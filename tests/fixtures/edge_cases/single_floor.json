@@ -1,0 +1,60 @@
+{
+  "tid": 999997,
+  "url": "https://bbs.yamibo.com/forum.php?mod=viewthread&tid=999997",
+  "display_title": "单层楼帖子",
+  "raw_title": "单层楼帖子",
+  "publisher": "test_user",
+  "pub_time": "2026-1-1 00:00",
+  "core_title": "测试作品",
+  "chapter_name": "1",
+  "chapter_title": null,
+  "series_id": 999,
+  "series_key": "测试作品",
+  "archive_status": "complete",
+  "validation_status": "valid",
+  "sync_time": "2026-01-01T00:00:00+00:00",
+  "export_path": null,
+  "resources": {
+    "context": "yamibo://threads/999997/context",
+    "metadata": "yamibo://threads/999997/metadata"
+  },
+  "publisher_uid": "000000",
+  "image_count": 1,
+  "context_path": "/tmp/test/context.md",
+  "export_path_abs": null,
+  "title_parse": {
+    "group_name": null,
+    "author_guess": "测试作者",
+    "core_title_guess": "测试作品",
+    "normalized_core_title": "测试作品",
+    "series_key": "测试作品",
+    "title_aliases_json": "[]",
+    "chapter_name": "1",
+    "chapter_index": 1.0,
+    "chapter_title": null,
+    "subtitle": null,
+    "tags_json": "[]",
+    "confidence": 0.9,
+    "needs_review": false
+  },
+  "floors": [
+    {
+      "pid": 9999999,
+      "floor_no": 1,
+      "publisher": "test_user",
+      "pub_time": "2026-1-1 00:00",
+      "has_images": true,
+      "content": "测试内容",
+      "content_preview": "测试内容"
+    }
+  ],
+  "floor_count": 1,
+  "series": {
+    "series_id": 999,
+    "canonical_title": "测试作品",
+    "resources": {
+      "index": "yamibo://series/index",
+      "chapters": "yamibo://series/999/chapters"
+    }
+  }
+}

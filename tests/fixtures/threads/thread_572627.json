@@ -1,0 +1,70 @@
+{
+  "tid": 572627,
+  "url": "https://bbs.yamibo.com/forum.php?mod=viewthread&tid=572627",
+  "display_title": "【超时空辉夜姬】[ポテトルス] ray",
+  "raw_title": "【超时空辉夜姬】[ポテトルス] ray",
+  "publisher": "晓美焰",
+  "pub_time": "2026-6-19 02:35",
+  "core_title": "超时空辉夜姬",
+  "chapter_name": "ray",
+  "chapter_title": null,
+  "series_id": 127,
+  "series_key": "超时空辉夜姬",
+  "archive_status": "complete",
+  "validation_status": "valid",
+  "sync_time": "2026-06-18T20:52:34+00:00",
+  "export_path": null,
+  "resources": {
+    "context": "yamibo://threads/572627/context",
+    "metadata": "yamibo://threads/572627/metadata"
+  },
+  "publisher_uid": "155037",
+  "image_count": 24,
+  "context_path": "/Users/vv/Code/Yamibo/data/threads/572627/context.md",
+  "export_path_abs": null,
+  "title_parse": {
+    "group_name": null,
+    "author_guess": "ポテトルス",
+    "core_title_guess": "超时空辉夜姬",
+    "normalized_core_title": "超时空辉夜姬",
+    "series_key": "超时空辉夜姬",
+    "title_aliases_json": "[]",
+    "chapter_name": "1",
+    "chapter_index": 1.0,
+    "chapter_title": null,
+    "subtitle": null,
+    "tags_json": "[]",
+    "confidence": 0.9,
+    "needs_review": 0,
+    "chapter_index_end": null
+  },
+  "floors": [
+    {
+      "pid": 41564246,
+      "floor_no": 1,
+      "publisher": "晓美焰",
+      "pub_time": "2026-6-19 02:35",
+      "has_images": true,
+      "content": "个人翻嵌\n\n作者P站\n作者推特",
+      "content_preview": "个人翻嵌\n\n作者P站\n作者推特"
+    },
+    {
+      "pid": 41564255,
+      "floor_no": 2,
+      "publisher": "2069017354",
+      "pub_time": "2026-6-19 02:50",
+      "has_images": false,
+      "content": "好美味的漫画，和电影一样既有笑点又有泪点，情绪转换也很自然，真是谢谢作者和译者的款待了(￣▼￣)",
+      "content_preview": "好美味的漫画，和电影一样既有笑点又有泪点，情绪转换也很自然，真是谢谢作者和译者的款待了(￣▼￣)"
+    }
+  ],
+  "floor_count": 2,
+  "series": {
+    "series_id": 127,
+    "canonical_title": "超时空辉夜姬",
+    "resources": {
+      "index": "yamibo://series/index",
+      "chapters": "yamibo://series/127/chapters"
+    }
+  }
+}

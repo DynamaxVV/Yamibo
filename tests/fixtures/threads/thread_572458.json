@@ -1,0 +1,79 @@
+{
+  "tid": 572458,
+  "url": "https://bbs.yamibo.com/forum.php?mod=viewthread&tid=572458",
+  "display_title": "【提灯喵汉化组】[なもり]摇曳百合 233 两个人的活动记录",
+  "raw_title": "【提灯喵汉化组】[なもり]摇曳百合 233 两个人的活动记录",
+  "publisher": "magtine",
+  "pub_time": "2026-6-14 21:21",
+  "core_title": "摇曳百合",
+  "chapter_name": "233",
+  "chapter_title": "两个人的活动记录",
+  "series_id": 94,
+  "series_key": "摇曳百合",
+  "archive_status": "complete",
+  "validation_status": "valid",
+  "sync_time": "2026-06-14T18:23:27+00:00",
+  "export_path": null,
+  "resources": {
+    "context": "yamibo://threads/572458/context",
+    "metadata": "yamibo://threads/572458/metadata"
+  },
+  "publisher_uid": "360078",
+  "image_count": 13,
+  "context_path": "/Users/vv/Code/Yamibo/data/threads/572458/context.md",
+  "export_path_abs": null,
+  "title_parse": {
+    "group_name": "提灯喵汉化组",
+    "author_guess": "なもり",
+    "core_title_guess": "摇曳百合",
+    "normalized_core_title": "摇曳百合",
+    "series_key": "摇曳百合",
+    "title_aliases_json": "[]",
+    "chapter_name": "1",
+    "chapter_index": 1.0,
+    "chapter_title": "两个人的活动记录",
+    "subtitle": null,
+    "tags_json": "[]",
+    "confidence": 0.95,
+    "needs_review": 0,
+    "chapter_index_end": null
+  },
+  "floors": [
+    {
+      "pid": 41560990,
+      "floor_no": 1,
+      "publisher": "magtine",
+      "pub_time": "2026-6-14 21:21",
+      "has_images": true,
+      "content": "轉載請註明原帖地址和以下信息\n\n圖源：Morina\n翻譯：飞光\n校對：ほむら\n嵌字：春日花店\n\n漢化作品僅供試閱，有愛者請  購買作品  支持作者！\n\n禁止轉載至FB、推特以及其他一切國際性網站！\n\n190  191  192  193  194  195  196  197  198  199\n200  201  202  203  204  205  206  207  208  209\n210  211  212  213  214  215  216  217 218 219\n220 221 222 223 224 225 226 227 228 229 230\n231 232\n\n特装版特典小册子：\n04卷  07卷  12卷",
+      "content_preview": "轉載請註明原帖地址和以下信息\n\n圖源：Morina\n翻譯：飞光\n校對：ほむら\n嵌字：春日花店\n\n漢化作品僅供試閱，有愛者請  購買作品  支持作者！\n\n禁止轉載至FB、推特以及其他一切國際性網站！\n\n190  191  192  193  194  195  196  197  198  199\n200  201  202  203  204  205  206  207  208  209\n210  211  212  213  214  215  216  217 218 219\n220 221 222 223 224 225 226 227 228"
+    },
+    {
+      "pid": 41561026,
+      "floor_no": 2,
+      "publisher": "ccontrary",
+      "pub_time": "2026-6-14 22:02",
+      "has_images": false,
+      "content": "京子已经完全被千夏拿捏了啊",
+      "content_preview": "京子已经完全被千夏拿捏了啊"
+    },
+    {
+      "pid": 41561114,
+      "floor_no": 3,
+      "publisher": "littlec87",
+      "pub_time": "2026-6-14 23:41",
+      "has_images": false,
+      "content": "头一次感觉千京有点香啊",
+      "content_preview": "头一次感觉千京有点香啊"
+    }
+  ],
+  "floor_count": 3,
+  "series": {
+    "series_id": 94,
+    "canonical_title": "摇曳百合",
+    "resources": {
+      "index": "yamibo://series/index",
+      "chapters": "yamibo://series/94/chapters"
+    }
+  }
+}

@@ -1,0 +1,502 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+
+from yamibo_mcp.domain.models import ThreadSnapshot
+from yamibo_mcp.db.repositories.series import SeriesRepository
+from yamibo_mcp.time_utils import utc_now_iso
+from yamibo_mcp.yamibo.title.normalizer import normalize_display_title, normalize_series_key
+
+
+class ThreadsRepository:
+    def __init__(self, conn: sqlite3.Connection):
+        self.conn = conn
+
+    def upsert_snapshot(
+        self,
+        snapshot: ThreadSnapshot,
+        *,
+        context_path: str | None = None,
+        archive_status: str = "complete",
+        missing_image_urls: list[str] | None = None,
+        title_warnings: dict[str, object] | None = None,
+    ) -> None:
+        now = utc_now_iso()
+        max_pid = max((floor.pid for floor in snapshot.floors), default=None)
+        series_id, needs_series_review = SeriesRepository(self.conn).resolve_for_title(snapshot.title)
+        missing_images_json = json.dumps(missing_image_urls or [], ensure_ascii=False)
+        self.conn.execute(
+            """
+            INSERT INTO threads (
+              tid, series_id, page_type, raw_title, display_title, publisher, publisher_uid,
+              pub_time, sync_time, last_pid, permission, image_count, context_path,
+              archive_status, validation_status, missing_images_json, needs_title_review, needs_series_review
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'valid', ?, ?, ?)
+            ON CONFLICT(tid) DO UPDATE SET
+              series_id = excluded.series_id,
+              page_type = excluded.page_type,
+              raw_title = excluded.raw_title,
+              display_title = excluded.display_title,
+              publisher = excluded.publisher,
+              publisher_uid = excluded.publisher_uid,
+              pub_time = excluded.pub_time,
+              sync_time = excluded.sync_time,
+              last_pid = excluded.last_pid,
+              permission = excluded.permission,
+              image_count = excluded.image_count,
+              context_path = excluded.context_path,
+              archive_status = excluded.archive_status,
+              validation_status = excluded.validation_status,
+              missing_images_json = excluded.missing_images_json,
+              needs_title_review = excluded.needs_title_review,
+              needs_series_review = excluded.needs_series_review
+            """,
+            (
+                snapshot.tid,
+                series_id,
+                snapshot.page_type,
+                snapshot.raw_title,
+                snapshot.display_title,
+                snapshot.publisher,
+                snapshot.publisher_uid,
+                snapshot.pub_time,
+                now,
+                max_pid,
+                snapshot.permission,
+                snapshot.image_count,
+                context_path,
+                archive_status,
+                missing_images_json,
+                1 if snapshot.title.needs_review else 0,
+                1 if needs_series_review else 0,
+            ),
+        )
+        self._upsert_title(snapshot, title_warnings=title_warnings)
+        self._upsert_floors(snapshot)
+        self._upsert_fts(snapshot)
+
+    def _upsert_title(self, snapshot: ThreadSnapshot, *, title_warnings: dict[str, object] | None = None) -> None:
+        title = snapshot.title
+        self.conn.execute(
+            """
+            INSERT INTO title_parse (
+              tid, raw_title, display_title, group_name, author_guess,
+              core_title_guess, normalized_core_title, series_key,
+              title_aliases_json, chapter_name, chapter_index, chapter_index_end, chapter_title, subtitle,
+              tags_json, confidence, parser_version, needs_review, warnings_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(tid) DO UPDATE SET
+              raw_title = excluded.raw_title,
+              display_title = excluded.display_title,
+              group_name = excluded.group_name,
+              author_guess = excluded.author_guess,
+              core_title_guess = excluded.core_title_guess,
+              normalized_core_title = excluded.normalized_core_title,
+              series_key = excluded.series_key,
+              title_aliases_json = excluded.title_aliases_json,
+              chapter_name = excluded.chapter_name,
+              chapter_index = excluded.chapter_index,
+              chapter_index_end = excluded.chapter_index_end,
+              chapter_title = excluded.chapter_title,
+              subtitle = excluded.subtitle,
+              tags_json = excluded.tags_json,
+              confidence = excluded.confidence,
+              parser_version = excluded.parser_version,
+              needs_review = excluded.needs_review,
+              warnings_json = excluded.warnings_json
+            """,
+            (
+                snapshot.tid,
+                title.raw_title,
+                title.display_title,
+                title.group_name,
+                title.author_guess,
+                title.core_title_guess,
+                title.normalized_core_title,
+                title.series_key,
+                json.dumps(title.title_aliases, ensure_ascii=False),
+                title.chapter_name,
+                title.chapter_index,
+                title.chapter_index_end,
+                title.chapter_title,
+                title.subtitle,
+                json.dumps(title.tags, ensure_ascii=False),
+                title.confidence,
+                title.parser_version,
+                1 if title.needs_review else 0,
+                json.dumps(title_warnings, ensure_ascii=False) if title_warnings is not None else None,
+            ),
+        )
+
+    def _upsert_floors(self, snapshot: ThreadSnapshot) -> None:
+        for floor in snapshot.floors:
+            self.conn.execute(
+                """
+                INSERT INTO floors (pid, tid, floor_no, publisher, content, pub_time, has_images, content_hash)
+                VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+                ON CONFLICT(pid) DO UPDATE SET
+                  tid = excluded.tid,
+                  floor_no = excluded.floor_no,
+                  publisher = excluded.publisher,
+                  content = excluded.content,
+                  pub_time = excluded.pub_time,
+                  has_images = excluded.has_images
+                """,
+                (
+                    floor.pid,
+                    floor.tid,
+                    floor.floor_no,
+                    floor.publisher,
+                    floor.content,
+                    floor.pub_time,
+                    1 if floor.has_images else 0,
+                ),
+            )
+
+    def _upsert_fts(self, snapshot: ThreadSnapshot) -> None:
+        content_preview = "\n".join(floor.content for floor in snapshot.floors[:3])
+        self.conn.execute("DELETE FROM thread_fts WHERE tid = ?", (snapshot.tid,))
+        self.conn.execute(
+            """
+            INSERT INTO thread_fts (tid, title, core_title, author, group_name, content_preview, catalog_text)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                snapshot.tid,
+                snapshot.display_title,
+                snapshot.title.core_title_guess,
+                snapshot.title.author_guess,
+                snapshot.title.group_name,
+                content_preview,
+                "",
+            ),
+        )
+
+    def get_thread(self, tid: int) -> sqlite3.Row | None:
+        return self.conn.execute("SELECT * FROM threads WHERE tid = ?", (tid,)).fetchone()
+
+    def delete_thread(self, tid: int) -> tuple[dict[str, object], dict[str, object]]:
+        thread_row = self.get_thread(tid)
+        if thread_row is None:
+            raise ValueError(f"thread not found: {tid}")
+        title_row = self.get_title_parse(tid)
+        floor_rows = self.list_floors(tid)
+        before = {
+            "thread": dict(thread_row),
+            "title_parse": None if title_row is None else dict(title_row),
+            "floors": [dict(row) for row in floor_rows],
+        }
+        self.conn.execute("DELETE FROM catalog WHERE tid = ?", (tid,))
+        self.conn.execute("DELETE FROM sync_runs WHERE tid = ?", (tid,))
+        self.conn.execute("DELETE FROM floors WHERE tid = ?", (tid,))
+        self.conn.execute("DELETE FROM title_parse WHERE tid = ?", (tid,))
+        self.conn.execute("DELETE FROM thread_fts WHERE tid = ?", (tid,))
+        self.conn.execute("DELETE FROM threads WHERE tid = ?", (tid,))
+        return before, {"tid": tid, "deleted": True}
+
+    def get_title_parse(self, tid: int) -> sqlite3.Row | None:
+        return self.conn.execute("SELECT * FROM title_parse WHERE tid = ?", (tid,)).fetchone()
+
+    def list_title_review_items(self, *, limit: int = 100) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            """
+            SELECT
+              t.tid, t.raw_title, t.display_title, t.series_id,
+              t.needs_title_review, t.needs_series_review,
+              tp.group_name, tp.author_guess, tp.core_title_guess, tp.series_key,
+              tp.title_aliases_json, tp.chapter_name, tp.chapter_index, tp.chapter_index_end, tp.chapter_title,
+              tp.subtitle, tp.tags_json, tp.confidence, tp.needs_review
+            FROM threads t
+            LEFT JOIN title_parse tp ON tp.tid = t.tid
+            WHERE t.needs_title_review = 1
+               OR t.needs_series_review = 1
+               OR tp.needs_review = 1
+            ORDER BY t.sync_time DESC, t.tid DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+    def confirm_title_review(self, tid: int) -> tuple[dict[str, object], dict[str, object]]:
+        before_row = self.conn.execute(
+            """
+            SELECT
+              t.tid, t.needs_title_review, t.needs_series_review,
+              tp.needs_review AS title_parse_needs_review
+            FROM threads t
+            LEFT JOIN title_parse tp ON tp.tid = t.tid
+            WHERE t.tid = ?
+            """,
+            (tid,),
+        ).fetchone()
+        if before_row is None:
+            raise ValueError(f"thread not found: {tid}")
+        before = dict(before_row)
+        self.conn.execute(
+            "UPDATE title_parse SET needs_review = 0 WHERE tid = ?",
+            (tid,),
+        )
+        self.conn.execute(
+            "UPDATE threads SET needs_title_review = 0 WHERE tid = ?",
+            (tid,),
+        )
+        after_row = self.conn.execute(
+            """
+            SELECT
+              t.tid, t.needs_title_review, t.needs_series_review,
+              tp.needs_review AS title_parse_needs_review
+            FROM threads t
+            LEFT JOIN title_parse tp ON tp.tid = t.tid
+            WHERE t.tid = ?
+            """,
+            (tid,),
+        ).fetchone()
+        return before, dict(after_row)
+
+    def update_title_review(
+        self,
+        tid: int,
+        *,
+        display_title: str,
+        group_name: str | None,
+        author_guess: str | None,
+        core_title_guess: str,
+        series_key: str | None,
+        title_aliases: list[str] | None,
+        chapter_name: str | None,
+        chapter_index: float | None,
+        chapter_index_end: float | None,
+        chapter_title: str | None,
+        subtitle: str | None,
+        tags: list[str] | None,
+        confidence: float | None,
+        needs_review: bool,
+    ) -> tuple[dict[str, object], dict[str, object]]:
+        thread_row = self.get_thread(tid)
+        title_row = self.get_title_parse(tid)
+        if thread_row is None or title_row is None:
+            raise ValueError(f"thread not found: {tid}")
+
+        normalized_display_title = normalize_display_title(display_title or thread_row["display_title"] or thread_row["raw_title"] or "")
+        normalized_core_title = normalize_display_title(core_title_guess or title_row["core_title_guess"] or "")
+        final_series_key = normalize_series_key(series_key or normalized_core_title)
+        if not normalized_display_title:
+            raise ValueError("display_title is required")
+        if not normalized_core_title:
+            raise ValueError("core_title_guess is required")
+        if not final_series_key:
+            raise ValueError("series_key is required")
+
+        aliases = [item for item in (title_aliases or []) if item]
+        tag_list = [item for item in (tags or []) if item]
+        final_confidence = float(title_row["confidence"] if confidence is None else confidence)
+
+        before = {
+            "thread": dict(thread_row),
+            "title_parse": dict(title_row),
+        }
+
+        from yamibo_mcp.domain.models import TitleSnapshot
+
+        title = TitleSnapshot(
+            raw_title=title_row["raw_title"] or thread_row["raw_title"] or normalized_display_title,
+            display_title=normalized_display_title,
+            group_name=group_name,
+            author_guess=author_guess,
+            core_title_guess=normalized_core_title,
+            normalized_core_title=normalize_series_key(normalized_core_title),
+            series_key=final_series_key,
+            title_aliases=aliases,
+            chapter_name=chapter_name,
+            chapter_index=chapter_index,
+            chapter_index_end=chapter_index_end,
+            chapter_title=chapter_title,
+            subtitle=subtitle,
+            tags=tag_list,
+            confidence=final_confidence,
+            needs_review=needs_review,
+            parser_version=title_row["parser_version"] or "title-v1",
+        )
+        series_id, needs_series_review = SeriesRepository(self.conn).resolve_for_title(title)
+
+        self.conn.execute(
+            """
+            UPDATE title_parse
+            SET display_title = ?,
+                group_name = ?,
+                author_guess = ?,
+                core_title_guess = ?,
+                normalized_core_title = ?,
+                series_key = ?,
+                title_aliases_json = ?,
+                chapter_name = ?,
+                chapter_index = ?,
+                chapter_index_end = ?,
+                chapter_title = ?,
+                subtitle = ?,
+                tags_json = ?,
+                confidence = ?,
+                needs_review = ?,
+                parser_version = ?,
+                warnings_json = NULL
+            WHERE tid = ?
+            """,
+            (
+                title.display_title,
+                title.group_name,
+                title.author_guess,
+                title.core_title_guess,
+                title.normalized_core_title,
+                title.series_key,
+                json.dumps(title.title_aliases, ensure_ascii=False),
+                title.chapter_name,
+                title.chapter_index,
+                title.chapter_index_end,
+                title.chapter_title,
+                title.subtitle,
+                json.dumps(title.tags, ensure_ascii=False),
+                title.confidence,
+                1 if title.needs_review else 0,
+                title.parser_version,
+                tid,
+            ),
+        )
+        self.conn.execute(
+            """
+            UPDATE threads
+            SET display_title = ?,
+                series_id = ?,
+                needs_title_review = ?,
+                needs_series_review = ?,
+                sync_time = ?
+            WHERE tid = ?
+            """,
+            (
+                title.display_title,
+                series_id,
+                1 if title.needs_review else 0,
+                1 if needs_series_review else 0,
+                utc_now_iso(),
+                tid,
+            ),
+        )
+        fts_existing = self.conn.execute(
+            "SELECT content_preview, catalog_text FROM thread_fts WHERE tid = ?",
+            (tid,),
+        ).fetchone()
+        self.conn.execute("DELETE FROM thread_fts WHERE tid = ?", (tid,))
+        self.conn.execute(
+            """
+            INSERT INTO thread_fts (tid, title, core_title, author, group_name, content_preview, catalog_text)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                tid,
+                title.display_title,
+                title.core_title_guess,
+                title.author_guess,
+                title.group_name,
+                "" if fts_existing is None else (fts_existing["content_preview"] or ""),
+                "" if fts_existing is None else (fts_existing["catalog_text"] or ""),
+            ),
+        )
+
+        after_thread = self.get_thread(tid)
+        after_title = self.get_title_parse(tid)
+        return before, {
+            "thread": None if after_thread is None else dict(after_thread),
+            "title_parse": None if after_title is None else dict(after_title),
+        }
+
+    def list_threads(self, *, limit: int = 100) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            """
+            SELECT
+              t.tid, t.raw_title, t.display_title, t.publisher, t.sync_time,
+              t.archive_status, t.validation_status, t.context_path, t.series_id, t.export_path,
+              tp.core_title_guess, tp.series_key, tp.chapter_name, tp.chapter_index, tp.chapter_index_end, tp.group_name, tp.author_guess, tp.needs_review
+            FROM threads t
+            LEFT JOIN title_parse tp ON tp.tid = t.tid
+            ORDER BY COALESCE(t.sync_time, '') DESC, t.tid DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+    def mark_exported(self, tid: int, export_path: str) -> None:
+        cur = self.conn.execute(
+            """
+            UPDATE threads
+            SET is_exported = 1, export_path = ?
+            WHERE tid = ?
+            """,
+            (export_path, tid),
+        )
+        if cur.rowcount != 1:
+            raise ValueError(f"thread not found: {tid}")
+
+    def list_exports(self, *, limit: int = 100) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            """
+            SELECT tid, raw_title, display_title, archive_status, is_exported, export_path
+            FROM threads
+            WHERE is_exported = 1 OR export_path IS NOT NULL
+            ORDER BY tid DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+    def search_threads(self, query: str, *, limit: int = 50) -> list[sqlite3.Row]:
+        normalized = query.strip()
+        if not normalized:
+            return self.list_threads(limit=limit)
+
+        try:
+            rows = self.conn.execute(
+                """
+                SELECT
+                  t.tid, t.raw_title, t.display_title, t.publisher, t.sync_time,
+                  t.archive_status, t.validation_status, t.context_path, t.series_id, t.export_path,
+                  tp.core_title_guess, tp.series_key, tp.chapter_name, tp.needs_review,
+                  bm25(thread_fts) AS rank
+                FROM thread_fts
+                JOIN threads t ON t.tid = thread_fts.tid
+                LEFT JOIN title_parse tp ON tp.tid = t.tid
+                WHERE thread_fts MATCH ?
+                ORDER BY rank
+                LIMIT ?
+                """,
+                (normalized, limit),
+            ).fetchall()
+            if rows:
+                return rows
+        except sqlite3.OperationalError:
+            pass
+        like = f"%{normalized}%"
+        return self.conn.execute(
+            """
+            SELECT
+              t.tid, t.raw_title, t.display_title, t.publisher, t.sync_time,
+              t.archive_status, t.validation_status, t.context_path, t.series_id, t.export_path,
+              tp.core_title_guess, tp.series_key, tp.chapter_name, tp.needs_review
+            FROM threads t
+            LEFT JOIN title_parse tp ON tp.tid = t.tid
+            WHERE t.raw_title LIKE ?
+               OR t.display_title LIKE ?
+               OR tp.core_title_guess LIKE ?
+               OR tp.series_key LIKE ?
+            ORDER BY COALESCE(t.sync_time, '') DESC, t.tid DESC
+            LIMIT ?
+            """,
+            (like, like, like, like, limit),
+        ).fetchall()
+
+    def list_floors(self, tid: int) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            "SELECT * FROM floors WHERE tid = ? ORDER BY floor_no ASC",
+            (tid,),
+        ).fetchall()

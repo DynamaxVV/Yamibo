@@ -1,0 +1,61 @@
+{
+  "tid": 569610,
+  "url": "https://bbs.yamibo.com/forum.php?mod=viewthread&tid=569610",
+  "display_title": "[汉化工房九九组][2222楠]梦路明灯与魔法之书 13话",
+  "raw_title": "[汉化工房九九组][2222楠]梦路明灯与魔法之书 13话",
+  "publisher": "萝卜小宝贝",
+  "pub_time": "2026-4-6 21:47",
+  "core_title": "梦路明灯与魔法之书",
+  "chapter_name": "13",
+  "chapter_title": "话",
+  "series_id": 129,
+  "series_key": "梦路明灯与魔法之书",
+  "archive_status": "complete",
+  "validation_status": "valid",
+  "sync_time": "2026-06-18T21:05:23+00:00",
+  "export_path": null,
+  "resources": {
+    "context": "yamibo://threads/569610/context",
+    "metadata": "yamibo://threads/569610/metadata"
+  },
+  "publisher_uid": "283491",
+  "image_count": 10,
+  "context_path": "/Users/vv/Code/Yamibo/data/threads/569610/context.md",
+  "export_path_abs": null,
+  "title_parse": {
+    "group_name": "汉化工房九九组",
+    "author_guess": "2222楠",
+    "core_title_guess": "梦路明灯与魔法之书",
+    "normalized_core_title": "梦路明灯与魔法之书",
+    "series_key": "梦路明灯与魔法之书",
+    "title_aliases_json": "[]",
+    "chapter_name": "13话",
+    "chapter_index": 13.0,
+    "chapter_title": "话",
+    "subtitle": null,
+    "tags_json": "[]",
+    "confidence": 0.9,
+    "needs_review": 0,
+    "chapter_index_end": null
+  },
+  "floors": [
+    {
+      "pid": 41509118,
+      "floor_no": 1,
+      "publisher": "萝卜小宝贝",
+      "pub_time": "2026-4-6 21:47",
+      "has_images": true,
+      "content": "================================================\n读切版 01话 02话 03话 04话 05话 06话 07话 08话 09话 10话 11话 12话\n================================================\n图源：抱枕\n翻译：萝卜小宝贝\n嵌字：孤夜零星\n================================================\n\n999P-《合创少女》.jpg",
+      "content_preview": "================================================\n读切版 01话 02话 03话 04话 05话 06话 07话 08话 09话 10话 11话 12话\n================================================\n图源：抱枕\n翻译：萝卜小宝贝\n嵌字：孤夜零星\n================================================\n\n999P-《合创少女》.jpg"
+    }
+  ],
+  "floor_count": 1,
+  "series": {
+    "series_id": 129,
+    "canonical_title": "梦路明灯与魔法之书",
+    "resources": {
+      "index": "yamibo://series/index",
+      "chapters": "yamibo://series/129/chapters"
+    }
+  }
+}

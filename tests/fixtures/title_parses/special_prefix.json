@@ -1,0 +1,80 @@
+{
+  "display_title": "【!】【汉化工房九九组】[花野ちあき]校内恋爱 13话其2",
+  "group_name": "汉化工房九九组",
+  "author_guess": "花野ちあき",
+  "core_title_guess": "校内恋爱",
+  "normalized_core_title": "校内恋爱",
+  "series_key": "校内恋爱",
+  "title_aliases": [],
+  "chapter_name": "13话其2",
+  "chapter_index": 13.2,
+  "chapter_title": "其2",
+  "subtitle": null,
+  "tags": [
+    "!"
+  ],
+  "confidence": 0.95,
+  "needs_review": false,
+  "llm_used": true,
+  "llm_meta": {
+    "attempted": true,
+    "used": true,
+    "strategy": "llm_primary",
+    "model": "mimo-v2-flash",
+    "raw_title": "【!】【汉化工房九九组】[花野ちあき]校内恋爱 13话其2",
+    "baseline": {
+      "display_title": "【!】【汉化工房九九组】[花野ちあき]校内恋爱 13话其2",
+      "group_name": null,
+      "author_guess": null,
+      "core_title_guess": "【!】【汉化工房九九组】[花野ちあき]校内恋爱",
+      "normalized_core_title": "【!】【汉化工房九九组】[花野ちあき]校内恋爱",
+      "series_key": "汉化工房九九组花野ちあき校内恋爱",
+      "title_aliases": [],
+      "chapter_name": "13",
+      "chapter_index": 13.0,
+      "chapter_title": "话其2",
+      "subtitle": null,
+      "tags": [],
+      "confidence": 0.9,
+      "needs_review": false,
+      "chapter_index_end": null
+    },
+    "raw_content": "{\n  \"group_name\": \"汉化工房九九组\",\n  \"author_guess\": \"花野ちあき\",\n  \"core_title_guess\": \"校内恋爱\",\n  \"title_aliases\": [],\n  \"chapter_name\": \"13\",\n  \"chapter_index\": 13.2,\n  \"chapter_title\": \"其2\",\n  \"subtitle\": null,\n  \"tags\": [\"!\"],\n  \"confidence\": 0.95,\n  \"needs_review\": false\n}",
+    "payload": {
+      "group_name": "汉化工房九九组",
+      "author_guess": "花野ちあき",
+      "core_title_guess": "校内恋爱",
+      "title_aliases": [],
+      "chapter_name": "13话其2",
+      "chapter_index": 13.2,
+      "chapter_title": "其2",
+      "subtitle": null,
+      "tags": [
+        "!"
+      ],
+      "confidence": 0.95,
+      "needs_review": false,
+      "chapter_index_end": null
+    },
+    "result": {
+      "display_title": "【!】【汉化工房九九组】[花野ちあき]校内恋爱 13话其2",
+      "group_name": "汉化工房九九组",
+      "author_guess": "花野ちあき",
+      "core_title_guess": "校内恋爱",
+      "normalized_core_title": "校内恋爱",
+      "series_key": "校内恋爱",
+      "title_aliases": [],
+      "chapter_name": "13话其2",
+      "chapter_index": 13.2,
+      "chapter_title": "其2",
+      "subtitle": null,
+      "tags": [
+        "!"
+      ],
+      "confidence": 0.95,
+      "needs_review": false,
+      "chapter_index_end": null
+    }
+  },
+  "chapter_index_end": null
+}
