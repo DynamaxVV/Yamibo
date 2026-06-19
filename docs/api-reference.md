@@ -357,7 +357,7 @@ Web 控制台基于 HTTP，提供 HTML 页面和表单操作。
 | 异常类 | HTTP 等价 | 说明 |
 |--------|----------|------|
 | `JobNotFound` | 404 | 指定的 job_id 不存在 |
-| `LeaseNotAcquired` | 409 | Worker 无法抢占任务（已被其他 Worker 持有） |
+| `LeaseNotAcquired` | 409 | Daemon 无法抢占任务（已被其他 Daemon 持有） |
 | `RemoteFetchError` | 502 | 远端 HTTP 请求失败 |
 | `LoginRequiredError` | 401 | 论坛要求登录 |
 | `RemoteMaintenanceError` | 503 | 论坛正在维护（每天 5:30-6:30 UTC+8） |

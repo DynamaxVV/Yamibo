@@ -28,7 +28,7 @@ Schema 版本跟踪表。
 
 ### 2.2 jobs
 
-后台任务表。Server 创建任务（INSERT），Worker 抢占执行（UPDATE）。
+后台任务表。Server 创建任务（INSERT），Daemon 抢占执行（UPDATE）。
 
 | 列名 | 类型 | 约束 | 说明 |
 |------|------|------|------|
@@ -41,7 +41,7 @@ Schema 版本跟踪表。
 | stage | TEXT | | 当前执行阶段 |
 | progress_current | INTEGER | NOT NULL, DEFAULT 0 | 当前进度 |
 | progress_total | INTEGER | | 总进度 |
-| worker_id | TEXT | | 持有租约的 Worker ID |
+| worker_id | TEXT | | 持有租约的 Daemon ID |
 | heartbeat_at | TEXT | | 最后心跳时间 |
 | lease_until | TEXT | | 租约到期时间 |
 | retry_count | INTEGER | NOT NULL, DEFAULT 0 | 已重试次数 |
@@ -59,7 +59,7 @@ Schema 版本跟踪表。
 
 | 名称 | 列 | 用途 |
 |------|-----|------|
-| idx_jobs_status_lease | (status, lease_until) | Worker 抢占查询 |
+| idx_jobs_status_lease | (status, lease_until) | Daemon 抢占查询 |
 | idx_jobs_tid_type | (tid, job_type) | 按帖子查任务 |
 | idx_jobs_updated_at | (updated_at) | 时间排序 |
 

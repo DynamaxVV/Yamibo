@@ -1,12 +1,12 @@
 # Yamibo MCP
 
-Local archiving system for the yamibo.com (百合会) forum. Python package with MCP server, background worker, web console, and CLI.
+Local archiving system for the yamibo.com (百合会) forum. Python package with MCP server, daemon, web console, and CLI.
 
 ## Architecture
 
 - `src/yamibo_mcp/server/` — MCP server (FastMCP stdio) + legacy JSON-RPC + CLI subcommands
-- `src/yamibo_mcp/worker/` — background job consumer (polls SQLite, executes handlers)
-- `src/yamibo_mcp/web/` — embedded web UI for job monitoring
+- `src/yamibo_mcp/daemon/` — background job consumer (polls SQLite, executes handlers) + embedded web console
+- `src/yamibo_mcp/web/` — embedded web UI for job monitoring (started by daemon)
 - `src/yamibo_mcp/yamibo/` — forum HTTP client, HTML parsers, title parsing, series matching
 - `src/yamibo_mcp/storage/` — local file I/O (staging, exports, images, markdown)
 - `src/yamibo_mcp/db/` — SQLite schema, migrations, repositories (jobs, threads, series, audit)
@@ -15,7 +15,7 @@ Local archiving system for the yamibo.com (百合会) forum. Python package with
 - `src/yamibo_mcp/maintenance/` — backup, cleanup, reset commands
 - `tests/unit/` — unit tests (pytest)
 
-Job-based architecture: `yamibo-mcp-server` creates jobs in SQLite, `yamibo-worker` consumes them.
+Job-based architecture: `yamibo-mcp-server` creates jobs in SQLite, `yamibo-daemon` consumes them.
 
 ## Commands
 
@@ -23,15 +23,12 @@ Job-based architecture: `yamibo-mcp-server` creates jobs in SQLite, `yamibo-work
 # Setup
 uv sync --extra dev
 
-# Run worker (background job consumer)
-uv run yamibo-worker
-uv run yamibo-worker --once        # single-pass for testing
+# Run daemon (background job consumer + web console)
+uv run yamibo-daemon
+uv run yamibo-daemon --once        # single-pass for testing
 
 # Run MCP server (stdio transport for LLM clients)
 uv run yamibo-mcp-server stdio
-
-# Run web console
-uv run yamibo-web
 
 # CLI shortcuts (direct tool calls, returns JSON)
 uv run yamibo-mcp-server browse-forum-page --page 1
@@ -48,7 +45,6 @@ uv run yamibo-init-db
 ```bash
 uv run pytest                      # all tests
 uv run pytest tests/unit/          # unit tests only
-uv run pytest tests/integration/   # integration tests only
 uv run pytest tests/unit/test_parsers/test_title_parser.py  # single file
 uv run pytest -k "test_name"       # by name
 ```
@@ -62,8 +58,6 @@ No lint/typecheck configured — only pytest.
 - `edge_cases/`：边界条件数据（空楼层、缺失字段、畸形数据、单层楼）
 
 **测试原则**：高内聚低耦合、独立性与可重复性、数据与逻辑分离
-
-**已知 Bug**：无
 
 ## Config
 
@@ -79,8 +73,8 @@ Config resolution: env vars → `yamibo.local.json` → hardcoded defaults (`con
 
 ## Gotchas
 
-- The worker must be running for `create-*-job` commands to execute. Creating a job just writes to SQLite.
-- `get-thread` auto-archives if local copy missing; `create-sync-thread-job` only queues.
+- The daemon must be running for `archive-thread` / `export-thread` jobs to execute. Creating a job just writes to SQLite.
+- `get-thread` auto-archives if local copy missing; `archive-thread` only queues.
 - `search-threads` tries remote first, falls back to local — check `source` and `remote_error` in response.
 - Forum requires valid `.cookie` file for remote access.
 - SQLite DB lives at `data/forum.db` by default. Schema managed by `db/migrations.py`.

@@ -79,25 +79,25 @@ uv run yamibo-init-db
 | 进程 | 生命周期 | 说明 |
 |------|---------|------|
 | MCP Server | 由 LLM 客户端触发，随会话长期运行 | 处理 MCP 请求，创建任务到 SQLite |
-| Worker | 独立后台进程，支持单次或持续运行 | 轮询 SQLite 消费任务，内嵌 Web 控制台 |
+| Daemon | 独立后台进程，支持单次或持续运行 | 轮询 SQLite 消费任务，内嵌 Web 控制台 |
 
-### 3.1 启动 Worker（后台任务消费 + Web 控制台）
+### 3.1 启动 Daemon（后台任务消费 + Web 控制台）
 
 ```bash
 # 持续运行（默认模式，内嵌 Web 控制台）
-uv run yamibo-worker
+uv run yamibo-daemon
 
 # 单次执行后退出（测试用）
-uv run yamibo-worker --once
+uv run yamibo-daemon --once
 
-# 指定 Worker ID
-uv run yamibo-worker --worker-id my-worker
+# 指定 Daemon ID
+uv run yamibo-daemon --worker-id my-daemon
 
 # 不启动嵌入式 Web 控制台
-uv run yamibo-worker --no-web
+uv run yamibo-daemon --no-web
 ```
 
-Worker 启动后，Web 控制台自动在 `http://127.0.0.1:8765` 提供服务。
+Daemon 启动后，Web 控制台自动在 `http://127.0.0.1:8765` 提供服务。
 
 ### 3.2 MCP Server（由 LLM 客户端自动启动）
 
@@ -231,12 +231,12 @@ Web 控制台（默认 `http://127.0.0.1:8765`）提供以下运维操作：
 
 - 帖子总数、系列数、导出数
 - 最近任务列表（含状态、错误信息）
-- Worker 心跳状态
+- Daemon 心跳状态
 - 审计事件
 
 ### 6.2 日志
 
-Worker 和 Server 使用 Python stdlib logging：
+Daemon 和 Server 使用 Python stdlib logging：
 
 ```bash
 # 日志格式
@@ -280,8 +280,7 @@ Worker 和 Server 使用 Python stdlib logging：
 
 | 症状 | 原因 | 解决 |
 |------|------|------|
-| Worker 不消费任务 | Worker 未启动 | `uv run yamibo-worker` |
-| 任务一直 queued | 无 Worker 运行 | 检查 Worker 进程 |
+| 任务一直 queued | Daemon 未启动 | `uv run yamibo-daemon` |
 | 任务 failed + LoginRequired | Cookie 过期 | 更新 `.cookie` 文件 |
 | 任务 failed + RemoteMaintenance | 论坛维护中 | 等待维护结束（5:30-6:30 UTC+8） |
 | 任务 partial | 部分图片下载失败 | 检查 `missing_images_json`，可重新同步 |

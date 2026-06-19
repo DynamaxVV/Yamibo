@@ -10,7 +10,7 @@ from yamibo_mcp.domain.models import Job
 from yamibo_mcp.domain.enums import JobType
 from yamibo_mcp.storage.exports import ExportPrecheckError, export_thread_zip, inspect_export_readiness, is_thread_stale
 from yamibo_mcp.storage.paths import StoragePaths
-from yamibo_mcp.worker.handlers.sync_thread import handle_sync_thread
+from yamibo_mcp.daemon.handlers.sync_thread import handle_sync_thread
 
 
 def handle_export_thread(repo: JobsRepository, job: Job, worker_id: str, lease_seconds: int, settings: Settings) -> None:

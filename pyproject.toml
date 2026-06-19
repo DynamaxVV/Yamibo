@@ -14,7 +14,7 @@ dev = [
 
 [project.scripts]
 yamibo-init-db = "yamibo_mcp.db.migrations:main"
-yamibo-worker = "yamibo_mcp.worker.main:main"
+yamibo-daemon = "yamibo_mcp.daemon.main:main"
 yamibo-web = "yamibo_mcp.web.app:main"
 yamibo-mcp-server = "yamibo_mcp.server.app:main"
 yamibo-backup-db = "yamibo_mcp.maintenance.backup_db:main"

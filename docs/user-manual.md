@@ -19,8 +19,8 @@ uv run yamibo-init-db
 # 4. 配置 Cookie（在浏览器登录 bbs.yamibo.com 后复制 Cookie）
 #    创建 .cookie 文件，写入 cookie 内容
 
-# 5. 启动 Worker（后台任务消费 + Web 控制台）
-uv run yamibo-worker
+# 5. 启动 Daemon（后台任务消费 + Web 控制台）
+uv run yamibo-daemon
 ```
 
 ### 1.2 验证安装
@@ -87,14 +87,14 @@ MCP 资源可以通过 URI 访问：
 
 ## 3. 通过 Web 控制台使用
 
-启动 Worker 后，访问 `http://127.0.0.1:8765/`。
+启动 Daemon 后，访问 `http://127.0.0.1:8765/`。
 
 ### 3.1 Dashboard
 
 首页展示：
 - 帖子总数、系列数、导出数
 - 最近任务列表
-- Worker 心跳状态
+- Daemon 心跳状态
 - 最近审计事件
 
 ### 3.2 任务管理
@@ -212,7 +212,7 @@ uv run yamibo-mcp-server read-resource "yamibo://threads/572313/context"
 ```
 1. create-sync-forum-range-jobs --start-page 1 --end-page 10
                                      → 批量创建同步任务
-2. 启动 Worker                       → 自动消费任务
+2. 启动 Daemon                       → 自动消费任务
 3. 在 Web 控制台监控进度
 4. 所有任务完成后，批量导出
 ```

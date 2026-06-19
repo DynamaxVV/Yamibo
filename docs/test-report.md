@@ -99,5 +99,5 @@
 | services/llm_client.py | 需要 mock 外部 HTTP 请求 | P2 |
 | services/title_llm.py | 需要 mock LLM API | P2 |
 | server/tools.py | 需要完整的 MCP 环境 | P1 |
-| worker/handlers/* | 需要完整的 Worker 环境 | P1 |
+| daemon/handlers/* | 需要完整的 Daemon 环境 | P1 |
 | web/app.py | 需要 HTTP 测试客户端 | P2 |

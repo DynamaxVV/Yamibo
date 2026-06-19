@@ -65,7 +65,7 @@ Yamibo MCP — 百合会漫画本地归档系统
 
 | ID | 需求 | 优先级 |
 |----|------|--------|
-| F-030 | Dashboard 展示归档统计、最近任务、Worker 状态 | P0 |
+| F-030 | Dashboard 展示归档统计、最近任务、Daemon 状态 | P0 |
 | F-031 | 任务列表与详情页（含 staging 排障） | P0 |
 | F-032 | 帖子归档列表与详情页（含阅读预览、图片预览） | P0 |
 | F-033 | 系列管理（查看、合并、确认） | P1 |
@@ -87,8 +87,8 @@ Yamibo MCP — 百合会漫画本地归档系统
 | 类别 | 要求 |
 |------|------|
 | 性能 | 单帖子归档 < 30s（不含图片下载） |
-| 可靠性 | Worker 崩溃后自动恢复中断任务 |
-| 并发 | 支持多 Worker 实例并行消费 |
+| 可靠性 | Daemon 崩溃后自动恢复中断任务 |
+| 并发 | 支持多 Daemon 实例并行消费 |
 | 安全 | Cookie 文件不入库、不入导出包 |
 | 兼容性 | Python >= 3.11，SQLite >= 3.35 |
 
@@ -114,7 +114,7 @@ Yamibo MCP — 百合会漫画本地归档系统
                            │ SQLite (jobs 表)
                            ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                     yamibo-worker                               │
+│                     yamibo-daemon                                │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐       │
 │  │  Runner  │  │ Recovery │  │ Handlers │  │  Staging │       │
 │  └──────────┘  └──────────┘  └──────────┘  └──────────┘       │
@@ -128,7 +128,7 @@ Yamibo MCP — 百合会漫画本地归档系统
 
 ┌─────────────────────────────────────────────────────────────────┐
 │                     yamibo-web (嵌入式)                          │
-│              HTTP 控制台，随 Worker 启动                          │
+│              HTTP 控制台，随 Daemon 启动                          │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -137,8 +137,8 @@ Yamibo MCP — 百合会漫画本地归档系统
 | 组件 | 入口 | 职责 |
 |------|------|------|
 | MCP Server | `yamibo-mcp-server stdio` | 接收 LLM 客户端请求，创建任务到 SQLite |
-| Worker | `yamibo-worker` | 轮询 SQLite，抢占任务并执行处理器 |
-| Web Console | `yamibo-web` (或嵌入 Worker) | HTTP 管理界面 |
+| Daemon | `yamibo-daemon` | 轮询 SQLite，抢占任务并执行处理器 |
+| Web Console | 嵌入 Daemon | HTTP 管理界面 |
 | Yamibo Client | `yamibo/client.py` | 论坛 HTTP 客户端，含登录、Cookie 管理 |
 | Parsers | `yamibo/parsers/` | HTML 解析（帖子详情、列表页、搜索结果） |
 | Title Parser | `yamibo/title/parser.py` | 标题规则引擎 |
@@ -152,7 +152,7 @@ Yamibo MCP — 百合会漫画本地归档系统
 创建 (Server/Web)
   │
   ▼
-QUEUED ──→ Worker acquire ──→ RUNNING
+QUEUED ──→ Daemon acquire ──→ RUNNING
                                  │
                     ┌────────────┼────────────┐
                     ▼            ▼            ▼
@@ -162,19 +162,19 @@ QUEUED ──→ Worker acquire ──→ RUNNING
                             (可人工排查)   (可重试)
                                  │
                                  ▼
-                           INTERRUPTED ──→ Worker 恢复 ──→ RUNNING
+                           INTERRUPTED ──→ Daemon 恢复 ──→ RUNNING
 ```
 
 **状态说明**：
 
 | 状态 | 含义 |
 |------|------|
-| `queued` | 已创建，等待 Worker 消费 |
-| `running` | Worker 已抢占，正在执行 |
+| `queued` | 已创建，等待 Daemon 消费 |
+| `running` | Daemon 已抢占，正在执行 |
 | `succeeded` | 全部成功 |
 | `partial` | 帖子已归档，但部分图片缺失 |
 | `failed` | 执行失败，含 error_code 和 error_message |
-| `interrupted` | Worker 超时，可被其他 Worker 恢复 |
+| `interrupted` | Daemon 超时，可被其他 Daemon 恢复 |
 | `retrying` | 准备重试 |
 | `cancelled` | 已取消 |
 
@@ -245,8 +245,8 @@ yamibo/
 │   │   ├── resources.py        # URI 模板 + 资源读取
 │   │   ├── schemas.py          # 响应结构构建
 │   │   └── protocol.py         # JSON-RPC 兼容层
-│   ├── worker/                 # 后台任务消费
-│   │   ├── main.py             # Worker 入口
+│   ├── daemon/                 # 后台任务消费
+│   │   ├── main.py             # Daemon 入口
 │   │   ├── runner.py           # 轮询 + 抢占 + 执行循环
 │   │   ├── recovery.py         # 过期任务恢复
 │   │   └── handlers/           # 任务处理器

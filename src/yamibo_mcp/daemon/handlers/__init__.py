@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from yamibo_mcp.domain.enums import JobType
 from yamibo_mcp.domain.models import Job
-from yamibo_mcp.worker.handlers.cleanup_job import handle_cleanup_job
-from yamibo_mcp.worker.handlers.export_thread import handle_export_thread
-from yamibo_mcp.worker.handlers.noop import handle_noop
-from yamibo_mcp.worker.handlers.sync_thread import handle_sync_thread
-from yamibo_mcp.worker.handlers.title_refine import handle_title_refine
+from yamibo_mcp.daemon.handlers.cleanup_job import handle_cleanup_job
+from yamibo_mcp.daemon.handlers.export_thread import handle_export_thread
+from yamibo_mcp.daemon.handlers.noop import handle_noop
+from yamibo_mcp.daemon.handlers.sync_thread import handle_sync_thread
+from yamibo_mcp.daemon.handlers.title_refine import handle_title_refine
 
 
 def get_handler(job: Job):

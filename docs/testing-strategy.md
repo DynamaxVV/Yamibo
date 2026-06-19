@@ -169,7 +169,7 @@ tests/
 │       └── test_title_parser.py # 标题解析器
 ├── integration/                 # 集成测试（待实现）
 │   ├── test_server_tools.py     # MCP 工具测试
-│   ├── test_worker_handlers.py  # Worker 处理器测试
+│   ├── test_daemon_handlers.py  # Daemon 处理器测试
 │   └── test_cli_commands.py     # CLI 命令测试
 └── e2e/                         # 端到端测试（待实现）
     ├── test_job_lifecycle.py    # Job 生命周期

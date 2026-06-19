@@ -28,7 +28,7 @@ from yamibo_mcp.yamibo.parsers.search_results import SearchResultItem
 from yamibo_mcp.yamibo.title.parser import parse_title
 from yamibo_mcp.yamibo.title.normalizer import normalize_series_key
 from yamibo_mcp.yamibo.urls import forum_page_url, thread_url_from_tid
-from yamibo_mcp.worker.handlers.sync_thread import handle_sync_thread
+from yamibo_mcp.daemon.handlers.sync_thread import handle_sync_thread
 
 
 def create_noop_job() -> str:

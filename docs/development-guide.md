@@ -134,17 +134,17 @@ LLM 使用 OpenAI-compatible API，prompt 中包含：
 ### 2.2 租约抢占机制
 
 ```
-Worker A: acquire(job_id, worker_id, lease_seconds)
+Daemon A: acquire(job_id, worker_id, lease_seconds)
   → UPDATE jobs SET status='running', worker_id='A', lease_until=now+60s
     WHERE job_id=? AND status IN ('queued','retrying','interrupted')
       AND (lease_until IS NULL OR lease_until < now)
   → if rowcount != 1: raise LeaseNotAcquired
 
-Worker A: heartbeat(job_id, worker_id, lease_seconds)
+Daemon A: heartbeat(job_id, worker_id, lease_seconds)
   → UPDATE jobs SET heartbeat_at=now, lease_until=now+60s
     WHERE job_id=? AND worker_id=? AND status='running'
 
-Worker B: recover_expired_jobs()
+Daemon B: recover_expired_jobs()
   → UPDATE jobs SET status='interrupted'
     WHERE status='running' AND lease_until < now
 ```
@@ -164,7 +164,7 @@ Worker B: recover_expired_jobs()
 
 - 失败时写入 `staging/{job_id}/failure.json`
 - 图片下载失败不阻断整体归档（标记为 `partial`）
-- Worker 崩溃后，过期任务自动恢复为 `interrupted` 状态
+- Daemon 崩溃后，过期任务自动恢复为 `interrupted` 状态
 
 ---
 
@@ -267,7 +267,7 @@ Worker B: recover_expired_jobs()
 | export_dir | YAMIBO_EXPORT_DIR | data/exports | 导出目录 |
 | web_host | YAMIBO_WEB_HOST | 127.0.0.1 | Web 监听地址 |
 | web_port | YAMIBO_WEB_PORT | 8765 | Web 端口 |
-| worker_poll_seconds | YAMIBO_WORKER_POLL_SECONDS | 2 | Worker 轮询间隔 |
+| worker_poll_seconds | YAMIBO_WORKER_POLL_SECONDS | 2 | Daemon 轮询间隔 |
 | worker_lease_seconds | YAMIBO_WORKER_LEASE_SECONDS | 60 | 租约时长 |
 | llm_base_url | YAMIBO_LLM_BASE_URL | https://api.openai.com/v1 | LLM API 地址 |
 | llm_api_key | YAMIBO_LLM_API_KEY | - | LLM API Key |

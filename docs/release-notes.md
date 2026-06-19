@@ -20,9 +20,9 @@
 | 进程 | 入口 | 说明 |
 |------|------|------|
 | MCP Server | `yamibo-mcp-server stdio` | 由 LLM 客户端触发，随会话长期运行 |
-| Worker | `yamibo-worker` | 独立后台进程，内嵌 Web 控制台 |
+| Daemon | `yamibo-daemon` | 独立后台进程，内嵌 Web 控制台 |
 
-Web 控制台随 Worker 自动启动（`http://127.0.0.1:8765`），无需单独运行。
+Web 控制台随 Daemon 自动启动（`http://127.0.0.1:8765`），无需单独运行。
 
 ---
 
@@ -31,8 +31,8 @@ Web 控制台随 Worker 自动启动（`http://127.0.0.1:8765`），无需单独
 ### 核心功能
 
 - **MCP Server**：基于 FastMCP 的标准 MCP 服务器，支持 stdio/SSE/HTTP 传输
-- **Worker**：后台任务消费引擎，支持租约抢占、心跳、崩溃恢复
-- **Web 控制台**：嵌入式 HTTP 管理界面（随 Worker 启动），中英文双语
+- **Daemon**：后台任务消费引擎，支持租约抢占、心跳、崩溃恢复
+- **Web 控制台**：嵌入式 HTTP 管理界面（随 Daemon 启动），中英文双语
 - **CLI**：所有工具均可通过命令行直接调用
 
 ### 论坛交互
@@ -107,7 +107,7 @@ Web 控制台随 Worker 自动启动（`http://127.0.0.1:8765`），无需单独
 | 命令 | 模块 | 说明 |
 |------|------|------|
 | yamibo-mcp-server | server.app:main | MCP 服务器 + CLI（由 LLM 客户端触发） |
-| yamibo-worker | worker.main:main | 后台任务消费 + 嵌入式 Web 控制台 |
+| yamibo-daemon | daemon.main:main | 后台任务消费 + 嵌入式 Web 控制台 |
 | yamibo-init-db | db.migrations:main | 数据库初始化 |
 | yamibo-backup-db | maintenance.backup_db:main | 数据库备份 |
 | yamibo-maintenance-cleanup | maintenance.cleanup_data:main | 过期清理 |

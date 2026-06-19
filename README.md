@@ -9,7 +9,7 @@
 - **自动归档** — 抓取帖子 HTML，解析楼层，下载图片，生成结构化本地存档
 - **系列管理** — 按 series_key 自动聚合同一系列的多个章节帖子
 - **标准化导出** — ZIP 打包（context.md + metadata.json + 图片），按系列分目录
-- **Web 控制台** — 嵌入式 HTTP 管理界面，中英文双语，随 Worker 自动启动
+- **Web 控制台** — 嵌入式 HTTP 管理界面，中英文双语，随 Daemon 自动启动
 - **CLI** — 所有工具均可通过命令行直接调用
 
 ## 快速开始
@@ -52,8 +52,8 @@ uv run yamibo-init-db
 ### 启动
 
 ```bash
-# 启动 Worker（后台任务消费 + Web 控制台）
-uv run yamibo-worker
+# 启动 Daemon（后台任务消费 + Web 控制台）
+uv run yamibo-daemon
 ```
 
 MCP Server 无需手动启动，由 LLM 客户端自动调用。
@@ -67,7 +67,7 @@ LLM Client (Claude Desktop / Cursor)
 yamibo-mcp-server ──创建任务──▶ SQLite
                                     ▲
                                     │ 轮询 + 抢占
-yamibo-worker ──────────────────────┘
+yamibo-daemon ─────────────────────┘
     ├── 论坛 HTTP 客户端
     ├── HTML 解析器
     ├── 标题解析（规则 + LLM）
@@ -139,7 +139,7 @@ uv run yamibo-backup-db
 ```
 src/yamibo_mcp/
 ├── server/          # MCP Server + CLI 子命令
-├── worker/          # 后台任务消费 + 处理器
+├── daemon/          # 后台任务消费 + 处理器
 ├── web/             # 嵌入式 Web 控制台
 ├── yamibo/          # 论坛 HTTP 客户端、HTML 解析器、标题解析
 ├── storage/         # 文件 I/O（staging、归档、导出、图片）
