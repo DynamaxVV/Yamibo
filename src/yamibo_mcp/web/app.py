@@ -15,6 +15,7 @@ from yamibo_mcp.config import Settings, load_settings
 from yamibo_mcp.db.connection import connect
 from yamibo_mcp.db.migrations import migrate
 from yamibo_mcp.db.repositories.audit_events import AuditEventsRepository
+from yamibo_mcp.db.repositories.job_events import JobEventsRepository
 from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.db.repositories.series import SeriesRepository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
@@ -127,6 +128,8 @@ TRANSLATIONS = {
         "failure_preview": "失败预览",
         "snapshot_preview": "快照预览",
         "title_parse_log_preview": "标题提取日志预览",
+        "events_timeline": "事件时间线",
+        "event_type": "事件类型",
         "diagnostics": "排障提示",
         "job_diagnostics_intro": "下面这些文件能帮助你判断任务卡在哪一段，以及数据有没有落干净。",
         "job_hint_snapshot": "存在 snapshot.json：说明页面解析已经成功，问题更可能出在校验、图片下载或数据库写入阶段。",
@@ -298,6 +301,8 @@ TRANSLATIONS = {
         "failure_preview": "Failure Preview",
         "snapshot_preview": "Snapshot Preview",
         "title_parse_log_preview": "Title Parse Log Preview",
+        "events_timeline": "Events Timeline",
+        "event_type": "Event type",
         "diagnostics": "Diagnostics",
         "job_diagnostics_intro": "Use these artifacts to see where the job stopped and whether data made it through each stage.",
         "job_hint_snapshot": "snapshot.json exists: HTML parsing succeeded, so issues are more likely in validation, image download, or DB commit.",
@@ -958,6 +963,7 @@ class WebHandler(BaseHTTPRequestHandler):
         conn, repo = self._repo()
         try:
             job = repo.get(job_id)
+            events = JobEventsRepository(conn).list(job_id=job_id, limit=200)
             auto_refresh = 3 if self._is_active_job_status(job.status) else None
             snapshot_text = self._read_text(self._job_artifact_path(job_id, "snapshot.json"))
             failure_text = self._read_text(self._job_artifact_path(job_id, "failure.json"))
@@ -990,6 +996,8 @@ class WebHandler(BaseHTTPRequestHandler):
                 <tr><th>{self._t("artifacts")}</th><td>{self._json_block(job.artifacts)}</td></tr>
                 <tr><th>{self._t("staging")}</th><td><div class="artifact-links">{snapshot_link}{failure_link}{title_parse_log_link}</div></td></tr>
               </table>
+              <h2>{self._t("events_timeline")}</h2>
+              {self._render_job_events_timeline(events)}
               <h2>{self._t("failure_preview")}</h2>
               <pre>{html.escape(self._preview(failure_text))}</pre>
               <h2>{self._t("snapshot_preview")}</h2>
@@ -1000,6 +1008,33 @@ class WebHandler(BaseHTTPRequestHandler):
             self._send(self._html_page(f"{self._t('job_detail')} {job_id}", body, auto_refresh_seconds=auto_refresh))
         finally:
             conn.close()
+
+    def _render_job_events_timeline(self, events: list[object]) -> str:
+        if not events:
+            return f"<p class=\"muted\">{html.escape(self._t('all'))}: 0</p>"
+        rows = []
+        for event in events:
+            payload = getattr(event, "payload", {}) or {}
+            rows.append(
+                "<tr>"
+                f"<td>{getattr(event, 'event_id', '')}</td>"
+                f"<td>{html.escape(getattr(event, 'created_at', '') or '')}</td>"
+                f"<td>{html.escape(getattr(event, 'event_type', '') or '')}</td>"
+                f"<td>{html.escape(getattr(event, 'status', '') or '-')}</td>"
+                f"<td>{html.escape(getattr(event, 'stage', '') or '-')}</td>"
+                f"<td>{self._json_block(payload)}</td>"
+                "</tr>"
+            )
+        return (
+            "<table border=\"1\" cellspacing=\"0\" cellpadding=\"4\">"
+            f"<tr><th>ID</th><th>{html.escape(self._t('created'))}</th>"
+            f"<th>{html.escape(self._t('event_type'))}</th>"
+            f"<th>{html.escape(self._t('status'))}</th>"
+            f"<th>{html.escape(self._t('stage'))}</th>"
+            f"<th>{html.escape(self._t('payload'))}</th></tr>"
+            f"{''.join(rows)}"
+            "</table>"
+        )
 
     def _job_artifact(self, path: str) -> None:
         parts = [part for part in path.split("/") if part]

@@ -1,14 +1,16 @@
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 from dataclasses import replace
 
 from yamibo_mcp.config import Settings
 from yamibo_mcp.db.connection import transaction
+from yamibo_mcp.db.repositories.assets import AssetsRepository
+from yamibo_mcp.db.repositories.content_blocks import ContentBlocksRepository
 from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
+from yamibo_mcp.domain.content import build_content_snapshot
 from yamibo_mcp.domain.models import Job
 from yamibo_mcp.domain.validation import validate_thread_snapshot
 from yamibo_mcp.storage.paths import StoragePaths
@@ -29,6 +31,7 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
     html_path_value = job.payload.get("html_path")
     url_value = job.payload.get("url")
     base_url = job.payload.get("base_url")
+    forum_id = int(job.payload["forum_id"]) if job.payload.get("forum_id") is not None else None
     tid = job.tid or extract_tid_from_input(job.payload.get("tid", ""))
     source_url: str | None = None
     snapshot = None
@@ -151,9 +154,32 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
         context_path = paths.thread_context(snapshot.tid)
         relative_context = str(context_path.relative_to(settings.data_dir))
         archive_status = "partial" if image_result.missing_urls else "complete"
+        content = build_content_snapshot(snapshot, forum_id=forum_id)
+        status_by_remote_url = {asset.remote_url: "pending" for asset in content.assets}
+        local_path_by_remote_url = {asset.remote_url: None for asset in content.assets}
+        for floor in snapshot.floors:
+            for index, remote_url in enumerate(floor.image_urls):
+                content_relpaths = image_result.downloaded_relpaths.get(floor.pid, [])
+                non_export_relpaths = image_result.non_export_relpaths.get(floor.pid, [])
+                all_relpaths = list(content_relpaths) + list(non_export_relpaths)
+                if index < len(all_relpaths):
+                    local_path_by_remote_url[remote_url] = all_relpaths[index]
+                    status_by_remote_url[remote_url] = "downloaded"
+                elif remote_url in image_result.missing_urls:
+                    status_by_remote_url[remote_url] = "missing"
+        synced_assets = [
+            replace(
+                asset,
+                local_path=local_path_by_remote_url.get(asset.remote_url),
+                status=status_by_remote_url.get(asset.remote_url, asset.status),
+            )
+            for asset in content.assets
+        ]
+        all_blocks = [block for post in content.posts for block in post.blocks]
         with transaction(repo.conn):
             ThreadsRepository(repo.conn).upsert_snapshot(
                 snapshot,
+                forum_id=forum_id,
                 context_path=relative_context,
                 archive_status=archive_status,
                 missing_image_urls=image_result.missing_urls,
@@ -169,6 +195,8 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
                     }
                 },
             )
+            ContentBlocksRepository(repo.conn).upsert_blocks(snapshot.tid, all_blocks)
+            AssetsRepository(repo.conn).upsert_assets(snapshot.tid, synced_assets)
 
         repo.update_stage(job.job_id, "materialize", progress_current=6, progress_total=6)
         context_path, metadata_path = materialize_thread(
@@ -210,17 +238,7 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
                 author_guess=snapshot.title.author_guess,
             )
             # 图片不完整时保留正式归档，但线程状态必须明确标成 partial，不能伪装成 complete。
-            repo.conn.execute(
-                """
-                UPDATE jobs
-                SET status = ?, stage = 'finalize', progress_current = COALESCE(progress_total, progress_current),
-                    artifacts_json = ?, updated_at = CURRENT_TIMESTAMP, finished_at = CURRENT_TIMESTAMP,
-                    lease_until = NULL
-                WHERE job_id = ?
-                """,
-                ("partial", json.dumps(artifacts, ensure_ascii=False), job.job_id),
-            )
-            repo.conn.commit()
+            repo.partial(job.job_id, artifacts)
         else:
             update_title_hints(
                 settings,

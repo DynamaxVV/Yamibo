@@ -1,29 +1,30 @@
 # 测试报告
 
-> 生成时间：2026-06-19 | 框架：pytest 9.0.3 | Python 3.13.13
+> 生成时间：2026-06-21 | 框架：pytest 9.0.3 | Python 3.13.13
 
 ## 1. 执行摘要
 
 | 指标 | 结果 |
 |------|------|
-| 总用例数 | **429** |
-| 通过 | **429** |
+| 总用例数 | **626** |
+| 通过 | **626** |
 | 失败 | 0 |
 | 错误 | 0 |
-| 执行时间 | 0.84s |
+| 执行时间 | 约 10s |
 
 ## 2. 测试矩阵
 
 | 类别 | 用例数 | 通过 |
 |------|--------|------|
 | 黑盒测试（解析器 fixture） | 212 | 212 |
-| 白盒测试（DB） | 58 | 58 |
-| 白盒测试（Domain） | 35 | 35 |
+| 白盒测试（DB） | 97 | 97 |
+| 白盒测试（Domain） | 60 | 60 |
 | 白盒测试（Storage） | 40 | 40 |
 | 白盒测试（Services） | 9 | 9 |
+| 白盒测试（Server + Application） | 80 | 80 |
 | 白盒测试（Yamibo 模块） | 75 | 75 |
 | 白盒测试（规则引擎直接） | 24 | 24 |
-| **总计** | **429** | **429** |
+| **总计** | **626** | **626** |
 
 ## 3. 白盒测试详情（本次新增）
 
@@ -35,6 +36,11 @@
 | test_threads_repository.py | 13 | 帖子 upsert、标题解析、楼层、删除、导出标记、搜索 |
 | test_series_repository.py | 13 | 系列创建/复用、别名累积、合并、删除、复核确认 |
 | test_audit_events_repository.py | 6 | 审计事件记录、时间排序、limit |
+| test_migrations.py | 15 | 空库迁移、旧库迁移、幂等性、新表创建、列回填 |
+| test_content_blocks_repository.py | 7 | 内容块 upsert、metadata JSON、替换、排序 |
+| test_assets_repository.py | 10 | 资产 upsert、类型、状态、local path |
+| test_job_events.py | 14 | 事件追加、succeed/fail 事件、append 失败降级、list 过滤 |
+| test_threads_forum_filter.py | 7 | search/list 按 forum_id 过滤 |
 
 ### 3.2 Domain 层 (test_domain)
 
@@ -42,6 +48,8 @@
 |----------|--------|----------|
 | test_validation.py | 20 | 快照校验：tid/page_type/标题/楼层完整性/图片/warnings |
 | test_models.py | 15 | 枚举值完整性、JobID 格式与唯一性、数据类不可变性、默认值 |
+| test_forums.py | 12 | ForumProfile、resolve_forum、default_forums、DEFAULT_FORUM_ID |
+| test_content.py | 13 | classify_content_kind、build_content_snapshot、validate_by_profile |
 
 ### 3.3 存储层 (test_storage)
 
@@ -81,15 +89,16 @@
 
 | 模块 | 白盒覆盖 | 说明 |
 |------|---------|------|
-| db/repositories | ✅ 完整 | Jobs/Threads/Series/Audit 四个 Repository 全覆盖 |
-| domain | ✅ 完整 | models/enums/validation/job_state 全覆盖 |
+| db/repositories | ✅ 完整 | Jobs/Threads/Series/Audit/ContentBlocks/Assets/JobEvents 七个 Repository 全覆盖 |
+| domain | ✅ 完整 | models/enums/validation/job_state/forums/content 全覆盖 |
 | storage | ✅ 完整 | atomic/paths/staging/markdown/exports 全覆盖 |
 | services | ✅ 完整 | title_hints 全覆盖（LLM client 需外部 API，跳过） |
+| server | ✅ 完整 | resources/protocol/tools 全覆盖（含新 resource URI） |
+| application | ✅ 完整 | contracts/thread_use_cases/job_use_cases 全覆盖 |
 | yamibo/page_classifier | ✅ 完整 | 所有 6 种页面类型全覆盖 |
 | yamibo/title/normalizer | ✅ 完整 | 三个公开函数全覆盖 |
 | yamibo/cleaners | ✅ 完整 | clean_content 全覆盖 |
 | yamibo/series_matcher | ✅ 完整 | build_series_match_decision 全覆盖 |
-| server | ⚠️ 待补充 | MCP 工具层需集成测试环境 |
 | worker/handlers | ⚠️ 待补充 | 处理器需集成测试环境 |
 
 ## 6. 待补充测试
@@ -98,6 +107,5 @@
 |------|------|--------|
 | services/llm_client.py | 需要 mock 外部 HTTP 请求 | P2 |
 | services/title_llm.py | 需要 mock LLM API | P2 |
-| server/tools.py | 需要完整的 MCP 环境 | P1 |
 | daemon/handlers/* | 需要完整的 Daemon 环境 | P1 |
 | web/app.py | 需要 HTTP 测试客户端 | P2 |

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from typing import Any
 
@@ -9,6 +10,8 @@ from yamibo_mcp.domain.job_state import new_job_id
 from yamibo_mcp.domain.models import Job
 from yamibo_mcp.errors import JobNotFound, LeaseNotAcquired
 from yamibo_mcp.time_utils import utc_after_iso, utc_now_iso
+
+LOG = logging.getLogger(__name__)
 
 
 def _loads(value: str | None) -> dict[str, Any]:
@@ -46,6 +49,27 @@ class JobsRepository:
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
 
+    def _append_event(
+        self,
+        job_id: str,
+        event_type: str,
+        *,
+        status: str | None = None,
+        stage: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        try:
+            from yamibo_mcp.db.repositories.job_events import JobEventsRepository
+            JobEventsRepository(self.conn).append(
+                job_id=job_id,
+                event_type=event_type,
+                status=status,
+                stage=stage,
+                payload=payload,
+            )
+        except Exception:
+            LOG.warning("Failed to append job event %s for job %s", event_type, job_id, exc_info=True)
+
     def create(
         self,
         job_type: str,
@@ -81,6 +105,7 @@ class JobsRepository:
             ),
         )
         self.conn.commit()
+        self._append_event(job_id, "job.created", status=JobStatus.QUEUED.value)
         return self.get(job_id)
 
     def get(self, job_id: str) -> Job:
@@ -152,6 +177,13 @@ class JobsRepository:
         self.conn.commit()
         if cur.rowcount != 1:
             raise LeaseNotAcquired(job_id)
+        self._append_event(
+            job_id,
+            "job.started",
+            status=JobStatus.RUNNING.value,
+            stage="acquired",
+            payload={"worker_id": worker_id},
+        )
         return self.get(job_id)
 
     def heartbeat(self, job_id: str, worker_id: str, lease_seconds: int) -> None:
@@ -193,6 +225,15 @@ class JobsRepository:
             params,
         )
         self.conn.commit()
+        self._append_event(
+            job_id,
+            "job.progressed",
+            stage=stage,
+            payload={
+                "progress_current": progress_current,
+                "progress_total": progress_total,
+            },
+        )
 
     def succeed(self, job_id: str, artifacts: dict[str, Any] | None = None) -> None:
         now = utc_now_iso()
@@ -213,6 +254,12 @@ class JobsRepository:
             ),
         )
         self.conn.commit()
+        self._append_event(
+            job_id,
+            "job.succeeded",
+            status=JobStatus.SUCCEEDED.value,
+            payload={"artifacts": artifacts or {}},
+        )
 
     def fail(self, job_id: str, error_code: str, error_message: str) -> None:
         now = utc_now_iso()
@@ -226,9 +273,50 @@ class JobsRepository:
             (JobStatus.FAILED.value, error_code, error_message, now, now, job_id),
         )
         self.conn.commit()
+        self._append_event(
+            job_id,
+            "job.failed",
+            status=JobStatus.FAILED.value,
+            payload={"error_code": error_code, "error_message": error_message},
+        )
+
+    def partial(self, job_id: str, artifacts: dict[str, Any] | None = None) -> None:
+        now = utc_now_iso()
+        self.conn.execute(
+            """
+            UPDATE jobs
+            SET status = ?, stage = 'finalize', progress_current = COALESCE(progress_total, progress_current),
+                artifacts_json = ?, updated_at = ?, finished_at = ?, lease_until = NULL
+            WHERE job_id = ?
+            """,
+            (
+                JobStatus.PARTIAL.value,
+                json.dumps(artifacts or {}, ensure_ascii=False),
+                now,
+                now,
+                job_id,
+            ),
+        )
+        self.conn.commit()
+        self._append_event(
+            job_id,
+            "job.partial",
+            status=JobStatus.PARTIAL.value,
+            payload={"artifacts": artifacts or {}},
+        )
 
     def mark_expired_running_interrupted(self) -> int:
         now = utc_now_iso()
+        expired_job_ids = [
+            row["job_id"]
+            for row in self.conn.execute(
+                """
+                SELECT job_id FROM jobs
+                WHERE status = ? AND lease_until IS NOT NULL AND lease_until < ?
+                """,
+                (JobStatus.RUNNING.value, now),
+            ).fetchall()
+        ]
         # Worker 重启时先把超时的 running 标成 interrupted，后续再重新抢占执行。
         cur = self.conn.execute(
             """
@@ -244,4 +332,10 @@ class JobsRepository:
             ),
         )
         self.conn.commit()
+        for job_id in expired_job_ids:
+            self._append_event(
+                job_id,
+                "job.interrupted",
+                status=JobStatus.INTERRUPTED.value,
+            )
         return cur.rowcount

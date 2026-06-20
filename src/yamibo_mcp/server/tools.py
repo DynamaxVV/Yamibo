@@ -17,8 +17,14 @@ from yamibo_mcp.server.resources import (
     parse_resource_uri,
     series_chapters_uri,
     series_index_uri,
+    thread_context_uri,
+    thread_diagnostics_uri,
+    thread_metadata_uri,
+    thread_posts_uri,
+    thread_assets_uri,
 )
-from yamibo_mcp.server.schemas import job_status_payload, thread_detail_payload, thread_summary_payload
+from yamibo_mcp.server.schemas import thread_summary_payload
+from yamibo_mcp.server.schemas import build_series_summary
 from yamibo_mcp.services.llm_client import openai_compatible_chat
 from yamibo_mcp.services.title_llm import refine_title_parse_with_llm
 from yamibo_mcp.storage.paths import StoragePaths
@@ -28,7 +34,8 @@ from yamibo_mcp.yamibo.parsers.search_results import SearchResultItem
 from yamibo_mcp.yamibo.title.parser import parse_title
 from yamibo_mcp.yamibo.title.normalizer import normalize_series_key
 from yamibo_mcp.yamibo.urls import forum_page_url, thread_url_from_tid
-from yamibo_mcp.daemon.handlers.sync_thread import handle_sync_thread
+from yamibo_mcp.application.thread_use_cases import ensure_thread, archive_thread_job
+from yamibo_mcp.application.job_use_cases import get_job_status_payload as _get_job_status_payload
 
 
 def create_noop_job() -> str:
@@ -49,29 +56,9 @@ def archive_thread(
     tid: int | None = None,
     url: str | None = None,
     base_url: str | None = None,
+    forum_id: int | None = None,
 ) -> dict[str, object]:
-    if not html_path and not tid and not url:
-        raise ValueError("archive_thread requires html_path or tid or url")
-    settings = load_settings()
-    conn = connect(settings.db_path)
-    try:
-        migrate(conn)
-        repo = JobsRepository(conn)
-        payload = {
-            key: value
-            for key, value in {
-                "html_path": html_path,
-                "tid": tid,
-                "url": url,
-                "base_url": base_url,
-            }.items()
-            if value is not None
-        }
-        job = repo.create(JobType.SYNC_THREAD.value, tid=tid, payload=payload)
-        # 长操作在 MCP 里只回 job_id，客户端后续通过 get_job_status 轮询。
-        return {"job_id": job.job_id}
-    finally:
-        conn.close()
+    return archive_thread_job(html_path=html_path, tid=tid, url=url, base_url=base_url, forum_id=forum_id)
 
 
 def sync_thread(
@@ -80,9 +67,10 @@ def sync_thread(
     tid: int | None = None,
     url: str | None = None,
     base_url: str | None = None,
+    forum_id: int | None = None,
 ) -> dict[str, object]:
     # 向后兼容旧调用；正式 MCP 暴露名称改为 archive_thread。
-    return archive_thread(html_path=html_path, tid=tid, url=url, base_url=base_url)
+    return archive_thread(html_path=html_path, tid=tid, url=url, base_url=base_url, forum_id=forum_id)
 
 
 def export_thread(*, tid: int, strategy: str | None = None) -> dict[str, object]:
@@ -121,6 +109,7 @@ def sync_forum_range(
     *,
     start_page: int,
     end_page: int,
+    forum_id: int = 30,
     base_url: str = "https://bbs.yamibo.com",
     cookie_file: str | None = None,
     include_sticky: bool = False,
@@ -142,7 +131,7 @@ def sync_forum_range(
     seen_tids: set[int] = set()
 
     for page in range(start_page, end_page + 1):
-        result, items = client.fetch_forum_threads(page=page, base_url=base_url)
+        result, items = client.fetch_forum_threads(page=page, base_url=base_url, forum_id=forum_id)
         scanned_pages.append(result.final_url)
         for item in items:
             if not include_sticky and item.is_sticky:
@@ -164,7 +153,7 @@ def sync_forum_range(
             job = repo.create(
                 JobType.SYNC_THREAD.value,
                 tid=item.tid,
-                payload={"tid": item.tid, "url": thread_url, "base_url": base_url},
+                payload={"tid": item.tid, "url": thread_url, "base_url": base_url, "forum_id": forum_id},
             )
             job_items.append(
                 {
@@ -191,6 +180,7 @@ def sync_forum_range(
 def browse_forum_page(
     *,
     page: int,
+    forum_id: int = 30,
     base_url: str = "https://bbs.yamibo.com",
     cookie_file: str | None = None,
     include_sticky: bool = False,
@@ -207,7 +197,7 @@ def browse_forum_page(
         login_username=settings.login_username,
         login_password=settings.login_password,
     )
-    result, items = client.fetch_forum_threads(page=page, base_url=base_url)
+    result, items = client.fetch_forum_threads(page=page, base_url=base_url, forum_id=forum_id)
 
     conn = connect(settings.db_path)
     try:
@@ -227,6 +217,7 @@ def browse_forum_page(
         return {
             "source": "forum_page",
             "page": page,
+            "forum_id": forum_id,
             "forum_url": result.final_url,
             "base_url": base_url,
             "include_sticky": include_sticky,
@@ -239,14 +230,7 @@ def browse_forum_page(
 
 
 def get_job_status(job_id: str) -> dict[str, object]:
-    settings = load_settings()
-    conn = connect(settings.db_path)
-    try:
-        migrate(conn)
-        job = JobsRepository(conn).get(job_id)
-        return job_status_payload(job)
-    finally:
-        conn.close()
+    return _get_job_status_payload(job_id)
 
 
 def _normalize_date_only(value: str | None) -> str | None:
@@ -285,6 +269,7 @@ def _remote_search_items(
     posted_on: str | None,
     base_url: str,
     cookie_file: str | None,
+    forum_id: int = 30,
 ) -> tuple[list[SearchResultItem], list[str], int]:
     settings = load_settings()
     client = YamiboClient(
@@ -296,6 +281,7 @@ def _remote_search_items(
     items, scanned_pages, total_pages = client.fetch_search_results_all(
         query=query,
         base_url=base_url,
+        forum_id=forum_id,
         start_page=start_page,
         end_page=end_page,
     )
@@ -347,6 +333,7 @@ def _search_item_from_remote(item: ForumThreadItem | SearchResultItem, thread_ro
 def search_threads(
     *,
     query: str = "",
+    forum_id: int = 30,
     limit: int = 0,
     start_page: int = 1,
     end_page: int | None = None,
@@ -375,6 +362,7 @@ def search_threads(
                 posted_on=posted_on,
                 base_url=base_url,
                 cookie_file=cookie_file,
+                forum_id=forum_id,
             )
         except Exception as exc:  # noqa: BLE001 - 远端不可用时保留本地检索能力
             remote_items = []
@@ -412,6 +400,7 @@ def search_threads(
         return {
             "query": query,
             "source": result_source,
+            "forum_id": forum_id,
             "posted_on": posted_on,
             "start_page": start_page,
             "end_page": resolved_end_page,
@@ -426,81 +415,8 @@ def search_threads(
         conn.close()
 
 
-def _sync_thread_inline(
-    *,
-    tid: int,
-    settings,
-    url: str | None = None,
-    base_url: str | None = None,
-) -> dict[str, object]:
-    conn = connect(settings.db_path)
-    worker_id = "server_inline_sync"
-    try:
-        migrate(conn)
-        repo = JobsRepository(conn)
-        job = repo.create(
-            JobType.SYNC_THREAD.value,
-            tid=tid,
-            payload={
-                key: value
-                for key, value in {"tid": tid, "url": url, "base_url": base_url}.items()
-                if value is not None
-            },
-        )
-        job = repo.acquire(job.job_id, worker_id, settings.worker_lease_seconds)
-        try:
-            handle_sync_thread(repo, job, worker_id, settings.worker_lease_seconds, settings)
-        except Exception as exc:  # noqa: BLE001 - 直接返回结构化错误，方便 MCP 客户端理解失败原因
-            repo.fail(job.job_id, exc.__class__.__name__, str(exc))
-            return {
-                "tid": tid,
-                "found": False,
-                "archived": False,
-                "message": f"failed to sync thread {tid} from remote",
-                "sync_job": {"job_id": job.job_id, "status": "failed"},
-                "error": {"code": exc.__class__.__name__, "message": str(exc)},
-            }
-        final_job = repo.get(job.job_id)
-        return {
-            "job_id": final_job.job_id,
-            "status": final_job.status,
-            "artifacts": final_job.artifacts,
-        }
-    finally:
-        conn.close()
-
-
 def get_thread(*, tid: int, url: str | None = None, base_url: str | None = None) -> dict[str, object]:
-    settings = load_settings()
-    conn = connect(settings.db_path)
-    try:
-        migrate(conn)
-        repo = ThreadsRepository(conn)
-        thread = repo.get_thread(tid)
-        if thread is None:
-            sync_job = _sync_thread_inline(tid=tid, url=url, base_url=base_url, settings=settings)
-            if sync_job.get("status") == "failed":
-                return sync_job
-            thread = repo.get_thread(tid)
-            if thread is None:
-                return {
-                    "tid": tid,
-                    "found": False,
-                    "archived": False,
-                    "message": f"thread {tid} could not be loaded after remote sync",
-                    "sync_job": sync_job,
-                }
-        title = repo.get_title_parse(tid)
-        floors = repo.list_floors(tid)
-        payload = thread_detail_payload(thread, title, floors, data_dir=settings.data_dir)
-        if thread["series_id"] is not None:
-            payload["series"] = build_series_summary(
-                int(thread["series_id"]),
-                canonical_title=title["core_title_guess"] if title is not None else payload.get("core_title"),
-            )
-        return payload
-    finally:
-        conn.close()
+    return ensure_thread(tid=tid, url=url, base_url=base_url)
 
 
 def list_exports(*, limit: int = 100) -> dict[str, object]:
@@ -515,17 +431,6 @@ def list_exports(*, limit: int = 100) -> dict[str, object]:
         }
     finally:
         conn.close()
-
-
-def build_series_summary(series_id: int, *, canonical_title: str | None = None) -> dict[str, object]:
-    return {
-        "series_id": series_id,
-        "canonical_title": canonical_title,
-        "resources": {
-            "index": series_index_uri(),
-            "chapters": series_chapters_uri(series_id),
-        },
-    }
 
 
 def read_resource(uri: str) -> dict[str, object]:
@@ -551,6 +456,14 @@ def read_resource(uri: str) -> dict[str, object]:
             else:
                 export_path = Path(str(export_value))
                 path = export_path if export_path.is_absolute() else settings.data_dir / export_path
+        elif kind == "summary":
+            return _build_thread_summary_resource(uri, tid, settings)
+        elif kind == "diagnostics":
+            return _build_thread_diagnostics_resource(uri, tid, settings)
+        elif kind == "posts":
+            return _build_thread_posts_resource(uri, tid, settings)
+        elif kind == "assets":
+            return _build_thread_assets_resource(uri, tid, settings)
         else:
             raise ValueError(f"unsupported resource kind: {kind}")
         payload = build_resource_payload(uri=uri, path=path, content_type=guess_content_type(kind))
@@ -576,6 +489,14 @@ def read_resource(uri: str) -> dict[str, object]:
         payload["exists"] = True
         payload["text"] = text
         return payload
+    if kind_root == "forums" and kind == "index":
+        return _build_forums_index_resource(uri, settings)
+    if kind_root == "forums" and kind == "summary":
+        assert tid is not None
+        return _build_forum_summary_resource(uri, tid, settings)
+    if kind_root == "jobs" and kind.endswith("/events"):
+        job_id = kind.split("/")[0]
+        return _build_job_events_resource(uri, job_id, settings)
     raise ValueError(f"unsupported resource root: {kind_root}")
 
 
@@ -588,6 +509,266 @@ def read_resource_content(uri: str) -> tuple[str | bytes, str]:
         path = Path(str(payload["path"]))
         return path.read_bytes(), content_type
     return str(payload.get("text") or ""), content_type
+
+
+def _build_forums_index_resource(uri: str, settings) -> dict[str, object]:
+    conn = connect(settings.db_path)
+    try:
+        migrate(conn)
+        rows = conn.execute("SELECT * FROM forums ORDER BY forum_id").fetchall()
+    finally:
+        conn.close()
+    forums = [
+        {
+            "forum_id": row["forum_id"],
+            "name": row["name"],
+            "content_kind": row["content_kind"],
+            "base_url": row["base_url"],
+            "enabled": bool(row["enabled"]),
+        }
+        for row in rows
+    ]
+    return {
+        "uri": uri,
+        "content_type": "application/json",
+        "exists": True,
+        "text": json.dumps(forums, ensure_ascii=False, indent=2),
+    }
+
+
+def _build_forum_summary_resource(uri: str, forum_id: int, settings) -> dict[str, object]:
+    conn = connect(settings.db_path)
+    try:
+        migrate(conn)
+        row = conn.execute("SELECT * FROM forums WHERE forum_id = ?", (forum_id,)).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return {
+            "uri": uri,
+            "content_type": "application/json",
+            "exists": False,
+            "error": f"forum {forum_id} not found",
+        }
+    summary = {
+        "forum_id": row["forum_id"],
+        "name": row["name"],
+        "content_kind": row["content_kind"],
+        "base_url": row["base_url"],
+        "enabled": bool(row["enabled"]),
+    }
+    return {
+        "uri": uri,
+        "content_type": "application/json",
+        "exists": True,
+        "text": json.dumps(summary, ensure_ascii=False, indent=2),
+    }
+
+
+def _build_thread_summary_resource(uri: str, tid: int, settings) -> dict[str, object]:
+    """Compact thread summary — does NOT read full context.md."""
+    conn = connect(settings.db_path)
+    try:
+        migrate(conn)
+        repo = ThreadsRepository(conn)
+        thread = repo.get_thread(tid)
+        if thread is None:
+            return {
+                "uri": uri,
+                "content_type": "application/json",
+                "exists": False,
+                "error": f"thread {tid} not found",
+            }
+        title = repo.get_title_parse(tid)
+    finally:
+        conn.close()
+    summary = {
+        "tid": thread["tid"],
+        "display_title": thread["display_title"] or thread["raw_title"],
+        "raw_title": thread["raw_title"],
+        "archive_status": thread["archive_status"],
+        "validation_status": thread["validation_status"],
+        "image_count": thread["image_count"],
+        "sync_time": thread["sync_time"],
+        "publisher": thread["publisher"],
+        "series_id": thread["series_id"],
+        "core_title": None if title is None else title["core_title_guess"],
+        "series_key": None if title is None else title["series_key"],
+        "chapter_name": None if title is None else title["chapter_name"],
+        "confidence": None if title is None else title["confidence"],
+        "needs_review": None if title is None else bool(title["needs_review"]),
+        "resources": {
+            "context": thread_context_uri(tid),
+            "metadata": thread_metadata_uri(tid),
+            "diagnostics": thread_diagnostics_uri(tid),
+            "posts": thread_posts_uri(tid),
+            "assets": thread_assets_uri(tid),
+        },
+    }
+    return {
+        "uri": uri,
+        "content_type": "application/json",
+        "exists": True,
+        "text": json.dumps(summary, ensure_ascii=False, indent=2),
+    }
+
+
+def _build_thread_diagnostics_resource(uri: str, tid: int, settings) -> dict[str, object]:
+    conn = connect(settings.db_path)
+    try:
+        migrate(conn)
+        repo = ThreadsRepository(conn)
+        thread = repo.get_thread(tid)
+        if thread is None:
+            return {
+                "uri": uri,
+                "content_type": "application/json",
+                "exists": False,
+                "error": f"thread {tid} not found",
+            }
+        from yamibo_mcp.db.repositories.assets import AssetsRepository
+        assets = AssetsRepository(conn).list_assets(tid)
+    finally:
+        conn.close()
+    missing_urls = json.loads(thread["missing_images_json"] or "[]")
+    required_assets = [a for a in assets if a["required"]]
+    missing_required = [a for a in required_assets if a["status"] == "missing"]
+    warnings: list[str] = []
+    next_actions: list[str] = []
+    archive_status = thread["archive_status"]
+    if archive_status == "stale":
+        next_actions.append("archive_thread")
+    elif archive_status == "partial":
+        warnings.append(f"missing {len(missing_urls)} images")
+        next_actions.append("re-export after re-sync")
+    elif archive_status == "complete" and not thread["export_path"]:
+        next_actions.append("export_thread")
+    if missing_required:
+        warnings.append(f"missing {len(missing_required)} required assets")
+    diagnostics = {
+        "tid": tid,
+        "archive_status": archive_status,
+        "validation_status": thread["validation_status"],
+        "image_count": thread["image_count"],
+        "missing_image_count": len(missing_urls),
+        "required_assets_count": len(required_assets),
+        "missing_required_assets_count": len(missing_required),
+        "is_exported": bool(thread["is_exported"]),
+        "export_path": thread["export_path"],
+        "warnings": warnings,
+        "next_actions": next_actions,
+    }
+    return {
+        "uri": uri,
+        "content_type": "application/json",
+        "exists": True,
+        "text": json.dumps(diagnostics, ensure_ascii=False, indent=2),
+    }
+
+
+def _build_thread_posts_resource(uri: str, tid: int, settings) -> dict[str, object]:
+    conn = connect(settings.db_path)
+    try:
+        migrate(conn)
+        from yamibo_mcp.db.repositories.content_blocks import ContentBlocksRepository
+        thread = ThreadsRepository(conn).get_thread(tid)
+        if thread is None:
+            conn.close()
+            return {
+                "uri": uri,
+                "content_type": "application/json",
+                "exists": False,
+                "error": f"thread {tid} not found",
+            }
+        blocks = ContentBlocksRepository(conn).list_blocks(tid)
+    finally:
+        conn.close()
+    posts_data = [
+        {
+            "id": block["id"],
+            "tid": block["tid"],
+            "pid": block["pid"],
+            "order_index": block["order_index"],
+            "block_type": block["block_type"],
+            "text": block["text"],
+            "asset_id": block["asset_id"],
+            "metadata": json.loads(block["metadata_json"] or "{}"),
+        }
+        for block in blocks
+    ]
+    return {
+        "uri": uri,
+        "content_type": "application/json",
+        "exists": True,
+        "text": json.dumps(posts_data, ensure_ascii=False, indent=2),
+    }
+
+
+def _build_thread_assets_resource(uri: str, tid: int, settings) -> dict[str, object]:
+    conn = connect(settings.db_path)
+    try:
+        migrate(conn)
+        from yamibo_mcp.db.repositories.assets import AssetsRepository
+        thread = ThreadsRepository(conn).get_thread(tid)
+        if thread is None:
+            conn.close()
+            return {
+                "uri": uri,
+                "content_type": "application/json",
+                "exists": False,
+                "error": f"thread {tid} not found",
+            }
+        assets = AssetsRepository(conn).list_assets(tid)
+    finally:
+        conn.close()
+    assets_data = [
+        {
+            "asset_id": asset["asset_id"],
+            "tid": asset["tid"],
+            "pid": asset["pid"],
+            "asset_type": asset["asset_type"],
+            "remote_url": asset["remote_url"],
+            "local_path": asset["local_path"],
+            "exportable": bool(asset["exportable"]),
+            "required": bool(asset["required"]),
+            "status": asset["status"],
+        }
+        for asset in assets
+    ]
+    return {
+        "uri": uri,
+        "content_type": "application/json",
+        "exists": True,
+        "text": json.dumps(assets_data, ensure_ascii=False, indent=2),
+    }
+
+
+def _build_job_events_resource(uri: str, job_id: str, settings) -> dict[str, object]:
+    conn = connect(settings.db_path)
+    try:
+        migrate(conn)
+        from yamibo_mcp.db.repositories.job_events import JobEventsRepository
+        events = JobEventsRepository(conn).list(job_id=job_id)
+    finally:
+        conn.close()
+    events_data = [
+        {
+            "event_id": event.event_id,
+            "job_id": event.job_id,
+            "event_type": event.event_type,
+            "status": event.status,
+            "stage": event.stage,
+            "payload": event.payload,
+            "created_at": event.created_at,
+        }
+        for event in events
+    ]
+    return {
+        "uri": uri,
+        "content_type": "application/json",
+        "exists": True,
+        "text": json.dumps(events_data, ensure_ascii=False, indent=2),
+    }
 
 
 def parse_thread_title(*, title: str, use_llm_on_low_confidence: bool = True) -> dict[str, object]:

@@ -1,6 +1,6 @@
 # 部署指南 & 运维手册
 
-> 版本：0.1.0 | 更新日期：2026-06-19
+> 版本：0.2.0 | 更新日期：2026-06-21
 
 ## 1. 环境要求
 
@@ -124,6 +124,7 @@ uv run yamibo-mcp-server browse-forum-page --page 1
 uv run yamibo-mcp-server search-threads --query "关键词"
 uv run yamibo-mcp-server get-thread --tid 572313
 uv run yamibo-mcp-server job-status <job_id>
+uv run yamibo-mcp-server read-resource "yamibo://threads/572313/summary"
 ```
 
 ---

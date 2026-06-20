@@ -1,6 +1,6 @@
 # 用户操作手册
 
-> 版本：0.1.0 | 更新日期：2026-06-19
+> 版本：0.2.0 | 更新日期：2026-06-21
 
 ## 1. 快速开始
 
@@ -77,11 +77,36 @@ MCP Server 会调用 `sync_forum_range` 创建批量同步任务。
 ### 2.6 读取归档内容
 
 MCP 资源可以通过 URI 访问：
+
+**帖子资源**：
+- `yamibo://threads/{tid}/summary` — 帖子紧凑摘要（推荐 Agent 首选）
+- `yamibo://threads/{tid}/diagnostics` — 诊断信息（缺失资产、建议操作）
+- `yamibo://threads/{tid}/posts` — 内容块列表
+- `yamibo://threads/{tid}/assets` — 资产列表
 - `yamibo://threads/{tid}/context` — 帖子正文 Markdown
 - `yamibo://threads/{tid}/metadata` — 完整元数据 JSON
 - `yamibo://threads/{tid}/export` — 导出 ZIP 包
+
+**论坛资源**：
+- `yamibo://forums/index` — 论坛分区列表
+- `yamibo://forums/{forum_id}/summary` — 分区摘要
+
+**任务资源**：
+- `yamibo://jobs/{job_id}/events` — 任务事件时间线
+
+**系列资源**：
 - `yamibo://series/index` — 系列索引
 - `yamibo://series/{series_id}/chapters` — 系列章节列表
+
+### 2.7 多论坛分区
+
+支持浏览和搜索不同论坛分区：
+
+> "帮我看一下轻小说区第 1 页有什么帖子"
+
+MCP Server 会调用 `browse_forum_page(page=1, forum_id=55)`。
+
+支持的分区：漫画区(30)、轻小说区(55)、动漫区(5)、水区(33)。
 
 ---
 
@@ -166,6 +191,9 @@ MCP 资源可以通过 URI 访问：
 # 浏览论坛
 uv run yamibo-mcp-server browse-forum-page --page 1
 
+# 浏览轻小说区
+uv run yamibo-mcp-server browse-forum-page --page 1 --forum-id 55
+
 # 搜索
 uv run yamibo-mcp-server search-threads --query "关键词"
 
@@ -191,7 +219,9 @@ uv run yamibo-mcp-server parse-thread-title "标题内容"
 uv run yamibo-mcp-server list-exports
 
 # 读取资源
-uv run yamibo-mcp-server read-resource "yamibo://threads/572313/context"
+uv run yamibo-mcp-server read-resource "yamibo://threads/572313/summary"
+uv run yamibo-mcp-server read-resource "yamibo://threads/572313/diagnostics"
+uv run yamibo-mcp-server read-resource "yamibo://forums/index"
 ```
 
 ---

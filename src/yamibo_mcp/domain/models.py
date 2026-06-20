@@ -75,3 +75,59 @@ class ThreadSnapshot:
     permission: int
     floors: list[FloorSnapshot]
     image_count: int = 0
+
+
+@dataclass(frozen=True)
+class ContentBlock:
+    block_id: str
+    pid: int
+    order_index: int
+    block_type: str  # text | image | attachment | quote | link | divider | unknown
+    text: str | None = None
+    asset_id: str | None = None
+    asset_url: str | None = None
+    metadata: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class AssetSnapshot:
+    asset_id: str
+    tid: int
+    pid: int
+    asset_type: str  # image | attachment | shared | external_link
+    remote_url: str
+    local_path: str | None
+    exportable: bool
+    required: bool
+    status: str  # pending | downloaded | skipped | missing
+
+
+@dataclass(frozen=True)
+class PostSnapshot:
+    pid: int
+    tid: int
+    floor_no: int
+    publisher: str | None
+    pub_time: str | None
+    content_text: str
+    blocks: list[ContentBlock] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ThreadContentSnapshot:
+    tid: int
+    forum_id: int
+    content_kind: str
+    posts: list[PostSnapshot]
+    assets: list[AssetSnapshot]
+
+
+@dataclass(frozen=True)
+class JobEvent:
+    event_id: int
+    job_id: str
+    event_type: str
+    status: str | None
+    stage: str | None
+    payload: dict[str, object]
+    created_at: str

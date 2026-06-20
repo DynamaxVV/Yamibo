@@ -1,6 +1,6 @@
 # API 接口文档
 
-> 版本：0.1.0 | 更新日期：2026-06-19
+> 版本：0.2.0 | 更新日期：2026-06-21
 
 ## 1. MCP 工具 (Tools)
 
@@ -13,6 +13,7 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
 | 参数 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
 | query | string | 否 | "" | 搜索关键词 |
+| forum_id | int | 否 | 30 | 论坛分区 ID（30=漫画, 55=轻小说, 5=动漫, 33=水区） |
 | limit | int | 否 | 0 | 最大返回数，0 表示不限 |
 | start_page | int | 否 | 1 | 起始页码 |
 | end_page | int \| null | 否 | null | 结束页码，null 表示到最后一页 |
@@ -28,6 +29,7 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
 {
   "query": "星灵感应",
   "source": "forum | local_fallback",
+  "forum_id": 30,
   "count": 10,
   "items": [
     {
@@ -52,7 +54,11 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
       "resources": {
         "context": "yamibo://threads/{tid}/context",
         "metadata": "yamibo://threads/{tid}/metadata",
-        "export": "yamibo://threads/{tid}/export"
+        "export": "yamibo://threads/{tid}/export",
+        "summary": "yamibo://threads/{tid}/summary",
+        "diagnostics": "yamibo://threads/{tid}/diagnostics",
+        "posts": "yamibo://threads/{tid}/posts",
+        "assets": "yamibo://threads/{tid}/assets"
       }
     }
   ]
@@ -123,11 +129,12 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
 
 ### 1.3 browse_forum_page
 
-读取漫画区某一页的帖子列表；短调用，直接返回该页帖子信息。
+读取论坛某一页的帖子列表；短调用，直接返回该页帖子信息。
 
 | 参数 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
 | page | int | 是 | - | 页码（正整数） |
+| forum_id | int | 否 | 30 | 论坛分区 ID（30=漫画, 55=轻小说, 5=动漫, 33=水区） |
 | base_url | string | 否 | "https://bbs.yamibo.com" | 站点根 URL |
 | cookie_file | string \| null | 否 | null | Cookie 文件路径 |
 | include_sticky | bool | 否 | false | 是否包含置顶帖 |
@@ -171,12 +178,13 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
 
 ### 1.6 sync_forum_range
 
-按漫画区页码范围抓取真实帖子列表并批量创建同步任务。
+按论坛页码范围抓取真实帖子列表并批量创建同步任务。
 
 | 参数 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
 | start_page | int | 是 | - | 起始页码 |
 | end_page | int | 是 | - | 结束页码 |
+| forum_id | int | 否 | 30 | 论坛分区 ID（30=漫画, 55=轻小说, 5=动漫, 33=水区） |
 | base_url | string | 否 | "https://bbs.yamibo.com" | 站点根 URL |
 | cookie_file | string \| null | 否 | null | Cookie 文件路径 |
 | include_sticky | bool | 否 | false | 是否包含置顶帖 |
@@ -263,13 +271,50 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
 
 MCP Server 暴露以下只读资源，通过 `yamibo://` URI scheme 访问。
 
+### 2.1 帖子资源
+
 | URI | Content-Type | 说明 |
 |-----|-------------|------|
+| `yamibo://threads/{tid}/summary` | application/json | 帖子紧凑摘要（不含完整正文） |
+| `yamibo://threads/{tid}/diagnostics` | application/json | 帖子诊断信息（归档状态、缺失资产、建议操作） |
+| `yamibo://threads/{tid}/posts` | application/json | 帖子内容块列表（text/image/attachment/quote/link） |
+| `yamibo://threads/{tid}/assets` | application/json | 帖子资产列表（图片、附件、共享资源） |
 | `yamibo://threads/{tid}/context` | text/markdown | 帖子正文 Markdown（含 frontmatter） |
 | `yamibo://threads/{tid}/metadata` | application/json | 帖子完整元数据 |
 | `yamibo://threads/{tid}/export` | application/zip | 帖子导出 ZIP 包 |
+
+### 2.2 系列资源
+
+| URI | Content-Type | 说明 |
+|-----|-------------|------|
 | `yamibo://series/index` | text/markdown | 系列索引（Markdown 格式） |
 | `yamibo://series/{series_id}/chapters` | application/json | 系列章节列表 |
+
+### 2.3 论坛资源
+
+| URI | Content-Type | 说明 |
+|-----|-------------|------|
+| `yamibo://forums/index` | application/json | 所有论坛分区列表 |
+| `yamibo://forums/{forum_id}/summary` | application/json | 单个论坛分区摘要 |
+
+### 2.4 任务资源
+
+| URI | Content-Type | 说明 |
+|-----|-------------|------|
+| `yamibo://jobs/{job_id}/events` | application/json | 任务事件时间线（append-only） |
+
+### 2.5 Agent 工作流
+
+推荐的资源读取顺序：
+
+```
+search_threads → items[].resources.summary
+  → yamibo://threads/{tid}/summary        (紧凑摘要)
+  → yamibo://threads/{tid}/diagnostics    (缺失资产、建议操作)
+  → yamibo://threads/{tid}/posts          (内容块，仅需要时)
+  → yamibo://threads/{tid}/assets         (资产详情，仅需要时)
+  → yamibo://threads/{tid}/context        (完整正文，仅需要时)
+```
 
 ---
 
@@ -280,6 +325,9 @@ MCP Server 暴露以下只读资源，通过 `yamibo://` URI scheme 访问。
 ```bash
 # 浏览论坛列表页
 yamibo-mcp-server browse-forum-page --page 1
+
+# 浏览轻小说区
+yamibo-mcp-server browse-forum-page --page 1 --forum-id 55
 
 # 搜索帖子
 yamibo-mcp-server search-threads --query "星灵感应"
@@ -310,6 +358,12 @@ yamibo-mcp-server list-exports
 
 # 读取资源
 yamibo-mcp-server read-resource "yamibo://threads/572313/context"
+yamibo-mcp-server read-resource "yamibo://threads/572313/summary"
+yamibo-mcp-server read-resource "yamibo://threads/572313/diagnostics"
+yamibo-mcp-server read-resource "yamibo://threads/572313/posts"
+yamibo-mcp-server read-resource "yamibo://threads/572313/assets"
+yamibo-mcp-server read-resource "yamibo://forums/index"
+yamibo-mcp-server read-resource "yamibo://jobs/sync_thread_xxxx/events"
 ```
 
 ---

@@ -15,7 +15,7 @@ from yamibo_mcp.errors import LoginRequiredError, RemoteFetchError, RemoteMainte
 from yamibo_mcp.yamibo.parsers.forum_list import ForumThreadItem, parse_forum_list
 from yamibo_mcp.yamibo.parsers.search_results import SearchResultItem, parse_search_results
 from yamibo_mcp.yamibo.page_classifier import PageType, classify_html
-from yamibo_mcp.yamibo.urls import forum_page_url, normalize_forum_page_url, normalize_thread_url, thread_url_from_tid
+from yamibo_mcp.yamibo.urls import DEFAULT_FORUM_ID, forum_page_url, normalize_forum_page_url, normalize_thread_url, thread_url_from_tid
 
 
 DEFAULT_HEADERS = {
@@ -104,18 +104,18 @@ class YamiboClient:
             raise ValueError("fetch_thread requires tid or url")
         return self.fetch_thread_by_tid(tid, base_url=base_url)
 
-    def fetch_forum_page(self, *, page: int | None = None, url: str | None = None, base_url: str | None = None) -> FetchResult:
+    def fetch_forum_page(self, *, page: int | None = None, url: str | None = None, base_url: str | None = None, forum_id: int = DEFAULT_FORUM_ID) -> FetchResult:
         if url:
             normalized = normalize_forum_page_url(url, base_url=base_url or "https://bbs.yamibo.com")
         else:
             if page is None:
                 raise ValueError("fetch_forum_page requires page or url")
-            normalized = forum_page_url(page, base_url=base_url or "https://bbs.yamibo.com")
+            normalized = forum_page_url(page, forum_id=forum_id, base_url=base_url or "https://bbs.yamibo.com")
         result = self.fetch_url_allowing_forum_list(normalized)
         return result
 
-    def fetch_forum_threads(self, *, page: int | None = None, url: str | None = None, base_url: str | None = None) -> tuple[FetchResult, list[ForumThreadItem]]:
-        result = self.fetch_forum_page(page=page, url=url, base_url=base_url)
+    def fetch_forum_threads(self, *, page: int | None = None, url: str | None = None, base_url: str | None = None, forum_id: int = DEFAULT_FORUM_ID) -> tuple[FetchResult, list[ForumThreadItem]]:
+        result = self.fetch_forum_page(page=page, url=url, base_url=base_url, forum_id=forum_id)
         return result, parse_forum_list(result.html)
 
     def fetch_search_results(
@@ -123,7 +123,7 @@ class YamiboClient:
         *,
         query: str,
         base_url: str | None = None,
-        forum_id: int = 30,
+        forum_id: int = DEFAULT_FORUM_ID,
     ) -> tuple[FetchResult, list[SearchResultItem]]:
         resolved_base = (base_url or "https://bbs.yamibo.com").rstrip("/")
         forum_result = self.fetch_forum_page(page=1, base_url=resolved_base)
@@ -167,7 +167,7 @@ class YamiboClient:
         *,
         query: str,
         base_url: str | None = None,
-        forum_id: int = 30,
+        forum_id: int = DEFAULT_FORUM_ID,
         start_page: int = 1,
         end_page: int | None = None,
     ) -> tuple[list[SearchResultItem], list[str], int]:

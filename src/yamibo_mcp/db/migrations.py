@@ -97,6 +97,59 @@ CREATE INDEX IF NOT EXISTS idx_threads_series_id ON threads(series_id);
 CREATE INDEX IF NOT EXISTS idx_threads_archive_status ON threads(archive_status);
 CREATE INDEX IF NOT EXISTS idx_threads_sync_time ON threads(sync_time);
 
+CREATE TABLE IF NOT EXISTS forums (
+  forum_id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL,
+  content_kind TEXT NOT NULL,
+  base_url TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS content_blocks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tid INTEGER NOT NULL,
+  pid INTEGER NOT NULL,
+  order_index INTEGER NOT NULL,
+  block_type TEXT NOT NULL,
+  text TEXT,
+  asset_id TEXT,
+  metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS idx_content_blocks_tid_order ON content_blocks(tid, order_index);
+
+CREATE TABLE IF NOT EXISTS assets (
+  asset_id TEXT PRIMARY KEY,
+  tid INTEGER NOT NULL,
+  pid INTEGER NOT NULL,
+  asset_type TEXT NOT NULL,
+  remote_url TEXT NOT NULL,
+  local_path TEXT,
+  exportable INTEGER NOT NULL DEFAULT 0,
+  required INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_assets_tid ON assets(tid);
+
+CREATE TABLE IF NOT EXISTS job_events (
+  event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_id TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  status TEXT,
+  stage TEXT,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_events_job_id_event_id
+ON job_events(job_id, event_id);
+
+CREATE INDEX IF NOT EXISTS idx_job_events_created_at
+ON job_events(created_at);
+
 CREATE TABLE IF NOT EXISTS floors (
   pid INTEGER PRIMARY KEY,
   tid INTEGER NOT NULL REFERENCES threads(tid),
@@ -176,6 +229,11 @@ def migrate(conn: sqlite3.Connection) -> None:
     conn.executescript(FTS_SQL)
     _ensure_column(conn, "title_parse", "chapter_title", "TEXT")
     _ensure_column(conn, "title_parse", "chapter_index_end", "REAL")
+    _ensure_column(conn, "threads", "forum_id", "INTEGER")
+    _ensure_column(conn, "threads", "content_kind", "TEXT")
+    _ensure_column(conn, "threads", "primary_media_type", "TEXT")
+    _backfill_thread_forum_fields(conn)
+    _seed_default_forums(conn)
     conn.execute(
         "INSERT OR IGNORE INTO schema_migrations(version) VALUES (?)",
         (1,),
@@ -187,6 +245,36 @@ def _ensure_column(conn: sqlite3.Connection, table: str, column: str, column_sql
     columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
     if column not in columns:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_sql}")
+
+
+def _backfill_thread_forum_fields(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "UPDATE threads SET forum_id = 30 WHERE forum_id IS NULL"
+    )
+    conn.execute(
+        "UPDATE threads SET content_kind = 'comic' WHERE content_kind IS NULL"
+    )
+    conn.execute(
+        "UPDATE threads SET primary_media_type = 'image' WHERE primary_media_type IS NULL"
+    )
+
+
+_DEFAULT_FORUMS = [
+    (30, "comic", "comic", "https://bbs.yamibo.com"),
+    (55, "novel", "novel", "https://bbs.yamibo.com"),
+    (5, "anime", "discussion", "https://bbs.yamibo.com"),
+    (33, "discussion", "discussion", "https://bbs.yamibo.com"),
+]
+
+
+def _seed_default_forums(conn: sqlite3.Connection) -> None:
+    conn.executemany(
+        """
+        INSERT OR IGNORE INTO forums (forum_id, name, content_kind, base_url)
+        VALUES (?, ?, ?, ?)
+        """,
+        _DEFAULT_FORUMS,
+    )
 
 
 def main() -> None:

@@ -1,6 +1,6 @@
 # Yamibo MCP 测试方案
 
-> 基于 2026-06-19 真实论坛数据设计，覆盖黑盒和白盒测试策略。
+> 基于 2026-06-21 真实论坛数据设计，覆盖黑盒和白盒测试策略。
 > 所有的代码备注使用简体中文
 
 ## 1. 设计原则
@@ -157,23 +157,46 @@ tests/
 │   │   └── thread_{tid}.json
 │   ├── title_parses/            # 标题解析数据
 │   │   └── {simple,with_group,...}.json
+│   ├── content_shapes/          # 内容形态数据
+│   │   └── {comic,novel,discussion,mixed}.json
 │   └── edge_cases/              # 边界条件数据
 │       ├── empty_floor.json     # 空楼层
 │       ├── missing_fields.json  # 缺失字段
 │       ├── malformed.json       # 畸形数据
 │       └── single_floor.json    # 单层楼帖子
 ├── unit/                        # 单元测试（高内聚）
-│   └── test_parsers/            # 解析器测试（已实现）
-│       ├── test_forum_list.py   # 论坛列表解析器
-│       ├── test_thread_detail.py # 帖子详情解析器
-│       └── test_title_parser.py # 标题解析器
+│   ├── test_parsers/            # 解析器测试
+│   │   ├── test_forum_list.py
+│   │   ├── test_thread_detail.py
+│   │   └── test_title_parser.py
+│   ├── test_db/                 # 数据仓库测试
+│   │   ├── test_jobs_repository.py
+│   │   ├── test_threads_repository.py
+│   │   ├── test_series_repository.py
+│   │   ├── test_audit_events_repository.py
+│   │   ├── test_migrations.py
+│   │   ├── test_content_blocks_repository.py
+│   │   ├── test_assets_repository.py
+│   │   ├── test_job_events.py
+│   │   └── test_threads_forum_filter.py
+│   ├── test_domain/             # 领域模型测试
+│   │   ├── test_models.py
+│   │   ├── test_validation.py
+│   │   ├── test_forums.py
+│   │   └── test_content.py
+│   ├── test_storage/            # 存储层测试
+│   ├── test_services/           # 服务层测试
+│   ├── test_server/             # Server 层测试
+│   │   ├── test_resources.py
+│   │   ├── test_protocol_legacy.py
+│   │   └── test_forum_id_tools.py
+│   ├── test_application/        # 应用层测试
+│   │   ├── test_contracts.py
+│   │   ├── test_thread_use_cases.py
+│   │   └── test_job_use_cases.py
+│   └── test_yamibo/             # Yamibo 模块测试
 ├── integration/                 # 集成测试（待实现）
-│   ├── test_server_tools.py     # MCP 工具测试
-│   ├── test_daemon_handlers.py  # Daemon 处理器测试
-│   └── test_cli_commands.py     # CLI 命令测试
 └── e2e/                         # 端到端测试（待实现）
-    ├── test_job_lifecycle.py    # Job 生命周期
-    └── test_export_workflow.py  # 导出工作流
 ```
 
 ---
@@ -349,13 +372,18 @@ def test_archived_items_have_series_id(self, page):
 
 ### 6.1 数据仓库测试
 
-**测试文件**：`tests/unit/test_db/`（58 个测试用例）
+**测试文件**：`tests/unit/test_db/`（97 个测试用例）
 
 **已测试模块**：
 - `test_jobs_repository.py` — Job CRUD、租约抢占、心跳、状态变更、过期恢复（26 用例）
 - `test_threads_repository.py` — 帖子 upsert、标题解析、楼层、删除、导出标记、搜索（13 用例）
 - `test_series_repository.py` — 系列创建/复用、别名累积、合并、删除、复核确认（13 用例）
 - `test_audit_events_repository.py` — 审计事件记录、时间排序、limit（6 用例）
+- `test_migrations.py` — 空库迁移、旧库迁移、幂等性、新表创建、列回填（15 用例）
+- `test_content_blocks_repository.py` — 内容块 upsert、metadata JSON、替换、排序（7 用例）
+- `test_assets_repository.py` — 资产 upsert、类型、状态、local path（10 用例）
+- `test_job_events.py` — 事件追加、succeed/fail 事件、append 失败降级、list 过滤（14 用例）
+- `test_threads_forum_filter.py` — search_threads/list_threads 按 forum_id 过滤（7 用例）
 
 ### 6.2 存储层测试
 

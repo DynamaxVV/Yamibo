@@ -1,6 +1,6 @@
 # 核心模块开发说明
 
-> 版本：0.1.0 | 更新日期：2026-06-19
+> 版本：0.2.0 | 更新日期：2026-06-21
 
 ## 1. 标题解析引擎
 
@@ -165,6 +165,93 @@ Daemon B: recover_expired_jobs()
 - 失败时写入 `staging/{job_id}/failure.json`
 - 图片下载失败不阻断整体归档（标记为 `partial`）
 - Daemon 崩溃后，过期任务自动恢复为 `interrupted` 状态
+
+### 2.5 Job Event Outbox
+
+任务状态变更时追加事件到 `job_events` 表，支持诊断和未来通知。
+
+**事件类型**：
+
+| 事件 | 触发时机 |
+|------|---------|
+| `job.created` | `JobsRepository.create()` |
+| `job.started` | `JobsRepository.acquire()`（预留） |
+| `job.progressed` | `JobsRepository.update_stage()` |
+| `job.succeeded` | `JobsRepository.succeed()` |
+| `job.failed` | `JobsRepository.fail()` |
+| `job.partial` | sync_thread handler 中图片不完整时（预留） |
+
+**降级策略**：事件追加失败不回滚主任务状态变更，仅记录 warning 日志。
+
+---
+
+## 3. 应用层
+
+### 3.1 用例函数
+
+**文件**：`application/thread_use_cases.py`、`application/job_use_cases.py`
+
+| 函数 | 说明 |
+|------|------|
+| `ensure_thread(tid, url?, base_url?)` | 获取帖子详情；本地缺失时自动远端抓取并归档 |
+| `archive_thread_job(html_path?, tid?, url?, base_url?, forum_id?)` | 创建归档任务，返回 job_id |
+| `get_job_status_payload(job_id)` | 获取任务状态 |
+
+`ensure_thread` 是意图级 API：调用方只需提供 tid/url，缓存命中、缓存缺失、远端抓取、本地归档等细节都隐藏在内部。
+
+### 3.2 Agent Contract
+
+**文件**：`application/contracts.py`
+
+```python
+@dataclass(frozen=True)
+class AgentResponse:
+    ok: bool
+    data: dict[str, Any] | None = None
+    error: dict[str, Any] | None = None
+    resources: dict[str, str] = field(default_factory=dict)
+    next_actions: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+```
+
+`success()` 和 `failure()` 工厂函数用于构建标准响应。
+
+---
+
+## 4. 内容类型模型
+
+### 3.1 领域模型
+
+**文件**：`domain/models.py`
+
+| 数据类 | 说明 |
+|--------|------|
+| `ContentBlock` | 有序内容块（text/image/attachment/quote/link/divider/unknown） |
+| `AssetSnapshot` | 资产快照（image/attachment/shared/external_link） |
+| `PostSnapshot` | 楼层帖子（含有序 blocks） |
+| `ThreadContentSnapshot` | 帖子内容快照（含 posts + assets + content_kind） |
+
+### 3.2 内容分类
+
+**文件**：`domain/content.py`
+
+`classify_content_kind(forum_id, image_count, word_count)` — 基于 forum_id 和内容特征自动分类：
+
+| content_kind | 说明 |
+|-------------|------|
+| `comic` | 图片优先（漫画区默认） |
+| `novel` | 长文本优先（轻小说区默认） |
+| `discussion` | 短文本+引用+链接（动漫区/水区默认） |
+| `mixed` | 混合内容 |
+
+### 3.3 Profile 校验
+
+`validate_by_profile(content, archived_image_pids?)` — 按内容类型校验：
+
+- `comic`：缺失 required image 记为 warning
+- `novel`：缺失主文本记为 error
+- `discussion`：缺失非关键图片记为 warning
+- `mixed`：保守兜底
 
 ---
 

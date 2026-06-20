@@ -99,6 +99,18 @@ class TestUpsertAndGetThread:
         # Assert
         assert row["display_title"] == "更新后的标题"
 
+    def test_upsert_persists_forum_id_and_content_fields(self, db):
+        # Arrange
+        repo = ThreadsRepository(db)
+        snapshot = _make_snapshot(tid=1003, image_count=0)
+        # Act
+        repo.upsert_snapshot(snapshot, forum_id=55)
+        row = repo.get_thread(1003)
+        # Assert
+        assert row["forum_id"] == 55
+        assert row["content_kind"] == "novel"
+        assert row["primary_media_type"] == "text"
+
 
 class TestTitleParseAndFloors:
     def test_upsert_creates_title_parse(self, db):

@@ -8,6 +8,7 @@ from yamibo_mcp.yamibo.parsers.common import extract_tid
 
 DEFAULT_THREAD_BASE = "https://bbs.yamibo.com"
 DEFAULT_COMIC_FORUM_ID = 30
+DEFAULT_FORUM_ID = DEFAULT_COMIC_FORUM_ID
 
 
 def thread_url_from_tid(tid: int, *, base_url: str = DEFAULT_THREAD_BASE) -> str:
@@ -15,7 +16,7 @@ def thread_url_from_tid(tid: int, *, base_url: str = DEFAULT_THREAD_BASE) -> str
     return f"{base}/forum.php?mod=viewthread&tid={tid}"
 
 
-def forum_page_url(page: int, *, forum_id: int = DEFAULT_COMIC_FORUM_ID, base_url: str = DEFAULT_THREAD_BASE) -> str:
+def forum_page_url(page: int, *, forum_id: int = DEFAULT_FORUM_ID, base_url: str = DEFAULT_THREAD_BASE) -> str:
     if page <= 0:
         raise ValueError(f"page must be positive: {page}")
     base = base_url.rstrip("/")
@@ -51,7 +52,7 @@ def normalize_thread_url(value: str, *, base_url: str = DEFAULT_THREAD_BASE) -> 
 def normalize_forum_page_url(
     value: str | int,
     *,
-    forum_id: int = DEFAULT_COMIC_FORUM_ID,
+    forum_id: int = DEFAULT_FORUM_ID,
     base_url: str = DEFAULT_THREAD_BASE,
 ) -> str:
     if isinstance(value, int):

@@ -3,7 +3,17 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from yamibo_mcp.server.resources import thread_context_uri, thread_export_uri, thread_metadata_uri
+from yamibo_mcp.server.resources import (
+    series_chapters_uri,
+    series_index_uri,
+    thread_context_uri,
+    thread_diagnostics_uri,
+    thread_export_uri,
+    thread_metadata_uri,
+    thread_posts_uri,
+    thread_assets_uri,
+    thread_summary_uri,
+)
 from yamibo_mcp.yamibo.urls import thread_url_from_tid
 
 
@@ -25,6 +35,17 @@ def job_status_payload(job) -> dict[str, Any]:
     }
 
 
+def build_series_summary(series_id: int, *, canonical_title: str | None = None) -> dict[str, Any]:
+    return {
+        "series_id": series_id,
+        "canonical_title": canonical_title,
+        "resources": {
+            "index": series_index_uri(),
+            "chapters": series_chapters_uri(series_id),
+        },
+    }
+
+
 def thread_summary_payload(row, *, include_export: bool = True) -> dict[str, Any]:
     def row_get(key: str) -> Any:
         return row[key] if key in row.keys() else None
@@ -35,6 +56,10 @@ def thread_summary_payload(row, *, include_export: bool = True) -> dict[str, Any
     resources = {
         "context": thread_context_uri(tid),
         "metadata": thread_metadata_uri(tid),
+        "summary": thread_summary_uri(tid),
+        "diagnostics": thread_diagnostics_uri(tid),
+        "posts": thread_posts_uri(tid),
+        "assets": thread_assets_uri(tid),
     }
     if include_export and export_path:
         resources["export"] = thread_export_uri(tid)

@@ -4,6 +4,7 @@ import json
 import sqlite3
 
 from yamibo_mcp.domain.models import ThreadSnapshot
+from yamibo_mcp.domain.content import build_content_snapshot
 from yamibo_mcp.db.repositories.series import SeriesRepository
 from yamibo_mcp.time_utils import utc_now_iso
 from yamibo_mcp.yamibo.title.normalizer import normalize_display_title, normalize_series_key
@@ -17,6 +18,7 @@ class ThreadsRepository:
         self,
         snapshot: ThreadSnapshot,
         *,
+        forum_id: int | None = None,
         context_path: str | None = None,
         archive_status: str = "complete",
         missing_image_urls: list[str] | None = None,
@@ -24,6 +26,8 @@ class ThreadsRepository:
     ) -> None:
         now = utc_now_iso()
         max_pid = max((floor.pid for floor in snapshot.floors), default=None)
+        content = build_content_snapshot(snapshot, forum_id=forum_id)
+        primary_media_type = "image" if any(asset.asset_type == "image" for asset in content.assets) else "text"
         series_id, needs_series_review = SeriesRepository(self.conn).resolve_for_title(snapshot.title)
         missing_images_json = json.dumps(missing_image_urls or [], ensure_ascii=False)
         self.conn.execute(
@@ -31,9 +35,10 @@ class ThreadsRepository:
             INSERT INTO threads (
               tid, series_id, page_type, raw_title, display_title, publisher, publisher_uid,
               pub_time, sync_time, last_pid, permission, image_count, context_path,
-              archive_status, validation_status, missing_images_json, needs_title_review, needs_series_review
+              archive_status, validation_status, missing_images_json, needs_title_review, needs_series_review,
+              forum_id, content_kind, primary_media_type
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'valid', ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'valid', ?, ?, ?, ?, ?, ?)
             ON CONFLICT(tid) DO UPDATE SET
               series_id = excluded.series_id,
               page_type = excluded.page_type,
@@ -51,7 +56,10 @@ class ThreadsRepository:
               validation_status = excluded.validation_status,
               missing_images_json = excluded.missing_images_json,
               needs_title_review = excluded.needs_title_review,
-              needs_series_review = excluded.needs_series_review
+              needs_series_review = excluded.needs_series_review,
+              forum_id = excluded.forum_id,
+              content_kind = excluded.content_kind,
+              primary_media_type = excluded.primary_media_type
             """,
             (
                 snapshot.tid,
@@ -71,6 +79,9 @@ class ThreadsRepository:
                 missing_images_json,
                 1 if snapshot.title.needs_review else 0,
                 1 if needs_series_review else 0,
+                content.forum_id,
+                content.content_kind,
+                primary_media_type,
             ),
         )
         self._upsert_title(snapshot, title_warnings=title_warnings)
@@ -411,7 +422,22 @@ class ThreadsRepository:
             "title_parse": None if after_title is None else dict(after_title),
         }
 
-    def list_threads(self, *, limit: int = 100) -> list[sqlite3.Row]:
+    def list_threads(self, *, limit: int = 100, forum_id: int | None = None) -> list[sqlite3.Row]:
+        if forum_id is not None:
+            return self.conn.execute(
+                """
+                SELECT
+                  t.tid, t.raw_title, t.display_title, t.publisher, t.sync_time,
+                  t.archive_status, t.validation_status, t.context_path, t.series_id, t.export_path,
+                  tp.core_title_guess, tp.series_key, tp.chapter_name, tp.chapter_index, tp.chapter_index_end, tp.group_name, tp.author_guess, tp.needs_review
+                FROM threads t
+                LEFT JOIN title_parse tp ON tp.tid = t.tid
+                WHERE t.forum_id = ?
+                ORDER BY COALESCE(t.sync_time, '') DESC, t.tid DESC
+                LIMIT ?
+                """,
+                (forum_id, limit),
+            ).fetchall()
         return self.conn.execute(
             """
             SELECT
@@ -450,14 +476,20 @@ class ThreadsRepository:
             (limit,),
         ).fetchall()
 
-    def search_threads(self, query: str, *, limit: int = 50) -> list[sqlite3.Row]:
+    def search_threads(self, query: str, *, limit: int = 50, forum_id: int | None = None) -> list[sqlite3.Row]:
         normalized = query.strip()
         if not normalized:
-            return self.list_threads(limit=limit)
+            return self.list_threads(limit=limit, forum_id=forum_id)
 
         try:
+            fts_where = "WHERE thread_fts MATCH ?"
+            params: list[object] = [normalized]
+            if forum_id is not None:
+                fts_where += " AND t.forum_id = ?"
+                params.append(forum_id)
+            params.append(limit)
             rows = self.conn.execute(
-                """
+                f"""
                 SELECT
                   t.tid, t.raw_title, t.display_title, t.publisher, t.sync_time,
                   t.archive_status, t.validation_status, t.context_path, t.series_id, t.export_path,
@@ -466,33 +498,39 @@ class ThreadsRepository:
                 FROM thread_fts
                 JOIN threads t ON t.tid = thread_fts.tid
                 LEFT JOIN title_parse tp ON tp.tid = t.tid
-                WHERE thread_fts MATCH ?
+                {fts_where}
                 ORDER BY rank
                 LIMIT ?
                 """,
-                (normalized, limit),
+                params,
             ).fetchall()
             if rows:
                 return rows
         except sqlite3.OperationalError:
             pass
         like = f"%{normalized}%"
+        like_params: list[object] = [like, like, like, like]
+        like_where = ""
+        if forum_id is not None:
+            like_where = " AND t.forum_id = ?"
+            like_params.append(forum_id)
+        like_params.append(limit)
         return self.conn.execute(
-            """
+            f"""
             SELECT
               t.tid, t.raw_title, t.display_title, t.publisher, t.sync_time,
               t.archive_status, t.validation_status, t.context_path, t.series_id, t.export_path,
               tp.core_title_guess, tp.series_key, tp.chapter_name, tp.needs_review
             FROM threads t
             LEFT JOIN title_parse tp ON tp.tid = t.tid
-            WHERE t.raw_title LIKE ?
+            WHERE (t.raw_title LIKE ?
                OR t.display_title LIKE ?
                OR tp.core_title_guess LIKE ?
-               OR tp.series_key LIKE ?
+               OR tp.series_key LIKE ?){like_where}
             ORDER BY COALESCE(t.sync_time, '') DESC, t.tid DESC
             LIMIT ?
             """,
-            (like, like, like, like, limit),
+            like_params,
         ).fetchall()
 
     def list_floors(self, tid: int) -> list[sqlite3.Row]:

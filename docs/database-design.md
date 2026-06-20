@@ -1,6 +1,6 @@
 # 数据字典 / 数据库设计文档
 
-> 版本：0.1.0 | 更新日期：2026-06-19
+> 版本：0.2.0 | 更新日期：2026-06-21
 
 ## 1. 概述
 
@@ -93,6 +93,9 @@ Schema 版本跟踪表。
 | needs_series_review | INTEGER | NOT NULL, DEFAULT 0 | 需要系列复核 |
 | is_exported | INTEGER | NOT NULL, DEFAULT 0 | 是否已导出 |
 | export_path | TEXT | | 导出 ZIP 路径 |
+| forum_id | INTEGER | | 论坛分区 ID（30=漫画, 55=轻小说, 5=动漫, 33=水区） |
+| content_kind | TEXT | | 内容类型：comic / novel / discussion / mixed |
+| primary_media_type | TEXT | | 主要媒体类型：image / text |
 
 **索引**：
 
@@ -242,6 +245,81 @@ Schema 版本跟踪表。
 | group_name | 汉化组 |
 | content_preview | 内容预览（前 3 层楼） |
 | catalog_text | 目录文本 |
+
+---
+
+### 2.11 forums
+
+论坛分区表。预置漫画区(30)、轻小说区(55)、动漫区(5)、水区(33)。
+
+| 列名 | 类型 | 约束 | 说明 |
+|------|------|------|------|
+| forum_id | INTEGER | PRIMARY KEY | 分区 ID |
+| name | TEXT | NOT NULL | 分区名称 |
+| content_kind | TEXT | NOT NULL | 内容类型：comic / novel / discussion |
+| base_url | TEXT | NOT NULL | 站点根 URL |
+| enabled | INTEGER | NOT NULL, DEFAULT 1 | 是否启用 |
+| created_at | TEXT | NOT NULL, DEFAULT CURRENT_TIMESTAMP | 创建时间 |
+| updated_at | TEXT | NOT NULL, DEFAULT CURRENT_TIMESTAMP | 更新时间 |
+
+---
+
+### 2.12 content_blocks
+
+内容块表。每个帖子的有序内容块（text/image/attachment/quote/link/divider）。
+
+| 列名 | 类型 | 约束 | 说明 |
+|------|------|------|------|
+| id | INTEGER | PRIMARY KEY AUTOINCREMENT | 记录 ID |
+| tid | INTEGER | NOT NULL | 帖子 ID |
+| pid | INTEGER | NOT NULL | 楼层 ID |
+| order_index | INTEGER | NOT NULL | 块序号 |
+| block_type | TEXT | NOT NULL | 块类型：text / image / attachment / quote / link / divider / unknown |
+| text | TEXT | | 文本内容 |
+| asset_id | TEXT | | 关联资产 ID |
+| metadata_json | TEXT | NOT NULL, DEFAULT '{}' | 块元数据 JSON |
+
+**索引**：`(tid, order_index)`
+
+---
+
+### 2.13 assets
+
+资产表。统一管理图片、附件、共享资源。
+
+| 列名 | 类型 | 约束 | 说明 |
+|------|------|------|------|
+| asset_id | TEXT | PRIMARY KEY | 资产 ID |
+| tid | INTEGER | NOT NULL | 帖子 ID |
+| pid | INTEGER | NOT NULL | 楼层 ID |
+| asset_type | TEXT | NOT NULL | 资产类型：image / attachment / shared / external_link |
+| remote_url | TEXT | NOT NULL | 远端 URL |
+| local_path | TEXT | | 本地路径 |
+| exportable | INTEGER | NOT NULL, DEFAULT 0 | 是否可导出 |
+| required | INTEGER | NOT NULL, DEFAULT 0 | 是否必需 |
+| status | TEXT | NOT NULL | 状态：pending / downloaded / skipped / missing |
+
+**索引**：`(tid)`
+
+---
+
+### 2.14 job_events
+
+任务事件表（append-only outbox）。记录任务状态变更历史。
+
+| 列名 | 类型 | 约束 | 说明 |
+|------|------|------|------|
+| event_id | INTEGER | PRIMARY KEY AUTOINCREMENT | 事件 ID |
+| job_id | TEXT | NOT NULL | 任务 ID |
+| event_type | TEXT | NOT NULL | 事件类型：job.created / job.started / job.progressed / job.succeeded / job.partial / job.failed / job.cancelled |
+| status | TEXT | | 任务状态 |
+| stage | TEXT | | 执行阶段 |
+| payload_json | TEXT | NOT NULL, DEFAULT '{}' | 事件负载 JSON |
+| created_at | TEXT | NOT NULL, DEFAULT CURRENT_TIMESTAMP | 创建时间 |
+
+**索引**：
+- `(job_id, event_id)` — 按任务查事件
+- `(created_at)` — 时间排序
 
 ---
 

@@ -1,15 +1,63 @@
 # 版本发布说明
 
-> 版本：0.1.0 | 发布日期：2026-06-19
+> 版本：0.2.0 | 发布日期：2026-06-21
 
 ## 版本信息
 
 | 项目 | 值 |
 |------|-----|
-| 版本号 | 0.1.0 |
+| 版本号 | 0.2.0 |
 | Python 要求 | >= 3.11 |
 | MCP SDK | >= 1.27.2 |
-| 测试用例数 | 429（全部通过） |
+| 测试用例数 | 626（全部通过） |
+
+---
+
+## v0.2.0 新增功能
+
+### 多分区支持
+
+- 新增 `forum_id` 参数：`browse_forum_page`、`search_threads`、`sync_forum_range`、`archive_thread`
+- 支持漫画区(30)、轻小说区(55)、动漫区(5)、水区(33)
+- 新增 `ForumProfile` 领域模型，`resolve_forum()` 按 forum_id 返回分区配置
+- 本地 fallback search 支持按 forum_id 过滤
+
+### 内容类型模型
+
+- 新增 `ContentBlock`、`AssetSnapshot`、`PostSnapshot`、`ThreadContentSnapshot` 数据类
+- 支持 comic/novel/discussion/mixed 四种内容形态
+- `classify_content_kind()` 基于 forum_id 和内容特征自动分类
+- `validate_by_profile()` 按内容类型校验归档完整性
+
+### Job Event Outbox
+
+- 新增 `job_events` 表，任务状态变更追加耐久化事件
+- 支持的事件类型：`job.created` / `job.started` / `job.progressed` / `job.succeeded` / `job.partial` / `job.failed` / `job.cancelled`
+- `JobEventsRepository` 提供 `append` 和 `list` 接口
+- 事件追加失败不回滚主任务状态变更
+
+### 面向 Agent 的 Resources
+
+- 新增 7 个只读 resource URI：
+  - `yamibo://forums/index` — 论坛分区列表
+  - `yamibo://forums/{forum_id}/summary` — 分区摘要
+  - `yamibo://threads/{tid}/summary` — 帖子紧凑摘要
+  - `yamibo://threads/{tid}/diagnostics` — 帖子诊断（缺失资产、建议操作）
+  - `yamibo://threads/{tid}/posts` — 内容块列表
+  - `yamibo://threads/{tid}/assets` — 资产列表
+  - `yamibo://jobs/{job_id}/events` — 任务事件时间线
+- `search_threads` 返回的 items 现在包含 `summary`/`diagnostics`/`posts`/`assets` URI
+
+### 应用层
+
+- 新增 `application/` 包，包含 `ensure_thread`、`archive_thread_job`、`get_job_status_payload` 用例
+- `server/tools.py` 退化为薄适配器，委托给应用层
+
+### 数据库迁移
+
+- 新增 `forums`、`content_blocks`、`assets`、`job_events` 表
+- `threads` 表新增 `forum_id`、`content_kind`、`primary_media_type` 列
+- 历史数据自动回填为 `forum_id=30`、`content_kind='comic'`、`primary_media_type='image'`
 
 ---
 
@@ -121,7 +169,6 @@ Web 控制台随 Daemon 自动启动（`http://127.0.0.1:8765`），无需单独
 |------|------|
 | 论坛维护窗口 | 每天 5:30-6:30（UTC+8）无法访问论坛 |
 | 搜索限流 | 论坛搜索接口约 10 秒/次 |
-| 仅支持漫画区 | 当前仅支持 forum-30（中文百合漫画区） |
 | 单帖子导出 | 不支持多帖子合并导出 |
 | Windows 未测试 | 仅在 macOS/Linux 上验证 |
 
@@ -132,11 +179,11 @@ Web 控制台随 Daemon 自动启动（`http://127.0.0.1:8765`），无需单独
 | 类别 | 用例数 | 状态 |
 |------|--------|------|
 | 黑盒测试（解析器 fixture） | 212 | 全部通过 |
-| 白盒测试（DB + Domain + Storage + Services） | 142 | 全部通过 |
-| 白盒测试（Yamibo 模块 + 规则引擎直接） | 75 | 全部通过 |
-| **总计** | **429** | **全部通过** |
+| 白盒测试（DB + Domain + Storage + Services） | 177 | 全部通过 |
+| 白盒测试（Server + Application + Yamibo 模块） | 237 | 全部通过 |
+| **总计** | **626** | **全部通过** |
 
-执行时间：0.84s
+执行时间：约 10s
 
 详见 [测试报告](test-report.md) 和 [测试方案](testing-strategy.md)。
 
@@ -144,7 +191,7 @@ Web 控制台随 Daemon 自动启动（`http://127.0.0.1:8765`），无需单独
 
 ## 后续规划
 
-- [ ] 多论坛板块支持
+- [x] 多论坛板块支持
 - [ ] 多帖子合并导出
 - [ ] 增量同步优化
 - [ ] 图片 OCR 文字识别
