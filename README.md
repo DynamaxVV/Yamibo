@@ -5,7 +5,7 @@
 ## 功能特性
 
 - **MCP Server** — 基于 FastMCP，支持 stdio/SSE/HTTP 传输，LLM 客户端直接调用
-- **多分区支持** — 漫画区(30)、轻小说区(55)、动漫区(5)、水区(33)，通过 `forum_id` 参数切换
+- **多分区支持** — 漫画区(30)、轻小说区(55)、动漫区(5)、海域区(33) + 7 个扩展分区，通过 `forum_id` 参数切换
 - **智能标题解析** — 规则引擎 + LLM 辅助，自动提取汉化组、作者、漫画名、章节信息
 - **自动归档** — 抓取帖子 HTML，解析楼层，下载图片，生成结构化本地存档
 - **内容模型** — 支持 comic/novel/discussion/mixed 四种内容形态，有序内容块 + 资产管理
@@ -13,7 +13,7 @@
 - **标准化导出** — ZIP 打包（context.md + metadata.json + 图片），按系列分目录
 - **Job Event Outbox** — 任务状态变更追加耐久化事件，支持诊断和未来通知
 - **Agent-Friendly Resources** — 紧凑 summary、diagnostics、posts、assets 资源，低 token 开销
-- **Web 控制台** — 嵌入式 HTTP 管理界面，中英文双语，随 Daemon 自动启动
+- **Web 控制台** — React+Vite SPA，中英文双语，4 套可切换主题 + 暗黑模式
 - **CLI** — 所有工具均可通过命令行直接调用
 
 ## 快速开始

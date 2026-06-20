@@ -3,6 +3,7 @@ import type { Theme } from './index'
 export const minimalist: Theme = {
   name: 'minimalist',
   label: '极简专业',
+  labelEn: 'Minimalist',
   fonts: {
     sans: '"Outfit", "Space Grotesk", -apple-system, BlinkMacSystemFont, sans-serif',
     serif: '"Space Grotesk", Georgia, serif',

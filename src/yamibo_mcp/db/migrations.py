@@ -232,7 +232,9 @@ def migrate(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "threads", "forum_id", "INTEGER")
     _ensure_column(conn, "threads", "content_kind", "TEXT")
     _ensure_column(conn, "threads", "primary_media_type", "TEXT")
+    _ensure_column(conn, "threads", "category", "TEXT")
     _backfill_thread_forum_fields(conn)
+    _ensure_column(conn, "forums", "name_en", "TEXT")
     _seed_default_forums(conn)
     conn.execute(
         "INSERT OR IGNORE INTO schema_migrations(version) VALUES (?)",
@@ -260,18 +262,26 @@ def _backfill_thread_forum_fields(conn: sqlite3.Connection) -> None:
 
 
 _DEFAULT_FORUMS = [
-    (30, "comic", "comic", "https://bbs.yamibo.com"),
-    (55, "novel", "novel", "https://bbs.yamibo.com"),
-    (5, "anime", "discussion", "https://bbs.yamibo.com"),
-    (33, "discussion", "discussion", "https://bbs.yamibo.com"),
+    (30, "漫画区", "comic", "https://bbs.yamibo.com", "Comic"),
+    (55, "轻小说区", "novel", "https://bbs.yamibo.com", "Novel"),
+    (5, "动漫区", "discussion", "https://bbs.yamibo.com", "Anime"),
+    (33, "海域区", "discussion", "https://bbs.yamibo.com", "Watercooler"),
+    (13, "贴图区", "discussion", "https://bbs.yamibo.com", "Image Board"),
+    (16, "管理版", "discussion", "https://bbs.yamibo.com", "Admin"),
+    (19, "资源交流区", "discussion", "https://bbs.yamibo.com", "Resources"),
+    (44, "游戏区", "discussion", "https://bbs.yamibo.com", "Games"),
+    (49, "文学区", "discussion", "https://bbs.yamibo.com", "Literature"),
+    (370, "使用指南", "discussion", "https://bbs.yamibo.com", "Guide"),
+    (379, "影视区", "discussion", "https://bbs.yamibo.com", "Film & TV"),
 ]
 
 
 def _seed_default_forums(conn: sqlite3.Connection) -> None:
     conn.executemany(
         """
-        INSERT OR IGNORE INTO forums (forum_id, name, content_kind, base_url)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO forums (forum_id, name, content_kind, base_url, name_en)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(forum_id) DO UPDATE SET name = excluded.name, name_en = excluded.name_en
         """,
         _DEFAULT_FORUMS,
     )

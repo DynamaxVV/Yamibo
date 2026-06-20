@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { useI18n } from '../context/I18nContext'
 
 const KIND_MAP: Record<string, string> = {
   succeeded: 'ok', complete: 'ok', valid: 'ok', downloaded: 'ok',
@@ -7,11 +8,11 @@ const KIND_MAP: Record<string, string> = {
   failed: 'error', error: 'error', interrupted: 'error', missing: 'error',
 }
 
-const CONTENT_KIND_MAP: Record<string, { label: string; className: string }> = {
-  comic: { label: '漫画', className: 'badge-comic' },
-  novel: { label: '小说', className: 'badge-novel' },
-  discussion: { label: '讨论', className: 'badge-discussion' },
-  mixed: { label: '混合', className: 'badge-mixed' },
+const CONTENT_KIND_CLASSES: Record<string, string> = {
+  comic: 'badge-comic',
+  novel: 'badge-novel',
+  discussion: 'badge-discussion',
+  mixed: 'badge-mixed',
 }
 
 export function Badge({ status, children }: { status?: string | null; children?: ReactNode }) {
@@ -20,10 +21,11 @@ export function Badge({ status, children }: { status?: string | null; children?:
 }
 
 export function ContentBadge({ kind }: { kind: string | null }) {
+  const { t } = useI18n()
   if (!kind) return <span className="badge badge-muted">-</span>
-  const mapped = CONTENT_KIND_MAP[kind]
-  if (mapped) {
-    return <span className={`badge ${mapped.className}`}>{mapped.label}</span>
+  const cls = CONTENT_KIND_CLASSES[kind]
+  if (cls) {
+    return <span className={`badge ${cls}`}>{t(kind)}</span>
   }
   return <span className="badge badge-accent">{kind}</span>
 }

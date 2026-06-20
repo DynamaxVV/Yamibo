@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { ThemeProvider } from './context/ThemeContext'
+import { I18nProvider } from './context/I18nContext'
 import { Layout } from './components/Layout'
 import { Dashboard } from './pages/Dashboard'
 import { Jobs } from './pages/Jobs'
@@ -14,6 +15,7 @@ import { Logs } from './pages/Logs'
 
 export default function App() {
   return (
+    <I18nProvider>
     <ThemeProvider>
       <BrowserRouter>
         <Routes>
@@ -33,5 +35,6 @@ export default function App() {
         </Routes>
       </BrowserRouter>
     </ThemeProvider>
+    </I18nProvider>
   )
 }

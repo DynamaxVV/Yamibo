@@ -1,5 +1,48 @@
 # 百合会归档助手 — 版本更新日志
 
+## v0.4.0 (2026-06-21)
+
+### 新增
+- **国际化 (i18n)**：中英文双语支持，~170 个翻译键，语言切换按钮（中/En），localStorage 持久化
+- **暗黑模式**：4 套主题各含独立暗色配色，浮动按钮切换（☾/☀），localStorage 持久化
+- **论坛版块自动识别**：从帖子 HTML 提取论坛链接和 typeid 分类标签（`forum.php?fid=XX&filter=typeid&typeid=YY`），支持 11 个论坛、100+ typeid 映射
+- **扩展论坛注册**：从 4 个论坛扩展到 11 个（新增贴图区/管理版/资源交流區/遊戲區/文學區/使用指南/影視區），每个论坛含中文名和英文名
+- **论坛级系列归类**：非漫画/轻小说论坛的帖子自动归入论坛级系列（如"动漫区全部"），通过 `resolve_for_forum()` 实现
+- **分类标签 (category)**：从帖子 HTML 提取子分类（如 [長篇連載]、[短篇完結]），存入 `threads.category` 列，帖子列表新增 Category 列
+- **多关键词搜索**：后端 AND 逻辑（空格分隔关键词），FTS 用 AND 连接，LIKE fallback 按关键词交叉匹配；系列页前端同步实现
+- **版块标签筛选器**：帖子列表页版块筛选从下拉框改为标签/药丸按钮，显示各版块帖子数，0 贴版块隐藏
+- **日志级别筛选**：日志页新增最低级别过滤（DEBUG/INFO/WARNING/ERROR/CRITICAL），支持暂停计数
+- **Dashboard 分区展示**：统计行显示各版块帖子数，最近归档按"漫画·轻小说"和"其他板块"分区展示，各含独立数量选择器
+- **自动删除空系列**：删除帖子后若系列无剩余帖子，自动删除该系列并返回 `deleted_series_id`
+- **forum_id 透传到后端**：重新同步/导出帖子时传递 forum_id，确保后端任务使用正确的论坛
+- **品牌 Logo 和 Favicon**：YamiboArchiveLogo.png → 多尺寸 favicon + apple-touch-icon
+- **主题英文标签**：Theme 接口新增 `labelEn` 字段，英文模式下显示英文主题名
+
+### 修复
+- `thread_summary_payload()` 缺少 `forum_id`、`content_kind`、`category` 字段 — 已补齐
+- `_thread_summary_dict()` 缺少 `category` 返回 — 已补齐
+- 贴子详情返回导航：从系列进入点击"返回"现在正确回到 `/series/{id}` 而非 `/series`
+- `_forums_list()` 中 `name_en` 访问未做安全检查 — 已加 fallback
+
+### UI/UX 改进
+- 表格默认居中对齐（`th, td { text-align: center }`），标题列通过 `.truncate` 保持左对齐
+- Layout 顶栏重构：新增语言切换按钮、品牌 Logo 图片
+- 复核页面区域顺序调整：系列复核移至标题复核上方
+- 帖子详情归档信息表新增 Category 行
+- Dashboard 统计行显示各版块帖子数明细
+- 帖子列表 `tableLayout: 'fixed'` 防止筛选时列宽跳动
+- Badge 颜色改用 CSS 变量（`--badge-*-text`），暗黑模式自适应
+- 内容块表和图片宽度工具栏仅对漫画类型帖子显示
+
+### 重构
+- 新增 `utils/time.ts` 共享时间格式化函数（`formatDateTime`、`formatLogTime`），消除页面间重复代码
+- `ContentBadge` 组件改用 `useI18n()` 翻译内容类型标签
+
+### 文档
+- 版本号推进至 0.4.0
+
+---
+
 ## v0.3.0 (2026-06-21)
 
 ### 新增

@@ -3,6 +3,7 @@ import type { Theme } from './index'
 export const retro: Theme = {
   name: 'retro',
   label: '复古 1957',
+  labelEn: 'Retro 1957',
   fonts: {
     sans: 'Georgia, "Times New Roman", "Palatino", serif',
     serif: 'Georgia, "Palatino Linotype", "Book Antiqua", serif',

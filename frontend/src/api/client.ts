@@ -62,6 +62,7 @@ export interface ThreadSummary {
   export_path: string | null
   forum_id: number | null
   content_kind: string | null
+  category: string | null
   core_title_guess: string | null
   series_key: string | null
   chapter_name: string | null
@@ -120,6 +121,7 @@ export interface SeriesSummary {
 export interface Forum {
   forum_id: number
   name: string
+  name_en: string | null
   content_kind: string
   thread_count: number
   enabled: boolean
@@ -160,6 +162,7 @@ export interface DashboardData {
   thread_count: number
   series_count: number
   export_count: number
+  forum_counts: Record<number, number>
   recent_jobs: JobSummary[]
   workers: WorkerHeartbeat[]
   recent_audits: AuditEvent[]
@@ -168,7 +171,7 @@ export interface DashboardData {
 
 // API methods
 export const api = {
-  dashboard: () => fetchJson<DashboardData>('/dashboard'),
+  dashboard: (limit?: number) => fetchJson<DashboardData>(`/dashboard${limit ? `?limit=${limit}` : ''}`),
   jobs: (status?: string) => fetchJson<JobSummary[]>(`/jobs${status ? `?status=${status}` : ''}`),
   job: (id: string) => fetchJson<JobSummary>(`/jobs/${id}`),
   jobEvents: (id: string) => fetchJson<JobEvent[]>(`/jobs/${id}/events`),
@@ -205,7 +208,7 @@ export const api = {
     const s = qs.toString()
     return fetchJson<{ entries: LogEntry[]; count: number }>(`/logs${s ? `?${s}` : ''}`)
   },
-  resyncThread: (tid: number) => postJson<{ ok: boolean; job_id: string }>('/threads/resync', { tid }),
-  exportThread: (tid: number, strategy?: string) => postJson<{ ok: boolean; job_id: string }>('/threads/export', { tid, strategy }),
-  deleteThread: (tid: number) => postJson<{ ok: boolean }>('/threads/delete', { tid }),
+  resyncThread: (tid: number, forum_id?: number) => postJson<{ ok: boolean; job_id: string }>('/threads/resync', { tid, ...(forum_id ? { forum_id } : {}) }),
+  exportThread: (tid: number, strategy?: string, forum_id?: number) => postJson<{ ok: boolean; job_id: string }>('/threads/export', { tid, strategy, ...(forum_id ? { forum_id } : {}) }),
+  deleteThread: (tid: number) => postJson<{ ok: boolean; deleted_series_id?: number }>('/threads/delete', { tid }),
 }

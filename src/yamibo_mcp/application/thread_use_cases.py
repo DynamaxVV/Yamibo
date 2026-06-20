@@ -17,6 +17,7 @@ def ensure_thread(
     tid: int,
     url: str | None = None,
     base_url: str | None = None,
+    forum_id: int | None = None,
 ) -> dict[str, Any]:
     settings = load_settings()
     conn = connect(settings.db_path)
@@ -29,6 +30,7 @@ def ensure_thread(
                 tid=tid,
                 url=url,
                 base_url=base_url,
+                forum_id=forum_id,
                 settings=settings,
             )
             if sync_result.get("status") == "failed" or sync_result.get("found") is False:
@@ -92,6 +94,7 @@ def _run_inline_sync(
     tid: int,
     url: str | None = None,
     base_url: str | None = None,
+    forum_id: int | None = None,
     settings=None,
 ) -> dict[str, Any]:
     from yamibo_mcp.daemon.handlers.sync_thread import handle_sync_thread
@@ -106,7 +109,7 @@ def _run_inline_sync(
             tid=tid,
             payload={
                 key: value
-                for key, value in {"tid": tid, "url": url, "base_url": base_url}.items()
+                for key, value in {"tid": tid, "url": url, "base_url": base_url, "forum_id": forum_id}.items()
                 if value is not None
             },
         )

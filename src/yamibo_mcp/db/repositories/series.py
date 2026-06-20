@@ -121,6 +121,30 @@ class SeriesRepository:
         )
         return int(row["series_id"])
 
+    def resolve_for_forum(self, forum_id: int) -> tuple[int, bool]:
+        from yamibo_mcp.domain.forums import resolve_forum
+        profile = resolve_forum(forum_id)
+        if not profile.default_series_key:
+            raise ValueError(f"forum {forum_id} has no default series")
+        existing = self.conn.execute(
+            "SELECT * FROM series WHERE series_key = ?",
+            (profile.default_series_key,),
+        ).fetchone()
+        if existing is not None:
+            return int(existing["series_id"]), False
+        cur = self.conn.execute(
+            """
+            INSERT INTO series (
+              canonical_title, normalized_title, series_key, alias_keys_json,
+              aliases_json, author_guess, creator_key, merge_confidence,
+              needs_review
+            )
+            VALUES (?, ?, ?, '[]', '[]', NULL, NULL, 1.0, 0)
+            """,
+            (profile.default_series_title, profile.default_series_title, profile.default_series_key),
+        )
+        return int(cur.lastrowid), False
+
     def _creator_compatible(self, existing: str | None, incoming: str | None) -> bool:
         return not existing or not incoming or existing == incoming
 

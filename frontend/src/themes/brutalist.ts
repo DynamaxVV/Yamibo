@@ -3,6 +3,7 @@ import type { Theme } from './index'
 export const brutalist: Theme = {
   name: 'brutalist',
   label: '粗野',
+  labelEn: 'Brutalist',
   fonts: {
     sans: '"Courier New", "Consolas", monospace',
     serif: '"Courier New", "Georgia", serif',

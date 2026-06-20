@@ -415,8 +415,8 @@ def search_threads(
         conn.close()
 
 
-def get_thread(*, tid: int, url: str | None = None, base_url: str | None = None) -> dict[str, object]:
-    return ensure_thread(tid=tid, url=url, base_url=base_url)
+def get_thread(*, tid: int, url: str | None = None, base_url: str | None = None, forum_id: int | None = None) -> dict[str, object]:
+    return ensure_thread(tid=tid, url=url, base_url=base_url, forum_id=forum_id)
 
 
 def list_exports(*, limit: int = 100) -> dict[str, object]:

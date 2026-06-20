@@ -2,8 +2,10 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, type SeriesSummary } from '../api/client'
 import { Badge } from '../components/Badge'
+import { useI18n } from '../context/I18nContext'
 
 export function Series() {
+  const { t } = useI18n()
   const [allSeries, setAllSeries] = useState<SeriesSummary[]>([])
   const [q, setQ] = useState('')
   const [reviewFilter, setReviewFilter] = useState<'all' | 'review' | 'confirmed'>('all')
@@ -14,9 +16,9 @@ export function Series() {
     if (reviewFilter === 'review' && !s.needs_review) return false
     if (reviewFilter === 'confirmed' && s.needs_review) return false
     if (q.trim()) {
-      const needle = q.trim().toLowerCase()
+      const keywords = q.trim().toLowerCase().split(/\s+/).filter(Boolean)
       const haystack = [s.canonical_title, s.series_key, s.author_guess].filter(Boolean).join(' ').toLowerCase()
-      if (!haystack.includes(needle)) return false
+      if (!keywords.every(kw => haystack.includes(kw))) return false
     }
     return true
   })
@@ -28,30 +30,30 @@ export function Series() {
           className="filter-search"
           value={q}
           onChange={e => setQ(e.target.value)}
-          placeholder="搜索系列名、系列键、作者"
+          placeholder={t('search_series_placeholder')}
         />
         <div className="filter-group">
           <select value={reviewFilter} onChange={e => setReviewFilter(e.target.value as typeof reviewFilter)}>
-            <option value="all">全部</option>
-            <option value="review">待复核</option>
-            <option value="confirmed">已确认</option>
+            <option value="all">{t('all')}</option>
+            <option value="review">{t('pending_review')}</option>
+            <option value="confirmed">{t('confirmed')}</option>
           </select>
         </div>
       </div>
 
       <div className="table-wrap"><table>
-        <thead><tr><th>ID</th><th>标题</th><th>作者</th><th>系列键</th><th>贴子数</th><th>复核</th></tr></thead>
+        <thead><tr><th>{t('id')}</th><th>{t('title')}</th><th>{t('author')}</th><th>{t('series_key')}</th><th>{t('thread_count')}</th><th>{t('review')}</th></tr></thead>
         <tbody>
           {filtered.length === 0 ? (
-            <tr><td colSpan={6} style={{ textAlign: 'center', color: 'var(--text-tertiary)', padding: 24 }}>无匹配系列</td></tr>
+            <tr><td colSpan={6} style={{ textAlign: 'center', color: 'var(--text-tertiary)', padding: 24 }}>{t('no_match')}</td></tr>
           ) : filtered.map(s => (
             <tr key={s.series_id}>
               <td className="mono"><Link to={`/series/${s.series_id}`}>{s.series_id}</Link></td>
-              <td className="truncate"><Link to={`/series/${s.series_id}`}>{s.canonical_title || s.series_key}</Link></td>
+              <td className="truncate" style={{ textAlign: 'center' }}><Link to={`/series/${s.series_id}`}>{s.canonical_title || s.series_key}</Link></td>
               <td>{s.author_guess || '-'}</td>
               <td className="mono">{s.series_key || '-'}</td>
               <td>{s.thread_count}</td>
-              <td><Badge status={s.needs_review ? 'warn' : 'ok'}>{s.needs_review ? '需复核' : '已确认'}</Badge></td>
+              <td><Badge status={s.needs_review ? 'warn' : 'ok'}>{s.needs_review ? t('needs_review') : t('confirmed')}</Badge></td>
             </tr>
           ))}
         </tbody>

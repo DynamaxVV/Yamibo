@@ -200,6 +200,87 @@ def _extract_tid_from_html_or_url(html: str, url: str | None) -> int:
     raise ValueError("Unable to resolve tid")
 
 
+_FORUM_LINK_RE = re.compile(r'forum-(?P<fid>\d+)-\d+\.html')
+_FORUM_PHP_RE = re.compile(r'forum\.php\?mod=forumdisplay[^>]*fid=(\d+)')
+_TYPEID_RE = re.compile(r'forum\.php\?mod=forumdisplay[^>]*fid=(\d+)[^>]*filter=typeid[^>]*typeid=(\d+)[^>]*>([^<]*)</a>')
+_CATEGORY_RE = re.compile(r'\[<a [^>]*filter=typeid[^>]*>(?P<category>.*?)</a>\]', re.S)
+_TAG_RE = re.compile(r"<[^>]+>")
+
+_FID_FORUM_NAMES: dict[int, str] = {
+    5: "動漫區", 13: "貼圖區", 16: "管理版", 19: "資源交流區",
+    30: "中文百合漫画区", 33: "海域區", 44: "遊戲區", 49: "文學區",
+    55: "轻小说/译文区", 370: "使用指南", 379: "影視區",
+}
+
+_FID_TYPEID_NAMES: dict[int, dict[int, str]] = {
+    33: {
+        4: "公告", 399: "活动", 400: "动画讨论", 401: "漫画讨论",
+        515: "轻小说", 516: "音声", 405: "2.5次元", 404: "情报",
+        303: "翻译资料", 402: "推荐", 403: "求推", 1: "杂谈",
+        256: "争议慎跳", 257: "别拦着我", 3: "其他",
+        408: "八卦杂谈", 409: "情感树洞", 406: "为什么呀",
+        410: "理性探讨", 407: "新闻资讯", 272: "电脑数码",
+        273: "宰客留情", 326: "互相安利", 412: "呼朋引伴",
+        276: "女王教室", 270: "影音殿堂", 271: "偶像团体",
+        328: "姬情安价", 411: "水库科研", 274: "Cosplay",
+        275: "百合wiki", 325: "活动", 268: "公告", 269: "其它文",
+    },
+    30: {
+        65: "公告", 398: "韩国漫画", 503: "泰国漫画", 504: "欧美其他",
+        69: "長篇連載", 68: "短篇漫畫", 66: "百合雜誌", 70: "奇字標記",
+        71: "單行本", 234: "東方", 225: "聖母在上", 335: "光之美少女",
+        224: "HIME", 227: "魔炮", 229: "SW", 236: "K-ON!",
+        228: "SAKI", 230: "魔法少女小圓", 343: "戦姫絶唱",
+        341: "少女与战车", 231: "LoveLive!", 338: "佐贺偶像是传奇",
+        226: "進擊的巨人", 340: "RWBY", 232: "艦これ",
+        342: "響け!", 329: "BanG Dream", 336: "赛马娘",
+        333: "少女☆歌剧", 330: "偶像大師", 337: "偶像活动",
+        339: "摇曳露营", 477: "孤独摇滚", 479: "Lycoris Recoil",
+        470: "水星的魔女", 478: "绯染天空", 480: "Assault Lily",
+        421: "Vtuber",
+    },
+    55: {
+        147: "公告", 295: "轻小说", 235: "其他小说",
+        149: "文学/文艺小说", 146: "其它",
+    },
+}
+
+
+def extract_forum_id_from_html(html: str) -> int | None:
+    for m in _TYPEID_RE.finditer(html):
+        fid = int(m.group(1))
+        if fid in _FID_FORUM_NAMES:
+            return fid
+    for m in _FORUM_PHP_RE.finditer(html):
+        fid = int(m.group(1))
+        if fid in _FID_FORUM_NAMES:
+            return fid
+    matches = _FORUM_LINK_RE.findall(html)
+    if not matches:
+        return None
+    from yamibo_mcp.domain.forums import resolve_forum
+    for fid_str in matches:
+        fid = int(fid_str)
+        profile = resolve_forum(fid)
+        if profile.content_kind != "unknown":
+            return fid
+    return int(matches[0])
+
+
+def extract_category_from_html(html: str) -> str | None:
+    for m in _TYPEID_RE.finditer(html):
+        fid = int(m.group(1))
+        typeid = int(m.group(2))
+        type_map = _FID_TYPEID_NAMES.get(fid, {})
+        if typeid in type_map:
+            return type_map[typeid]
+        return _TAG_RE.sub("", m.group(3)).strip() or None
+    match = _CATEGORY_RE.search(html)
+    if match:
+        return _TAG_RE.sub("", match.group("category")).strip() or None
+    return None
+
+
 def _extract_post_meta(html: str) -> dict[int, dict[str, str | None]]:
     meta: dict[int, dict[str, str | None]] = {}
     block_pattern = re.compile(r'<div id="post_(?P<pid>\d+)"[^>]*>(?P<body>.*?)(?=<div id="post_\d+"|$)', re.S)

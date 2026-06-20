@@ -126,7 +126,7 @@ class TestEnsureThreadCacheMiss:
         # Arrange
         settings = _fake_settings(tmp_path)
 
-        def fake_run_inline_sync(*, tid, url, base_url, settings):
+        def fake_run_inline_sync(*, tid, url, base_url, forum_id, settings):
             _seed_thread(db, tid=tid)
             return {"job_id": "fake_job", "status": "succeeded", "artifacts": {}}
 
@@ -151,7 +151,7 @@ class TestEnsureThreadCacheMiss:
             "error": {"code": "RemoteFetchError", "message": "connection refused"},
         }
 
-        def fake_run_inline_sync(*, tid, url, base_url, settings):
+        def fake_run_inline_sync(*, tid, url, base_url, forum_id, settings):
             return error_payload
 
         with patch("yamibo_mcp.application.thread_use_cases.load_settings", return_value=settings), \
@@ -170,7 +170,7 @@ class TestEnsureThreadCacheMiss:
         # Arrange
         settings = _fake_settings(tmp_path)
 
-        def fake_run_inline_sync(*, tid, url, base_url, settings):
+        def fake_run_inline_sync(*, tid, url, base_url, forum_id, settings):
             return {"job_id": "j2", "status": "succeeded", "artifacts": {}}
 
         with patch("yamibo_mcp.application.thread_use_cases.load_settings", return_value=settings), \

@@ -2,10 +2,13 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, type JobSummary } from '../api/client'
 import { Badge } from '../components/Badge'
+import { useI18n } from '../context/I18nContext'
+import { formatDateTime } from '../utils/time'
 
 const STATUSES = [null, 'queued', 'running', 'succeeded', 'failed', 'interrupted'] as const
 
 export function Jobs() {
+  const { t } = useI18n()
   const [jobs, setJobs] = useState<JobSummary[]>([])
   const [status, setStatus] = useState<string | null>(null)
 
@@ -17,12 +20,12 @@ export function Jobs() {
         {STATUSES.map(s => (
           <a key={s || 'all'} className={status === s ? 'active' : ''}
             href="#" onClick={e => { e.preventDefault(); setStatus(s) }}>
-            {s || '全部'}
+            {s ? t(s) : t('all')}
           </a>
         ))}
       </div>
       <div className="table-wrap"><table>
-        <thead><tr><th>ID</th><th>类型</th><th>状态</th><th>阶段</th><th>TID</th><th>进度</th><th>错误</th><th>创建时间</th></tr></thead>
+        <thead><tr><th>{t('id')}</th><th>{t('type')}</th><th>{t('status')}</th><th>{t('stage')}</th><th>{t('tid')}</th><th>{t('progress')}</th><th>{t('error')}</th><th>{t('created_at')}</th></tr></thead>
         <tbody>
           {jobs.map(j => (
             <tr key={j.job_id}>
@@ -33,7 +36,7 @@ export function Jobs() {
               <td>{j.tid ? <Link to={`/threads/${j.tid}`}>{j.tid}</Link> : '-'}</td>
               <td className="nowrap">{j.progress_current}/{j.progress_total ?? '?'}</td>
               <td className="truncate">{j.error_code || '-'}</td>
-              <td className="nowrap">{j.created_at}</td>
+              <td className="nowrap">{formatDateTime(j.created_at)}</td>
             </tr>
           ))}
         </tbody>

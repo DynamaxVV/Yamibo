@@ -1,6 +1,7 @@
 export interface Theme {
   name: string
   label: string
+  labelEn: string
   fonts: {
     sans: string
     serif: string

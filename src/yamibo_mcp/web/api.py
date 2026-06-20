@@ -56,7 +56,7 @@ def handle_api(handler, path: str, query: str, settings: Settings) -> bool:
 
 def _route(handler, route: str, params, conn, settings):
     if route == "/dashboard":
-        _dashboard(handler, conn)
+        _dashboard(handler, conn, params)
     elif route == "/jobs" and handler.command == "GET":
         _jobs_list(handler, params, conn)
     elif route.startswith("/jobs/") and route.endswith("/events"):
@@ -121,22 +121,28 @@ def _route(handler, route: str, params, conn, settings):
         _error_response(handler, f"Not found: {route}", HTTPStatus.NOT_FOUND)
 
 
-def _dashboard(handler, conn):
+def _dashboard(handler, conn, params):
     jobs_repo = JobsRepository(conn)
     threads_repo = ThreadsRepository(conn)
     thread_count = conn.execute("SELECT COUNT(*) FROM threads").fetchone()[0]
     series_count = conn.execute("SELECT COUNT(*) FROM series").fetchone()[0]
     export_count = conn.execute("SELECT COUNT(*) FROM threads WHERE is_exported = 1").fetchone()[0]
+    forum_rows = conn.execute(
+        "SELECT forum_id, COUNT(*) as cnt FROM threads WHERE forum_id IS NOT NULL GROUP BY forum_id ORDER BY cnt DESC"
+    ).fetchall()
+    forum_counts = {r["forum_id"]: r["cnt"] for r in forum_rows}
 
+    recent_limit = int(params.get("limit", ["10"])[0])
     recent_jobs = [_job_to_dict(j) for j in jobs_repo.list(limit=10)]
     workers = _worker_heartbeats(conn)
     audits = [_audit_to_dict(r) for r in AuditEventsRepository(conn).list_recent(limit=8)]
-    recent_threads = [_thread_summary_dict(r) for r in threads_repo.list_threads(limit=20)]
+    recent_threads = [_thread_summary_dict(r) for r in threads_repo.list_threads(limit=recent_limit)]
 
     _json_response(handler, {
         "thread_count": thread_count,
         "series_count": series_count,
         "export_count": export_count,
+        "forum_counts": forum_counts,
         "recent_jobs": recent_jobs,
         "workers": workers,
         "recent_audits": audits,
@@ -275,7 +281,8 @@ def _forums_list(handler, conn):
         "GROUP BY f.forum_id ORDER BY f.forum_id"
     ).fetchall()
     _json_response(handler, [
-        {"forum_id": r["forum_id"], "name": r["name"], "content_kind": r["content_kind"],
+        {"forum_id": r["forum_id"], "name": r["name"], "name_en": r["name_en"] if "name_en" in r.keys() else None,
+         "content_kind": r["content_kind"],
          "thread_count": r["thread_count"], "enabled": bool(r["enabled"])}
         for r in rows
     ])
@@ -444,7 +451,10 @@ def _resync_thread(handler, conn):
     if not tid:
         _error_response(handler, "tid required")
         return
-    job = JobsRepository(conn).create("sync_thread", tid=int(tid), payload={"tid": int(tid)})
+    payload = {"tid": int(tid)}
+    if body.get("forum_id") is not None:
+        payload["forum_id"] = int(body["forum_id"])
+    job = JobsRepository(conn).create("sync_thread", tid=int(tid), payload=payload)
     _json_response(handler, {"ok": True, "job_id": job.job_id})
 
 
@@ -455,7 +465,10 @@ def _export_thread(handler, conn, settings):
         _error_response(handler, "tid required")
         return
     strategy = body.get("strategy") or settings.export_default_strategy
-    job = JobsRepository(conn).create("export_thread", tid=int(tid), payload={"tid": int(tid), "strategy": strategy})
+    payload = {"tid": int(tid), "strategy": strategy}
+    if body.get("forum_id") is not None:
+        payload["forum_id"] = int(body["forum_id"])
+    job = JobsRepository(conn).create("export_thread", tid=int(tid), payload=payload)
     _json_response(handler, {"ok": True, "job_id": job.job_id})
 
 
@@ -468,12 +481,22 @@ def _delete_thread(handler, conn, settings):
     try:
         repo = ThreadsRepository(conn)
         before, after = repo.delete_thread(int(tid))
+        deleted_series = None
+        series_id = before.get("series_id")
+        if series_id:
+            remaining = conn.execute("SELECT COUNT(*) FROM threads WHERE series_id = ?", (series_id,)).fetchone()[0]
+            if remaining == 0:
+                conn.execute("DELETE FROM series WHERE series_id = ?", (series_id,))
+                deleted_series = series_id
         AuditEventsRepository(conn).record(
             actor="web", action="delete_thread", target_type="thread",
             target_id=str(tid), before=before, after=after,
         )
         conn.commit()
-        _json_response(handler, {"ok": True, "tid": int(tid)})
+        resp: dict = {"ok": True, "tid": int(tid)}
+        if deleted_series is not None:
+            resp["deleted_series_id"] = deleted_series
+        _json_response(handler, resp)
     except ValueError as exc:
         conn.rollback()
         _error_response(handler, str(exc), HTTPStatus.NOT_FOUND)
@@ -601,6 +624,7 @@ def _thread_summary_dict(row) -> dict:
         "export_path": g("export_path"), "forum_id": g("forum_id"),
         "content_kind": g("content_kind"), "core_title_guess": g("core_title_guess"),
         "series_key": g("series_key"), "chapter_name": g("chapter_name"),
+        "category": g("category"),
     }
 
 

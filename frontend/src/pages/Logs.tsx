@@ -1,5 +1,7 @@
-import { useEffect, useState, useRef, useCallback } from 'react'
+import { useEffect, useState, useRef, useCallback, useMemo } from 'react'
 import { api, type LogEntry } from '../api/client'
+import { useI18n } from '../context/I18nContext'
+import { formatLogTime } from '../utils/time'
 
 const LEVEL_COLORS: Record<string, string> = {
   DEBUG: 'var(--text-tertiary)',
@@ -9,10 +11,15 @@ const LEVEL_COLORS: Record<string, string> = {
   CRITICAL: 'var(--status-error)',
 }
 
+const LEVEL_ORDER = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'] as const
+type LevelFilter = typeof LEVEL_ORDER[number]
+
 export function Logs() {
+  const { t } = useI18n()
   const [entries, setEntries] = useState<LogEntry[]>([])
   const [autoScroll, setAutoScroll] = useState(true)
   const [paused, setPaused] = useState(false)
+  const [minLevel, setMinLevel] = useState<LevelFilter>('INFO')
   const tailRef = useRef<HTMLDivElement>(null)
   const lastTsRef = useRef<number | undefined>(undefined)
 
@@ -23,7 +30,6 @@ export function Logs() {
       if (data.entries.length > 0) {
         setEntries(prev => {
           const merged = [...prev, ...data.entries]
-          // Keep last 1000 entries
           return merged.length > 1000 ? merged.slice(-1000) : merged
         })
         lastTsRef.current = data.entries[data.entries.length - 1].ts
@@ -48,27 +54,40 @@ export function Logs() {
     lastTsRef.current = undefined
   }
 
+  const minIdx = LEVEL_ORDER.indexOf(minLevel)
+  const filtered = useMemo(
+    () => entries.filter(e => LEVEL_ORDER.indexOf(e.level as LevelFilter) >= minIdx),
+    [entries, minIdx],
+  )
+
   return (
     <>
       <div className="filter-bar">
-        <button className="btn-subtle" onClick={fetchLogs}>刷新</button>
+        <button className="btn-subtle" onClick={fetchLogs}>{t('refresh')}</button>
         <button className="btn-subtle" onClick={() => setPaused(p => !p)}>
-          {paused ? '▶ 继续' : '⏸ 暂停'}
+          {paused ? `▶ ${t('resume')}` : `⏸ ${t('pause')}`}
         </button>
-        <button className="btn-subtle" onClick={clearLogs}>清空</button>
+        <button className="btn-subtle" onClick={clearLogs}>{t('clear')}</button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginLeft: 8 }}>
+          <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{t('status')}:</span>
+          <select value={minLevel} onChange={e => setMinLevel(e.target.value as LevelFilter)}
+            style={{ fontSize: 12, padding: '1px 4px', border: '1px solid var(--border-light)', borderRadius: 3, background: 'var(--bg-card)', color: 'var(--text-primary)' }}>
+            {LEVEL_ORDER.map(l => <option key={l} value={l}>{l}</option>)}
+          </select>
+        </div>
         <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, color: 'var(--text-tertiary)', marginLeft: 'auto' }}>
           <input type="checkbox" checked={autoScroll} onChange={e => setAutoScroll(e.target.checked)} />
-          自动滚动
+          {t('auto_scroll')}
         </label>
-        <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{entries.length} 条</span>
+        <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{filtered.length} {t('log_unit')}</span>
       </div>
 
       <div className="log-view">
-        {entries.length === 0 ? (
-          <div style={{ color: 'var(--text-tertiary)', padding: 16 }}>暂无日志输出。日志会在服务运行时自动收集。</div>
-        ) : entries.map((e, i) => (
+        {filtered.length === 0 ? (
+          <div style={{ color: 'var(--text-tertiary)', padding: 16 }}>{t('no_logs')}</div>
+        ) : filtered.map((e, i) => (
           <div key={i} className="log-line">
-            <span className="log-time">{formatTime(e.ts)}</span>
+            <span className="log-time">{formatLogTime(e.ts)}</span>
             <span className="log-level" style={{ color: LEVEL_COLORS[e.level] || 'var(--text-secondary)' }}>{e.level}</span>
             <span className="log-msg">{e.msg}</span>
           </div>
@@ -77,9 +96,4 @@ export function Logs() {
       </div>
     </>
   )
-}
-
-function formatTime(ts: number): string {
-  const d = new Date(ts * 1000)
-  return d.toLocaleTimeString('zh-CN', { hour12: false }) + '.' + String(d.getMilliseconds()).padStart(3, '0')
 }

@@ -1,19 +1,21 @@
 import { NavLink, Outlet } from 'react-router-dom'
 import { useTheme } from '../context/ThemeContext'
-
-const NAV_ITEMS = [
-  { to: '/', label: '控制台' },
-  { to: '/jobs', label: '任务' },
-  { to: '/threads', label: '贴子' },
-  { to: '/series', label: '系列' },
-  { to: '/review', label: '复核' },
-  { to: '/exports', label: '导出' },
-  { to: '/forums', label: '版块' },
-  { to: '/logs', label: '日志' },
-]
+import { useI18n } from '../context/I18nContext'
 
 export function Layout() {
-  const { theme, themes, setTheme } = useTheme()
+  const { theme, themes, setTheme, dark, toggleDark } = useTheme()
+  const { lang, setLang, t } = useI18n()
+
+  const NAV_ITEMS = [
+    { to: '/', key: 'dashboard' },
+    { to: '/jobs', key: 'jobs' },
+    { to: '/threads', key: 'threads' },
+    { to: '/series', key: 'series' },
+    { to: '/review', key: 'review' },
+    { to: '/exports', key: 'exports' },
+    { to: '/forums', key: 'forums' },
+    { to: '/logs', key: 'logs' },
+  ]
 
   return (
     <>
@@ -21,27 +23,41 @@ export function Layout() {
       <div className="page">
         <div className="topbar">
           <div style={{ display: 'flex', alignItems: 'center', gap: 20 }}>
-            <span className="brand">百合会归档助手</span>
+            <div className="brand" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <img src="/logo.png" alt="" style={{ width: 48, height: 48, borderRadius: 4, display: 'block', flexShrink: 0 }} />
+              <span style={{ lineHeight: 1 }}>{t('brand')}</span>
+            </div>
             <nav className="subnav">
               {NAV_ITEMS.map(item => (
                 <NavLink key={item.to} to={item.to} end={item.to === '/'}
                   className={({ isActive }) => isActive ? 'active' : ''}>
-                  {item.label}
+                  {t(item.key)}
                 </NavLink>
               ))}
             </nav>
           </div>
-          <div className="theme-switcher">
-            <select value={theme.name} onChange={e => setTheme(e.target.value)}>
-              {themes.map(t => (
-                <option key={t.name} value={t.name}>{t.label}</option>
-              ))}
-            </select>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <div style={{ display: 'flex', gap: 4, fontSize: 12 }}>
+              <button className={`lang-btn ${lang === 'zh' ? 'lang-active' : ''}`} onClick={() => setLang('zh')}>中</button>
+              <button className={`lang-btn ${lang === 'en' ? 'lang-active' : ''}`} onClick={() => setLang('en')}>En</button>
+            </div>
+            <div className="theme-switcher">
+              <select value={theme.name} onChange={e => setTheme(e.target.value)}>
+                {themes.map(th => (
+                  <option key={th.name} value={th.name}>{lang === 'en' ? th.labelEn : th.label}</option>
+                ))}
+              </select>
+            </div>
           </div>
         </div>
         <Outlet />
       </div>
-      <a className="back-to-top" href="#top">顶部</a>
+      <div className="float-actions">
+        <button className="float-btn" onClick={toggleDark} title={dark ? 'Light' : 'Dark'}>
+          {dark ? '☀' : '☾'}
+        </button>
+        <a className="float-btn" href="#top">{t('back_to_top')}</a>
+      </div>
     </>
   )
 }

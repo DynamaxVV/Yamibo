@@ -63,6 +63,11 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
 
         repo.update_stage(job.job_id, "parse", progress_current=1, progress_total=6)
         snapshot = parse_thread_snapshot(html, url=source_url, tid=tid)
+        if forum_id is None:
+            from yamibo_mcp.yamibo.parsers.thread_detail import extract_forum_id_from_html
+            forum_id = extract_forum_id_from_html(html)
+        from yamibo_mcp.yamibo.parsers.thread_detail import extract_category_from_html
+        category = extract_category_from_html(html)
         refined_title, llm_title_meta = refine_title_parse_with_llm(
             settings,
             raw_title=snapshot.raw_title,
@@ -180,6 +185,7 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
             ThreadsRepository(repo.conn).upsert_snapshot(
                 snapshot,
                 forum_id=forum_id,
+                category=category,
                 context_path=relative_context,
                 archive_status=archive_status,
                 missing_image_urls=image_result.missing_urls,

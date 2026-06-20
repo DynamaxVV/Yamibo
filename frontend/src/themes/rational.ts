@@ -3,6 +3,7 @@ import type { Theme } from './index'
 export const rational: Theme = {
   name: 'rational',
   label: '理性数据',
+  labelEn: 'Rational',
   fonts: {
     sans: '"Instrument Serif", "Space Grotesk", Georgia, serif',
     serif: '"Instrument Serif", Georgia, "Times New Roman", serif',

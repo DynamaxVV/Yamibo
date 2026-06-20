@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import { Link, useNavigate, useLocation } from 'react-router-dom'
 import { api, type ThreadDetail as ThreadDetailType, type ContentBlock, type ThreadImage } from '../api/client'
 import { Badge, ContentBadge } from '../components/Badge'
+import { useI18n } from '../context/I18nContext'
+import { formatDateTime } from '../utils/time'
 
 const FORUM_NAMES: Record<number, string> = {}
 
@@ -16,6 +18,7 @@ interface FloorGroup {
 }
 
 export function ThreadDetail() {
+  const { t, lang } = useI18n()
   const tid = parseInt(window.location.pathname.split('/').pop() || '0')
   const navigate = useNavigate()
   const location = useLocation()
@@ -31,37 +34,43 @@ export function ThreadDetail() {
     api.thread(tid).then(setThread).catch(e => setError(e.message))
     api.threadBlocks(tid).then(setBlocks).catch(() => {})
     api.threadImages(tid).then(setImages).catch(() => {})
-    api.forums().then(fs => fs.forEach(f => { FORUM_NAMES[f.forum_id] = f.name })).catch(() => {})
-  }, [tid])
+    api.forums().then(fs => fs.forEach(f => { FORUM_NAMES[f.forum_id] = lang === 'en' ? (f.name_en || f.name) : f.name })).catch(() => {})
+  }, [tid, lang])
 
   const handleResync = async () => {
     setActionLoading('resync')
-    try { const res = await api.resyncThread(tid); navigate(`/jobs/${res.job_id}`) } catch { /* ignore */ }
+    try { await api.resyncThread(tid, thread?.forum_id ?? undefined) } catch { /* ignore */ }
     setActionLoading(null)
   }
 
   const handleExport = async () => {
     setActionLoading('export')
-    try { const res = await api.exportThread(tid, 'sync_if_stale'); navigate(`/jobs/${res.job_id}`) } catch { /* ignore */ }
+    try { await api.exportThread(tid, 'sync_if_stale', thread?.forum_id ?? undefined) } catch { /* ignore */ }
     setActionLoading(null)
   }
+
+  const [seriesDeleted, setSeriesDeleted] = useState<number | null>(null)
 
   const handleDelete = async () => {
     if (!confirmDelete) { setConfirmDelete(true); return }
     setActionLoading('delete')
-    try { await api.deleteThread(tid); navigate('/threads') } catch { /* ignore */ }
+    try {
+      const res = await api.deleteThread(tid)
+      if (res.deleted_series_id) setSeriesDeleted(res.deleted_series_id)
+      navigate('/threads')
+    } catch { /* ignore */ }
     setActionLoading(null)
     setConfirmDelete(false)
   }
 
   if (error) return <div className="panel" style={{ color: 'var(--status-error)' }}>{error}</div>
-  if (!thread) return <div className="panel" style={{ color: 'var(--text-tertiary)' }}>Loading...</div>
+  if (!thread) return <div className="panel" style={{ color: 'var(--text-tertiary)' }}>{t('loading')}</div>
 
   const forumName = FORUM_NAMES[thread.forum_id ?? 0] || String(thread.forum_id ?? '-')
   const isComic = thread.content_kind === 'comic'
   const fromSeries = location.state?.from === 'series'
+  const seriesId = location.state?.seriesId as number | undefined
 
-  // Group images by pid
   const imagesByPid = new Map<number, { content: ThreadImage[]; small: ThreadImage[] }>()
   for (const img of images) {
     if (img.is_shared) continue
@@ -74,7 +83,6 @@ export function ThreadDetail() {
     imagesByPid.set(img.pid, entry)
   }
 
-  // Build floor groups
   const floorGroups: FloorGroup[] = (thread.floors || []).map(f => {
     const imgGroup = imagesByPid.get(f.pid) || { content: [], small: [] }
     return {
@@ -92,55 +100,65 @@ export function ThreadDetail() {
     <>
       <div className="panel">
         <div className="row-actions">
-          <Link to={fromSeries ? '/series' : '/threads'} className="btn-subtle">← {fromSeries ? '系列列表' : '贴子列表'}</Link>
-          <button className="btn-subtle" disabled={actionLoading === 'resync'} onClick={handleResync}>重新同步</button>
-          <button className="btn-subtle" disabled={actionLoading === 'export'} onClick={handleExport}>导出</button>
+          <Link to={fromSeries && seriesId ? `/series/${seriesId}` : '/threads'} className="btn-subtle">← {fromSeries ? t('series_detail') : t('thread_list')}</Link>
+          <button className="btn-subtle" disabled={actionLoading === 'resync'} onClick={handleResync}>{t('resync')}</button>
+          <button className="btn-subtle" disabled={actionLoading === 'export'} onClick={handleExport}>{t('export_action')}</button>
           {confirmDelete ? (
             <>
-              <button className="btn-danger" disabled={actionLoading === 'delete'} onClick={handleDelete}>确认删除？</button>
-              <button className="btn-subtle" onClick={() => setConfirmDelete(false)}>取消</button>
+              <button className="btn-danger" disabled={actionLoading === 'delete'} onClick={handleDelete}>{t('confirm_delete')}</button>
+              <button className="btn-subtle" onClick={() => setConfirmDelete(false)}>{t('cancel')}</button>
+              {thread.series_id && <span style={{ fontSize: 11, color: 'var(--text-tertiary)', marginLeft: 4 }}>{t('auto_delete_empty_series')}</span>}
             </>
           ) : (
-            <button className="btn-danger-outline" onClick={() => setConfirmDelete(true)}>删除</button>
+            <button className="btn-danger-outline" onClick={() => setConfirmDelete(true)}>{t('delete')}</button>
           )}
         </div>
       </div>
 
-      <h2>归档信息</h2>
+      {seriesDeleted && (
+        <div className="panel" style={{ color: 'var(--status-warn)', borderLeft: '3px solid var(--status-warn)' }}>
+          {t('series_deleted')} (series_id={seriesDeleted})
+        </div>
+      )}
+
+      <h2>{t('archive_info')}</h2>
       <div className="table-wrap"><table>
         <tbody>
           {[
             ['TID', <span className="mono">{thread.tid}</span>],
-            ['原贴网址', thread.url ? <a href={thread.url} target="_blank" rel="noreferrer">{thread.url}</a> : '-'],
-            ['原始标题', thread.raw_title],
-            ['发布者', thread.publisher || '-'],
-            ['版块', forumName],
-            ['内容类型', <ContentBadge kind={thread.content_kind} />],
-            ['归档状态', <Badge status={thread.archive_status} />],
-            ['校验状态', <Badge status={thread.validation_status} />],
-            ['图片数', String(thread.image_count ?? 0)],
-            ['上下文路径', thread.context_path || '-'],
-            ['导出路径', thread.export_path || '-'],
-          ].map(([k, v], i) => <tr key={i}><th style={{ width: 120 }}>{k}</th><td>{v}</td></tr>)}
+            [t('original_url'), thread.url ? <a href={thread.url} target="_blank" rel="noreferrer">{thread.url}</a> : '-'],
+            [t('raw_title'), thread.raw_title],
+            [t('publisher'), thread.publisher || '-'],
+            [t('forum'), forumName],
+            [t('content_kind'), <ContentBadge kind={thread.content_kind} />],
+            [t('category'), thread.category || '-'],
+            [t('archive_status'), <Badge status={thread.archive_status} />],
+            [t('validation_status'), <Badge status={thread.validation_status} />],
+            [t('image_count'), String(thread.image_count ?? 0)],
+            [t('context_path'), thread.context_path || '-'],
+            [t('export_path'), thread.export_path || '-'],
+          ].map(([k, v], i) => <tr key={i}><th style={{ width: 120 }}>{k}</th><td style={{ textAlign: 'left' }}>{v}</td></tr>)}
         </tbody>
       </table></div>
 
       {floorGroups.length > 0 ? (
         <>
-          <h2>阅读预览</h2>
-          <div className="reading-toolbar">
-            <span className="toolbar-label">图片宽度</span>
-            {[50, 75, 100].map(w => (
-              <button key={w} className={imgWidth === w ? 'active' : ''} onClick={() => setImgWidth(w)}>{w}%</button>
-            ))}
-          </div>
+          <h2>{t('read_preview')}</h2>
+          {isComic && (
+            <div className="reading-toolbar">
+              <span className="toolbar-label">{t('image_width')}</span>
+              {[50, 75, 100].map(w => (
+                <button key={w} className={imgWidth === w ? 'active' : ''} onClick={() => setImgWidth(w)}>{w}%</button>
+              ))}
+            </div>
+          )}
           <div className="reading-view" style={{ '--img-pct': `${imgWidth}%` } as React.CSSProperties}>
             {floorGroups.map(fg => (
               <div key={fg.pid} className="floor-row">
                 <div className="floor-sidebar">
                   <div className="floor-no">{fg.floor_no}F</div>
                   <div className="floor-publisher">{fg.publisher || '-'}</div>
-                  {fg.pub_time && <div className="floor-time">{fg.pub_time}</div>}
+                  {fg.pub_time && <div className="floor-time">{formatDateTime(fg.pub_time)}</div>}
                   <div className="floor-pid">#{fg.pid}</div>
                 </div>
                 <div className="floor-content">
@@ -173,16 +191,16 @@ export function ThreadDetail() {
       ) : (
         thread.image_count > 0 && images.length === 0 && (
           <div className="panel" style={{ color: 'var(--text-tertiary)' }}>
-            有 {thread.image_count} 张图片但元数据中未找到路径，可能需要重新同步。
+            {t('image_missing_msg', { n: thread.image_count })}
           </div>
         )
       )}
 
-      {blocks.length > 0 && (
+      {isComic && blocks.length > 0 && (
         <>
-          <h2>内容块 ({blocks.length})</h2>
+          <h2>{t('content_blocks')} ({blocks.length})</h2>
           <div className="table-wrap"><table>
-            <thead><tr><th>序号</th><th>PID</th><th>类型</th><th>内容</th></tr></thead>
+            <thead><tr><th>{t('seq')}</th><th>PID</th><th>{t('type')}</th><th>{t('content')}</th></tr></thead>
             <tbody>
               {blocks.map(b => (
                 <tr key={b.id}>

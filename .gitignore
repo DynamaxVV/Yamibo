@@ -17,3 +17,6 @@ yamibo.local.json
 
 # Old test backups
 tests/unit/_backup_*/
+
+# Agent config
+AGENTS.md

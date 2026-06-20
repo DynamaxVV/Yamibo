@@ -2,52 +2,26 @@ import { useEffect, useState, useCallback } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api, type ThreadSummary, type Forum } from '../api/client'
 import { ContentBadge } from '../components/Badge'
-
-const FORUM_NAMES: Record<number, string> = {}
-
-const DATE_OPTIONS = [
-  { label: '全部时间', value: undefined },
-  { label: '一天内', value: 1 },
-  { label: '三天内', value: 3 },
-  { label: '一周内', value: 7 },
-  { label: '一月内', value: 30 },
-  { label: '三月内', value: 90 },
-]
+import { useI18n } from '../context/I18nContext'
+import { formatDateTime } from '../utils/time'
 
 type SortKey = 'pub_time' | 'sync_time'
 type SortDir = 'asc' | 'desc'
 
-function formatTime(iso: string | null): string {
-  if (!iso) return '-'
-  try {
-    const d = new Date(iso)
-    if (isNaN(d.getTime())) return iso
-    const utc8 = new Date(d.getTime() + 8 * 60 * 60 * 1000)
-    const y = utc8.getUTCFullYear()
-    const m = String(utc8.getUTCMonth() + 1).padStart(2, '0')
-    const day = String(utc8.getUTCDate()).padStart(2, '0')
-    const h = String(utc8.getUTCHours()).padStart(2, '0')
-    const min = String(utc8.getUTCMinutes()).padStart(2, '0')
-    const s = String(utc8.getUTCSeconds()).padStart(2, '0')
-    return `${y}-${m}-${day} ${h}:${min}:${s}`
-  } catch {
-    return iso
-  }
-}
-
-function SortHeader({ label, sortKey, currentKey, currentDir, onSort }: {
-  label: string; sortKey: SortKey; currentKey: SortKey | null; currentDir: SortDir; onSort: (key: SortKey) => void
+function SortHeader({ label, sortKey, currentKey, currentDir, onSort, width }: {
+  label: string; sortKey: SortKey; currentKey: SortKey | null; currentDir: SortDir; onSort: (key: SortKey) => void; width?: number
 }) {
   const active = currentKey === sortKey
   const arrow = active ? (currentDir === 'asc' ? ' ▲' : ' ▼') : ''
   return (
-    <th className="sortable" onClick={() => onSort(sortKey)}>
+    <th className="sortable" style={width ? { width } : undefined} onClick={() => onSort(sortKey)}>
       {label}<span className="sort-arrow">{arrow}</span>
     </th>
   )
 }
 
 export function Threads() {
+  const { t, lang } = useI18n()
   const [searchParams] = useSearchParams()
   const [threads, setThreads] = useState<ThreadSummary[]>([])
   const [forums, setForums] = useState<Forum[]>([])
@@ -61,10 +35,7 @@ export function Threads() {
   const [sortDir, setSortDir] = useState<SortDir>('desc')
 
   useEffect(() => {
-    api.forums().then(fs => {
-      setForums(fs)
-      fs.forEach(f => { FORUM_NAMES[f.forum_id] = f.name })
-    }).catch(() => {})
+    api.forums().then(fs => setForums(fs.filter(f => f.thread_count > 0))).catch(() => {})
   }, [])
 
   const search = useCallback(() => {
@@ -91,6 +62,15 @@ export function Threads() {
       })
     : threads
 
+  const DATE_OPTIONS = [
+    { label: t('time_all'), value: undefined },
+    { label: t('time_1day'), value: 1 },
+    { label: t('time_3days'), value: 3 },
+    { label: t('time_1week'), value: 7 },
+    { label: t('time_1month'), value: 30 },
+    { label: t('time_3months'), value: 90 },
+  ]
+
   return (
     <>
       <div className="filter-bar">
@@ -98,41 +78,52 @@ export function Threads() {
           className="filter-search"
           value={q}
           onChange={e => setQ(e.target.value)}
-          placeholder="搜索标题、作者、汉化组、发布者"
-          onKeyDown={e => e.key === 'Enter' && search()}
+          placeholder={t('search_placeholder')}
         />
         <div className="filter-group">
-          <select value={forumId ?? ''} onChange={e => setForumId(e.target.value ? Number(e.target.value) : undefined)}>
-            <option value="">全部版块</option>
-            {forums.map(f => <option key={f.forum_id} value={f.forum_id}>{f.name}</option>)}
-          </select>
           <select value={days ?? ''} onChange={e => setDays(e.target.value ? Number(e.target.value) : undefined)}>
             {DATE_OPTIONS.map(o => <option key={o.label} value={o.value ?? ''}>{o.label}</option>)}
           </select>
         </div>
-        <button className="btn-primary" onClick={search}>搜索</button>
       </div>
 
-      <div className="table-wrap"><table>
+      <div className="forum-tags">
+        <button className={`forum-tag ${forumId === undefined ? 'active' : ''}`}
+          onClick={() => setForumId(undefined)}>
+          {t('all_forums')}
+        </button>
+        {forums.map(f => (
+          <button key={f.forum_id}
+            className={`forum-tag ${forumId === f.forum_id ? 'active' : ''}`}
+            onClick={() => setForumId(forumId === f.forum_id ? undefined : f.forum_id)}>
+            {lang === 'en' ? (f.name_en || f.name) : f.name}
+            <span className="forum-tag-count">{f.thread_count}</span>
+          </button>
+        ))}
+      </div>
+
+      <div className="table-wrap"><table style={{ tableLayout: 'fixed', width: '100%' }}>
         <thead>
           <tr>
-            <th>TID</th>
-            <th>标题</th>
-            <th>版块</th>
-            <th>归档</th>
-            <SortHeader label="发布时间" sortKey="pub_time" currentKey={sortKey} currentDir={sortDir} onSort={handleSort} />
-            <SortHeader label="同步时间" sortKey="sync_time" currentKey={sortKey} currentDir={sortDir} onSort={handleSort} />
+            <th style={{ width: 75 }}>{t('tid')}</th>
+            <th>{t('title')}</th>
+            <th style={{ width: 100 }}>{t('forum')}</th>
+            <th style={{ width: 110 }}>{t('category')}</th>
+            <th style={{ width: 90 }}>{t('archive')}</th>
+            <SortHeader label={t('pub_time')} sortKey="pub_time" currentKey={sortKey} currentDir={sortDir} onSort={handleSort} width={200} />
+            <SortHeader label={t('sync_time')} sortKey="sync_time" currentKey={sortKey} currentDir={sortDir} onSort={handleSort} width={200} />
           </tr>
         </thead>
         <tbody>
-          {sorted.map(t => (
-            <tr key={t.tid}>
-              <td className="mono"><Link to={`/threads/${t.tid}`}>{t.tid}</Link></td>
-              <td className="truncate"><Link to={`/threads/${t.tid}`}>{t.display_title || t.raw_title}</Link></td>
-              <td className="nowrap">{FORUM_NAMES[t.forum_id ?? 0] || t.forum_id || '-'}</td>
-              <td><ContentBadge kind={t.content_kind} /></td>
-              <td className="nowrap">{formatTime(t.pub_time)}</td>
-              <td className="nowrap">{formatTime(t.sync_time)}</td>
+          {sorted.map(t_ => (
+            <tr key={t_.tid}>
+              <td className="mono"><Link to={`/threads/${t_.tid}`}>{t_.tid}</Link></td>
+              <td className="truncate"><Link to={`/threads/${t_.tid}`}>{t_.display_title || t_.raw_title}</Link></td>
+              <td className="nowrap">{forums.find(f => f.forum_id === t_.forum_id)?.[lang === 'en' ? 'name_en' : 'name'] || t_.forum_id || '-'}</td>
+              <td className="nowrap">{t_.category || '-'}</td>
+              <td><ContentBadge kind={t_.content_kind} /></td>
+              <td className="nowrap">{formatDateTime(t_.pub_time)}</td>
+              <td className="nowrap">{formatDateTime(t_.sync_time)}</td>
             </tr>
           ))}
         </tbody>

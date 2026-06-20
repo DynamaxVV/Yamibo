@@ -79,6 +79,9 @@ def thread_summary_payload(row, *, include_export: bool = True) -> dict[str, Any
         "validation_status": row_get("validation_status"),
         "sync_time": row_get("sync_time"),
         "export_path": export_path,
+        "forum_id": row_get("forum_id"),
+        "content_kind": row_get("content_kind"),
+        "category": row_get("category"),
         "resources": resources,
     }
 

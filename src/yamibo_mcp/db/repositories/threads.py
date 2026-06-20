@@ -19,6 +19,7 @@ class ThreadsRepository:
         snapshot: ThreadSnapshot,
         *,
         forum_id: int | None = None,
+        category: str | None = None,
         context_path: str | None = None,
         archive_status: str = "complete",
         missing_image_urls: list[str] | None = None,
@@ -28,7 +29,13 @@ class ThreadsRepository:
         max_pid = max((floor.pid for floor in snapshot.floors), default=None)
         content = build_content_snapshot(snapshot, forum_id=forum_id)
         primary_media_type = "image" if any(asset.asset_type == "image" for asset in content.assets) else "text"
-        series_id, needs_series_review = SeriesRepository(self.conn).resolve_for_title(snapshot.title)
+        series_repo = SeriesRepository(self.conn)
+        from yamibo_mcp.domain.forums import resolve_forum
+        profile = resolve_forum(forum_id)
+        if profile.default_series_key:
+            series_id, needs_series_review = series_repo.resolve_for_forum(forum_id)
+        else:
+            series_id, needs_series_review = series_repo.resolve_for_title(snapshot.title)
         missing_images_json = json.dumps(missing_image_urls or [], ensure_ascii=False)
         self.conn.execute(
             """
@@ -36,9 +43,9 @@ class ThreadsRepository:
               tid, series_id, page_type, raw_title, display_title, publisher, publisher_uid,
               pub_time, sync_time, last_pid, permission, image_count, context_path,
               archive_status, validation_status, missing_images_json, needs_title_review, needs_series_review,
-              forum_id, content_kind, primary_media_type
+              forum_id, content_kind, primary_media_type, category
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'valid', ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'valid', ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(tid) DO UPDATE SET
               series_id = excluded.series_id,
               page_type = excluded.page_type,
@@ -59,7 +66,8 @@ class ThreadsRepository:
               needs_series_review = excluded.needs_series_review,
               forum_id = excluded.forum_id,
               content_kind = excluded.content_kind,
-              primary_media_type = excluded.primary_media_type
+              primary_media_type = excluded.primary_media_type,
+              category = excluded.category
             """,
             (
                 snapshot.tid,
@@ -82,6 +90,7 @@ class ThreadsRepository:
                 content.forum_id,
                 content.content_kind,
                 primary_media_type,
+                category,
             ),
         )
         self._upsert_title(snapshot, title_warnings=title_warnings)
@@ -427,7 +436,7 @@ class ThreadsRepository:
             SELECT
               t.tid, t.raw_title, t.display_title, t.publisher, t.pub_time, t.sync_time,
               t.archive_status, t.validation_status, t.context_path, t.series_id, t.export_path,
-              t.forum_id, t.content_kind,
+              t.forum_id, t.content_kind, t.category,
               tp.core_title_guess, tp.series_key, tp.chapter_name, tp.chapter_index, tp.chapter_index_end, tp.group_name, tp.author_guess, tp.needs_review
             FROM threads t
             LEFT JOIN title_parse tp ON tp.tid = t.tid
@@ -471,9 +480,12 @@ class ThreadsRepository:
         if not normalized:
             return self.list_threads(limit=limit, forum_id=forum_id)
 
+        keywords = [kw for kw in normalized.split() if kw]
+
         try:
+            fts_terms = " AND ".join(keywords)
             fts_where = "WHERE thread_fts MATCH ?"
-            params: list[object] = [normalized]
+            params: list[object] = [fts_terms]
             if forum_id is not None:
                 fts_where += " AND t.forum_id = ?"
                 params.append(forum_id)
@@ -483,7 +495,7 @@ class ThreadsRepository:
                 SELECT
                   t.tid, t.raw_title, t.display_title, t.publisher, t.pub_time, t.sync_time,
                   t.archive_status, t.validation_status, t.context_path, t.series_id, t.export_path,
-                  t.forum_id, t.content_kind,
+                  t.forum_id, t.content_kind, t.category,
                   tp.core_title_guess, tp.series_key, tp.chapter_name, tp.needs_review,
                   bm25(thread_fts) AS rank
                 FROM thread_fts
@@ -499,8 +511,13 @@ class ThreadsRepository:
                 return rows
         except sqlite3.OperationalError:
             pass
-        like = f"%{normalized}%"
-        like_params: list[object] = [like, like, like, like, like]
+
+        or_cols = "(t.raw_title LIKE ? OR t.display_title LIKE ? OR t.publisher LIKE ? OR tp.core_title_guess LIKE ? OR tp.series_key LIKE ?)"
+        and_parts = [f"({or_cols})" for _ in keywords]
+        like_params: list[object] = []
+        for kw in keywords:
+            like = f"%{kw}%"
+            like_params.extend([like, like, like, like, like])
         like_where = ""
         if forum_id is not None:
             like_where = " AND t.forum_id = ?"
@@ -511,15 +528,11 @@ class ThreadsRepository:
             SELECT
               t.tid, t.raw_title, t.display_title, t.publisher, t.pub_time, t.sync_time,
               t.archive_status, t.validation_status, t.context_path, t.series_id, t.export_path,
-              t.forum_id, t.content_kind,
+              t.forum_id, t.content_kind, t.category,
               tp.core_title_guess, tp.series_key, tp.chapter_name, tp.needs_review
             FROM threads t
             LEFT JOIN title_parse tp ON tp.tid = t.tid
-            WHERE (t.raw_title LIKE ?
-               OR t.display_title LIKE ?
-               OR t.publisher LIKE ?
-               OR tp.core_title_guess LIKE ?
-               OR tp.series_key LIKE ?){like_where}
+            WHERE {" AND ".join(and_parts)}{like_where}
             ORDER BY COALESCE(t.sync_time, '') DESC, t.tid DESC
             LIMIT ?
             """,

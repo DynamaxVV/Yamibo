@@ -40,30 +40,30 @@ class TestDefaultForumId:
 class TestDefaultForums:
     def test_returns_four_profiles(self):
         forums = default_forums()
-        assert len(forums) == 4
+        assert len(forums) >= 4
 
     def test_contains_comic_forum(self):
         forums = default_forums()
         comic = next(f for f in forums if f.forum_id == 30)
-        assert comic.name == "comic"
+        assert comic.name == "漫画区"
         assert comic.content_kind == "comic"
 
     def test_contains_novel_forum(self):
         forums = default_forums()
         novel = next(f for f in forums if f.forum_id == 55)
-        assert novel.name == "novel"
+        assert novel.name == "轻小说区"
         assert novel.content_kind == "novel"
 
     def test_contains_anime_forum(self):
         forums = default_forums()
         anime = next(f for f in forums if f.forum_id == 5)
-        assert anime.name == "anime"
+        assert anime.name == "动漫区"
         assert anime.content_kind == "discussion"
 
     def test_contains_discussion_forum(self):
         forums = default_forums()
         disc = next(f for f in forums if f.forum_id == 33)
-        assert disc.name == "discussion"
+        assert disc.name == "海域区"
         assert disc.content_kind == "discussion"
 
 
@@ -71,7 +71,7 @@ class TestResolveForum:
     def test_none_returns_default(self):
         profile = resolve_forum(None)
         assert profile.forum_id == 30
-        assert profile.name == "comic"
+        assert profile.name == "漫画区"
 
     def test_explicit_30(self):
         profile = resolve_forum(30)
