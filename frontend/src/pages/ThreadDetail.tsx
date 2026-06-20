@@ -15,6 +15,8 @@ interface FloorGroup {
   content: string
   contentImages: ThreadImage[]
   smallImages: ThreadImage[]
+  quoteText: string | null
+  replyText: string | null
 }
 
 export function ThreadDetail() {
@@ -28,7 +30,12 @@ export function ThreadDetail() {
   const [error, setError] = useState<string | null>(null)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
-  const [imgWidth, setImgWidth] = useState(75)
+  const isMobile = typeof window !== 'undefined' && window.innerWidth <= 768
+  const [imgWidth, setImgWidth] = useState(isMobile ? 100 : 75)
+  const [fontSize, setFontSize] = useState(isMobile ? 125 : 100)
+  const [pendingSync, setPendingSync] = useState(false)
+  const [editingChapter, setEditingChapter] = useState(false)
+  const [chapterForm, setChapterForm] = useState({ chapter_name: '', chapter_index: '', author_guess: '', group_name: '' })
 
   useEffect(() => {
     api.thread(tid).then(setThread).catch(e => setError(e.message))
@@ -37,9 +44,53 @@ export function ThreadDetail() {
     api.forums().then(fs => fs.forEach(f => { FORUM_NAMES[f.forum_id] = lang === 'en' ? (f.name_en || f.name) : f.name })).catch(() => {})
   }, [tid, lang])
 
+  useEffect(() => {
+    if (!pendingSync) return
+    const poll = setInterval(async () => {
+      try {
+        const jobs = await api.jobs('running')
+        const active = jobs.some(j => j.tid === tid)
+        if (!active) {
+          setPendingSync(false)
+          api.thread(tid).then(setThread).catch(() => {})
+          api.threadImages(tid).then(setImages).catch(() => {})
+        }
+      } catch { /* ignore */ }
+    }, 3000)
+    return () => clearInterval(poll)
+  }, [pendingSync, tid])
+
   const handleResync = async () => {
     setActionLoading('resync')
     try { await api.resyncThread(tid, thread?.forum_id ?? undefined) } catch { /* ignore */ }
+    setActionLoading(null)
+    setPendingSync(true)
+  }
+
+  const handleEditChapter = () => {
+    setChapterForm({
+      chapter_name: thread?.chapter_name || '',
+      chapter_index: thread?.chapter_index != null ? String(thread.chapter_index) : '',
+      author_guess: thread?.author_guess || '',
+      group_name: thread?.group_name || '',
+    })
+    setEditingChapter(true)
+  }
+
+  const handleSaveChapter = async () => {
+    setActionLoading('chapter')
+    try {
+      await api.updateChapter(
+        tid,
+        chapterForm.chapter_name || null,
+        chapterForm.chapter_index ? Number(chapterForm.chapter_index) : null,
+        chapterForm.author_guess || null,
+        chapterForm.group_name || null,
+      )
+      const refreshed = await api.thread(tid)
+      setThread(refreshed)
+      setEditingChapter(false)
+    } catch { /* ignore */ }
     setActionLoading(null)
   }
 
@@ -52,7 +103,6 @@ export function ThreadDetail() {
   const [seriesDeleted, setSeriesDeleted] = useState<number | null>(null)
 
   const handleDelete = async () => {
-    if (!confirmDelete) { setConfirmDelete(true); return }
     setActionLoading('delete')
     try {
       const res = await api.deleteThread(tid)
@@ -68,6 +118,8 @@ export function ThreadDetail() {
 
   const forumName = FORUM_NAMES[thread.forum_id ?? 0] || String(thread.forum_id ?? '-')
   const isComic = thread.content_kind === 'comic'
+  const isNovel = thread.content_kind === 'novel'
+  const isExportable = thread.forum_id === 30 || thread.forum_id === 55
   const fromSeries = location.state?.from === 'series'
   const seriesId = location.state?.seriesId as number | undefined
 
@@ -93,6 +145,8 @@ export function ThreadDetail() {
       content: f.content || '',
       contentImages: imgGroup.content,
       smallImages: imgGroup.small,
+      quoteText: f.quote_text || null,
+      replyText: f.reply_text || null,
     }
   })
 
@@ -102,16 +156,8 @@ export function ThreadDetail() {
         <div className="row-actions">
           <Link to={fromSeries && seriesId ? `/series/${seriesId}` : '/threads'} className="btn-subtle">← {fromSeries ? t('series_detail') : t('thread_list')}</Link>
           <button className="btn-subtle" disabled={actionLoading === 'resync'} onClick={handleResync}>{t('resync')}</button>
-          <button className="btn-subtle" disabled={actionLoading === 'export'} onClick={handleExport}>{t('export_action')}</button>
-          {confirmDelete ? (
-            <>
-              <button className="btn-danger" disabled={actionLoading === 'delete'} onClick={handleDelete}>{t('confirm_delete')}</button>
-              <button className="btn-subtle" onClick={() => setConfirmDelete(false)}>{t('cancel')}</button>
-              {thread.series_id && <span style={{ fontSize: 11, color: 'var(--text-tertiary)', marginLeft: 4 }}>{t('auto_delete_empty_series')}</span>}
-            </>
-          ) : (
-            <button className="btn-danger-outline" onClick={() => setConfirmDelete(true)}>{t('delete')}</button>
-          )}
+          {isExportable && <button className="btn-subtle" disabled={actionLoading === 'export'} onClick={handleExport}>{t('export_action')}</button>}
+          <button className="btn-danger-outline" onClick={() => setConfirmDelete(true)}>{t('delete')}</button>
         </div>
       </div>
 
@@ -121,7 +167,14 @@ export function ThreadDetail() {
         </div>
       )}
 
-      <h2>{t('archive_info')}</h2>
+      <h2 style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        {t('archive_info')}
+        {(isComic || isNovel) && !editingChapter && (
+          <button onClick={handleEditChapter} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontSize: 11, lineHeight: 1 }} title={t('edit')}>
+            🛠️
+          </button>
+        )}
+      </h2>
       <div className="table-wrap"><table>
         <tbody>
           {[
@@ -130,16 +183,38 @@ export function ThreadDetail() {
             [t('raw_title'), thread.raw_title],
             [t('publisher'), thread.publisher || '-'],
             [t('forum'), forumName],
-            [t('content_kind'), <ContentBadge kind={thread.content_kind} />],
+            [t('series'), thread.series_id ? <Link to={`/series/${thread.series_id}`}>{thread.series_title || `${t('series')} #${thread.series_id}`}</Link> : '-'],
+            ...((isComic || isNovel) ? [
+              [t('chapter_number'), thread.chapter_index != null ? String(thread.chapter_index) : '-'],
+              [t('chapter_name'), thread.chapter_name || '-'],
+            ] : []),
+            ...((isComic || isNovel) ? [
+              [t('author'), thread.author_guess || '-'],
+              [t(isComic ? 'scanlation_group' : 'translator'), thread.group_name || '-'],
+            ] : []),
             [t('category'), thread.category || '-'],
-            [t('archive_status'), <Badge status={thread.archive_status} />],
-            [t('validation_status'), <Badge status={thread.validation_status} />],
             [t('image_count'), String(thread.image_count ?? 0)],
-            [t('context_path'), thread.context_path || '-'],
-            [t('export_path'), thread.export_path || '-'],
+            [t('content_kind'), <ContentBadge kind={thread.content_kind} />],
+            [t('archive_status'), pendingSync ? <Badge status="running">{t('resyncing')}</Badge> : <Badge status={thread.archive_status} />],
+            [t('validation_status'), <Badge status={thread.validation_status} />],
           ].map(([k, v], i) => <tr key={i}><th style={{ width: 120 }}>{k}</th><td style={{ textAlign: 'left' }}>{v}</td></tr>)}
         </tbody>
       </table></div>
+
+      {editingChapter && (
+        <div className="inline-edit">
+          <div className="inline-edit-grid">
+            <label>{t('chapter_number')}<input type="number" value={chapterForm.chapter_index} onChange={e => setChapterForm(f => ({ ...f, chapter_index: e.target.value }))} /></label>
+            <label>{t('chapter_name')}<input value={chapterForm.chapter_name} onChange={e => setChapterForm(f => ({ ...f, chapter_name: e.target.value }))} /></label>
+            <label>{t('author')}<input value={chapterForm.author_guess} onChange={e => setChapterForm(f => ({ ...f, author_guess: e.target.value }))} /></label>
+            <label>{t(isComic ? 'scanlation_group' : 'translator')}<input value={chapterForm.group_name} onChange={e => setChapterForm(f => ({ ...f, group_name: e.target.value }))} /></label>
+          </div>
+          <div className="inline-edit-actions">
+            <button className="btn-primary" disabled={actionLoading === 'chapter'} onClick={handleSaveChapter}>{t('save')}</button>
+            <button className="btn-subtle" onClick={() => setEditingChapter(false)}>{t('cancel')}</button>
+          </div>
+        </div>
+      )}
 
       {floorGroups.length > 0 ? (
         <>
@@ -152,7 +227,13 @@ export function ThreadDetail() {
               ))}
             </div>
           )}
-          <div className="reading-view" style={{ '--img-pct': `${imgWidth}%` } as React.CSSProperties}>
+          <div className="reading-toolbar">
+            <span className="toolbar-label">{t('font_size')}</span>
+            {[75, 100, 125, 150, 200].map(s => (
+              <button key={s} className={fontSize === s ? 'active' : ''} onClick={() => setFontSize(s)}>{s}%</button>
+            ))}
+          </div>
+          <div className="reading-view" style={{ '--img-pct': `${imgWidth}%`, fontSize: `${fontSize}%` } as React.CSSProperties}>
             {floorGroups.map(fg => (
               <div key={fg.pid} className="floor-row">
                 <div className="floor-sidebar">
@@ -162,7 +243,12 @@ export function ThreadDetail() {
                   <div className="floor-pid">#{fg.pid}</div>
                 </div>
                 <div className="floor-content">
-                  {fg.content && <div className="floor-text">{fg.content}</div>}
+                  {fg.quoteText && (
+                    <div className="floor-quote">
+                      <blockquote>{fg.quoteText}</blockquote>
+                    </div>
+                  )}
+                  {(fg.replyText || (!fg.quoteText && fg.content)) && <div className="floor-text">{fg.replyText || fg.content}</div>}
                   {fg.contentImages.length > 0 && (
                     <div className="floor-images">
                       {fg.contentImages.map((img, i) => {
@@ -211,8 +297,28 @@ export function ThreadDetail() {
                 </tr>
               ))}
             </tbody>
-          </table></div>
+      </table></div>
         </>
+      )}
+
+      {confirmDelete && (
+        <div className="confirm-overlay" onClick={() => setConfirmDelete(false)}>
+          <div className="confirm-dialog" onClick={e => e.stopPropagation()}>
+            <h2 style={{ margin: '0 0 16px', fontSize: 15, color: 'var(--text-primary)', textTransform: 'none', letterSpacing: 0 }}>{t('confirm_delete')}</h2>
+            <p style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.6, margin: '0 0 16px' }}>
+              {t('tid')}: {tid} — {thread.raw_title}
+            </p>
+            {thread.series_id && (
+              <p style={{ fontSize: 12, color: 'var(--status-warn)', margin: '0 0 16px' }}>
+                {t('auto_delete_empty_series')}
+              </p>
+            )}
+            <div className="confirm-actions">
+              <button className="btn-subtle" onClick={() => setConfirmDelete(false)}>{t('cancel')}</button>
+              <button className="btn-danger" disabled={actionLoading === 'delete'} onClick={handleDelete}>{t('confirm_execute')}</button>
+            </div>
+          </div>
+        </div>
       )}
     </>
   )

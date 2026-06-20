@@ -28,6 +28,10 @@ export interface JobSummary {
   status: string
   stage: string | null
   tid: number | null
+  description: string
+  description_en: string
+  payload: Record<string, unknown>
+  artifacts: Record<string, unknown>
   progress_current: number
   progress_total: number | null
   worker_id: string | null
@@ -66,6 +70,7 @@ export interface ThreadSummary {
   core_title_guess: string | null
   series_key: string | null
   chapter_name: string | null
+  reply_count: number
 }
 
 export interface ThreadDetail extends ThreadSummary {
@@ -75,6 +80,10 @@ export interface ThreadDetail extends ThreadSummary {
   image_count: number
   primary_media_type: string | null
   floors: FloorSummary[]
+  series_title: string | null
+  chapter_index: number | null
+  group_name: string | null
+  author_guess: string | null
 }
 
 export interface FloorSummary {
@@ -84,6 +93,8 @@ export interface FloorSummary {
   content: string | null
   pub_time: string | null
   has_images: boolean
+  quote_text: string | null
+  reply_text: string | null
 }
 
 export interface Asset {
@@ -141,6 +152,8 @@ export interface AuditEvent {
   target_type: string
   target_id: string
   created_at: string
+  description: string
+  description_en: string
 }
 
 export interface ThreadImage {
@@ -211,4 +224,7 @@ export const api = {
   resyncThread: (tid: number, forum_id?: number) => postJson<{ ok: boolean; job_id: string }>('/threads/resync', { tid, ...(forum_id ? { forum_id } : {}) }),
   exportThread: (tid: number, strategy?: string, forum_id?: number) => postJson<{ ok: boolean; job_id: string }>('/threads/export', { tid, strategy, ...(forum_id ? { forum_id } : {}) }),
   deleteThread: (tid: number) => postJson<{ ok: boolean; deleted_series_id?: number }>('/threads/delete', { tid }),
+  deleteJob: (job_id: string) => postJson<{ ok: boolean }>('/jobs/delete', { job_id }),
+  batchDeleteJobs: (status: string) => postJson<{ ok: boolean; deleted: number }>('/jobs/batch-delete', { status }),
+  updateChapter: (tid: number, chapter_name: string | null, chapter_index: number | null, author_guess?: string | null, group_name?: string | null) => postJson<{ ok: boolean }>('/threads/update-chapter', { tid, chapter_name, chapter_index, author_guess, group_name }),
 }

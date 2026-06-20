@@ -1,6 +1,6 @@
 # 用户操作手册
 
-> 版本：0.2.0 | 更新日期：2026-06-21
+> 版本：0.5.0 | 更新日期：2026-06-21
 
 ## 1. 快速开始
 
@@ -190,6 +190,9 @@ MCP Server 会调用 `browse_forum_page(page=1, forum_id=55)`。
 ```bash
 # 浏览论坛
 uv run yamibo-mcp-server browse-forum-page --page 1
+
+# 按发帖时间排序浏览
+uv run yamibo-mcp-server browse-forum-page --page 1 --order dateline
 
 # 浏览轻小说区
 uv run yamibo-mcp-server browse-forum-page --page 1 --forum-id 55

@@ -118,6 +118,9 @@ yamibo-daemon ──────────────────────
 # 浏览论坛
 uv run yamibo-mcp-server browse-forum-page --page 1
 
+# 按发帖时间排序浏览
+uv run yamibo-mcp-server browse-forum-page --page 1 --order dateline
+
 # 浏览轻小说区
 uv run yamibo-mcp-server browse-forum-page --page 1 --forum-id 55
 

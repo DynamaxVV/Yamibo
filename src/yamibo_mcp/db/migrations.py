@@ -158,7 +158,9 @@ CREATE TABLE IF NOT EXISTS floors (
   content TEXT,
   pub_time TEXT,
   has_images INTEGER NOT NULL DEFAULT 0,
-  content_hash TEXT
+  content_hash TEXT,
+  quote_text TEXT,
+  reply_text TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_floors_tid_floor ON floors(tid, floor_no);
@@ -235,6 +237,8 @@ def migrate(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "threads", "category", "TEXT")
     _backfill_thread_forum_fields(conn)
     _ensure_column(conn, "forums", "name_en", "TEXT")
+    _ensure_column(conn, "floors", "quote_text", "TEXT")
+    _ensure_column(conn, "floors", "reply_text", "TEXT")
     _seed_default_forums(conn)
     conn.execute(
         "INSERT OR IGNORE INTO schema_migrations(version) VALUES (?)",

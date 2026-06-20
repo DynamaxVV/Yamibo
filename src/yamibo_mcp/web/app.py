@@ -1266,11 +1266,18 @@ class WebHandler(BaseHTTPRequestHandler):
             metadata = self._parse_metadata_json(metadata_text)
 
             # Quick actions
+            fid_for_export = thread["forum_id"] if "forum_id" in thread.keys() else None
+            can_export = fid_for_export in (30, 55)
+            export_forms = ""
+            if can_export:
+                export_forms = (
+                    f'<form method="post" action="{self._url("/jobs/export-thread")}">{self._hidden_lang()}<input type="hidden" name="tid" value="{tid}"><input type="hidden" name="strategy" value="sync_if_stale"><button type="submit">{self._t("create_export_job")}</button></form>'
+                    f'<form method="post" action="{self._url("/jobs/reexport-thread")}">{self._hidden_lang()}<input type="hidden" name="tid" value="{tid}"><button type="submit">{self._t("force_resync_export")}</button></form>'
+                )
             actions_html = (
                 f'<div class="actions">'
                 f'<form method="post" action="{self._url("/jobs/resync-thread")}">{self._hidden_lang()}<input type="hidden" name="tid" value="{tid}"><button type="submit">{self._t("resync_thread")}</button></form>'
-                f'<form method="post" action="{self._url("/jobs/export-thread")}">{self._hidden_lang()}<input type="hidden" name="tid" value="{tid}"><input type="hidden" name="strategy" value="sync_if_stale"><button type="submit">{self._t("create_export_job")}</button></form>'
-                f'<form method="post" action="{self._url("/jobs/reexport-thread")}">{self._hidden_lang()}<input type="hidden" name="tid" value="{tid}"><button type="submit">{self._t("force_resync_export")}</button></form>'
+                f'{export_forms}'
                 f'<form method="post" action="{self._url("/threads/delete")}">{self._hidden_lang()}<input type="hidden" name="tid" value="{tid}"><button class="danger" type="submit">{self._t("delete_thread")}</button></form>'
                 f'</div>'
             )
@@ -2001,6 +2008,11 @@ class WebHandler(BaseHTTPRequestHandler):
         strategy = form.get("strategy", "").strip() or self.settings.export_default_strategy
         conn, repo = self._repo()
         try:
+            thread_row = conn.execute("SELECT forum_id FROM threads WHERE tid = ?", (tid,)).fetchone()
+            forum_id = thread_row["forum_id"] if thread_row and thread_row["forum_id"] is not None else None
+            if forum_id is not None and forum_id not in (30, 55):
+                self._send("仅漫画区和轻小说区的贴子支持导出", HTTPStatus.BAD_REQUEST, "text/plain")
+                return
             job = repo.create(JobType.EXPORT_THREAD.value, tid=tid, payload={"tid": tid, "strategy": strategy})
             self.send_response(HTTPStatus.SEE_OTHER.value)
             self.send_header("Location", self._url(f"/jobs?created={job.job_id}"))
@@ -2132,6 +2144,11 @@ class WebHandler(BaseHTTPRequestHandler):
         tid = int(raw_tid)
         conn, repo = self._repo()
         try:
+            thread_row = conn.execute("SELECT forum_id FROM threads WHERE tid = ?", (tid,)).fetchone()
+            forum_id = thread_row["forum_id"] if thread_row and thread_row["forum_id"] is not None else None
+            if forum_id is not None and forum_id not in (30, 55):
+                self._send("仅漫画区和轻小说区的贴子支持导出", HTTPStatus.BAD_REQUEST, "text/plain")
+                return
             job = repo.create(
                 JobType.EXPORT_THREAD.value,
                 tid=tid,

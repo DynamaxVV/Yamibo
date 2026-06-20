@@ -65,6 +65,10 @@ def _route(handler, route: str, params, conn, settings):
     elif route.startswith("/jobs/") and handler.command == "GET":
         job_id = route[6:]
         _job_detail(handler, job_id, conn)
+    elif route == "/jobs/delete" and handler.command == "POST":
+        _delete_job(handler, conn)
+    elif route == "/jobs/batch-delete" and handler.command == "POST":
+        _batch_delete_jobs(handler, conn)
     elif route == "/threads" and handler.command == "GET":
         _threads_list(handler, params, conn)
     elif route.startswith("/threads/") and route.endswith("/images"):
@@ -105,6 +109,8 @@ def _route(handler, route: str, params, conn, settings):
         _rebuild_series(handler, conn, settings)
     elif route == "/review/update-title" and handler.command == "POST":
         _update_title(handler, conn, settings)
+    elif route == "/threads/update-chapter" and handler.command == "POST":
+        _update_chapter(handler, conn)
     elif route == "/review/update-series" and handler.command == "POST":
         _update_series(handler, conn, settings)
     elif route == "/threads/resync" and handler.command == "POST":
@@ -133,7 +139,7 @@ def _dashboard(handler, conn, params):
     forum_counts = {r["forum_id"]: r["cnt"] for r in forum_rows}
 
     recent_limit = int(params.get("limit", ["10"])[0])
-    recent_jobs = [_job_to_dict(j) for j in jobs_repo.list(limit=10)]
+    recent_jobs = [_job_to_dict(j, conn) for j in jobs_repo.list(limit=10)]
     workers = _worker_heartbeats(conn)
     audits = [_audit_to_dict(r) for r in AuditEventsRepository(conn).list_recent(limit=8)]
     recent_threads = [_thread_summary_dict(r) for r in threads_repo.list_threads(limit=recent_limit)]
@@ -153,17 +159,58 @@ def _dashboard(handler, conn, params):
 def _jobs_list(handler, params, conn):
     status = params.get("status", [None])[0]
     jobs = JobsRepository(conn).list(limit=150, status=status)
-    _json_response(handler, [_job_to_dict(j) for j in jobs])
+    _json_response(handler, [_job_to_dict(j, conn) for j in jobs])
 
 
 def _job_detail(handler, job_id, conn):
     job = JobsRepository(conn).get(job_id)
-    _json_response(handler, _job_to_dict(job))
+    _json_response(handler, _job_to_dict(job, conn))
 
 
 def _job_events(handler, job_id, conn):
     events = JobEventsRepository(conn).list(job_id=job_id, limit=200)
     _json_response(handler, [_event_to_dict(e) for e in events])
+
+
+def _delete_job(handler, conn):
+    body = _read_json_body(handler)
+    job_id = body.get("job_id")
+    if not job_id:
+        _error_response(handler, "job_id required")
+        return
+    repo = JobsRepository(conn)
+    job = repo.get(job_id)
+    if job is None:
+        _error_response(handler, "Job not found", HTTPStatus.NOT_FOUND)
+        return
+    if job.status in ("running",):
+        _error_response(handler, "Cannot delete a running job")
+        return
+    conn.execute("DELETE FROM job_events WHERE job_id = ?", (job_id,))
+    conn.execute("DELETE FROM jobs WHERE job_id = ?", (job_id,))
+    conn.commit()
+    _json_response(handler, {"ok": True, "job_id": job_id})
+
+
+def _batch_delete_jobs(handler, conn):
+    body = _read_json_body(handler)
+    status_filter = body.get("status")
+    if not status_filter:
+        _error_response(handler, "status required")
+        return
+    if status_filter == "running":
+        _error_response(handler, "Cannot batch delete running jobs")
+        return
+    rows = conn.execute("SELECT job_id FROM jobs WHERE status = ?", (status_filter,)).fetchall()
+    job_ids = [r["job_id"] for r in rows]
+    if not job_ids:
+        _json_response(handler, {"ok": True, "deleted": 0})
+        return
+    for jid in job_ids:
+        conn.execute("DELETE FROM job_events WHERE job_id = ?", (jid,))
+    conn.execute("DELETE FROM jobs WHERE status = ?", (status_filter,))
+    conn.commit()
+    _json_response(handler, {"ok": True, "deleted": len(job_ids)})
 
 
 def _threads_list(handler, params, conn):
@@ -189,13 +236,27 @@ def _thread_detail(handler, tid, conn):
         _error_response(handler, "Thread not found", HTTPStatus.NOT_FOUND)
         return
     floors = repo.list_floors(tid)
+    title_row = repo.get_title_parse(tid)
     data = _thread_summary_dict(thread)
+    if title_row:
+        if data.get("chapter_name") is None:
+            data["chapter_name"] = title_row["chapter_name"] if "chapter_name" in title_row.keys() else None
+        if data.get("chapter_index") is None:
+            data["chapter_index"] = title_row["chapter_index"] if "chapter_index" in title_row.keys() else None
+        data["group_name"] = title_row["group_name"] if "group_name" in title_row.keys() else None
+        data["author_guess"] = title_row["author_guess"] if "author_guess" in title_row.keys() else None
     data["url"] = f"https://bbs.yamibo.com/forum.php?mod=viewthread&tid={tid}"
     data["floors"] = [_floor_to_dict(f) for f in floors]
     data["publisher_uid"] = thread["publisher_uid"] if "publisher_uid" in thread.keys() else None
     data["pub_time"] = thread["pub_time"] if "pub_time" in thread.keys() else None
     data["image_count"] = thread["image_count"] if "image_count" in thread.keys() else 0
     data["primary_media_type"] = thread["primary_media_type"] if "primary_media_type" in thread.keys() else None
+    series_id = thread["series_id"] if "series_id" in thread.keys() else None
+    if series_id:
+        series_row = conn.execute("SELECT canonical_title FROM series WHERE series_id = ?", (series_id,)).fetchone()
+        data["series_title"] = series_row["canonical_title"] if series_row else None
+    else:
+        data["series_title"] = None
     _json_response(handler, data)
 
 
@@ -408,6 +469,24 @@ def _update_title(handler, conn, settings):
         _error_response(handler, str(exc), HTTPStatus.BAD_REQUEST)
 
 
+def _update_chapter(handler, conn):
+    body = _read_json_body(handler)
+    tid = body.get("tid")
+    if not tid:
+        _error_response(handler, "tid required")
+        return
+    chapter_name = body.get("chapter_name")
+    chapter_index = body.get("chapter_index")
+    author_guess = body.get("author_guess")
+    group_name = body.get("group_name")
+    conn.execute(
+        "UPDATE title_parse SET chapter_name=?, chapter_index=?, author_guess=?, group_name=? WHERE tid=?",
+        (chapter_name, chapter_index, author_guess, group_name, int(tid)),
+    )
+    conn.commit()
+    _json_response(handler, {"ok": True, "tid": int(tid)})
+
+
 def _update_series(handler, conn, settings):
     body = _read_json_body(handler)
     series_id = body.get("series_id")
@@ -458,16 +537,28 @@ def _resync_thread(handler, conn):
     _json_response(handler, {"ok": True, "job_id": job.job_id})
 
 
+EXPORTABLE_FORUMS = {30, 55}  # 漫画区, 轻小说区
+
+
 def _export_thread(handler, conn, settings):
     body = _read_json_body(handler)
     tid = body.get("tid")
     if not tid:
         _error_response(handler, "tid required")
         return
+    forum_id = body.get("forum_id")
+    if forum_id is not None:
+        forum_id = int(forum_id)
+    else:
+        row = conn.execute("SELECT forum_id FROM threads WHERE tid = ?", (int(tid),)).fetchone()
+        forum_id = row["forum_id"] if row and row["forum_id"] is not None else None
+    if forum_id is not None and forum_id not in EXPORTABLE_FORUMS:
+        _error_response(handler, "仅漫画区和轻小说区的贴子支持导出")
+        return
     strategy = body.get("strategy") or settings.export_default_strategy
     payload = {"tid": int(tid), "strategy": strategy}
-    if body.get("forum_id") is not None:
-        payload["forum_id"] = int(body["forum_id"])
+    if forum_id is not None:
+        payload["forum_id"] = forum_id
     job = JobsRepository(conn).create("export_thread", tid=int(tid), payload=payload)
     _json_response(handler, {"ok": True, "job_id": job.job_id})
 
@@ -594,10 +685,145 @@ def _logs(handler, params):
 
 # ─── Dict converters ───
 
-def _job_to_dict(job) -> dict:
+_JOB_TYPE_LABELS = {
+    "sync_thread": "同步贴子",
+    "export_thread": "导出贴子",
+    "title_refine": "重算标题/系列",
+    "cleanup_job": "清理任务",
+    "noop": "空任务",
+}
+
+_EXPORT_STRATEGY_LABELS = {
+    "cache_only": "仅缓存",
+    "sync_if_stale": "过期则同步",
+    "force_resync": "强制重同步",
+}
+
+_JOB_TYPE_LABELS_EN = {
+    "sync_thread": "Sync thread",
+    "export_thread": "Export thread",
+    "title_refine": "Rebuild titles/series",
+    "cleanup_job": "Cleanup",
+    "noop": "Noop",
+}
+
+_EXPORT_STRATEGY_LABELS_EN = {
+    "cache_only": "cache only",
+    "sync_if_stale": "sync if stale",
+    "force_resync": "force resync",
+}
+
+
+def _describe_job(conn, job) -> str:
+    payload = job.payload if isinstance(job.payload, dict) else {}
+    tid = payload.get("tid") or job.tid
+
+    thread_title = ""
+    if tid:
+        row = conn.execute("SELECT raw_title FROM threads WHERE tid = ?", (tid,)).fetchone()
+        if row:
+            thread_title = row["raw_title"] or ""
+
+    def _short():
+        if not thread_title:
+            return ""
+        return (thread_title[:30] + "...") if len(thread_title) > 30 else thread_title
+
+    if job.job_type == "sync_thread":
+        desc = "同步贴子"
+        if tid:
+            desc += f" #{tid}"
+            s = _short()
+            if s:
+                desc += f"「{s}」"
+        return desc
+
+    if job.job_type == "export_thread":
+        strategy = payload.get("strategy", "")
+        strategy_label = _EXPORT_STRATEGY_LABELS.get(strategy, strategy)
+        desc = "导出贴子"
+        if tid:
+            desc += f" #{tid}"
+            s = _short()
+            if s:
+                desc += f"「{s}」"
+        if strategy_label:
+            desc += f"（策略：{strategy_label}）"
+        return desc
+
+    if job.job_type == "title_refine":
+        mode = payload.get("mode", "")
+        if mode == "rebuild_series":
+            return "批量重算系列"
+        return "重算标题/系列"
+
+    if job.job_type == "cleanup_job":
+        mode = payload.get("mode", "")
+        return f"清理：{mode}" if mode else "清理任务"
+
+    return _JOB_TYPE_LABELS.get(job.job_type, job.job_type)
+
+
+def _describe_job_en(conn, job) -> str:
+    payload = job.payload if isinstance(job.payload, dict) else {}
+    tid = payload.get("tid") or job.tid
+
+    thread_title = ""
+    if tid:
+        row = conn.execute("SELECT raw_title FROM threads WHERE tid = ?", (tid,)).fetchone()
+        if row:
+            thread_title = row["raw_title"] or ""
+
+    def _short():
+        if not thread_title:
+            return ""
+        return (thread_title[:30] + "...") if len(thread_title) > 30 else thread_title
+
+    if job.job_type == "sync_thread":
+        desc = "Sync thread"
+        if tid:
+            desc += f" #{tid}"
+            s = _short()
+            if s:
+                desc += f" \"{s}\""
+        return desc
+
+    if job.job_type == "export_thread":
+        strategy = payload.get("strategy", "")
+        strategy_label = _EXPORT_STRATEGY_LABELS_EN.get(strategy, strategy)
+        desc = "Export thread"
+        if tid:
+            desc += f" #{tid}"
+            s = _short()
+            if s:
+                desc += f" \"{s}\""
+        if strategy_label:
+            desc += f" ({strategy_label})"
+        return desc
+
+    if job.job_type == "title_refine":
+        mode = payload.get("mode", "")
+        if mode == "rebuild_series":
+            return "Batch rebuild series"
+        return "Rebuild titles/series"
+
+    if job.job_type == "cleanup_job":
+        mode = payload.get("mode", "")
+        return f"Cleanup: {mode}" if mode else "Cleanup"
+
+    return _JOB_TYPE_LABELS_EN.get(job.job_type, job.job_type)
+
+
+def _job_to_dict(job, conn=None) -> dict:
+    payload = job.payload if isinstance(job.payload, dict) else {}
+    artifacts = job.artifacts if isinstance(job.artifacts, dict) else {}
+    description = _describe_job(conn, job) if conn else job.job_type
+    description_en = _describe_job_en(conn, job) if conn else job.job_type
     return {
         "job_id": job.job_id, "job_type": job.job_type, "status": job.status,
         "stage": job.stage, "tid": job.tid,
+        "description": description, "description_en": description_en,
+        "payload": payload, "artifacts": artifacts,
         "progress_current": job.progress_current, "progress_total": job.progress_total,
         "worker_id": job.worker_id, "error_code": job.error_code,
         "error_message": job.error_message, "created_at": job.created_at,
@@ -624,7 +850,7 @@ def _thread_summary_dict(row) -> dict:
         "export_path": g("export_path"), "forum_id": g("forum_id"),
         "content_kind": g("content_kind"), "core_title_guess": g("core_title_guess"),
         "series_key": g("series_key"), "chapter_name": g("chapter_name"),
-        "category": g("category"),
+        "category": g("category"), "reply_count": g("reply_count") or 0,
     }
 
 
@@ -633,6 +859,8 @@ def _floor_to_dict(row) -> dict:
         "pid": row["pid"], "floor_no": row["floor_no"],
         "publisher": row["publisher"], "content": row["content"] or "",
         "pub_time": row["pub_time"], "has_images": bool(row["has_images"]),
+        "quote_text": row["quote_text"] if "quote_text" in row.keys() else None,
+        "reply_text": row["reply_text"] if "reply_text" in row.keys() else None,
     }
 
 
@@ -669,7 +897,90 @@ def _audit_to_dict(row) -> dict:
         "event_id": str(row["event_id"]), "actor": row["actor"],
         "action": row["action"], "target_type": row["target_type"],
         "target_id": row["target_id"], "created_at": row["created_at"],
+        "description": _describe_audit(row),
+        "description_en": _describe_audit_en(row),
     }
+
+
+_AUDIT_ACTION_LABELS = {
+    "delete_series": "删除系列",
+    "confirm_series_review": "确认系列",
+    "merge_series": "合并系列",
+    "confirm_title_review": "确认标题",
+    "update_title_review": "更新标题",
+    "update_series": "更新系列",
+    "delete_thread": "删除贴子",
+}
+
+_AUDIT_TARGET_LABELS = {
+    "series": "系列",
+    "thread": "贴子",
+}
+
+_AUDIT_ACTION_LABELS_EN = {
+    "delete_series": "Delete series",
+    "confirm_series_review": "Confirm series",
+    "merge_series": "Merge series",
+    "confirm_title_review": "Confirm title",
+    "update_title_review": "Update title",
+    "update_series": "Update series",
+    "delete_thread": "Delete thread",
+}
+
+_AUDIT_TARGET_LABELS_EN = {
+    "series": "series",
+    "thread": "thread",
+}
+
+
+def _describe_audit(row) -> str:
+    action = row["action"]
+    target_type = row["target_type"]
+    target_id = row["target_id"]
+    action_label = _AUDIT_ACTION_LABELS.get(action, action)
+    target_label = _AUDIT_TARGET_LABELS.get(target_type, target_type)
+
+    if target_type == "thread" and target_id and target_id.isdigit():
+        conn = row._connection if hasattr(row, '_connection') else None
+        title = ""
+        if conn:
+            r = conn.execute("SELECT raw_title FROM threads WHERE tid = ?", (int(target_id),)).fetchone()
+            if r:
+                title = r["raw_title"] or ""
+        short = (title[:20] + "...") if len(title) > 20 else title
+        if short:
+            return f"{action_label}：{target_label} #{target_id}「{short}」"
+        return f"{action_label}：{target_label} #{target_id}"
+
+    if target_type == "series" and target_id and target_id.isdigit():
+        return f"{action_label}：{target_label} #{target_id}"
+
+    return f"{action_label}：{target_label} {target_id}"
+
+
+def _describe_audit_en(row) -> str:
+    action = row["action"]
+    target_type = row["target_type"]
+    target_id = row["target_id"]
+    action_label = _AUDIT_ACTION_LABELS_EN.get(action, action)
+    target_label = _AUDIT_TARGET_LABELS_EN.get(target_type, target_type)
+
+    if target_type == "thread" and target_id and target_id.isdigit():
+        conn = row._connection if hasattr(row, '_connection') else None
+        title = ""
+        if conn:
+            r = conn.execute("SELECT raw_title FROM threads WHERE tid = ?", (int(target_id),)).fetchone()
+            if r:
+                title = r["raw_title"] or ""
+        short = (title[:20] + "...") if len(title) > 20 else title
+        if short:
+            return f"{action_label} {target_label} #{target_id} \"{short}\""
+        return f"{action_label} {target_label} #{target_id}"
+
+    if target_type == "series" and target_id and target_id.isdigit():
+        return f"{action_label} {target_label} #{target_id}"
+
+    return f"{action_label} {target_label} {target_id}"
 
 
 def _worker_heartbeats(conn) -> list[dict]:

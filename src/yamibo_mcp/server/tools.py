@@ -125,6 +125,8 @@ def sync_forum_range(
         use_system_proxy=settings.use_system_proxy,
         login_username=settings.login_username,
         login_password=settings.login_password,
+        request_interval=settings.request_interval_seconds,
+        request_interval_jitter=settings.request_interval_jitter_seconds,
     )
     collected: list[ForumThreadItem] = []
     scanned_pages: list[str] = []
@@ -181,6 +183,7 @@ def browse_forum_page(
     *,
     page: int,
     forum_id: int = 30,
+    order: str = "default",
     base_url: str = "https://bbs.yamibo.com",
     cookie_file: str | None = None,
     include_sticky: bool = False,
@@ -196,8 +199,14 @@ def browse_forum_page(
         use_system_proxy=settings.use_system_proxy,
         login_username=settings.login_username,
         login_password=settings.login_password,
+        request_interval=settings.request_interval_seconds,
+        request_interval_jitter=settings.request_interval_jitter_seconds,
     )
-    result, items = client.fetch_forum_threads(page=page, base_url=base_url, forum_id=forum_id)
+    if order == "dateline":
+        result, items, total_pages = client.fetch_forum_threads_dateline(page=page, base_url=base_url, forum_id=forum_id)
+    else:
+        result, items = client.fetch_forum_threads(page=page, base_url=base_url, forum_id=forum_id)
+        total_pages = 0
 
     conn = connect(settings.db_path)
     try:
@@ -218,6 +227,8 @@ def browse_forum_page(
             "source": "forum_page",
             "page": page,
             "forum_id": forum_id,
+            "order": order,
+            "total_pages": total_pages,
             "forum_url": result.final_url,
             "base_url": base_url,
             "include_sticky": include_sticky,
@@ -270,14 +281,21 @@ def _remote_search_items(
     base_url: str,
     cookie_file: str | None,
     forum_id: int = 30,
-) -> tuple[list[SearchResultItem], list[str], int]:
+) -> tuple[list[SearchResultItem | ForumThreadItem], list[str], int]:
     settings = load_settings()
     client = YamiboClient(
         cookie_file=cookie_file or str(settings.cookie_file),
         use_system_proxy=settings.use_system_proxy,
         login_username=settings.login_username,
         login_password=settings.login_password,
+        request_interval=settings.request_interval_seconds,
+        request_interval_jitter=settings.request_interval_jitter_seconds,
     )
+
+    if posted_on:
+        return _dateline_search(client, query=query, limit=limit, posted_on=posted_on,
+                                base_url=base_url, forum_id=forum_id)
+
     items, scanned_pages, total_pages = client.fetch_search_results_all(
         query=query,
         base_url=base_url,
@@ -285,10 +303,160 @@ def _remote_search_items(
         start_page=start_page,
         end_page=end_page,
     )
-    filtered = [item for item in items if _matches_remote_filters(item, query=query, posted_on=posted_on)]
+    filtered = [item for item in items if _matches_remote_filters(item, query=query, posted_on=None)]
     if limit > 0:
         filtered = filtered[:limit]
     return filtered, scanned_pages, total_pages
+
+
+def _dateline_search(
+    client: YamiboClient,
+    *,
+    query: str,
+    limit: int,
+    posted_on: str,
+    base_url: str,
+    forum_id: int,
+) -> tuple[list[ForumThreadItem], list[str], int]:
+    normalized_query = normalize_series_key(query) if query else ""
+    normalized_date = _normalize_date_only(posted_on)
+    scanned_pages: list[str] = []
+    collected: list[ForumThreadItem] = []
+
+    total_pages = 1
+    growth_factor = 2
+    step = 1
+    page = 1
+    prev_page = 0
+    found_boundary = False
+
+    def _page_info(result, items):
+        non_sticky = [it for it in items if not it.is_sticky and (it.category or "").strip() != "公告"]
+        oldest = None
+        newest = None
+        for it in non_sticky:
+            d = _normalize_date_only(it.posted_at)
+            if d:
+                if oldest is None or d < oldest:
+                    oldest = d
+                if newest is None or d > newest:
+                    newest = d
+        has_target = any(_normalize_date_only(it.posted_at) == normalized_date for it in non_sticky)
+        return non_sticky, oldest, newest, has_target
+
+    def _collect(non_sticky):
+        for it in non_sticky:
+            if _normalize_date_only(it.posted_at) != normalized_date:
+                continue
+            if normalized_query:
+                haystack = normalize_series_key(f"{it.title} {it.category or ''} {it.publisher or ''}")
+                if normalized_query not in haystack:
+                    continue
+            collected.append(it)
+            if limit > 0 and len(collected) >= limit:
+                return True
+        return False
+
+    first_result, first_items, total_pages = client.fetch_forum_threads_dateline(page=1, base_url=base_url, forum_id=forum_id)
+    scanned_pages.append(first_result.final_url)
+    growth_factor = max(2, min(5, (total_pages // 100) + 1))
+
+    non_sticky, oldest, newest, has_target = _page_info(first_result, first_items)
+    if oldest and oldest >= normalized_date and newest and newest >= normalized_date:
+        if _collect(non_sticky):
+            return collected, scanned_pages, total_pages
+    elif oldest and oldest < normalized_date:
+        found_boundary = True
+        lo_page, hi_page = 0, 1
+        _collect(non_sticky)
+
+    if not found_boundary:
+        page = 1 + step
+        prev_page = 1
+
+        while page <= total_pages:
+            result, items, _ = client.fetch_forum_threads_dateline(page=page, base_url=base_url, forum_id=forum_id)
+            scanned_pages.append(result.final_url)
+            non_sticky, oldest, newest, has_target = _page_info(result, items)
+
+            if not non_sticky:
+                if page >= total_pages:
+                    break
+                prev_page = page
+                page += step
+                step *= growth_factor
+                page = min(page, total_pages)
+                continue
+
+            if has_target and oldest and oldest < normalized_date:
+                _collect(non_sticky)
+                found_boundary = True
+                break
+
+            if oldest and oldest < normalized_date:
+                found_boundary = True
+                lo_page, hi_page = prev_page, page
+                _collect(non_sticky)
+                break
+
+            if has_target and oldest and oldest >= normalized_date:
+                if _collect(non_sticky):
+                    return collected, scanned_pages, total_pages
+                prev_page = page
+                page += step
+                step *= growth_factor
+                page = min(page, total_pages)
+                continue
+
+            prev_page = page
+            page += step
+            step *= growth_factor
+            page = min(page, total_pages)
+
+    if found_boundary and lo_page + 1 < hi_page:
+        while lo_page + 1 < hi_page:
+            mid = (lo_page + hi_page) // 2
+            result, items, _ = client.fetch_forum_threads_dateline(page=mid, base_url=base_url, forum_id=forum_id)
+            scanned_pages.append(result.final_url)
+            non_sticky, oldest, newest, has_target = _page_info(result, items)
+
+            if not non_sticky:
+                lo_page = mid
+                continue
+
+            if has_target:
+                _collect(non_sticky)
+
+            if oldest and oldest < normalized_date:
+                hi_page = mid
+            else:
+                lo_page = mid
+
+        start_scan = max(1, hi_page - 1)
+        end_scan = hi_page + 1
+        for scan_page in range(start_scan, end_scan + 1):
+            if scan_page > total_pages:
+                break
+            if scan_page == hi_page:
+                continue
+            result, items, _ = client.fetch_forum_threads_dateline(page=scan_page, base_url=base_url, forum_id=forum_id)
+            scanned_pages.append(result.final_url)
+            non_sticky, _, newest, has_target = _page_info(result, items)
+            if has_target:
+                _collect(non_sticky)
+            if newest and newest < normalized_date:
+                break
+
+    if collected:
+        seen: set[int] = set()
+        deduped: list[ForumThreadItem] = []
+        for it in collected:
+            if it.tid not in seen:
+                seen.add(it.tid)
+                deduped.append(it)
+        collected = deduped
+
+    return collected, scanned_pages, total_pages
 
 
 def _local_row_by_tid(repo: ThreadsRepository, tid: int):
@@ -343,6 +511,9 @@ def search_threads(
     include_sticky: bool = False,
     include_announcements: bool = False,
 ) -> dict[str, object]:
+    if posted_on:
+        start_page = 1
+        end_page = None
     if start_page <= 0 or (end_page is not None and end_page <= 0) or (end_page is not None and end_page < start_page):
         raise ValueError("invalid forum page range")
     settings = load_settings()

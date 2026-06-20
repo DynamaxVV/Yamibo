@@ -23,6 +23,13 @@ def forum_page_url(page: int, *, forum_id: int = DEFAULT_FORUM_ID, base_url: str
     return f"{base}/forum-{forum_id}-{page}.html"
 
 
+def dateline_forum_page_url(page: int, *, forum_id: int = DEFAULT_FORUM_ID, base_url: str = DEFAULT_THREAD_BASE) -> str:
+    if page <= 0:
+        raise ValueError(f"page must be positive: {page}")
+    base = base_url.rstrip("/")
+    return f"{base}/forum.php?mod=forumdisplay&fid={forum_id}&orderby=dateline&page={page}"
+
+
 def extract_tid_from_input(value: str | int) -> int | None:
     if isinstance(value, int):
         return value

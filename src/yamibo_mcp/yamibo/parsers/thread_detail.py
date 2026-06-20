@@ -34,6 +34,9 @@ class _ThreadSubjectParser(TextCaptureParser):
         self._floors: list[FloorSnapshot] = []
         self._floor_has_images = False
         self._floor_image_urls: list[str] = []
+        self._in_quote = False
+        self._quote_parts: list[str] = []
+        self._reply_parts: list[str] = []
 
     def handle_starttag(self, tag: str, attrs):
         data = attrs_dict(attrs)
@@ -49,6 +52,9 @@ class _ThreadSubjectParser(TextCaptureParser):
             self._floor_parts = []
             self._floor_has_images = False
             self._floor_image_urls = []
+            self._in_quote = False
+            self._quote_parts = []
+            self._reply_parts = []
         elif self._capture_floor and tag == "td":
             self._floor_td_depth += 1
         if self._capture_floor and tag == "img":
@@ -56,17 +62,24 @@ class _ThreadSubjectParser(TextCaptureParser):
             if image_url:
                 self._floor_image_urls.append(image_url)
             self._floor_has_images = self._floor_has_images or bool(image_url) or True
+        if self._capture_floor and tag == "div" and data.get("class") == "quote":
+            self._in_quote = True
+            self._quote_parts = []
         super().handle_starttag(tag, attrs)
 
     def handle_endtag(self, tag: str):
         if tag == "span" and self._capture_subject:
             self._capture_subject = False
+        if tag == "div" and self._in_quote:
+            self._in_quote = False
         if tag == "td" and self._capture_floor:
             self._floor_td_depth -= 1
             if self._floor_td_depth <= 0:
                 if self._floor_pid is not None:
                     self._floor_no += 1
                     content = clean_content("".join(self._floor_parts))
+                    quote_text = clean_content("".join(self._quote_parts)) if self._quote_parts else None
+                    reply_text = clean_content("".join(self._reply_parts)) if self._reply_parts else None
                     self._floors.append(
                         FloorSnapshot(
                             pid=self._floor_pid,
@@ -77,6 +90,8 @@ class _ThreadSubjectParser(TextCaptureParser):
                             pub_time=None,
                             has_images=self._floor_has_images,
                             image_urls=self._floor_image_urls.copy(),
+                            quote_text=quote_text,
+                            reply_text=reply_text,
                         )
                     )
                 self._capture_floor = False
@@ -89,6 +104,10 @@ class _ThreadSubjectParser(TextCaptureParser):
             self._subject_parts.append(data)
         if self._capture_floor:
             self._floor_parts.append(data)
+            if self._in_quote:
+                self._quote_parts.append(data)
+            else:
+                self._reply_parts.append(data)
 
     def result(self) -> ThreadDetailSummary:
         title = normalize_display_title("".join(self._subject_parts)) if self._subject_parts else None
@@ -123,6 +142,8 @@ def parse_thread_detail(html: str, *, base_url: str | None = None) -> ThreadDeta
                     pub_time=floor.pub_time,
                     has_images=bool(deduped_urls),
                     image_urls=deduped_urls,
+                    quote_text=floor.quote_text,
+                    reply_text=floor.reply_text,
                 )
             )
         else:
@@ -151,6 +172,8 @@ def parse_thread_snapshot(html: str, *, url: str | None = None, tid: int | None 
             pub_time=post_meta.get(floor.pid, {}).get("pub_time"),
             has_images=floor.has_images,
             image_urls=[attachment_download_map.get(image_url, image_url) for image_url in floor.image_urls],
+            quote_text=floor.quote_text,
+            reply_text=floor.reply_text,
         )
         for floor in summary.floors
     ]

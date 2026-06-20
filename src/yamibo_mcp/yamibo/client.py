@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html as html_lib
+import random
 import re
 import time
 import urllib.parse
@@ -12,10 +13,10 @@ from http.cookiejar import CookieJar
 from pathlib import Path
 
 from yamibo_mcp.errors import LoginRequiredError, RemoteFetchError, RemoteMaintenanceError, UnexpectedPageError
-from yamibo_mcp.yamibo.parsers.forum_list import ForumThreadItem, parse_forum_list
+from yamibo_mcp.yamibo.parsers.forum_list import ForumThreadItem, extract_total_pages, parse_forum_list
 from yamibo_mcp.yamibo.parsers.search_results import SearchResultItem, parse_search_results
 from yamibo_mcp.yamibo.page_classifier import PageType, classify_html
-from yamibo_mcp.yamibo.urls import DEFAULT_FORUM_ID, forum_page_url, normalize_forum_page_url, normalize_thread_url, thread_url_from_tid
+from yamibo_mcp.yamibo.urls import DEFAULT_FORUM_ID, dateline_forum_page_url, forum_page_url, normalize_forum_page_url, normalize_thread_url, thread_url_from_tid
 
 
 DEFAULT_HEADERS = {
@@ -45,6 +46,8 @@ class YamiboClient:
         use_system_proxy: bool = False,
         login_username: str | None = None,
         login_password: str | None = None,
+        request_interval: float = 1.0,
+        request_interval_jitter: float = 0.5,
     ) -> None:
         self.timeout = timeout
         self.retries = retries
@@ -55,9 +58,11 @@ class YamiboClient:
         self.use_system_proxy = use_system_proxy
         self.login_username = login_username
         self.login_password = login_password
+        self._request_interval = request_interval
+        self._request_interval_jitter = request_interval_jitter
+        self._last_request_time: float = 0.0
         handlers = [urllib.request.HTTPCookieProcessor(self.cookie_jar)]
         if not use_system_proxy:
-            # 默认绕过系统代理，避免本机残留的 localhost 代理配置把抓取请求拦死。
             handlers.insert(0, urllib.request.ProxyHandler({}))
         self.opener = urllib.request.build_opener(*handlers)
         self._load_cookies()
@@ -66,6 +71,7 @@ class YamiboClient:
         return self._fetch_with_validation(url, self._validate_thread_page)
 
     def _fetch_with_validation(self, url: str, validator, *, allow_login_retry: bool = True) -> FetchResult:
+        self._throttle()
         last_error: Exception | None = None
         for attempt in range(self.retries + 1):
             try:
@@ -93,6 +99,16 @@ class YamiboClient:
             raise last_error
         raise RemoteFetchError(f"failed to fetch {url}: {last_error}")
 
+    def _throttle(self) -> None:
+        if self._request_interval <= 0:
+            return
+        elapsed = time.monotonic() - self._last_request_time
+        jitter = random.uniform(0, self._request_interval_jitter) if self._request_interval_jitter > 0 else 0
+        wait = self._request_interval + jitter - elapsed
+        if wait > 0:
+            time.sleep(wait)
+        self._last_request_time = time.monotonic()
+
     def fetch_thread_by_tid(self, tid: int, *, base_url: str | None = None) -> FetchResult:
         return self.fetch_url(thread_url_from_tid(tid, base_url=base_url or "https://bbs.yamibo.com"))
 
@@ -117,6 +133,12 @@ class YamiboClient:
     def fetch_forum_threads(self, *, page: int | None = None, url: str | None = None, base_url: str | None = None, forum_id: int = DEFAULT_FORUM_ID) -> tuple[FetchResult, list[ForumThreadItem]]:
         result = self.fetch_forum_page(page=page, url=url, base_url=base_url, forum_id=forum_id)
         return result, parse_forum_list(result.html)
+
+    def fetch_forum_threads_dateline(self, *, page: int, base_url: str | None = None, forum_id: int = DEFAULT_FORUM_ID) -> tuple[FetchResult, list[ForumThreadItem], int]:
+        resolved_base = base_url or "https://bbs.yamibo.com"
+        url = dateline_forum_page_url(page, forum_id=forum_id, base_url=resolved_base)
+        result = self.fetch_url_allowing_forum_list(url)
+        return result, parse_forum_list(result.html), extract_total_pages(result.html)
 
     def fetch_search_results(
         self,

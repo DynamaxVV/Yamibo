@@ -60,7 +60,7 @@ def build_mcp_server():
         ),
     )
 
-    @server.tool(name="search_threads", description="统一搜索帖子：优先按论坛页搜索和筛选，再结合本地归档补充详情。")
+    @server.tool(name="search_threads", description="统一搜索帖子：按论坛页搜索和筛选，再结合本地归档补充详情。posted_on 与 start_page/end_page 互斥——指定 posted_on 时自动按发帖日期排序并使用指数跳转+二分查找策略。")
     def _search_threads(
         query: str = "",
         forum_id: int = 30,
@@ -90,10 +90,11 @@ def build_mcp_server():
     def _get_thread(tid: int, url: str | None = None, base_url: str | None = None) -> dict[str, object]:
         return get_thread(tid=tid, url=url, base_url=base_url)
 
-    @server.tool(name="browse_forum_page", description="读取论坛某一页的帖子列表；短调用，直接返回该页帖子信息，不创建后台任务。")
+    @server.tool(name="browse_forum_page", description="读取论坛某一页的帖子列表；短调用，直接返回该页帖子信息，不创建后台任务。order=\"dateline\" 按发帖时间排序（返回 total_pages），默认按最后回复排序。")
     def _browse_forum_page(
         page: int,
         forum_id: int = 30,
+        order: str = "default",
         base_url: str = "https://bbs.yamibo.com",
         cookie_file: str | None = None,
         include_sticky: bool = False,
@@ -102,6 +103,7 @@ def build_mcp_server():
         return browse_forum_page(
             page=page,
             forum_id=forum_id,
+            order=order,
             base_url=base_url,
             cookie_file=cookie_file,
             include_sticky=include_sticky,
@@ -270,6 +272,7 @@ def main() -> None:
     browse_forum_page_parser = sub.add_parser("browse-forum-page")
     browse_forum_page_parser.add_argument("--page", type=int, required=True)
     browse_forum_page_parser.add_argument("--forum-id", type=int, default=30)
+    browse_forum_page_parser.add_argument("--order", default="default", choices=["default", "dateline"], help="排序方式: default=最后回复, dateline=发帖时间")
     browse_forum_page_parser.add_argument("--base-url", default="https://bbs.yamibo.com")
     browse_forum_page_parser.add_argument("--cookie-file")
     browse_forum_page_parser.add_argument("--include-sticky", action="store_true")
@@ -291,7 +294,7 @@ def main() -> None:
     search_parser.add_argument("--limit", default=100)
     search_parser.add_argument("--start-page", type=int, default=1)
     search_parser.add_argument("--end-page", type=int)
-    search_parser.add_argument("--posted-on")
+    search_parser.add_argument("--posted-on", help="按发帖日期搜索(YYYY-MM-DD)，与 --start-page/--end-page 互斥")
     search_parser.add_argument("--base-url", default="https://bbs.yamibo.com")
     search_parser.add_argument("--cookie-file")
     search_parser.add_argument("--include-sticky", action="store_true")
@@ -335,6 +338,7 @@ def main() -> None:
                 browse_forum_page(
                     page=args.page,
                     forum_id=args.forum_id,
+                    order=args.order,
                     base_url=args.base_url,
                     cookie_file=args.cookie_file,
                     include_sticky=args.include_sticky,

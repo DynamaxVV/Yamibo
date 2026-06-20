@@ -38,6 +38,8 @@ class FloorSnapshot:
     pub_time: str | None
     has_images: bool
     image_urls: list[str] = field(default_factory=list)
+    quote_text: str | None = None
+    reply_text: str | None = None
 
 
 @dataclass(frozen=True)

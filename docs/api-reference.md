@@ -1,6 +1,6 @@
 # API 接口文档
 
-> 版本：0.2.0 | 更新日期：2026-06-21
+> 版本：0.5.0 | 更新日期：2026-06-21
 
 ## 1. MCP 工具 (Tools)
 
@@ -135,6 +135,7 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
 |------|------|------|--------|------|
 | page | int | 是 | - | 页码（正整数） |
 | forum_id | int | 否 | 30 | 论坛分区 ID（30=漫画, 55=轻小说, 5=动漫, 33=水区） |
+| order | string | 否 | "default" | 排序方式：`default`=最后回复时间，`dateline`=发帖时间。使用 `dateline` 时返回 `total_pages` |
 | base_url | string | 否 | "https://bbs.yamibo.com" | 站点根 URL |
 | cookie_file | string \| null | 否 | null | Cookie 文件路径 |
 | include_sticky | bool | 否 | false | 是否包含置顶帖 |

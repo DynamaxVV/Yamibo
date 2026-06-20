@@ -8,20 +8,20 @@ import { formatDateTime } from '../utils/time'
 function RecentTable({ threads, t }: { threads: ThreadSummary[]; t: (k: string) => string }) {
   if (threads.length === 0) return <div className="panel" style={{ color: 'var(--text-tertiary)', padding: '8px 12px', fontSize: 12 }}>{t('no_data')}</div>
   return (
-    <div className="table-wrap"><table>
-      <thead><tr><th>{t('tid')}</th><th>{t('title')}</th><th>{t('content_kind')}</th><th>{t('archive_status')}</th><th>{t('sync_time')}</th></tr></thead>
-      <tbody>
-        {threads.map(t_ => (
-          <tr key={t_.tid}>
-            <td className="mono"><Link to={`/threads/${t_.tid}`}>{t_.tid}</Link></td>
-            <td className="truncate"><Link to={`/threads/${t_.tid}`}>{t_.display_title || t_.raw_title}</Link></td>
-            <td><ContentBadge kind={t_.content_kind || 'unknown'} /></td>
-            <td><Badge status={t_.archive_status} /></td>
-            <td className="nowrap">{formatDateTime(t_.sync_time)}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table></div>
+      <div className="table-wrap"><table>
+        <thead><tr><th style={{ width: 75 }}>{t('tid')}</th><th>{t('title')}</th><th>{t('content_kind')}</th><th>{t('archive_status')}</th><th>{t('sync_time')}</th></tr></thead>
+        <tbody>
+          {threads.map(t_ => (
+            <tr key={t_.tid}>
+              <td className="mono"><Link to={`/threads/${t_.tid}`}>{t_.tid}</Link></td>
+              <td className="truncate" title={t_.display_title || t_.raw_title}><Link to={`/threads/${t_.tid}`}>{t_.display_title || t_.raw_title}</Link></td>
+              <td><ContentBadge kind={t_.content_kind || 'unknown'} /></td>
+              <td><Badge status={t_.archive_status} /></td>
+              <td className="nowrap col-time">{formatDateTime(t_.sync_time)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table></div>
   )
 }
 
@@ -47,6 +47,8 @@ function SectionHeader({ title, limit, onLimitChange, t }: { title: string; limi
 
 export function Dashboard() {
   const { t, lang } = useI18n()
+  const desc = (j: { description: string; description_en: string }) => lang === 'en' ? j.description_en : j.description
+  const auditDesc = (a: { description: string; description_en: string }) => lang === 'en' ? a.description_en : a.description
   const [data, setData] = useState<DashboardData | null>(null)
   const [primaryThreads, setPrimaryThreads] = useState<ThreadSummary[]>([])
   const [otherThreads, setOtherThreads] = useState<ThreadSummary[]>([])
@@ -112,16 +114,15 @@ export function Dashboard() {
 
       <h2>{t('recent_jobs')}</h2>
       <div className="table-wrap"><table>
-        <thead><tr><th>{t('id')}</th><th>{t('type')}</th><th>{t('status')}</th><th>{t('stage')}</th><th>{t('tid')}</th><th>{t('updated')}</th></tr></thead>
+        <thead><tr><th style={{ width: 75 }}>{t('tid')}</th><th>{t('description')}</th><th>{t('status')}</th><th style={{ width: 65 }}>{t('progress')}</th><th>{t('updated')}</th></tr></thead>
         <tbody>
           {data.recent_jobs.map(j => (
             <tr key={j.job_id}>
-              <td className="mono"><Link to={`/jobs/${j.job_id}`}>{j.job_id}</Link></td>
-              <td className="nowrap">{j.job_type}</td>
-              <td><Badge status={j.status} /></td>
-              <td className="nowrap">{j.stage || '-'}</td>
               <td>{j.tid ? <Link to={`/threads/${j.tid}`}>{j.tid}</Link> : '-'}</td>
-              <td className="nowrap">{formatDateTime(j.updated_at)}</td>
+              <td className="truncate" title={desc(j)}><Link to={`/jobs/${j.job_id}`}>{desc(j)}</Link></td>
+              <td><Badge status={j.status} /></td>
+              <td className="nowrap">{j.progress_current}/{j.progress_total ?? '?'}</td>
+              <td className="nowrap col-time">{formatDateTime(j.updated_at)}</td>
             </tr>
           ))}
         </tbody>
@@ -148,12 +149,11 @@ export function Dashboard() {
 
       <h2>{t('audit_events')}</h2>
       <div className="table-wrap"><table>
-        <thead><tr><th>{t('action')}</th><th>{t('target')}</th><th>{t('actor')}</th><th>{t('time')}</th></tr></thead>
+        <thead><tr><th>{t('description')}</th><th>{t('actor')}</th><th>{t('time')}</th></tr></thead>
         <tbody>
           {data.recent_audits.map(a => (
             <tr key={a.event_id}>
-              <td>{a.action}</td>
-              <td>{a.target_type}:{a.target_id}</td>
+              <td title={auditDesc(a)}>{auditDesc(a)}</td>
               <td>{a.actor}</td>
               <td className="nowrap">{formatDateTime(a.created_at)}</td>
             </tr>

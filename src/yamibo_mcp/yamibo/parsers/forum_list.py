@@ -100,3 +100,14 @@ def parse_forum_list(html_text: str) -> list[ForumThreadItem]:
             )
         )
     return items
+
+
+_TOTAL_PAGES_RE = re.compile(r'(?:共\s*(\d+)\s*页|<a[^>]*class="last"[^>]*>(\d+)</a>)')
+
+
+def extract_total_pages(html_text: str) -> int:
+    match = _TOTAL_PAGES_RE.search(html_text)
+    if not match:
+        return 1
+    pages_str = match.group(1) or match.group(2)
+    return int(pages_str) if pages_str else 1

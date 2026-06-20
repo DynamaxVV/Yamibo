@@ -56,6 +56,8 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
                 use_system_proxy=settings.use_system_proxy,
                 login_username=settings.login_username,
                 login_password=settings.login_password,
+                request_interval=settings.request_interval_seconds,
+                request_interval_jitter=settings.request_interval_jitter_seconds,
             )
             fetched = client.fetch_thread(tid=tid, url=str(url_value) if url_value else None, base_url=str(base_url) if base_url else None)
             html = fetched.html
@@ -68,7 +70,38 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
             forum_id = extract_forum_id_from_html(html)
         from yamibo_mcp.yamibo.parsers.thread_detail import extract_category_from_html
         category = extract_category_from_html(html)
-        refined_title, llm_title_meta = refine_title_parse_with_llm(
+
+        COMIC_NOVEL_FORUMS = {30, 55}
+        if forum_id is not None and forum_id not in COMIC_NOVEL_FORUMS:
+            from yamibo_mcp.domain.models import TitleSnapshot
+            from yamibo_mcp.yamibo.title.normalizer import normalize_display_title
+            display = normalize_display_title(snapshot.raw_title)
+            snapshot = replace(
+                snapshot,
+                title=TitleSnapshot(
+                    raw_title=snapshot.raw_title,
+                    display_title=display,
+                    group_name=None,
+                    author_guess=snapshot.title.author_guess,
+                    core_title_guess=display,
+                    normalized_core_title=display,
+                    series_key=None,
+                    title_aliases=[],
+                    chapter_name=None,
+                    chapter_index=None,
+                    chapter_index_end=None,
+                    chapter_title=None,
+                    subtitle=None,
+                    tags=[],
+                    confidence=1.0,
+                    needs_review=False,
+                    parser_version="no-extract",
+                ),
+            )
+            refined_title = snapshot.title
+            llm_title_meta = None
+        else:
+            refined_title, llm_title_meta = refine_title_parse_with_llm(
             settings,
             raw_title=snapshot.raw_title,
             parsed=replace(

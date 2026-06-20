@@ -41,6 +41,8 @@ class Settings:
     backup_dir: Path
     backup_keep_count: int
     cleanup_staging_older_than_hours: int
+    request_interval_seconds: float
+    request_interval_jitter_seconds: float
 
 
 def _read_local_config(path: Path) -> dict[str, object]:
@@ -101,7 +103,7 @@ def load_settings() -> Settings:
         data_dir=data_dir,
         db_path=db_path,
         title_hints_path=title_hints_path,
-        web_host=os.environ.get("YAMIBO_WEB_HOST", str(_cfg_value(config, "web", "host", "127.0.0.1"))),
+        web_host=os.environ.get("YAMIBO_WEB_HOST", str(_cfg_value(config, "web", "host", "0.0.0.0"))),
         web_port=int(os.environ.get("YAMIBO_WEB_PORT", str(_cfg_value(config, "web", "port", 8765)))),
         worker_id=os.environ.get("YAMIBO_WORKER_ID") or None,
         worker_poll_seconds=float(
@@ -191,6 +193,18 @@ def load_settings() -> Settings:
             os.environ.get(
                 "YAMIBO_CLEANUP_STAGING_OLDER_THAN_HOURS",
                 str(_cfg_value(config, "maintenance", "cleanup_staging_older_than_hours", 48)),
+            )
+        ),
+        request_interval_seconds=float(
+            os.environ.get(
+                "YAMIBO_REQUEST_INTERVAL_SECONDS",
+                str(_cfg_value(config, "yamibo", "request_interval_seconds", 1.0)),
+            )
+        ),
+        request_interval_jitter_seconds=float(
+            os.environ.get(
+                "YAMIBO_REQUEST_INTERVAL_JITTER_SECONDS",
+                str(_cfg_value(config, "yamibo", "request_interval_jitter_seconds", 0.5)),
             )
         ),
     )

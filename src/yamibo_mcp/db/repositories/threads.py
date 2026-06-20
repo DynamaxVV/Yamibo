@@ -155,15 +155,17 @@ class ThreadsRepository:
         for floor in snapshot.floors:
             self.conn.execute(
                 """
-                INSERT INTO floors (pid, tid, floor_no, publisher, content, pub_time, has_images, content_hash)
-                VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+                INSERT INTO floors (pid, tid, floor_no, publisher, content, pub_time, has_images, content_hash, quote_text, reply_text)
+                VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
                 ON CONFLICT(pid) DO UPDATE SET
                   tid = excluded.tid,
                   floor_no = excluded.floor_no,
                   publisher = excluded.publisher,
                   content = excluded.content,
                   pub_time = excluded.pub_time,
-                  has_images = excluded.has_images
+                  has_images = excluded.has_images,
+                  quote_text = excluded.quote_text,
+                  reply_text = excluded.reply_text
                 """,
                 (
                     floor.pid,
@@ -173,6 +175,8 @@ class ThreadsRepository:
                     floor.content,
                     floor.pub_time,
                     1 if floor.has_images else 0,
+                    floor.quote_text,
+                    floor.reply_text,
                 ),
             )
 
@@ -437,7 +441,8 @@ class ThreadsRepository:
               t.tid, t.raw_title, t.display_title, t.publisher, t.pub_time, t.sync_time,
               t.archive_status, t.validation_status, t.context_path, t.series_id, t.export_path,
               t.forum_id, t.content_kind, t.category,
-              tp.core_title_guess, tp.series_key, tp.chapter_name, tp.chapter_index, tp.chapter_index_end, tp.group_name, tp.author_guess, tp.needs_review
+              tp.core_title_guess, tp.series_key, tp.chapter_name, tp.chapter_index, tp.chapter_index_end, tp.group_name, tp.author_guess, tp.needs_review,
+              (SELECT COUNT(*) FROM floors f WHERE f.tid = t.tid) AS reply_count
             FROM threads t
             LEFT JOIN title_parse tp ON tp.tid = t.tid
         """
@@ -497,7 +502,8 @@ class ThreadsRepository:
                   t.archive_status, t.validation_status, t.context_path, t.series_id, t.export_path,
                   t.forum_id, t.content_kind, t.category,
                   tp.core_title_guess, tp.series_key, tp.chapter_name, tp.needs_review,
-                  bm25(thread_fts) AS rank
+                  bm25(thread_fts) AS rank,
+                  (SELECT COUNT(*) FROM floors f WHERE f.tid = t.tid) AS reply_count
                 FROM thread_fts
                 JOIN threads t ON t.tid = thread_fts.tid
                 LEFT JOIN title_parse tp ON tp.tid = t.tid
@@ -529,7 +535,8 @@ class ThreadsRepository:
               t.tid, t.raw_title, t.display_title, t.publisher, t.pub_time, t.sync_time,
               t.archive_status, t.validation_status, t.context_path, t.series_id, t.export_path,
               t.forum_id, t.content_kind, t.category,
-              tp.core_title_guess, tp.series_key, tp.chapter_name, tp.needs_review
+              tp.core_title_guess, tp.series_key, tp.chapter_name, tp.needs_review,
+              (SELECT COUNT(*) FROM floors f WHERE f.tid = t.tid) AS reply_count
             FROM threads t
             LEFT JOIN title_parse tp ON tp.tid = t.tid
             WHERE {" AND ".join(and_parts)}{like_where}

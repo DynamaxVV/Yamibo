@@ -63,23 +63,23 @@ export function Logs() {
   return (
     <>
       <div className="filter-bar">
-        <button className="btn-subtle" onClick={fetchLogs}>{t('refresh')}</button>
-        <button className="btn-subtle" onClick={() => setPaused(p => !p)}>
-          {paused ? `▶ ${t('resume')}` : `⏸ ${t('pause')}`}
-        </button>
-        <button className="btn-subtle" onClick={clearLogs}>{t('clear')}</button>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginLeft: 8 }}>
-          <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{t('status')}:</span>
+        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center' }}>
+          <button className="btn-subtle" onClick={fetchLogs}>{t('refresh')}</button>
+          <button className="btn-subtle" onClick={() => setPaused(p => !p)}>
+            {paused ? `▶ ${t('resume')}` : `⏸ ${t('pause')}`}
+          </button>
+          <button className="btn-subtle" onClick={clearLogs}>{t('clear')}</button>
+          <span style={{ fontSize: 12, color: 'var(--text-tertiary)', marginLeft: 4 }}>{t('status')}:</span>
           <select value={minLevel} onChange={e => setMinLevel(e.target.value as LevelFilter)}
-            style={{ fontSize: 12, padding: '1px 4px', border: '1px solid var(--border-light)', borderRadius: 3, background: 'var(--bg-card)', color: 'var(--text-primary)' }}>
+            style={{ fontSize: 12, padding: '1px 4px', border: '1px solid var(--border-light)', borderRadius: 3, background: 'var(--bg-surface)', color: 'var(--text-primary)' }}>
             {LEVEL_ORDER.map(l => <option key={l} value={l}>{l}</option>)}
           </select>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, color: 'var(--text-tertiary)', marginLeft: 'auto' }}>
+            <input type="checkbox" checked={autoScroll} onChange={e => setAutoScroll(e.target.checked)} />
+            {t('auto_scroll')}
+          </label>
+          <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{filtered.length} {t('log_unit')}</span>
         </div>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, color: 'var(--text-tertiary)', marginLeft: 'auto' }}>
-          <input type="checkbox" checked={autoScroll} onChange={e => setAutoScroll(e.target.checked)} />
-          {t('auto_scroll')}
-        </label>
-        <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{filtered.length} {t('log_unit')}</span>
       </div>
 
       <div className="log-view">

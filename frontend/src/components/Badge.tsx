@@ -16,8 +16,10 @@ const CONTENT_KIND_CLASSES: Record<string, string> = {
 }
 
 export function Badge({ status, children }: { status?: string | null; children?: ReactNode }) {
+  const { t } = useI18n()
   const kind = status ? (KIND_MAP[status.toLowerCase()] || 'muted') : 'muted'
-  return <span className={`badge badge-${kind}`}>{children || status || '-'}</span>
+  const label = status ? t(status) : '-'
+  return <span className={`badge badge-${kind}`}>{children || label}</span>
 }
 
 export function ContentBadge({ kind }: { kind: string | null }) {

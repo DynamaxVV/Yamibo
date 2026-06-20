@@ -6,7 +6,8 @@ import { useI18n } from '../context/I18nContext'
 import { formatDateTime } from '../utils/time'
 
 export function JobDetail() {
-  const { t } = useI18n()
+  const { t, lang } = useI18n()
+  const desc = (j: { description: string; description_en: string }) => lang === 'en' ? j.description_en : j.description
   const id = window.location.pathname.split('/').pop() || ''
   const [job, setJob] = useState<JobSummary | null>(null)
   const [events, setEvents] = useState<JobEvent[]>([])
@@ -21,8 +22,8 @@ export function JobDetail() {
   if (!job) return <div className="panel" style={{ color: 'var(--text-tertiary)' }}>{t('loading')}</div>
 
   const rows = [
-    ['ID', <span className="mono">{job.job_id}</span>],
-    [t('type'), job.job_type],
+    [t('description'), <span style={{ fontSize: 14, fontWeight: 500 }}>{desc(job)}</span>],
+    ['ID', <span className="mono" style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{job.job_id}</span>],
     [t('status'), <Badge status={job.status} />],
     [t('stage'), job.stage || '-'],
     [t('tid'), job.tid ? <Link to={`/threads/${job.tid}`}>{job.tid}</Link> : '-'],
@@ -34,12 +35,43 @@ export function JobDetail() {
     [t('finished_at'), formatDateTime(job.finished_at)],
   ]
 
+  const payloadEntries = Object.entries(job.payload || {})
+  const artifactEntries = Object.entries(job.artifacts || {})
+
   return (
     <>
       <h2>{t('job_detail')}</h2>
       <div className="table-wrap"><table>
         <tbody>{rows.map(([k, v], i) => <tr key={i}><th style={{ width: 120 }}>{k}</th><td style={{ textAlign: 'left' }}>{v}</td></tr>)}</tbody>
       </table></div>
+
+      {payloadEntries.length > 0 && (
+        <>
+          <h2>{t('payload')}</h2>
+          <div className="table-wrap"><table>
+            <thead><tr><th>{t('key')}</th><th>{t('value')}</th></tr></thead>
+            <tbody>
+              {payloadEntries.map(([k, v], i) => (
+                <tr key={i}><td className="mono">{k}</td><td style={{ textAlign: 'left' }}>{typeof v === 'object' ? JSON.stringify(v) : String(v ?? '-')}</td></tr>
+              ))}
+            </tbody>
+          </table></div>
+        </>
+      )}
+
+      {artifactEntries.length > 0 && (
+        <>
+          <h2>{t('artifacts')}</h2>
+          <div className="table-wrap"><table>
+            <thead><tr><th>{t('key')}</th><th>{t('value')}</th></tr></thead>
+            <tbody>
+              {artifactEntries.map(([k, v], i) => (
+                <tr key={i}><td className="mono">{k}</td><td style={{ textAlign: 'left' }}>{typeof v === 'object' ? JSON.stringify(v) : String(v ?? '-')}</td></tr>
+              ))}
+            </tbody>
+          </table></div>
+        </>
+      )}
 
       {events.length > 0 && (
         <>

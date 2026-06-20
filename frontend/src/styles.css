@@ -230,10 +230,27 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 
 /* ─── Row Actions ─── */
 .row-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.row-actions > a.btn-subtle, .row-actions > button { height: 26px; display: inline-flex; align-items: center; }
 .input-sm {
   padding: 3px 6px; border: 1px solid var(--border); border-radius: var(--radius-sm);
   font-size: 12px; background: var(--bg-surface); color: var(--text-primary);
   width: 70px;
+}
+.input-btn-group {
+  display: inline-flex; align-items: stretch; height: 26px;
+}
+.input-btn-group input {
+  padding: 4px 6px; border: 1px solid var(--border-light); border-right: none; border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+  font-size: 12px; background: var(--bg-surface); color: var(--text-primary); width: 60px;
+  outline: none;
+}
+.input-btn-group input:focus {
+  border-color: var(--accent); box-shadow: 0 0 0 2px rgba(9,105,218,0.12);
+  z-index: 1; position: relative;
+}
+.input-btn-group button {
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  font-size: 12px; padding: 4px 8px; white-space: nowrap;
 }
 
 /* ─── Inline Edit ─── */
@@ -304,9 +321,21 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 .floor-content {
   flex: 1; padding: 12px; min-width: 0;
 }
+.floor-quote {
+  margin-bottom: 8px;
+}
+.floor-quote blockquote {
+  margin: 0; padding: 6px 10px;
+  border-left: 3px solid var(--border);
+  background: var(--bg-muted);
+  color: var(--text-secondary);
+  font-size: 13px; line-height: 1.6;
+  white-space: pre-wrap; word-break: break-word;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
 .floor-text {
   white-space: pre-wrap; word-break: break-word; line-height: 1.7;
-  font-size: 14px; margin-bottom: 8px;
+  font-size: inherit; margin-bottom: 8px;
 }
 .floor-images {
   display: flex; flex-direction: column; gap: 2px;
@@ -374,17 +403,42 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 
 /* ─── Responsive ─── */
 @media (max-width: 768px) {
-  .page { padding: 12px; }
-  .stat-row { flex-direction: column; }
-  .subnav { gap: 8px; flex-wrap: wrap; }
-  table { font-size: 12px; }
-  th, td { padding: 6px 8px; }
+  .page { padding: 10px; }
+  .stat-row { flex-wrap: wrap; }
+  .stat-cell { flex: 1; min-width: 80px; }
+  .subnav { gap: 6px; flex-wrap: wrap; }
+  .subnav a { font-size: 12px; padding: 3px 0; }
+  table { font-size: 12px; table-layout: auto !important; }
+  th, td { padding: 5px 6px; }
+  td.truncate { max-width: none; white-space: normal; word-break: break-word; }
+  .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .hide-mobile { display: none !important; }
+  td.col-time { min-width: 100px; white-space: normal; word-break: break-word; }
+  td.col-title-mobile { min-width: 0; }
   .floor-row { flex-direction: column; }
   .floor-sidebar {
     width: 100%; max-width: none; border-right: none;
     border-bottom: 1px solid var(--border-light);
-    flex-direction: row; gap: 12px; flex-wrap: wrap;
+    flex-direction: row; gap: 8px; flex-wrap: wrap;
   }
+  .topbar { flex-wrap: wrap; gap: 8px; }
+  .brand { font-size: 16px; }
+  .filter-bar { flex-direction: column; }
+  .filter-search { min-width: 0; width: 100%; }
+  .filter-group { width: 100%; }
+  .filter-group select { flex: 1; }
+  .forum-tags { gap: 4px; }
+  .forum-tag { padding: 3px 8px; font-size: 11px; }
+  .row-actions { gap: 4px; }
+  .row-actions button { font-size: 11px; padding: 3px 8px; }
+  .confirm-dialog { padding: 16px; }
+  .confirm-compare { flex-direction: column; gap: 8px; }
+  .float-actions { right: 8px; bottom: 8px; }
+  .reading-toolbar button { padding: 3px 8px; font-size: 11px; }
+  .floor-content { padding: 8px; }
+  .log-view { max-height: calc(100vh - 200px); }
+  .log-time { width: 70px; }
+  .inline-edit-grid { grid-template-columns: 1fr; }
 }
 .image-grid {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
@@ -400,15 +454,6 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 }
 .image-card .meta {
   margin-top: 6px; font-size: 12px; color: var(--text-tertiary);
-}
-
-/* ─── Responsive ─── */
-@media (max-width: 768px) {
-  .page { padding: 12px; }
-  .stat-row { flex-direction: column; }
-  .subnav { gap: 8px; flex-wrap: wrap; }
-  table { font-size: 12px; }
-  th, td { padding: 6px 8px; }
 }
 
 .lang-btn {
@@ -437,4 +482,10 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 }
 .forum-tag-count {
   font-size: 10px; opacity: 0.7;
+}
+
+.review-table th,
+.review-table td,
+.review-table .truncate {
+  text-align: center !important;
 }

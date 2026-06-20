@@ -199,46 +199,53 @@ export function Review() {
       {series.length === 0 ? (
         <div className="panel" style={{ color: 'var(--text-tertiary)' }}>{t('no_pending_series')}</div>
       ) : (
-        <div className="table-wrap"><table>
-          <thead><tr><th>{t('id')}</th><th>{t('title')}</th><th>{t('author')}</th><th>{t('series_key')}</th><th>{t('thread_count')}</th><th>{t('action')}</th></tr></thead>
+        <div className="table-wrap"><table className="review-table" style={{ tableLayout: 'fixed', width: '100%' }}>
+          <thead><tr><th style={{ width: 45 }}>{t('id')}</th><th style={{ width: '30%' }}>{t('title')}</th><th style={{ width: 160 }}>{t('author')}</th><th style={{ width: 260 }}>{t('series_key')}</th><th style={{ width: '20%' }}>{t('action')}</th></tr></thead>
           <tbody>
-            {series.flatMap(s => [
+            {series.flatMap(s => {
+              const sims = similarMap[s.series_id] || []
+              return [
               <tr key={s.series_id}>
                 <td className="mono"><Link to={`/series/${s.series_id}`}>{s.series_id}</Link></td>
-                <td className="truncate">{s.canonical_title || s.series_key}</td>
-                <td>{s.author_guess || '-'}</td>
-                <td className="mono">{s.series_key || '-'}</td>
-                <td>{s.thread_count}</td>
+                <td className="truncate" title={s.canonical_title || s.series_key || ''}>{s.canonical_title || s.series_key}</td>
+                <td className="truncate" title={s.author_guess || ''}>{s.author_guess || '-'}</td>
+                <td className="mono truncate" title={s.series_key || ''}>{s.series_key || '-'}</td>
                 <td>
-                  <div className="row-actions">
-                    <button className="btn-subtle" onClick={() => startEditSeries(s)}>
-                      {editingSeries === s.series_id ? t('collapse') : t('edit')}
-                    </button>
+                  <div className="row-actions" style={{ gap: 4, flexWrap: 'wrap' }}>
+                    <button className="btn-subtle" onClick={() => startEditSeries(s)}>{editingSeries === s.series_id ? t('collapse') : t('edit')}</button>
                     <button className="btn-subtle" onClick={() => proposeConfirmSeries(s)}>{t('confirm')}</button>
-                    <input className="input-sm" size={6} placeholder={t('merge_target_id')} value={mergeTarget[s.series_id] || ''}
-                      onChange={e => setMergeTarget(m => ({ ...m, [s.series_id]: e.target.value }))} />
-                    <button className="btn-subtle" onClick={() => proposeMerge(s)}>{t('merge_action')}</button>
+                    <div className="input-btn-group">
+                      <input placeholder={t('merge_target_id')} value={mergeTarget[s.series_id] || ''}
+                        onChange={e => setMergeTarget(m => ({ ...m, [s.series_id]: e.target.value }))} />
+                      <button className="btn-subtle" onClick={() => proposeMerge(s)}>{t('merge_action')}</button>
+                    </div>
                   </div>
-                  {similarMap[s.series_id] && (
-                    <div style={{ marginTop: 4, display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center' }}>
-                      <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>{t('similar_label')}</span>
-                      {similarMap[s.series_id].map(sim => (
+                </td>
+              </tr>,
+              ...(sims.length ? [
+                <tr key={`${s.series_id}-similar`} style={{ background: 'var(--bg-muted)' }}>
+                  <td colSpan={2} style={{ padding: '3px 8px', borderTop: '1px dashed var(--border-light)' }}>
+                    <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>{t('similar_label')}</span>
+                  </td>
+                  <td colSpan={3} style={{ padding: '3px 8px', borderTop: '1px dashed var(--border-light)' }}>
+                    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center' }}>
+                      {sims.map(sim => (
                         <button
                           key={sim.series_id}
                           className="btn-chip"
                           onClick={() => setMergeTarget(m => ({ ...m, [s.series_id]: String(sim.series_id) }))}
                           title={`${sim.canonical_title || sim.series_key} (${sim.thread_count}${t('thread_link')})`}
                         >
-                          {sim.series_id}: {(sim.canonical_title || sim.series_key || '').slice(0, 12)}
+                          {sim.series_id}: {(sim.canonical_title || sim.series_key || '').slice(0, 16)}
                         </button>
                       ))}
                     </div>
-                  )}
-                </td>
-              </tr>,
+                  </td>
+                </tr>,
+              ] : []),
               ...(editingSeries === s.series_id ? [
                 <tr key={`${s.series_id}-edit`}>
-                  <td colSpan={6} style={{ padding: 0 }}>
+                  <td colSpan={5} style={{ padding: 0 }}>
                     <div className="inline-edit">
                       <div className="inline-edit-grid">
                         <label>{t('series_name')}<input value={seriesForm.canonical_title || ''} onChange={e => setSeriesForm(f => ({ ...f, canonical_title: e.target.value }))} /></label>
@@ -253,7 +260,7 @@ export function Review() {
                   </td>
                 </tr>,
               ] : []),
-            ])}
+            ]})}
           </tbody>
         </table></div>
       )}
@@ -262,13 +269,13 @@ export function Review() {
       {titles.length === 0 ? (
         <div className="panel" style={{ color: 'var(--text-tertiary)' }}>{t('no_pending_titles')}</div>
       ) : (
-        <div className="table-wrap"><table>
+        <div className="table-wrap"><table className="review-table">
           <thead><tr><th>{t('tid')}</th><th>{t('title')}</th><th>{t('core_title')}</th><th>{t('author')}</th><th>{t('series_key')}</th><th>{t('action')}</th></tr></thead>
           <tbody>
             {titles.flatMap(th => [
               <tr key={th.tid}>
                 <td className="mono"><Link to={`/threads/${th.tid}`}>{th.tid}</Link></td>
-                <td className="truncate">{th.display_title || th.raw_title}</td>
+                <td className="truncate" title={th.display_title || th.raw_title || ''}>{th.display_title || th.raw_title}</td>
                 <td>{th.core_title_guess || '-'}</td>
                 <td>{th.publisher || '-'}</td>
                 <td className="mono">{th.series_key || '-'}</td>
@@ -305,7 +312,7 @@ export function Review() {
       )}
 
       {confirm && (
-        <div className="confirm-overlay" onClick={() => setConfirm(null)}>
+        <div className="confirm-overlay" onClick={() => { setConfirm(null); setConfirmError(null) }}>
           <div className="confirm-dialog" onClick={e => e.stopPropagation()}>
             <h2 style={{ margin: '0 0 16px', fontSize: 15, color: 'var(--text-primary)', textTransform: 'none', letterSpacing: 0 }}>{confirm.label}</h2>
             <div className="confirm-compare">
