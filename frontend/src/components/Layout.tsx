@@ -21,7 +21,7 @@ export function Layout() {
       <div className="page">
         <div className="topbar">
           <div style={{ display: 'flex', alignItems: 'center', gap: 20 }}>
-            <span className="brand">百合会归档</span>
+            <span className="brand">百合会归档助手</span>
             <nav className="subnav">
               {NAV_ITEMS.map(item => (
                 <NavLink key={item.to} to={item.to} end={item.to === '/'}

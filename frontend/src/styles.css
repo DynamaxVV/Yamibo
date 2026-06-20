@@ -92,6 +92,9 @@ td.mono { font-family: var(--font-mono, monospace); font-size: 12px; }
 td.nowrap { white-space: nowrap; }
 td.truncate { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 td a { color: var(--accent); }
+th.sortable { cursor: pointer; user-select: none; }
+th.sortable:hover { color: var(--accent); }
+.sort-arrow { font-size: 10px; margin-left: 2px; }
 th[style*="width"] { font-weight: 600; font-size: 12px; color: var(--text-header, #8b949e); text-transform: none; letter-spacing: 0; }
 
 /* ─── Badges ─── */

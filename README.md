@@ -1,4 +1,4 @@
-# Yamibo MCP
+# 百合会归档助手
 
 百合会 (yamibo.com) 论坛本地归档系统。通过 MCP 协议让 LLM 客户端浏览、搜索、归档和导出论坛贴子；内嵌 React WebUI 控制台，支持多主题切换。
 
