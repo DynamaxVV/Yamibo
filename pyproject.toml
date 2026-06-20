@@ -1,6 +1,6 @@
 [project]
 name = "yamibo-mcp"
-version = "0.1.0"
+version = "0.3.0"
 description = "Local Yamibo archiving MCP server, worker, and web console."
 requires-python = ">=3.11"
 dependencies = [
