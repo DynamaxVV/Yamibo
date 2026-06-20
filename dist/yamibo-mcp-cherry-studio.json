@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "yamibo-mcp": {
+      "command": "uv",
+      "args": [
+        "run",
+        "yamibo-mcp-server",
+        "stdio"
+      ],
+      "cwd": "/Users/vv/Code/Yamibo"
+    }
+  }
+}

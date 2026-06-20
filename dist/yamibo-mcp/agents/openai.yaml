@@ -1,0 +1,7 @@
+interface:
+  display_name: "YamiboMCP 中文助手"
+  short_description: "用于检索、浏览、查看与归档百合会论坛帖子和章节内容，支持多分区"
+  default_prompt: "Use $yamibo-mcp to search, browse, and archive Yamibo forum threads across multiple sections (manga, novel, anime, discussion)."
+
+policy:
+  allow_implicit_invocation: true
