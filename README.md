@@ -68,14 +68,16 @@ MCP Server 无需手动启动，由 LLM 客户端自动调用。
 LLM Client (Claude Desktop / Cursor)
     │ MCP Protocol (stdio)
     ▼
-yamibo-mcp-server ──创建任务──▶ SQLite
-                                    ▲
-                                    │ 轮询 + 抢占
-yamibo-daemon ─────────────────────┘
-    ├── 论坛 HTTP 客户端
+yamibo-mcp-server ──创建任务──▶ SQLite (jobs + job_events)
+    │                               ▲
+    │ application layer             │ 轮询 + 抢占
+    │ (ensure_thread, archive)      │
+yamibo-daemon ──────────────────────┘
+    ├── 论坛 HTTP 客户端（多分区支持）
     ├── HTML 解析器
     ├── 标题解析（规则 + LLM）
-    ├── 图片下载
+    ├── 图片下载 + 资产管理
+    ├── 内容块模型 (content_blocks)
     ├── 文件归档（Markdown + JSON）
     └── 嵌入式 Web 控制台 (http://127.0.0.1:8765)
 ```
@@ -185,4 +187,5 @@ uv run pytest -k "test_name"       # 按名称过滤
 | [用户操作手册](docs/user-manual.md) | MCP/Web/CLI 使用方式 |
 | [测试方案](docs/testing-strategy.md) | 测试原则、规范、架构 |
 | [测试报告](docs/test-report.md) | 测试执行结果 |
-| [版本发布说明](docs/release-notes.md) | v0.1.0 功能清单 |
+| [版本发布说明](docs/release-notes.md) | v0.2.0 功能清单 |
+| [Agent 重构执行计划](docs/agent-refactor-execution-prompt.zh-CN.md) | 渐进式重构路线图（Phase 1-6） |
