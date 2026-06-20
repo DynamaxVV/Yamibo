@@ -6,6 +6,7 @@ __pycache__/
 .pytest_cache/
 .venv/
 .venv_mcp/
+node_modules/
 
 # Sensitive files
 .cookie

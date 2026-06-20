@@ -1,0 +1,37 @@
+import type { Theme } from './index'
+
+export const retro: Theme = {
+  name: 'retro',
+  label: '复古 1957',
+  fonts: {
+    sans: 'Georgia, "Times New Roman", "Palatino", serif',
+    serif: 'Georgia, "Palatino Linotype", "Book Antiqua", serif',
+    mono: '"Courier New", Courier, monospace',
+  },
+  colors: {
+    bgPage: '#f5f0e8',
+    bgSurface: '#faf7f2',
+    bgMuted: '#ede8de',
+    bgHeader: '#e6dfd3',
+    border: '#d4c9b8',
+    borderLight: '#e6dfd3',
+    textPrimary: '#2d2d2d',
+    textSecondary: '#5a5a5a',
+    textTertiary: '#8a8a7a',
+    textHeader: '#8a8a7a',
+    accent: '#c75b39',
+    accentLight: '#fde8e0',
+    accentText: '#a04530',
+    statusOk: '#5a7a3a',
+    statusWarn: '#d4a574',
+    statusError: '#c75b39',
+    statusMuted: '#a0a090',
+    badgeOkBg: '#e0e8d0',
+    badgeWarnBg: '#f5e6d0',
+    badgeErrorBg: '#fde8e0',
+    badgeAccentBg: '#fde8e0',
+    badgeMutedBg: '#e6dfd3',
+  },
+  radius: { sm: '4px', md: '8px', lg: '12px', full: '9999px' },
+  shadow: { card: '0 2px 4px rgba(0,0,0,0.06)', elevated: '0 4px 12px rgba(0,0,0,0.1)' },
+}

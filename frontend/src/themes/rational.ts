@@ -1,0 +1,37 @@
+import type { Theme } from './index'
+
+export const rational: Theme = {
+  name: 'rational',
+  label: '理性数据',
+  fonts: {
+    sans: '"Instrument Serif", "Space Grotesk", Georgia, serif',
+    serif: '"Instrument Serif", Georgia, "Times New Roman", serif',
+    mono: '"JetBrains Mono", "SF Mono", "Fira Code", monospace',
+  },
+  colors: {
+    bgPage: '#f8f9fa',
+    bgSurface: '#ffffff',
+    bgMuted: '#f1f3f5',
+    bgHeader: '#e9ecef',
+    border: '#dee2e6',
+    borderLight: '#e9ecef',
+    textPrimary: '#212529',
+    textSecondary: '#495057',
+    textTertiary: '#868e96',
+    textHeader: '#868e96',
+    accent: '#0d6efd',
+    accentLight: '#cfe2ff',
+    accentText: '#0a58ca',
+    statusOk: '#198754',
+    statusWarn: '#ffc107',
+    statusError: '#dc3545',
+    statusMuted: '#adb5bd',
+    badgeOkBg: '#d1e7dd',
+    badgeWarnBg: '#fff3cd',
+    badgeErrorBg: '#f8d7da',
+    badgeAccentBg: '#cfe2ff',
+    badgeMutedBg: '#e9ecef',
+  },
+  radius: { sm: '2px', md: '3px', lg: '4px', full: '9999px' },
+  shadow: { card: 'none', elevated: '0 1px 2px rgba(0,0,0,0.05)' },
+}

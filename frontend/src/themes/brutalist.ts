@@ -1,0 +1,37 @@
+import type { Theme } from './index'
+
+export const brutalist: Theme = {
+  name: 'brutalist',
+  label: '粗野',
+  fonts: {
+    sans: '"Courier New", "Consolas", monospace',
+    serif: '"Courier New", "Georgia", serif',
+    mono: '"Courier New", "Consolas", monospace',
+  },
+  colors: {
+    bgPage: '#ffffff',
+    bgSurface: '#ffffff',
+    bgMuted: '#f0f0f0',
+    bgHeader: '#1a1a1a',
+    border: '#000000',
+    borderLight: '#333333',
+    textPrimary: '#000000',
+    textSecondary: '#333333',
+    textTertiary: '#666666',
+    textHeader: '#ffffff',
+    accent: '#ff0000',
+    accentLight: '#ffe0e0',
+    accentText: '#cc0000',
+    statusOk: '#00aa00',
+    statusWarn: '#ff8800',
+    statusError: '#ff0000',
+    statusMuted: '#999999',
+    badgeOkBg: '#e0ffe0',
+    badgeWarnBg: '#fff0d0',
+    badgeErrorBg: '#ffe0e0',
+    badgeAccentBg: '#ffe0e0',
+    badgeMutedBg: '#e0e0e0',
+  },
+  radius: { sm: '0px', md: '0px', lg: '0px', full: '0px' },
+  shadow: { card: 'none', elevated: 'none' },
+}

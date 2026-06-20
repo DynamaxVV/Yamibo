@@ -423,32 +423,22 @@ class ThreadsRepository:
         }
 
     def list_threads(self, *, limit: int = 100, forum_id: int | None = None) -> list[sqlite3.Row]:
-        if forum_id is not None:
-            return self.conn.execute(
-                """
-                SELECT
-                  t.tid, t.raw_title, t.display_title, t.publisher, t.sync_time,
-                  t.archive_status, t.validation_status, t.context_path, t.series_id, t.export_path,
-                  tp.core_title_guess, tp.series_key, tp.chapter_name, tp.chapter_index, tp.chapter_index_end, tp.group_name, tp.author_guess, tp.needs_review
-                FROM threads t
-                LEFT JOIN title_parse tp ON tp.tid = t.tid
-                WHERE t.forum_id = ?
-                ORDER BY COALESCE(t.sync_time, '') DESC, t.tid DESC
-                LIMIT ?
-                """,
-                (forum_id, limit),
-            ).fetchall()
-        return self.conn.execute(
-            """
+        base_select = """
             SELECT
-              t.tid, t.raw_title, t.display_title, t.publisher, t.sync_time,
+              t.tid, t.raw_title, t.display_title, t.publisher, t.pub_time, t.sync_time,
               t.archive_status, t.validation_status, t.context_path, t.series_id, t.export_path,
+              t.forum_id, t.content_kind,
               tp.core_title_guess, tp.series_key, tp.chapter_name, tp.chapter_index, tp.chapter_index_end, tp.group_name, tp.author_guess, tp.needs_review
             FROM threads t
             LEFT JOIN title_parse tp ON tp.tid = t.tid
-            ORDER BY COALESCE(t.sync_time, '') DESC, t.tid DESC
-            LIMIT ?
-            """,
+        """
+        if forum_id is not None:
+            return self.conn.execute(
+                f"{base_select} WHERE t.forum_id = ? ORDER BY COALESCE(t.sync_time, '') DESC, t.tid DESC LIMIT ?",
+                (forum_id, limit),
+            ).fetchall()
+        return self.conn.execute(
+            f"{base_select} ORDER BY COALESCE(t.sync_time, '') DESC, t.tid DESC LIMIT ?",
             (limit,),
         ).fetchall()
 
@@ -491,8 +481,9 @@ class ThreadsRepository:
             rows = self.conn.execute(
                 f"""
                 SELECT
-                  t.tid, t.raw_title, t.display_title, t.publisher, t.sync_time,
+                  t.tid, t.raw_title, t.display_title, t.publisher, t.pub_time, t.sync_time,
                   t.archive_status, t.validation_status, t.context_path, t.series_id, t.export_path,
+                  t.forum_id, t.content_kind,
                   tp.core_title_guess, tp.series_key, tp.chapter_name, tp.needs_review,
                   bm25(thread_fts) AS rank
                 FROM thread_fts
@@ -509,7 +500,7 @@ class ThreadsRepository:
         except sqlite3.OperationalError:
             pass
         like = f"%{normalized}%"
-        like_params: list[object] = [like, like, like, like]
+        like_params: list[object] = [like, like, like, like, like]
         like_where = ""
         if forum_id is not None:
             like_where = " AND t.forum_id = ?"
@@ -518,13 +509,15 @@ class ThreadsRepository:
         return self.conn.execute(
             f"""
             SELECT
-              t.tid, t.raw_title, t.display_title, t.publisher, t.sync_time,
+              t.tid, t.raw_title, t.display_title, t.publisher, t.pub_time, t.sync_time,
               t.archive_status, t.validation_status, t.context_path, t.series_id, t.export_path,
+              t.forum_id, t.content_kind,
               tp.core_title_guess, tp.series_key, tp.chapter_name, tp.needs_review
             FROM threads t
             LEFT JOIN title_parse tp ON tp.tid = t.tid
             WHERE (t.raw_title LIKE ?
                OR t.display_title LIKE ?
+               OR t.publisher LIKE ?
                OR tp.core_title_guess LIKE ?
                OR tp.series_key LIKE ?){like_where}
             ORDER BY COALESCE(t.sync_time, '') DESC, t.tid DESC

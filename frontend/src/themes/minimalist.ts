@@ -1,0 +1,37 @@
+import type { Theme } from './index'
+
+export const minimalist: Theme = {
+  name: 'minimalist',
+  label: '极简专业',
+  fonts: {
+    sans: '"Outfit", "Space Grotesk", -apple-system, BlinkMacSystemFont, sans-serif',
+    serif: '"Space Grotesk", Georgia, serif',
+    mono: '"JetBrains Mono", "SF Mono", "Fira Code", monospace',
+  },
+  colors: {
+    bgPage: '#ffffff',
+    bgSurface: '#ffffff',
+    bgMuted: '#f8f9fa',
+    bgHeader: '#f1f3f5',
+    border: '#e0e0e0',
+    borderLight: '#f0f0f0',
+    textPrimary: '#1a1a2e',
+    textSecondary: '#6b7280',
+    textTertiary: '#9ca3af',
+    textHeader: '#9ca3af',
+    accent: '#0066ff',
+    accentLight: '#e6f0ff',
+    accentText: '#0052cc',
+    statusOk: '#16a34a',
+    statusWarn: '#d97706',
+    statusError: '#dc2626',
+    statusMuted: '#9ca3af',
+    badgeOkBg: '#dcfce7',
+    badgeWarnBg: '#fef3c7',
+    badgeErrorBg: '#fee2e2',
+    badgeAccentBg: '#e6f0ff',
+    badgeMutedBg: '#f3f4f6',
+  },
+  radius: { sm: '4px', md: '6px', lg: '8px', full: '9999px' },
+  shadow: { card: 'none', elevated: '0 1px 3px rgba(0,0,0,0.08)' },
+}

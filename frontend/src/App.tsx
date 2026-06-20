@@ -1,0 +1,37 @@
+import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import { ThemeProvider } from './context/ThemeContext'
+import { Layout } from './components/Layout'
+import { Dashboard } from './pages/Dashboard'
+import { Jobs } from './pages/Jobs'
+import { JobDetail } from './pages/JobDetail'
+import { Threads } from './pages/Threads'
+import { ThreadDetail } from './pages/ThreadDetail'
+import { SeriesDetail, Exports } from './pages/Exports'
+import { Series } from './pages/Series'
+import { Review } from './pages/Review'
+import { Forums } from './pages/Forums'
+import { Logs } from './pages/Logs'
+
+export default function App() {
+  return (
+    <ThemeProvider>
+      <BrowserRouter>
+        <Routes>
+          <Route element={<Layout />}>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/jobs" element={<Jobs />} />
+            <Route path="/jobs/:id" element={<JobDetail />} />
+            <Route path="/threads" element={<Threads />} />
+            <Route path="/threads/:tid" element={<ThreadDetail />} />
+            <Route path="/series" element={<Series />} />
+            <Route path="/series/:id" element={<SeriesDetail />} />
+            <Route path="/review" element={<Review />} />
+            <Route path="/exports" element={<Exports />} />
+            <Route path="/forums" element={<Forums />} />
+            <Route path="/logs" element={<Logs />} />
+          </Route>
+        </Routes>
+      </BrowserRouter>
+    </ThemeProvider>
+  )
+}

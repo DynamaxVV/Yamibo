@@ -188,4 +188,4 @@ uv run pytest -k "test_name"       # 按名称过滤
 | [测试方案](docs/testing-strategy.md) | 测试原则、规范、架构 |
 | [测试报告](docs/test-report.md) | 测试执行结果 |
 | [版本发布说明](docs/release-notes.md) | v0.2.0 功能清单 |
-| [Agent 重构执行计划](docs/agent-refactor-execution-prompt.zh-CN.md) | 渐进式重构路线图（Phase 1-6） |
+| [WebUI 设计文档](docs/webui-design.md) | 功能点、主题系统、组件设计、API 端点 |

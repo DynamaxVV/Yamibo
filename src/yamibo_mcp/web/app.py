@@ -15,33 +15,41 @@ from yamibo_mcp.config import Settings, load_settings
 from yamibo_mcp.db.connection import connect
 from yamibo_mcp.db.migrations import migrate
 from yamibo_mcp.db.repositories.audit_events import AuditEventsRepository
+from yamibo_mcp.db.repositories.assets import AssetsRepository
+from yamibo_mcp.db.repositories.content_blocks import ContentBlocksRepository
 from yamibo_mcp.db.repositories.job_events import JobEventsRepository
 from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.db.repositories.series import SeriesRepository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
 from yamibo_mcp.domain.enums import JobType
+from yamibo_mcp.domain.forums import default_forums
 from yamibo_mcp.logging import configure_logging
 from yamibo_mcp.services.title_hints import update_title_hints
 from yamibo_mcp.storage.paths import StoragePaths
+from yamibo_mcp.web.api import handle_api
+
+_FORUM_NAMES: dict[int, str] = {f.forum_id: f.name for f in default_forums()}
+_FORUM_KINDS: dict[int, str] = {f.forum_id: f.content_kind for f in default_forums()}
 
 TRANSLATIONS = {
     "zh": {
         "dashboard": "控制台",
         "jobs": "任务",
-        "threads": "帖子归档",
-        "series": "作品系列",
-        "title_review": "标题复核",
+        "threads": "帖子",
+        "series": "系列",
+        "title_review": "复核",
         "exports": "导出",
+        "forums": "版块",
         "language": "语言",
         "switch_zh": "中文",
-        "switch_en": "English",
+        "switch_en": "EN",
         "data_dir": "数据目录",
         "create_noop_job": "创建空任务",
         "local_html_path": "本地 HTML 路径",
         "create_sync_job": "创建同步任务",
         "recent_jobs": "最近任务",
         "worker_heartbeats": "Worker 心跳",
-        "recent_audit_events": "最近审计事件",
+        "recent_audit_events": "审计事件",
         "id": "ID",
         "type": "类型",
         "status": "状态",
@@ -51,9 +59,9 @@ TRANSLATIONS = {
         "worker": "Worker",
         "latest_heartbeat": "最近心跳",
         "latest_update": "最近更新",
-        "running_jobs": "运行中任务",
-        "seen_jobs": "处理过任务数",
-        "action": "动作",
+        "running_jobs": "运行中",
+        "seen_jobs": "已处理",
+        "action": "操作",
         "target": "目标",
         "actor": "执行者",
         "at": "时间",
@@ -82,7 +90,7 @@ TRANSLATIONS = {
         "canonical_title": "规范标题",
         "author": "作者",
         "confidence": "置信度",
-        "needs_review": "需要复核",
+        "needs_review": "复核",
         "last_sync": "最近同步",
         "aliases": "别名",
         "thread_titles": "帖子标题复核",
@@ -104,15 +112,15 @@ TRANSLATIONS = {
         "export_path": "导出路径",
         "open_metadata": "打开 metadata.json",
         "open_context": "打开 context.md",
-        "metadata_preview": "Metadata 预览",
-        "context_preview": "Context 预览",
+        "metadata_preview": "Metadata",
+        "context_preview": "Context",
         "reading_preview": "阅读预览",
-        "reading_preview_tip": "这里按楼层顺序合并展示正文和本地归档图片，尽量贴近原帖阅读顺序。",
+        "reading_preview_tip": "按楼层顺序合并展示正文和本地归档图片。",
         "image_width": "图片宽度",
         "image_width_50": "50%",
         "image_width_75": "75%",
         "image_width_100": "100%",
-        "back_to_top": "回到顶部",
+        "back_to_top": "顶部",
         "job_submitted": "已创建任务",
         "floors": "楼层",
         "floor_no": "楼层号",
@@ -127,22 +135,22 @@ TRANSLATIONS = {
         "staging": "Staging",
         "failure_preview": "失败预览",
         "snapshot_preview": "快照预览",
-        "title_parse_log_preview": "标题提取日志预览",
+        "title_parse_log_preview": "标题日志",
         "events_timeline": "事件时间线",
         "event_type": "事件类型",
-        "diagnostics": "排障提示",
-        "job_diagnostics_intro": "下面这些文件能帮助你判断任务卡在哪一段，以及数据有没有落干净。",
-        "job_hint_snapshot": "存在 snapshot.json：说明页面解析已经成功，问题更可能出在校验、图片下载或数据库写入阶段。",
-        "job_hint_failure": "存在 failure.json：优先看 stage、error_type、error_message，可以快速定位失败边界。",
-        "job_hint_title_parse_log": "存在 title_parse_log.json：可以对比规则解析 baseline 和 LLM 最终结果，判断标题抽取是否跑偏。",
-        "job_hint_partial": "任务为 partial：帖子已归档，但仍有图片缺失或下载失败，需要结合 metadata / missing_image_urls 排查。",
+        "diagnostics": "诊断",
+        "job_diagnostics_intro": "用于判断任务卡在哪一段，以及数据有没有落干净。",
+        "job_hint_snapshot": "snapshot.json 存在：HTML 解析已成功，问题可能在校验、图片下载或 DB 写入。",
+        "job_hint_failure": "failure.json 存在：看 stage、error_type、error_message 定位失败边界。",
+        "job_hint_title_parse_log": "title_parse_log.json 存在：对比规则 baseline 和 LLM 结果。",
+        "job_hint_partial": "partial 状态：帖子已归档但有图片缺失。",
         "schema_version": "Schema 版本",
         "thread_count": "帖子数",
         "series_count": "系列数",
         "audit_event_count": "审计事件数",
         "view_thread": "查看帖子",
         "quick_actions": "快捷操作",
-        "remote_url": "远端帖子 URL",
+        "remote_url": "远端 URL",
         "base_url": "站点根 URL",
         "sync_thread_now": "创建同步任务",
         "resync_thread": "重新同步",
@@ -156,65 +164,74 @@ TRANSLATIONS = {
         "operations": "操作",
         "delete_thread": "删除归档",
         "delete_series": "删除系列",
-        "cannot_delete_nonempty_series": "仅允许删除没有关联帖子的空系列。",
+        "cannot_delete_nonempty_series": "仅允许删除空系列。",
         "deleted": "已删除",
-        "compact_hint": "已切换为紧凑列表，单页显示更多记录。",
-        "thread_list_hint": "按标题、系列、章节与状态分组显示，减少横向滚动。",
         "archive_meta": "归档信息",
         "title_meta": "标题信息",
         "status_meta": "状态",
-        "open_thread": "打开详情",
-        "job_list_hint": "按任务类型、状态、阶段与报错分组显示，便于快速定位异常。",
-        "series_list_hint": "按系列标题、作者、归并状态与操作分组显示，减少横向滚动。",
-        "export_list_hint": "按导出目标、归档状态与文件位置分组显示，方便批量检查。",
-        "job_meta": "任务信息",
-        "error_meta": "错误与时间",
-        "export_meta": "导出信息",
-        "open_job": "打开任务",
-        "open_series": "打开系列",
-        "dashboard_jobs_hint": "最近任务按类型、状态和错误分组显示，方便快速发现失败点。",
-        "dashboard_workers_hint": "Worker 心跳按实例聚合展示，便于判断是否仍在稳定消费任务。",
-        "dashboard_audit_hint": "最近审计事件显示关键数据变更，适合追踪人工操作。",
-        "dashboard_threads_hint": "最近归档漫画沿用帖子卡片视图，便于直接继续排查或导出。",
-        "review_series_hint": "系列复核按标题、作者、别名与操作分组显示，和帖子复核保持一致。",
-        "review_meta": "复核状态",
-        "audit_meta": "审计信息",
+        "open_thread": "打开",
+        "open_job": "打开",
+        "open_series": "打开",
+        "job_meta": "任务",
+        "error_meta": "错误",
+        "export_meta": "导出",
         "overview": "概览",
         "archive_ready": "归档完成",
-        "archive_partial": "归档部分完成",
+        "archive_partial": "部分完成",
         "archive_failed": "归档失败",
         "start_sync": "发起同步",
         "thread_not_found": "帖子不存在",
         "images": "图片预览",
-        "no_images": "当前帖子没有本地归档图片可预览。",
-        "open_image": "打开原图",
-        "image_preview_tip": "这里展示的是本地归档图片，优先用于核验漫画内容是否保存完整。",
-        "recent_archived_threads": "最近归档漫画",
-        "no_archived_threads": "当前还没有可展示的归档漫画。",
-        "no_review_items": "当前没有待复核的标题。",
-        "subtitle": "补充信息",
+        "no_images": "暂无归档图片。",
+        "open_image": "原图",
+        "image_preview_tip": "本地归档图片，用于核验内容完整性。",
+        "recent_archived_threads": "最近归档",
+        "no_archived_threads": "暂无归档帖子。",
+        "no_review_items": "暂无待复核标题。",
+        "subtitle": "副标题",
         "tags": "标签",
         "chapter_index": "章节序号",
-        "chapter_index_end": "章节序号（结束）",
+        "chapter_index_end": "章节结束序号",
         "one_per_line": "每行一个",
+        "forum_name": "版块",
+        "forum_id": "版块 ID",
+        "content_kind": "内容类型",
+        "enabled": "启用",
+        "yes": "是",
+        "no": "否",
+        "asset_id": "资源 ID",
+        "asset_type": "资源类型",
+        "remote_url_label": "远端 URL",
+        "local_path": "本地路径",
+        "downloaded": "已下载",
+        "missing": "缺失",
+        "pending": "等待中",
+        "skipped": "跳过",
+        "block_type": "块类型",
+        "order_index": "序号",
+        "media_type": "媒体类型",
+        "assets": "资源",
+        "content_blocks": "内容块",
+        "threads_label": "帖子数",
     },
     "en": {
         "dashboard": "Dashboard",
         "jobs": "Jobs",
         "threads": "Threads",
         "series": "Series",
-        "title_review": "Title Review",
+        "title_review": "Review",
         "exports": "Exports",
+        "forums": "Forums",
         "language": "Language",
-        "switch_zh": "Chinese",
-        "switch_en": "English",
+        "switch_zh": "中文",
+        "switch_en": "EN",
         "data_dir": "Data dir",
         "create_noop_job": "Create no-op job",
         "local_html_path": "Local HTML path",
         "create_sync_job": "Create sync job",
         "recent_jobs": "Recent Jobs",
         "worker_heartbeats": "Worker Heartbeats",
-        "recent_audit_events": "Recent Audit Events",
+        "recent_audit_events": "Audit Events",
         "id": "ID",
         "type": "Type",
         "status": "Status",
@@ -222,15 +239,15 @@ TRANSLATIONS = {
         "error": "Error",
         "updated": "Updated",
         "worker": "Worker",
-        "latest_heartbeat": "Latest heartbeat",
-        "latest_update": "Latest update",
-        "running_jobs": "Running jobs",
-        "seen_jobs": "Seen jobs",
+        "latest_heartbeat": "Last heartbeat",
+        "latest_update": "Last update",
+        "running_jobs": "Running",
+        "seen_jobs": "Seen",
         "action": "Action",
         "target": "Target",
         "actor": "Actor",
         "at": "At",
-        "status_filters": "Status filters",
+        "status_filters": "Status",
         "all": "All",
         "queued": "Queued",
         "running": "Running",
@@ -242,7 +259,7 @@ TRANSLATIONS = {
         "error_message": "Error message",
         "created": "Created",
         "finished": "Finished",
-        "created_job": "Created job",
+        "created_job": "Job created",
         "search": "Search",
         "title": "Title",
         "core_title": "Core title",
@@ -255,7 +272,7 @@ TRANSLATIONS = {
         "canonical_title": "Canonical title",
         "author": "Author",
         "confidence": "Confidence",
-        "needs_review": "Needs review",
+        "needs_review": "Review",
         "last_sync": "Last sync",
         "aliases": "Aliases",
         "thread_titles": "Thread Titles",
@@ -267,25 +284,25 @@ TRANSLATIONS = {
         "target_series_id": "Target series ID",
         "rebuild_series": "Rebuild series",
         "thread": "Thread",
-        "create_export_job": "Create export job",
+        "create_export_job": "Create export",
         "raw_title": "Raw title",
         "publisher": "Publisher",
-        "group_name": "Scanlation group",
+        "group_name": "Group",
         "author_guess": "Author",
         "chapter_title": "Chapter title",
         "context_path": "Context path",
         "export_path": "Export path",
         "open_metadata": "Open metadata.json",
         "open_context": "Open context.md",
-        "metadata_preview": "Metadata Preview",
-        "context_preview": "Context Preview",
+        "metadata_preview": "Metadata",
+        "context_preview": "Context",
         "reading_preview": "Reading Preview",
-        "reading_preview_tip": "This view merges floor text and archived local images to resemble the original thread reading order.",
+        "reading_preview_tip": "Merged floor text and archived images in reading order.",
         "image_width": "Image width",
         "image_width_50": "50%",
         "image_width_75": "75%",
         "image_width_100": "100%",
-        "back_to_top": "Back to top",
+        "back_to_top": "Top",
         "job_submitted": "Job created",
         "floors": "Floors",
         "floor_no": "Floor",
@@ -298,25 +315,25 @@ TRANSLATIONS = {
         "payload": "Payload",
         "artifacts": "Artifacts",
         "staging": "Staging",
-        "failure_preview": "Failure Preview",
-        "snapshot_preview": "Snapshot Preview",
-        "title_parse_log_preview": "Title Parse Log Preview",
+        "failure_preview": "Failure",
+        "snapshot_preview": "Snapshot",
+        "title_parse_log_preview": "Title Log",
         "events_timeline": "Events Timeline",
         "event_type": "Event type",
         "diagnostics": "Diagnostics",
-        "job_diagnostics_intro": "Use these artifacts to see where the job stopped and whether data made it through each stage.",
-        "job_hint_snapshot": "snapshot.json exists: HTML parsing succeeded, so issues are more likely in validation, image download, or DB commit.",
-        "job_hint_failure": "failure.json exists: start with stage, error_type, and error_message to locate the failure boundary.",
-        "job_hint_title_parse_log": "title_parse_log.json exists: compare the rule baseline with the LLM result to inspect title extraction drift.",
-        "job_hint_partial": "Job status is partial: the thread was archived, but some images are still missing or failed to download.",
+        "job_diagnostics_intro": "Use these to see where the job stopped and whether data made it through.",
+        "job_hint_snapshot": "snapshot.json exists: HTML parsing succeeded.",
+        "job_hint_failure": "failure.json exists: check stage, error_type, error_message.",
+        "job_hint_title_parse_log": "title_parse_log.json exists: compare rule baseline with LLM result.",
+        "job_hint_partial": "partial: thread archived but some images missing.",
         "schema_version": "Schema version",
-        "thread_count": "Thread count",
-        "series_count": "Series count",
-        "audit_event_count": "Audit event count",
-        "view_thread": "View thread",
+        "thread_count": "Threads",
+        "series_count": "Series",
+        "audit_event_count": "Audit events",
+        "view_thread": "View",
         "quick_actions": "Quick Actions",
-        "remote_url": "Remote thread URL",
-        "base_url": "Site base URL",
+        "remote_url": "Remote URL",
+        "base_url": "Base URL",
         "sync_thread_now": "Create sync job",
         "resync_thread": "Resync",
         "force_resync_export": "Resync + export",
@@ -324,54 +341,93 @@ TRANSLATIONS = {
         "cache_only": "Cache only",
         "sync_if_stale": "Sync if stale",
         "force_resync": "Force resync",
-        "open_jobs": "Open jobs",
-        "open_threads": "Open threads",
+        "open_jobs": "Jobs",
+        "open_threads": "Threads",
         "operations": "Actions",
-        "delete_thread": "Delete archive",
-        "delete_series": "Delete series",
-        "cannot_delete_nonempty_series": "Only empty series without linked threads can be deleted.",
+        "delete_thread": "Delete",
+        "delete_series": "Delete",
+        "cannot_delete_nonempty_series": "Only empty series can be deleted.",
         "deleted": "Deleted",
-        "compact_hint": "Compact layout enabled to fit more rows on each page.",
-        "thread_list_hint": "Grouped by title, series, chapter, and status to reduce horizontal scrolling.",
         "archive_meta": "Archive",
         "title_meta": "Title",
         "status_meta": "Status",
         "open_thread": "Open",
-        "job_list_hint": "Grouped by type, status, stage, and errors for quicker scanning.",
-        "series_list_hint": "Grouped by title, author, merge state, and actions to reduce horizontal scrolling.",
-        "export_list_hint": "Grouped by export target, archive state, and file path for quick checks.",
+        "open_job": "Open",
+        "open_series": "Open",
         "job_meta": "Job",
-        "error_meta": "Error & Time",
+        "error_meta": "Error",
         "export_meta": "Export",
-        "open_job": "Open job",
-        "open_series": "Open series",
-        "dashboard_jobs_hint": "Recent jobs are grouped by type, status, and errors for quick triage.",
-        "dashboard_workers_hint": "Worker heartbeats are grouped by instance to show whether processing is healthy.",
-        "dashboard_audit_hint": "Recent audit events highlight key data changes for operator tracing.",
-        "dashboard_threads_hint": "Recently archived comics reuse the thread card layout for quick follow-up actions.",
-        "review_series_hint": "Series review is grouped by title, author, aliases, and actions to match thread review.",
-        "review_meta": "Review",
-        "audit_meta": "Audit",
         "overview": "Overview",
-        "archive_ready": "Archive ready",
-        "archive_partial": "Archive partial",
-        "archive_failed": "Archive failed",
+        "archive_ready": "Ready",
+        "archive_partial": "Partial",
+        "archive_failed": "Failed",
         "start_sync": "Start sync",
         "thread_not_found": "Thread not found",
-        "images": "Image Preview",
-        "no_images": "No archived local images are available for this thread.",
-        "open_image": "Open image",
-        "image_preview_tip": "These are local archived images, shown first so you can verify comic content integrity.",
-        "recent_archived_threads": "Recently Archived Comics",
-        "no_archived_threads": "No archived comics are available yet.",
-        "no_review_items": "There are no title review items right now.",
+        "images": "Images",
+        "no_images": "No archived images.",
+        "open_image": "Open",
+        "image_preview_tip": "Archived images for content verification.",
+        "recent_archived_threads": "Recent Archives",
+        "no_archived_threads": "No archived threads yet.",
+        "no_review_items": "No review items.",
         "subtitle": "Subtitle",
         "tags": "Tags",
         "chapter_index": "Chapter index",
         "chapter_index_end": "Chapter index (end)",
         "one_per_line": "One per line",
+        "forum_name": "Forum",
+        "forum_id": "Forum ID",
+        "content_kind": "Kind",
+        "enabled": "Enabled",
+        "yes": "Yes",
+        "no": "No",
+        "asset_id": "Asset ID",
+        "asset_type": "Type",
+        "remote_url_label": "Remote URL",
+        "local_path": "Local path",
+        "downloaded": "Downloaded",
+        "missing": "Missing",
+        "pending": "Pending",
+        "skipped": "Skipped",
+        "block_type": "Block type",
+        "order_index": "Order",
+        "media_type": "Media type",
+        "assets": "Assets",
+        "content_blocks": "Content Blocks",
+        "threads_label": "Threads",
     },
 }
+
+
+def _forum_name(forum_id: int | None) -> str:
+    if forum_id is None:
+        return "-"
+    return _FORUM_NAMES.get(forum_id, f"forum-{forum_id}")
+
+
+def _forum_kind(forum_id: int | None) -> str:
+    if forum_id is None:
+        return "-"
+    return _FORUM_KINDS.get(forum_id, "unknown")
+
+
+def _badge(status: str | None, kind: str = "muted") -> str:
+    """Render a status badge. kind: ok/warn/error/accent/muted"""
+    text = html.escape(str(status or "-"))
+    return f'<span class="badge badge-{kind}">{text}</span>'
+
+
+def _status_badge(status: str | None) -> str:
+    s = (status or "").lower()
+    if s in ("succeeded", "complete", "valid", "downloaded"):
+        return _badge(status, "ok")
+    if s in ("running", "queued", "retrying", "pending"):
+        return _badge(status, "accent")
+    if s in ("partial",):
+        return _badge(status, "warn")
+    if s in ("failed", "error", "interrupted", "missing"):
+        return _badge(status, "error")
+    return _badge(status, "muted")
 
 
 def _job_to_dict(job) -> dict[str, object]:
@@ -395,9 +451,221 @@ def _job_to_dict(job) -> dict[str, object]:
     }
 
 
+# ─── CSS Design System ───
+
+CSS = """
+:root {
+  --bg-page: #fafbfc;
+  --bg-surface: #ffffff;
+  --bg-muted: #f6f8fa;
+  --bg-header: #f0f2f5;
+  --border: #d1d9e0;
+  --border-light: #e8ecf0;
+  --text-primary: #1f2328;
+  --text-secondary: #656d76;
+  --text-tertiary: #8b949e;
+  --accent: #0969da;
+  --accent-light: #ddf4ff;
+  --accent-text: #0550ae;
+  --status-ok: #1a7f37;
+  --status-warn: #9a6700;
+  --status-error: #cf222e;
+  --status-muted: #8b949e;
+}
+*, *::before, *::after { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
+  font-size: 14px; line-height: 1.5; color: var(--text-primary);
+  background: var(--bg-page); margin: 0;
+}
+.page { max-width: 1400px; margin: 0 auto; padding: 16px 24px; }
+
+/* Topbar */
+.topbar {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 8px 0; border-bottom: 1px solid var(--border-light); margin-bottom: 16px;
+}
+.brand { font-size: 16px; font-weight: 600; color: var(--text-primary); }
+.subnav { display: flex; gap: 16px; }
+.subnav a {
+  color: var(--text-secondary); text-decoration: none; font-size: 13px;
+  padding: 4px 0; border-bottom: 2px solid transparent;
+}
+.subnav a:hover { color: var(--accent); }
+.subnav a.active { color: var(--accent); border-bottom-color: var(--accent); }
+.lang-switch { font-size: 12px; color: var(--text-tertiary); }
+.lang-switch a { color: var(--text-secondary); text-decoration: none; }
+.lang-switch a:hover { color: var(--accent); }
+
+/* Headings */
+h1 { font-size: 20px; font-weight: 600; margin: 0 0 16px; }
+h2 {
+  font-size: 11px; font-weight: 600; margin: 20px 0 8px;
+  color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.8px;
+}
+
+/* Stat row */
+.stat-row {
+  display: flex; gap: 1px; margin-bottom: 16px;
+  background: var(--border-light); border: 1px solid var(--border-light); border-radius: 3px;
+  overflow: hidden;
+}
+.stat-cell { flex: 1; padding: 12px 16px; background: var(--bg-surface); }
+.stat-cell .label { font-size: 12px; color: var(--text-tertiary); }
+.stat-cell .value { font-size: 20px; font-weight: 600; margin-top: 2px; }
+
+/* Tables */
+.table-wrap { overflow-x: auto; margin-bottom: 16px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td {
+  padding: 8px 12px; text-align: left;
+  border-bottom: 1px solid var(--border-light); vertical-align: top;
+}
+th {
+  font-weight: 600; font-size: 11px; color: var(--text-tertiary);
+  text-transform: uppercase; letter-spacing: 0.3px;
+  background: var(--bg-header); position: sticky; top: 0; z-index: 1;
+}
+tr:hover td { background: var(--bg-muted); }
+td.mono { font-family: ui-monospace, "SFMono-Regular", "SF Mono", Menlo, monospace; font-size: 12px; }
+td.nowrap { white-space: nowrap; }
+td.truncate { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+td a { color: var(--accent); text-decoration: none; }
+td a:hover { text-decoration: underline; }
+
+/* Badges */
+.badge {
+  display: inline-block; padding: 1px 8px; font-size: 12px; font-weight: 500;
+  border-radius: 999px; white-space: nowrap;
+}
+.badge-ok { background: #dafbe1; color: var(--status-ok); }
+.badge-warn { background: #fff8c5; color: var(--status-warn); }
+.badge-error { background: #ffebe9; color: var(--status-error); }
+.badge-muted { background: var(--bg-muted); color: var(--status-muted); }
+.badge-accent { background: var(--accent-light); color: var(--accent-text); }
+
+/* Forms */
+input[type="text"], input[type="number"], textarea, select {
+  padding: 5px 8px; border: 1px solid var(--border); border-radius: 3px;
+  font-size: 13px; background: var(--bg-surface); font-family: inherit;
+}
+input:focus, textarea:focus, select:focus {
+  border-color: var(--accent); outline: none;
+  box-shadow: 0 0 0 2px rgba(9,105,218,0.15);
+}
+textarea { width: 100%; min-height: 72px; resize: vertical; box-sizing: border-box; }
+button {
+  padding: 5px 12px; border: 1px solid var(--border); border-radius: 3px;
+  background: var(--bg-header); cursor: pointer; font-size: 13px; font-family: inherit;
+}
+button:hover { background: var(--bg-muted); }
+button.primary { background: var(--accent); color: white; border-color: var(--accent); }
+button.primary:hover { background: var(--accent-text); }
+button.danger { background: var(--status-error); color: white; border-color: var(--status-error); }
+button.danger:hover { background: #a21c25; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Actions row */
+.actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.actions form { margin: 0; }
+
+/* Toolbar */
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+
+/* Segmented filters */
+.segmented { display: inline-flex; flex-wrap: wrap; gap: 0; margin-bottom: 12px; }
+.segmented a {
+  padding: 5px 12px; border: 1px solid var(--border); background: var(--bg-surface);
+  color: var(--text-secondary); text-decoration: none; font-size: 13px;
+  margin-right: -1px;
+}
+.segmented a:first-child { border-radius: 3px 0 0 3px; }
+.segmented a:last-child { border-radius: 0 3px 3px 0; }
+.segmented a.active {
+  background: var(--accent-light); color: var(--accent-text);
+  border-color: var(--accent); z-index: 1; position: relative;
+}
+.segmented a:hover:not(.active) { background: var(--bg-muted); }
+
+/* Panel */
+.panel {
+  background: var(--bg-surface); border: 1px solid var(--border-light);
+  padding: 16px; margin-bottom: 16px;
+}
+
+/* Hint list */
+.hint-list { margin: 4px 0 0; padding-left: 20px; color: var(--text-secondary); font-size: 13px; }
+.hint-list li { margin: 4px 0; }
+
+/* Artifact links */
+.artifact-links { display: flex; flex-wrap: wrap; gap: 12px; }
+.artifact-links a { color: var(--accent); text-decoration: none; font-size: 13px; }
+.artifact-links a:hover { text-decoration: underline; }
+
+/* Reading view */
+.reading-flow { display: flex; flex-direction: column; gap: 12px; }
+.floor-block {
+  background: var(--bg-surface); border: 1px solid var(--border-light); padding: 12px;
+}
+.floor-head { font-weight: 600; font-size: 13px; margin-bottom: 8px; color: var(--text-secondary); }
+.floor-body { white-space: pre-wrap; word-break: break-word; line-height: 1.7; font-size: 14px; }
+.floor-images { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.floor-images a { display: block; }
+.floor-images img {
+  display: block; width: min(var(--reading-image-width, 100%), 100%);
+  max-width: 100%; height: auto; background: var(--bg-muted);
+}
+
+/* Image grid */
+.image-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; }
+.image-card { background: var(--bg-surface); border: 1px solid var(--border-light); padding: 8px; }
+.image-card img { display: block; width: 100%; height: auto; background: var(--bg-muted); }
+.image-card .meta { margin-top: 6px; font-size: 12px; color: var(--text-tertiary); }
+
+/* Review cards */
+details.review-card { background: var(--bg-surface); border: 1px solid var(--border-light); margin-bottom: 8px; }
+details.review-card summary {
+  list-style: none; cursor: pointer; padding: 10px 12px; font-size: 13px;
+}
+details.review-card summary::-webkit-details-marker { display: none; }
+details.review-card summary:hover { background: var(--bg-muted); }
+.review-meta {
+  display: grid; grid-template-columns: minmax(80px, 120px) 1fr;
+  gap: 6px 12px; margin: 0 0 12px; font-size: 13px;
+}
+.review-form { padding: 12px; border-top: 1px solid var(--border-light); }
+.review-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
+.field label { display: block; font-size: 12px; color: var(--text-tertiary); margin-bottom: 4px; }
+.field input[type="text"], .field input[type="number"] { width: 100%; box-sizing: border-box; }
+.field-full { grid-column: 1 / -1; }
+
+/* Back to top */
+.back-to-top {
+  position: fixed; right: 20px; bottom: 20px; z-index: 20;
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 8px 12px; border: 1px solid var(--border); border-radius: 3px;
+  background: var(--bg-surface); color: var(--text-secondary);
+  text-decoration: none; font-size: 12px;
+}
+.back-to-top:hover { background: var(--bg-muted); color: var(--accent); }
+
+/* Responsive */
+@media (max-width: 768px) {
+  .page { padding: 12px; }
+  .stat-row { flex-direction: column; }
+  .subnav { gap: 8px; flex-wrap: wrap; }
+  table { font-size: 12px; }
+  th, td { padding: 6px 8px; }
+}
+"""
+
+
 class WebHandler(BaseHTTPRequestHandler):
     settings: Settings
     lang: str = "zh"
+
+    # ─── Helpers ───
 
     def _send(self, body: str, status: HTTPStatus = HTTPStatus.OK, content_type: str = "text/html") -> None:
         data = body.encode("utf-8")
@@ -439,127 +707,6 @@ class WebHandler(BaseHTTPRequestHandler):
 
     def _hidden_lang(self) -> str:
         return f'<input type="hidden" name="lang" value="{self.lang}">'
-
-    def _html_page(self, title: str, body: str, *, auto_refresh_seconds: int | None = None) -> str:
-        app_title = "YamiboMCP 漫画归档控制台" if self.lang == "zh" else "YamiboMCP Manga Archive Console"
-        nav = (
-            f'<div class="topbar"><div><div class="brand">{html.escape(app_title)}</div>'
-            f'<div class="subnav"><a href="{self._url("/")}">{self._t("dashboard")}</a>'
-            f'<a href="{self._url("/jobs")}">{self._t("jobs")}</a>'
-            f'<a href="{self._url("/threads")}">{self._t("threads")}</a>'
-            f'<a href="{self._url("/series")}">{self._t("series")}</a>'
-            f'<a href="{self._url("/title-review")}">{self._t("title_review")}</a>'
-            f'<a href="{self._url("/exports")}">{self._t("exports")}</a></div></div>'
-            f'<div class="lang-switch">{self._t("language")}: '
-            f'<a href="{self._url_with_lang("zh")}">{self._t("switch_zh")}</a> '
-            f'<a href="{self._url_with_lang("en")}">{self._t("switch_en")}</a></div></div>'
-        )
-        meta_refresh = f'<meta http-equiv="refresh" content="{auto_refresh_seconds}">' if auto_refresh_seconds and auto_refresh_seconds > 0 else ""
-        return f"""
-        <html><head><title>{html.escape(title)} | {html.escape(app_title)}</title>{meta_refresh}
-        <style>
-          html {{ scroll-behavior: smooth; }}
-          body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; background: #f5f7fb; color: #1f2937; }}
-          .page {{ width: min(100%, 1680px); margin: 0 auto; padding: 16px 18px 24px; box-sizing: border-box; }}
-          .topbar {{ display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; margin-bottom: 14px; }}
-          .brand {{ font-size: 22px; font-weight: 700; }}
-          .subnav {{ display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }}
-          .subnav a, .lang-switch a {{ color: #1d4ed8; text-decoration: none; }}
-          h1 {{ font-size: 20px; margin: 0 0 12px; }}
-          h2 {{ font-size: 16px; margin: 18px 0 10px; }}
-          .panel {{ background: white; border: 1px solid #dbe3f0; border-radius: 6px; padding: 12px; margin-bottom: 12px; }}
-          .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }}
-          .stat {{ background: #fff; border: 1px solid #dbe3f0; border-radius: 6px; padding: 12px; }}
-          .stat .label {{ font-size: 12px; color: #64748b; }}
-          .stat .value {{ font-size: 20px; font-weight: 700; margin-top: 4px; }}
-          .table-wrap {{ overflow-x: auto; }}
-          table {{ width: 100%; border-collapse: collapse; background: white; }}
-          th, td {{ border: 1px solid #dbe3f0; padding: 6px 8px; vertical-align: top; text-align: left; font-size: 13px; line-height: 1.4; }}
-          th {{ background: #f8fafc; }}
-          table.compact td, table.compact th {{ white-space: nowrap; }}
-          .actions {{ display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }}
-          .actions form {{ margin: 0; }}
-          input, select, button, textarea {{ font: inherit; }}
-          input[type="text"], input[name="html_path"], input[name="url"], input[name="base_url"], input[name="q"], input[type="number"], textarea {{ padding: 6px 8px; border: 1px solid #cbd5e1; border-radius: 6px; }}
-          textarea {{ width: 100%; min-height: 88px; resize: vertical; box-sizing: border-box; }}
-          button {{ padding: 6px 10px; border: 1px solid #cbd5e1; border-radius: 6px; background: #eff6ff; cursor: pointer; }}
-          button.danger {{ background: #fff1f2; border-color: #fecdd3; color: #9f1239; }}
-          button:disabled {{ opacity: 0.55; cursor: not-allowed; }}
-          .muted {{ color: #64748b; }}
-          .badge {{ display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; border: 1px solid #cbd5e1; }}
-          pre {{ white-space: pre-wrap; word-break: break-word; margin: 0; }}
-          .toolbar {{ display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }}
-          .toolbar-label {{ font-size: 12px; color: #64748b; }}
-          .segmented {{ display: inline-flex; flex-wrap: wrap; gap: 6px; }}
-          .segmented a {{ padding: 5px 10px; border: 1px solid #cbd5e1; border-radius: 6px; background: #fff; color: #1f2937; text-decoration: none; font-size: 12px; }}
-          .segmented a.active {{ background: #dbeafe; border-color: #93c5fd; color: #1d4ed8; font-weight: 600; }}
-          .hint-list {{ margin: 0; padding-left: 20px; color: #475569; }}
-          .hint-list li {{ margin: 6px 0; }}
-          .artifact-links {{ display: flex; flex-wrap: wrap; gap: 10px; }}
-          .artifact-links a {{ color: #1d4ed8; text-decoration: none; }}
-          .image-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }}
-          .image-card {{ background: #fff; border: 1px solid #dbe3f0; border-radius: 6px; padding: 10px; }}
-          .image-card img {{ display: block; width: 100%; height: auto; border-radius: 6px; background: #e2e8f0; }}
-          .image-card .meta {{ margin-top: 8px; font-size: 12px; color: #64748b; }}
-          .reading-flow {{ display: flex; flex-direction: column; gap: 14px; }}
-          .floor-block {{ background: #fff; border: 1px solid #dbe3f0; border-radius: 6px; padding: 12px; }}
-          .floor-head {{ font-weight: 600; margin-bottom: 10px; }}
-          .floor-body {{ white-space: pre-wrap; word-break: break-word; line-height: 1.7; }}
-          .floor-images {{ display: flex; flex-direction: column; gap: 12px; margin-top: 12px; }}
-          .floor-images a {{ display: block; }}
-          .floor-images img {{ display: block; width: min(var(--reading-image-width, 100%), 100%); max-width: 100%; height: auto; border-radius: 6px; background: #e2e8f0; }}
-          details.review-card {{ background: #fff; border: 1px solid #dbe3f0; border-radius: 6px; margin-bottom: 14px; overflow: hidden; }}
-          details.review-card summary {{ list-style: none; cursor: pointer; padding: 12px 14px; background: #f8fafc; }}
-          details.review-card summary::-webkit-details-marker {{ display: none; }}
-          .review-meta {{ display: grid; grid-template-columns: minmax(80px, 120px) 1fr; gap: 8px 12px; margin: 0 0 14px; }}
-          .review-form {{ padding: 16px; }}
-          .review-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }}
-          .field label {{ display: block; font-size: 12px; color: #64748b; margin-bottom: 6px; }}
-          .field input[type="text"], .field input[type="number"] {{ width: 100%; box-sizing: border-box; }}
-          .field-full {{ grid-column: 1 / -1; }}
-          .thread-list {{ display: flex; flex-direction: column; gap: 10px; }}
-          .thread-row {{ background: #fff; border: 1px solid #dbe3f0; border-radius: 6px; padding: 12px; display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(220px, 0.9fr) minmax(220px, 1fr); gap: 12px; align-items: start; }}
-          .thread-main {{ min-width: 0; }}
-          .thread-main-title {{ font-size: 15px; font-weight: 600; line-height: 1.45; margin-bottom: 6px; word-break: break-word; }}
-          .thread-main-sub {{ color: #64748b; font-size: 12px; display: flex; flex-wrap: wrap; gap: 6px 10px; }}
-          .thread-inline-actions {{ display: inline-flex; flex-wrap: wrap; gap: 6px; margin-left: 8px; vertical-align: middle; }}
-          .thread-inline-actions form {{ margin: 0; }}
-          .thread-inline-actions button {{ padding: 4px 8px; font-size: 12px; }}
-          .thread-meta {{ min-width: 0; }}
-          .thread-meta-label {{ font-size: 11px; color: #94a3b8; text-transform: uppercase; margin-bottom: 6px; }}
-          .thread-meta-lines {{ display: flex; flex-direction: column; gap: 6px; font-size: 13px; }}
-          .thread-meta-lines div {{ word-break: break-word; }}
-          .item-list {{ display: flex; flex-direction: column; gap: 10px; }}
-          .item-row {{ background: #fff; border: 1px solid #dbe3f0; border-radius: 6px; padding: 12px; display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(220px, 0.9fr) minmax(240px, 1fr); gap: 12px; align-items: start; }}
-          .item-main {{ min-width: 0; }}
-          .item-main-title {{ font-size: 15px; font-weight: 600; line-height: 1.45; margin-bottom: 6px; word-break: break-word; }}
-          .item-main-sub {{ color: #64748b; font-size: 12px; display: flex; flex-wrap: wrap; gap: 6px 10px; }}
-          .item-inline-actions {{ display: inline-flex; flex-wrap: wrap; gap: 6px; margin-left: 8px; vertical-align: middle; }}
-          .item-inline-actions form {{ margin: 0; }}
-          .item-inline-actions button {{ padding: 4px 8px; font-size: 12px; }}
-          .item-meta {{ min-width: 0; }}
-          .item-meta-label {{ font-size: 11px; color: #94a3b8; text-transform: uppercase; margin-bottom: 6px; }}
-          .item-meta-lines {{ display: flex; flex-direction: column; gap: 6px; font-size: 13px; }}
-          .item-meta-lines div {{ word-break: break-word; }}
-          .back-to-top {{ position: fixed; right: 20px; bottom: 20px; z-index: 20; display: inline-flex; align-items: center; justify-content: center; padding: 10px 12px; border: 1px solid #cbd5e1; border-radius: 999px; background: rgba(255, 255, 255, 0.96); color: #1f2937; text-decoration: none; box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12); font-size: 12px; }}
-          .back-to-top:hover {{ background: #eff6ff; color: #1d4ed8; }}
-          @media (max-width: 980px) {{
-            .thread-row {{ grid-template-columns: 1fr; }}
-            .thread-inline-actions {{ display: flex; margin-left: 0; margin-top: 8px; }}
-            .item-row {{ grid-template-columns: 1fr; }}
-            .item-inline-actions {{ display: flex; margin-left: 0; margin-top: 8px; }}
-          }}
-        </style></head>
-        <body>
-          <div id="top"></div>
-          <div class="page">
-            {nav}
-            <h1>{html.escape(title)}</h1>
-            {body}
-          </div>
-          <a class="back-to-top" href="#top">{self._t("back_to_top")}</a>
-        </body></html>
-        """
 
     def _read_text(self, path: Path) -> str | None:
         if not path.exists() or not path.is_file():
@@ -607,25 +754,11 @@ class WebHandler(BaseHTTPRequestHandler):
                 return job
         return None
 
-    def _thread_image_width_toolbar(self, tid: int, *, img_width: int) -> str:
-        options = [50, 75, 100]
-        links = "".join(
-            f'<a class="{"active" if option == img_width else ""}" href="{self._thread_detail_url(tid, img_width=option)}">{self._t(f"image_width_{option}")}</a>'
-            for option in options
-        )
-        return (
-            f'<div class="toolbar">'
-            f'<span class="toolbar-label">{self._t("image_width")}:</span>'
-            f'<div class="segmented">{links}</div>'
-            f"</div>"
-        )
-
     def _preview(self, value: str | None, *, limit: int = 4000) -> str:
         if not value:
             return ""
         if len(value) <= limit:
             return value
-        # 预览只截前面一段，页面里保留原始文件链接继续查看。
         return value[:limit] + "\n...<truncated>..."
 
     def _json_block(self, value: object) -> str:
@@ -672,66 +805,78 @@ class WebHandler(BaseHTTPRequestHandler):
             FROM jobs
             WHERE worker_id IS NOT NULL
             GROUP BY worker_id
+            HAVING SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) > 0
             ORDER BY COALESCE(MAX(heartbeat_at), MAX(updated_at)) DESC
             LIMIT 20
             """
         ).fetchall()
         return [dict(row) for row in rows]
 
-    def _render_title_review_card(self, row) -> str:
-        alias_text = self._json_list_to_lines(row["title_aliases_json"])
-        tags_text = self._json_list_to_lines(row["tags_json"])
-        summary_title = html.escape(row["display_title"] or row["raw_title"] or "")
-        return f"""
-        <details class="review-card">
-          <summary>
-            <div><strong><a href="{self._url(f"/threads/{row["tid"]}")}">{row["tid"]}</a></strong> · {summary_title}</div>
-            <div class="muted">{html.escape(row["core_title_guess"] or '')} | {html.escape(row["author_guess"] or '')} | {html.escape(row["series_key"] or '')} | {self._t("confidence")}: {row["confidence"]}</div>
-          </summary>
-          <div class="review-form">
-            <div class="review-meta">
-              <div class="muted">{self._t("raw_title")}</div><div>{html.escape(row["raw_title"] or "")}</div>
-              <div class="muted">{self._t("tid")}</div><div>{row["tid"]}</div>
-            </div>
-            <form method="post" action="{self._url("/title-review/update-title")}">
-              {self._hidden_lang()}
-              <input type="hidden" name="tid" value="{row["tid"]}">
-              <div class="review-grid">
-                <div class="field field-full"><label>{self._t("title")}</label><input type="text" name="display_title" value="{html.escape(row["display_title"] or row["raw_title"] or "", quote=True)}"></div>
-                <div class="field"><label>{self._t("group_name")}</label><input type="text" name="group_name" value="{html.escape(row["group_name"] or "", quote=True)}"></div>
-                <div class="field"><label>{self._t("author_guess")}</label><input type="text" name="author_guess" value="{html.escape(row["author_guess"] or "", quote=True)}"></div>
-                <div class="field"><label>{self._t("core_title")}</label><input type="text" name="core_title_guess" value="{html.escape(row["core_title_guess"] or "", quote=True)}"></div>
-                <div class="field"><label>{self._t("series_key")}</label><input type="text" name="series_key" value="{html.escape(row["series_key"] or "", quote=True)}"></div>
-                <div class="field"><label>{self._t("chapter")}</label><input type="text" name="chapter_name" value="{html.escape(row["chapter_name"] or "", quote=True)}"></div>
-                <div class="field"><label>{self._t("chapter_index")}</label><input type="number" step="0.01" name="chapter_index" value="{'' if row["chapter_index"] is None else row["chapter_index"]}"></div>
-                <div class="field"><label>{self._t("chapter_index_end")}</label><input type="number" step="0.01" name="chapter_index_end" value="{'' if row.get("chapter_index_end") is None else row["chapter_index_end"]}"></div>
-                <div class="field"><label>{self._t("chapter_title")}</label><input type="text" name="chapter_title" value="{html.escape(row["chapter_title"] or "", quote=True)}"></div>
-                <div class="field"><label>{self._t("confidence")}</label><input type="number" step="0.01" min="0" max="1" name="confidence" value="{'' if row["confidence"] is None else row["confidence"]}"></div>
-                <div class="field field-full"><label>{self._t("subtitle")}</label><input type="text" name="subtitle" value="{html.escape(row["subtitle"] or "", quote=True)}"></div>
-                <div class="field"><label>{self._t("aliases")} ({self._t("one_per_line")})</label><textarea name="title_aliases">{html.escape(alias_text)}</textarea></div>
-                <div class="field"><label>{self._t("tags")} ({self._t("one_per_line")})</label><textarea name="tags">{html.escape(tags_text)}</textarea></div>
-              </div>
-              <div class="actions" style="margin-top:12px;">
-                <button type="submit">{self._t("save_title_review")}</button>
-              </div>
-            </form>
-            <div class="actions" style="margin-top:10px;">
-              <form method="post" action="{self._url("/title-review/confirm-title")}">
-                {self._hidden_lang()}
-                <input type="hidden" name="tid" value="{row["tid"]}">
-                <button type="submit">{self._t("confirm_title")}</button>
-              </form>
-            </div>
-          </div>
-        </details>
-        """
-
     def _job_artifact_path(self, job_id: str, filename: str) -> Path:
         return self._storage_paths().staging_job_dir(job_id) / filename
 
-    def do_GET(self) -> None:  # noqa: N802 - stdlib hook
+    def _thread_image_width_toolbar(self, tid: int, *, img_width: int) -> str:
+        options = [50, 75, 100]
+        links = "".join(
+            f'<a class="{"active" if option == img_width else ""}" href="{self._thread_detail_url(tid, img_width=option)}">{self._t(f"image_width_{option}")}</a>'
+            for option in options
+        )
+        return f'<div class="segmented">{links}</div>'
+
+    # ─── HTML Shell ───
+
+    def _html_page(self, title: str, body: str, *, auto_refresh_seconds: int | None = None) -> str:
+        app_title = "YamiboMCP" if self.lang == "zh" else "YamiboMCP"
+        nav_items = [
+            ("/", "dashboard"), ("/jobs", "jobs"), ("/threads", "threads"),
+            ("/series", "series"), ("/title-review", "title_review"),
+            ("/exports", "exports"), ("/forums", "forums"),
+        ]
+        nav_links = "".join(
+            f'<a href="{self._url(path)}" class="{"active" if self.path == path or (path != "/" and self.path.startswith(path)) else ""}">{self._t(key)}</a>'
+            for path, key in nav_items
+        )
+        nav = (
+            f'<div class="topbar">'
+            f'<div style="display:flex;align-items:center;gap:20px;">'
+            f'<span class="brand">{html.escape(app_title)}</span>'
+            f'<div class="subnav">{nav_links}</div></div>'
+            f'<div class="lang-switch">'
+            f'<a href="{self._url_with_lang("zh")}">{self._t("switch_zh")}</a> · '
+            f'<a href="{self._url_with_lang("en")}">{self._t("switch_en")}</a></div></div>'
+        )
+        meta_refresh = f'<meta http-equiv="refresh" content="{auto_refresh_seconds}">' if auto_refresh_seconds and auto_refresh_seconds > 0 else ""
+        return f"""<!DOCTYPE html>
+<html lang="{self.lang}"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{html.escape(title)} · {html.escape(app_title)}</title>
+{meta_refresh}
+<style>{CSS}</style>
+</head><body>
+<div id="top"></div>
+<div class="page">
+{nav}
+<h1>{html.escape(title)}</h1>
+{body}
+</div>
+<a class="back-to-top" href="#top">{self._t("back_to_top")}</a>
+</body></html>"""
+
+    # ─── Routing ───
+
+    def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         self._activate_lang(parsed.query)
+
+        # API routes
+        if parsed.path.startswith("/api/"):
+            handle_api(self, parsed.path, parsed.query, self.settings)
+            return
+
+        # Static files (React SPA)
+        if self._serve_static(parsed.path):
+            return
+
         if parsed.path == "/jobs":
             self._jobs(parsed.query)
         elif parsed.path.startswith("/jobs/"):
@@ -752,126 +897,123 @@ class WebHandler(BaseHTTPRequestHandler):
             self._title_review()
         elif parsed.path == "/exports":
             self._exports()
+        elif parsed.path == "/forums":
+            self._forums()
         elif parsed.path == "/":
             self._dashboard()
         else:
             self._send("Not found", HTTPStatus.NOT_FOUND, "text/plain")
 
-    def do_POST(self) -> None:  # noqa: N802 - stdlib hook
+    def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         self._activate_lang(parsed.query)
-        if parsed.path == "/jobs/noop":
-            self._create_noop()
-        elif parsed.path == "/jobs/sync-thread":
-            self._create_sync_thread()
-        elif parsed.path == "/jobs/resync-thread":
-            self._create_resync_thread()
-        elif parsed.path == "/threads/delete":
-            self._delete_thread()
-        elif parsed.path == "/series/delete":
-            self._delete_series()
-        elif parsed.path == "/title-review/confirm-title":
-            self._confirm_title_review()
-        elif parsed.path == "/title-review/update-title":
-            self._update_title_review()
-        elif parsed.path == "/title-review/confirm-series":
-            self._confirm_series_review()
-        elif parsed.path == "/title-review/merge-series":
-            self._merge_series_review()
-        elif parsed.path == "/jobs/rebuild-series":
-            self._create_rebuild_series_job()
-        elif parsed.path == "/jobs/export-thread":
-            self._create_export_thread()
-        elif parsed.path == "/jobs/reexport-thread":
-            self._create_reexport_thread()
+
+        # API routes
+        if parsed.path.startswith("/api/"):
+            handle_api(self, parsed.path, parsed.query, self.settings)
+            return
+
+        handler = {
+            "/jobs/noop": self._create_noop,
+            "/jobs/sync-thread": self._create_sync_thread,
+            "/jobs/resync-thread": self._create_resync_thread,
+            "/threads/delete": self._delete_thread,
+            "/series/delete": self._delete_series,
+            "/title-review/confirm-title": self._confirm_title_review,
+            "/title-review/update-title": self._update_title_review,
+            "/title-review/confirm-series": self._confirm_series_review,
+            "/title-review/merge-series": self._merge_series_review,
+            "/jobs/rebuild-series": self._create_rebuild_series_job,
+            "/jobs/export-thread": self._create_export_thread,
+            "/jobs/reexport-thread": self._create_reexport_thread,
+        }.get(parsed.path)
+        if handler:
+            handler()
         else:
             self._send("Not found", HTTPStatus.NOT_FOUND, "text/plain")
+
+    # ─── Dashboard ───
 
     def _dashboard(self) -> None:
         conn, repo = self._repo()
         try:
-            recent_jobs = repo.list(limit=8)
+            recent_jobs = repo.list(limit=10)
             recent_audits = AuditEventsRepository(conn).list_recent(limit=8)
             worker_rows = self._worker_heartbeats(conn)
             archived_threads = ThreadsRepository(conn).list_threads(limit=20)
             thread_count = conn.execute("SELECT COUNT(*) FROM threads").fetchone()[0]
             series_count = conn.execute("SELECT COUNT(*) FROM series").fetchone()[0]
             finished_exports = conn.execute("SELECT COUNT(*) FROM threads WHERE is_exported = 1").fetchone()[0]
-            recent_job_rows = "\n".join(self._render_job_list_row(job) for job in recent_jobs)
-            worker_cards = "\n".join(self._render_worker_list_row(row) for row in worker_rows)
-            audit_cards = "\n".join(self._render_audit_list_row(row) for row in recent_audits)
-            archived_cards = "\n".join(self._render_thread_list_row(row) for row in archived_threads)
-            body = f"""
-          <div class="grid">
-            <div class="stat"><div class="label">{self._t("thread_count")}</div><div class="value">{thread_count}</div></div>
-            <div class="stat"><div class="label">{self._t("series_count")}</div><div class="value">{series_count}</div></div>
-            <div class="stat"><div class="label">{self._t("exports")}</div><div class="value">{finished_exports}</div></div>
-            <div class="stat"><div class="label">{self._t("data_dir")}</div><div class="value" style="font-size:14px">{html.escape(str(self.settings.data_dir))}</div></div>
-          </div>
-          <h2>{self._t("recent_jobs")}</h2>
-          <p class="muted">{self._t("dashboard_jobs_hint")}</p>
-          <div class="item-list">{recent_job_rows}</div>
-          <h2>{self._t("worker_heartbeats")}</h2>
-          <p class="muted">{self._t("dashboard_workers_hint")}</p>
-          <div class="item-list">{worker_cards}</div>
-          <h2>{self._t("recent_audit_events")}</h2>
-          <p class="muted">{self._t("dashboard_audit_hint")}</p>
-          <div class="item-list">{audit_cards}</div>
-          <h2>{self._t("recent_archived_threads")}</h2>
-          <p class="muted">{self._t("dashboard_threads_hint")}</p>
-          <div class="thread-list">{archived_cards or f'<div class="panel muted">{self._t("no_archived_threads")}</div>'}</div>
-            """
-            self._send(self._html_page("YamiboMCP", body))
+
+            stats = (
+                f'<div class="stat-row">'
+                f'<div class="stat-cell"><div class="label">{self._t("thread_count")}</div><div class="value">{thread_count}</div></div>'
+                f'<div class="stat-cell"><div class="label">{self._t("series_count")}</div><div class="value">{series_count}</div></div>'
+                f'<div class="stat-cell"><div class="label">{self._t("exports")}</div><div class="value">{finished_exports}</div></div>'
+                f'<div class="stat-cell"><div class="label">{self._t("data_dir")}</div><div class="value" style="font-size:13px;word-break:break-all">{html.escape(str(self.settings.data_dir))}</div></div>'
+                f'</div>'
+            )
+
+            # Jobs table
+            job_rows = "".join(self._render_job_tr(job) for job in recent_jobs)
+            jobs_table = (
+                f'<h2>{self._t("recent_jobs")}</h2>'
+                f'<div class="table-wrap"><table>'
+                f'<tr><th>{self._t("id")}</th><th>{self._t("type")}</th><th>{self._t("status")}</th>'
+                f'<th>{self._t("stage")}</th><th>{self._t("tid")}</th><th>{self._t("updated")}</th></tr>'
+                f'{job_rows}</table></div>'
+            )
+
+            # Workers table
+            if worker_rows:
+                worker_trs = "".join(
+                    f'<tr><td class="mono">{html.escape(str(r["worker_id"] or ""))}</td>'
+                    f'<td>{r["running_jobs"]}</td><td>{r["seen_jobs"]}</td>'
+                    f'<td class="nowrap">{html.escape(str(r["latest_heartbeat_at"] or "-"))}</td></tr>'
+                    for r in worker_rows
+                )
+                workers_table = (
+                    f'<h2>{self._t("worker_heartbeats")}</h2>'
+                    f'<div class="table-wrap"><table>'
+                    f'<tr><th>{self._t("worker")}</th><th>{self._t("running_jobs")}</th>'
+                    f'<th>{self._t("seen_jobs")}</th><th>{self._t("latest_heartbeat")}</th></tr>'
+                    f'{worker_trs}</table></div>'
+                )
+            else:
+                workers_table = ""
+
+            # Audit table
+            audit_trs = "".join(
+                f'<tr><td>{html.escape(r["action"])}</td>'
+                f'<td>{html.escape(r["target_type"])}:{html.escape(r["target_id"])}</td>'
+                f'<td>{html.escape(r["actor"])}</td>'
+                f'<td class="nowrap">{html.escape(r["created_at"])}</td></tr>'
+                for r in recent_audits
+            )
+            audit_table = (
+                f'<h2>{self._t("recent_audit_events")}</h2>'
+                f'<div class="table-wrap"><table>'
+                f'<tr><th>{self._t("action")}</th><th>{self._t("target")}</th>'
+                f'<th>{self._t("actor")}</th><th>{self._t("at")}</th></tr>'
+                f'{audit_trs}</table></div>'
+            )
+
+            # Threads table
+            thread_trs = "".join(self._render_thread_tr(row) for row in archived_threads)
+            threads_table = (
+                f'<h2>{self._t("recent_archived_threads")}</h2>'
+                f'<div class="table-wrap"><table>'
+                f'<tr><th>{self._t("tid")}</th><th>{self._t("title")}</th><th>{self._t("forum_name")}</th>'
+                f'<th>{self._t("archive")}</th><th>{self._t("synced")}</th></tr>'
+                f'{thread_trs or f"<tr><td colspan=\"5\" style=\"color:var(--text-tertiary)\">{self._t('no_archived_threads')}</td></tr>"}</table></div>'
+            )
+
+            body = stats + jobs_table + workers_table + audit_table + threads_table
+            self._send(self._html_page(self._t("dashboard"), body))
         finally:
             conn.close()
 
-    def _render_worker_list_row(self, row: dict[str, object]) -> str:
-        return f"""
-          <div class="item-row">
-            <div class="item-main">
-              <div class="item-main-title">{html.escape(str(row['worker_id'] or ''))}</div>
-            </div>
-            <div class="item-meta">
-              <div class="item-meta-label">{self._t("status_meta")}</div>
-              <div class="item-meta-lines">
-                <div><strong>{self._t("running_jobs")}:</strong> {row['running_jobs']}</div>
-                <div><strong>{self._t("seen_jobs")}:</strong> {row['seen_jobs']}</div>
-              </div>
-            </div>
-            <div class="item-meta">
-              <div class="item-meta-label">{self._t("updated")}</div>
-              <div class="item-meta-lines">
-                <div><strong>{self._t("latest_heartbeat")}:</strong> {html.escape(str(row['latest_heartbeat_at'] or '-'))}</div>
-                <div><strong>{self._t("latest_update")}:</strong> {html.escape(str(row['latest_updated_at'] or '-'))}</div>
-              </div>
-            </div>
-          </div>
-        """
-
-    def _render_audit_list_row(self, row: dict[str, object]) -> str:
-        return f"""
-          <div class="item-row">
-            <div class="item-main">
-              <div class="item-main-title">{html.escape(row['action'])}</div>
-              <div class="item-main-sub">
-                <span><strong>{self._t("actor")}:</strong> {html.escape(row['actor'])}</span>
-              </div>
-            </div>
-            <div class="item-meta">
-              <div class="item-meta-label">{self._t("audit_meta")}</div>
-              <div class="item-meta-lines">
-                <div><strong>{self._t("target")}:</strong> {html.escape(row['target_type'])}:{html.escape(row['target_id'])}</div>
-                <div><strong>{self._t("at")}:</strong> {html.escape(row['created_at'])}</div>
-              </div>
-            </div>
-            <div class="item-meta">
-              <div class="item-meta-label">{self._t("status_meta")}</div>
-              <div class="item-meta-lines">
-                <div><strong>ID:</strong> {html.escape(str(row['event_id']))}</div>
-              </div>
-            </div>
-          </div>
-        """
+    # ─── Jobs ───
 
     def _jobs(self, query: str) -> None:
         params = parse_qs(query)
@@ -881,79 +1023,61 @@ class WebHandler(BaseHTTPRequestHandler):
         try:
             jobs = repo.list(limit=150, status=status)
             auto_refresh = 3 if any(self._is_active_job_status(job.status) for job in jobs) else None
-            status_links = " | ".join(
-                f'<a href="{self._url("/jobs" if value is None else f"/jobs?status={value}")}">{self._t(label.lower()) if label != "All" else self._t("all")}</a>'
-                for value, label in (
-                    (None, "All"),
-                    ("queued", "Queued"),
-                    ("running", "Running"),
-                    ("succeeded", "Succeeded"),
-                    ("failed", "Failed"),
-                    ("interrupted", "Interrupted"),
-                )
+
+            filters = "".join(
+                f'<a href="{self._url("/jobs" if val is None else f"/jobs?status={val}")}"'
+                f' class="{"active" if val == status else ""}">{self._t(label)}</a>'
+                for val, label in [
+                    (None, "all"), ("queued", "queued"), ("running", "running"),
+                    ("succeeded", "succeeded"), ("failed", "failed"), ("interrupted", "interrupted"),
+                ]
             )
-            rows = "\n".join(self._render_job_list_row(job) for job in jobs)
+
             created_notice = ""
             if created:
-                created_notice = f"<p><strong>{self._t('created_job')}:</strong> <a href=\"{self._url(f'/jobs/{html.escape(created)}')}\">{html.escape(created)}</a></p>"
-            body = f"""
-              {created_notice}
-              <p>{self._t("status_filters")}: {status_links}</p>
-              <form method="post" action="{self._url("/jobs/noop")}">
-                {self._hidden_lang()}
-                <button type="submit">{self._t("create_noop_job")}</button>
-              </form>
-              <form method="post" action="{self._url("/jobs/sync-thread")}">
-                {self._hidden_lang()}
-                <div class="toolbar">
-                  <label>{self._t("local_html_path")}
-                    <input name="html_path" size="36" placeholder="html_sample/thread.html">
-                  </label>
-                  <label>TID <input name="tid" size="10" placeholder="572272"></label>
-                  <label>{self._t("remote_url")} <input name="url" size="36" placeholder="https://bbs.yamibo.com/thread-572272-1-1.html"></label>
-                  <button type="submit">{self._t("sync_thread_now")}</button>
-                </div>
-              </form>
-              <p class="muted">{self._t("job_list_hint")}</p>
-              <div class="item-list">{rows}</div>
-            """
+                created_notice = f'<div class="panel" style="margin-bottom:12px"><strong>{self._t("created_job")}:</strong> <a href="{self._url(f"/jobs/{html.escape(created)}")}">{html.escape(created)}</a></div>'
+
+            form_html = (
+                f'<form method="post" action="{self._url("/jobs/noop")}">{self._hidden_lang()}'
+                f'<button type="submit">{self._t("create_noop_job")}</button></form>'
+                f'<form method="post" action="{self._url("/jobs/sync-thread")}" style="margin-top:8px">'
+                f'{self._hidden_lang()}<div class="toolbar">'
+                f'<input name="html_path" size="30" placeholder="html_sample/thread.html">'
+                f'<input name="tid" size="8" placeholder="TID">'
+                f'<input name="url" size="30" placeholder="https://bbs.yamibo.com/thread-...">'
+                f'<button type="submit">{self._t("sync_thread_now")}</button></div></form>'
+            )
+
+            rows = "".join(self._render_job_tr(job) for job in jobs)
+            table = (
+                f'<div class="table-wrap"><table>'
+                f'<tr><th>{self._t("id")}</th><th>{self._t("type")}</th><th>{self._t("status")}</th>'
+                f'<th>{self._t("stage")}</th><th>{self._t("tid")}</th><th>{self._t("progress")}</th>'
+                f'<th>{self._t("error")}</th><th>{self._t("created")}</th></tr>'
+                f'{rows}</table></div>'
+            )
+
+            body = created_notice + f'<div class="segmented">{filters}</div>' + form_html + table
             self._send(self._html_page(self._t("jobs"), body, auto_refresh_seconds=auto_refresh))
         finally:
             conn.close()
 
-    def _render_job_list_row(self, job: object) -> str:
+    def _render_job_tr(self, job: object) -> str:
         progress = f"{job.progress_current}/{job.progress_total or '?'}"
-        error_code = html.escape(job.error_code or "")
-        error_message = html.escape(job.error_message or "")
-        return f"""
-          <div class="item-row">
-            <div class="item-main">
-              <div class="item-main-title"><a href="{self._url(f"/jobs/{job.job_id}")}">{html.escape(job.job_id)}</a></div>
-              <div class="item-main-sub">
-                <span><strong>{self._t("type")}:</strong> {html.escape(job.job_type)}</span>
-                <span><strong>{self._t("worker")}:</strong> {html.escape(job.worker_id or "-")}</span>
-              </div>
-            </div>
-            <div class="item-meta">
-              <div class="item-meta-label">{self._t("job_meta")}</div>
-              <div class="item-meta-lines">
-                <div><strong>{self._t("status")}:</strong> {html.escape(job.status)}</div>
-                <div><strong>{self._t("stage")}:</strong> {html.escape(job.stage or "-")}</div>
-                <div><strong>{self._t("progress")}:</strong> {progress}</div>
-                <div><a href="{self._url(f"/jobs/{job.job_id}")}">{self._t("open_job")}</a></div>
-              </div>
-            </div>
-            <div class="item-meta">
-              <div class="item-meta-label">{self._t("error_meta")}</div>
-              <div class="item-meta-lines">
-                <div><strong>{self._t("error_code")}:</strong> {error_code or "-"}</div>
-                <div><strong>{self._t("error_message")}:</strong> {error_message or "-"}</div>
-                <div><strong>{self._t("created")}:</strong> {html.escape(job.created_at)}</div>
-                <div><strong>{self._t("finished")}:</strong> {html.escape(job.finished_at or "-")}</div>
-              </div>
-            </div>
-          </div>
-        """
+        error = html.escape(job.error_code or "")
+        tid_link = f'<a href="{self._url(f"/threads/{job.tid}")}">{job.tid}</a>' if job.tid else "-"
+        return (
+            f'<tr>'
+            f'<td class="mono"><a href="{self._url(f"/jobs/{job.job_id}")}">{html.escape(job.job_id)}</a></td>'
+            f'<td class="nowrap">{html.escape(job.job_type)}</td>'
+            f'<td>{_status_badge(job.status)}</td>'
+            f'<td class="nowrap">{html.escape(job.stage or "-")}</td>'
+            f'<td>{tid_link}</td>'
+            f'<td class="nowrap">{progress}</td>'
+            f'<td class="truncate">{error or "-"}</td>'
+            f'<td class="nowrap">{html.escape(job.created_at)}</td>'
+            f'</tr>'
+        )
 
     def _job_detail(self, path: str) -> None:
         job_id = path.removeprefix("/jobs/").strip("/")
@@ -968,72 +1092,92 @@ class WebHandler(BaseHTTPRequestHandler):
             snapshot_text = self._read_text(self._job_artifact_path(job_id, "snapshot.json"))
             failure_text = self._read_text(self._job_artifact_path(job_id, "failure.json"))
             title_parse_log_text = self._read_text(self._job_artifact_path(job_id, "title_parse_log.json"))
+
+            # Diagnostics
+            diagnostics = self._job_diagnostics(job.status, snapshot_text, failure_text, title_parse_log_text)
+
+            # Detail table
             snapshot_link = f'<a href="{self._url(f"/artifacts/jobs/{html.escape(job_id)}/snapshot.json")}">snapshot.json</a>' if snapshot_text else ""
             failure_link = f'<a href="{self._url(f"/artifacts/jobs/{html.escape(job_id)}/failure.json")}">failure.json</a>' if failure_text else ""
-            title_parse_log_link = f'<a href="{self._url(f"/artifacts/jobs/{html.escape(job_id)}/title_parse_log.json")}">title_parse_log.json</a>' if title_parse_log_text else ""
-            diagnostics = self._job_diagnostics(job.status, snapshot_text, failure_text, title_parse_log_text)
-            body = f"""
-              <div class="panel">
-                <h2>{self._t("diagnostics")}</h2>
-                <p class="muted">{self._t("job_diagnostics_intro")}</p>
-                {diagnostics}
-              </div>
-              <table border="1" cellspacing="0" cellpadding="4">
-                <tr><th>{self._t("id")}</th><td>{html.escape(job.job_id)}</td></tr>
-                <tr><th>{self._t("type")}</th><td>{html.escape(job.job_type)}</td></tr>
-                <tr><th>{self._t("status")}</th><td>{html.escape(job.status)}</td></tr>
-                <tr><th>{self._t("stage")}</th><td>{html.escape(job.stage or '')}</td></tr>
-                <tr><th>{self._t("tid")}</th><td>{'' if job.tid is None else job.tid}</td></tr>
-                <tr><th>{self._t("progress")}</th><td>{job.progress_current}/{job.progress_total or '?'}</td></tr>
-                <tr><th>{self._t("worker")}</th><td>{html.escape(job.worker_id or '')}</td></tr>
-                <tr><th>{self._t("heartbeat")}</th><td>{html.escape(job.heartbeat_at or '')}</td></tr>
-                <tr><th>{self._t("lease_until")}</th><td>{html.escape(job.lease_until or '')}</td></tr>
-                <tr><th>{self._t("error")}</th><td>{html.escape(job.error_code or '')} {html.escape(job.error_message or '')}</td></tr>
-                <tr><th>{self._t("created")}</th><td>{html.escape(job.created_at)}</td></tr>
-                <tr><th>{self._t("updated")}</th><td>{html.escape(job.updated_at)}</td></tr>
-                <tr><th>{self._t("finished")}</th><td>{html.escape(job.finished_at or '')}</td></tr>
-                <tr><th>{self._t("payload")}</th><td>{self._json_block(job.payload)}</td></tr>
-                <tr><th>{self._t("artifacts")}</th><td>{self._json_block(job.artifacts)}</td></tr>
-                <tr><th>{self._t("staging")}</th><td><div class="artifact-links">{snapshot_link}{failure_link}{title_parse_log_link}</div></td></tr>
-              </table>
-              <h2>{self._t("events_timeline")}</h2>
-              {self._render_job_events_timeline(events)}
-              <h2>{self._t("failure_preview")}</h2>
-              <pre>{html.escape(self._preview(failure_text))}</pre>
-              <h2>{self._t("snapshot_preview")}</h2>
-              <pre>{html.escape(self._preview(snapshot_text))}</pre>
-              <h2>{self._t("title_parse_log_preview")}</h2>
-              <pre>{html.escape(self._preview(title_parse_log_text))}</pre>
-            """
+            title_parse_link = f'<a href="{self._url(f"/artifacts/jobs/{html.escape(job_id)}/title_parse_log.json")}">title_parse_log.json</a>' if title_parse_log_text else ""
+            staging_links = f'<div class="artifact-links">{snapshot_link}{failure_link}{title_parse_link}</div>' if (snapshot_link or failure_link or title_parse_link) else "-"
+
+            detail_rows = [
+                (self._t("id"), f'<span class="mono">{html.escape(job.job_id)}</span>'),
+                (self._t("type"), html.escape(job.job_type)),
+                (self._t("status"), _status_badge(job.status)),
+                (self._t("stage"), html.escape(job.stage or "-")),
+                (self._t("tid"), f'<a href="{self._url(f"/threads/{job.tid}")}">{job.tid}</a>' if job.tid else "-"),
+                (self._t("progress"), f"{job.progress_current}/{job.progress_total or '?'}"),
+                (self._t("worker"), html.escape(job.worker_id or "-")),
+                (self._t("heartbeat"), html.escape(job.heartbeat_at or "-")),
+                (self._t("lease_until"), html.escape(job.lease_until or "-")),
+                (self._t("error"), f'{html.escape(job.error_code or "")} {html.escape(job.error_message or "")}'.strip() or "-"),
+                (self._t("created"), html.escape(job.created_at)),
+                (self._t("updated"), html.escape(job.updated_at)),
+                (self._t("finished"), html.escape(job.finished_at or "-")),
+                (self._t("payload"), self._json_block(job.payload)),
+                (self._t("artifacts"), self._json_block(job.artifacts)),
+                (self._t("staging"), staging_links),
+            ]
+            detail_trs = "".join(f'<tr><th style="width:120px">{k}</th><td>{v}</td></tr>' for k, v in detail_rows)
+            detail_table = f'<div class="table-wrap"><table>{detail_trs}</table></div>'
+
+            # Events timeline
+            events_html = self._render_job_events_timeline(events)
+            events_section = f'<h2>{self._t("events_timeline")}</h2>{events_html}' if events_html else ""
+
+            # Previews
+            previews = ""
+            for label, text in [
+                (self._t("failure_preview"), failure_text),
+                (self._t("snapshot_preview"), snapshot_text),
+                (self._t("title_parse_log_preview"), title_parse_log_text),
+            ]:
+                if text:
+                    previews += f'<h2>{label}</h2><pre style="font-size:12px;max-height:400px;overflow:auto;background:var(--bg-muted);padding:12px;border:1px solid var(--border-light)">{html.escape(self._preview(text))}</pre>'
+
+            body = f'<div class="panel"><h2>{self._t("diagnostics")}</h2><p style="color:var(--text-tertiary);font-size:13px;margin:0 0 8px">{self._t("job_diagnostics_intro")}</p>{diagnostics}</div>' + detail_table + events_section + previews
             self._send(self._html_page(f"{self._t('job_detail')} {job_id}", body, auto_refresh_seconds=auto_refresh))
         finally:
             conn.close()
 
+    def _job_diagnostics(self, status: str, snapshot_text: str | None, failure_text: str | None, title_parse_log_text: str | None) -> str:
+        hints: list[str] = []
+        if snapshot_text:
+            hints.append(self._t("job_hint_snapshot"))
+        if failure_text:
+            hints.append(self._t("job_hint_failure"))
+        if title_parse_log_text:
+            hints.append(self._t("job_hint_title_parse_log"))
+        if status == "partial":
+            hints.append(self._t("job_hint_partial"))
+        if not hints:
+            return '<p style="color:var(--text-tertiary);font-size:13px">No diagnostics available yet.</p>'
+        return "<ul class=\"hint-list\">" + "".join(f"<li>{html.escape(item)}</li>" for item in hints) + "</ul>"
+
     def _render_job_events_timeline(self, events: list[object]) -> str:
         if not events:
-            return f"<p class=\"muted\">{html.escape(self._t('all'))}: 0</p>"
+            return ""
         rows = []
-        for event in events:
-            payload = getattr(event, "payload", {}) or {}
+        for e in events:
+            payload = getattr(e, "payload", {}) or {}
             rows.append(
-                "<tr>"
-                f"<td>{getattr(event, 'event_id', '')}</td>"
-                f"<td>{html.escape(getattr(event, 'created_at', '') or '')}</td>"
-                f"<td>{html.escape(getattr(event, 'event_type', '') or '')}</td>"
-                f"<td>{html.escape(getattr(event, 'status', '') or '-')}</td>"
-                f"<td>{html.escape(getattr(event, 'stage', '') or '-')}</td>"
-                f"<td>{self._json_block(payload)}</td>"
-                "</tr>"
+                f'<tr><td class="mono">{getattr(e, "event_id", "")}</td>'
+                f'<td class="nowrap">{html.escape(getattr(e, "created_at", "") or "")}</td>'
+                f'<td class="nowrap">{html.escape(getattr(e, "event_type", "") or "")}</td>'
+                f'<td>{_status_badge(getattr(e, "status", None))}</td>'
+                f'<td class="nowrap">{html.escape(getattr(e, "stage", "") or "-")}</td>'
+                f'<td><pre style="margin:0;font-size:12px;max-width:300px;overflow:auto">{html.escape(json.dumps(payload, ensure_ascii=False, indent=2))}</pre></td></tr>'
             )
         return (
-            "<table border=\"1\" cellspacing=\"0\" cellpadding=\"4\">"
-            f"<tr><th>ID</th><th>{html.escape(self._t('created'))}</th>"
-            f"<th>{html.escape(self._t('event_type'))}</th>"
-            f"<th>{html.escape(self._t('status'))}</th>"
-            f"<th>{html.escape(self._t('stage'))}</th>"
-            f"<th>{html.escape(self._t('payload'))}</th></tr>"
-            f"{''.join(rows)}"
-            "</table>"
+            '<div class="table-wrap"><table>'
+            f'<tr><th>ID</th><th>{html.escape(self._t("created"))}</th>'
+            f'<th>{html.escape(self._t("event_type"))}</th>'
+            f'<th>{html.escape(self._t("status"))}</th>'
+            f'<th>{html.escape(self._t("stage"))}</th>'
+            f'<th>{html.escape(self._t("payload"))}</th></tr>'
+            f'{"".join(rows)}</table></div>'
         )
 
     def _job_artifact(self, path: str) -> None:
@@ -1052,6 +1196,8 @@ class WebHandler(BaseHTTPRequestHandler):
             return
         self._send(content, content_type="application/json")
 
+    # ─── Threads ───
+
     def _threads(self, query: str) -> None:
         params = parse_qs(query)
         q = params.get("q", [""])[0].strip()
@@ -1060,318 +1206,44 @@ class WebHandler(BaseHTTPRequestHandler):
         try:
             repo = ThreadsRepository(conn)
             threads = repo.search_threads(q, limit=200) if q else repo.list_threads(limit=200)
-            rows = "\n".join(self._render_thread_list_row(row) for row in threads)
-            body = f"""
-              <form method="get" action="/threads">
-                {self._hidden_lang()}
-                <input name="q" size="50" value="{html.escape(q)}" placeholder="{html.escape(self._t("search_placeholder"))}">
-                <button type="submit">{self._t("search")}</button>
-              </form>
-              <p class="muted">{self._t("thread_list_hint")}</p>
-              <div class="thread-list">{rows}</div>
-            """
+            rows = "".join(self._render_thread_tr(row) for row in threads)
+            body = (
+                f'<form method="get" action="/threads" class="toolbar">'
+                f'{self._hidden_lang()}'
+                f'<input name="q" size="50" value="{html.escape(q)}" placeholder="{html.escape(self._t("search_placeholder"))}">'
+                f'<button type="submit">{self._t("search")}</button></form>'
+                f'<div class="table-wrap"><table>'
+                f'<tr><th>{self._t("tid")}</th><th>{self._t("title")}</th><th>{self._t("forum_name")}</th>'
+                f'<th>{self._t("content_kind")}</th><th>{self._t("archive")}</th><th>{self._t("synced")}</th></tr>'
+                f'{rows}</table></div>'
+            )
             self._send(self._html_page(self._t("threads"), body))
         finally:
             conn.close()
 
-    def _render_thread_list_row(self, row) -> str:
+    def _render_thread_tr(self, row) -> str:
         tid = int(row["tid"])
         title = html.escape(row["display_title"] or row["raw_title"] or "")
-        core_title = html.escape(row["core_title_guess"] or "")
-        chapter = html.escape(row["chapter_name"] or "")
-        publisher = html.escape(row["publisher"] or "")
-        archive_status = html.escape(row["archive_status"] or "")
-        validation_status = html.escape(row["validation_status"] or "")
-        sync_time = html.escape(row["sync_time"] or "")
-        series_cell = self._series_cell(row)
-        return f"""
-          <div class="thread-row">
-            <div class="thread-main">
-              <div class="thread-main-title">
-                <a href="{self._url(f"/threads/{tid}")}">{title}</a>
-                {self._thread_action_forms(tid, compact=True)}
-              </div>
-              <div class="thread-main-sub">
-                <span><strong>{self._t("tid")}:</strong> {tid}</span>
-                <span><strong>{self._t("publisher")}:</strong> {publisher or "-"}</span>
-              </div>
-            </div>
-            <div class="thread-meta">
-              <div class="thread-meta-label">{self._t("title_meta")}</div>
-              <div class="thread-meta-lines">
-                <div><strong>{self._t("core_title")}:</strong> {core_title or "-"}</div>
-                <div><strong>{self._t("chapter")}:</strong> {chapter or "-"}</div>
-                <div><strong>{self._t("series_key")}:</strong> {series_cell or "-"}</div>
-              </div>
-            </div>
-            <div class="thread-meta">
-              <div class="thread-meta-label">{self._t("status_meta")}</div>
-              <div class="thread-meta-lines">
-                <div><strong>{self._t("archive")}:</strong> {archive_status or "-"}</div>
-                <div><strong>{self._t("validation")}:</strong> {validation_status or "-"}</div>
-                <div><strong>{self._t("synced")}:</strong> {sync_time or "-"}</div>
-                <div><a href="{self._url(f"/threads/{tid}")}">{self._t("open_thread")}</a></div>
-              </div>
-            </div>
-          </div>
-        """
-
-    def _series_cell(self, row) -> str:
-        series_key = html.escape(row["series_key"] or "")
-        series_id = row["series_id"]
-        if series_id is None:
-            return series_key
-        return f'<a href="{self._url(f"/series/{series_id}")}">{series_key}</a>'
-
-    def _thread_action_forms(self, tid: int, *, compact: bool = False) -> str:
-        action_class = "thread-inline-actions" if compact else "actions"
+        fid = row["forum_id"] if "forum_id" in row.keys() else None
+        kind = row["content_kind"] if "content_kind" in row.keys() else None
         return (
-            f'<div class="{action_class}">'
-            f'<form method="post" action="{self._url("/jobs/resync-thread")}">{self._hidden_lang()}'
-            f'<input type="hidden" name="tid" value="{tid}"><button type="submit">{self._t("resync_thread")}</button></form>'
-            f'<form method="post" action="{self._url("/jobs/export-thread")}">{self._hidden_lang()}'
-            f'<input type="hidden" name="tid" value="{tid}"><input type="hidden" name="strategy" value="sync_if_stale">'
-            f'<button type="submit">{self._t("create_export_job")}</button></form>'
-            f'<form method="post" action="{self._url("/threads/delete")}">{self._hidden_lang()}'
-            f'<input type="hidden" name="tid" value="{tid}"><button class="danger" type="submit">{self._t("delete_thread")}</button></form>'
-            f"</div>"
+            f'<tr>'
+            f'<td class="mono"><a href="{self._url(f"/threads/{tid}")}">{tid}</a></td>'
+            f'<td class="truncate"><a href="{self._url(f"/threads/{tid}")}">{title}</a></td>'
+            f'<td class="nowrap">{html.escape(_forum_name(fid))}</td>'
+            f'<td class="nowrap">{_badge(kind or "-", "accent") if kind and kind != "-" else "-"}</td>'
+            f'<td>{_status_badge(row["archive_status"])}</td>'
+            f'<td class="nowrap">{html.escape(row["sync_time"] or "-")}</td>'
+            f'</tr>'
         )
-
-    def _series_action_forms(self, series_id: int, thread_count: int, *, compact: bool = False, allow_merge: bool = False) -> str:
-        disabled = ' disabled title="' + html.escape(self._t("cannot_delete_nonempty_series"), quote=True) + '"' if thread_count > 0 else ""
-        action_class = "item-inline-actions" if compact else "actions"
-        parts = [f'<div class="{action_class}">']
-        if allow_merge:
-            parts.append(
-                f'<form method="post" action="{self._url("/title-review/merge-series")}">{self._hidden_lang()}'
-                f'<input type="hidden" name="source_series_id" value="{series_id}">'
-                f'<input type="hidden" name="return_to" value="series_detail">'
-                f'<input type="text" name="target_series_id" placeholder="{self._t("target_series_id")}" size="10">'
-                f'<button type="submit">{self._t("merge_series")}</button></form>'
-            )
-        parts.append(
-            f'<form method="post" action="{self._url("/series/delete")}">{self._hidden_lang()}'
-            f'<input type="hidden" name="series_id" value="{series_id}"><button class="danger" type="submit"{disabled}>{self._t("delete_series")}</button></form>'
-        )
-        parts.append("</div>")
-        return "".join(parts)
-
-    def _series(self) -> None:
-        conn = connect(self.settings.db_path)
-        migrate(conn)
-        try:
-            repo = SeriesRepository(conn)
-            series_rows = repo.list_series(limit=200)
-            rows = "\n".join(self._render_series_list_row(row) for row in series_rows)
-            body = f"""
-              <p class="muted">{self._t("series_list_hint")}</p>
-              <div class="item-list">{rows}</div>
-            """
-            self._send(self._html_page(self._t("series"), body))
-        finally:
-            conn.close()
-
-    def _render_series_list_row(self, row) -> str:
-        series_id = int(row["series_id"])
-        thread_count = int(row["thread_count"] or 0)
-        return f"""
-          <div class="item-row">
-            <div class="item-main">
-              <div class="item-main-title">
-                <a href="{self._url(f"/series/{series_id}")}">{html.escape(row['canonical_title'] or row['series_key'] or '')}</a>
-                {self._series_action_forms(series_id, thread_count, compact=True)}
-              </div>
-              <div class="item-main-sub">
-                <span><strong>{self._t("id")}:</strong> {series_id}</span>
-                <span><strong>{self._t("author")}:</strong> {html.escape(row['author_guess'] or "-")}</span>
-              </div>
-            </div>
-            <div class="item-meta">
-              <div class="item-meta-label">{self._t("title_meta")}</div>
-              <div class="item-meta-lines">
-                <div><strong>{self._t("series_key")}:</strong> {html.escape(row['series_key'] or "-")}</div>
-                <div><strong>{self._t("threads")}:</strong> {thread_count}</div>
-                <div><a href="{self._url(f"/series/{series_id}")}">{self._t("open_series")}</a></div>
-              </div>
-            </div>
-            <div class="item-meta">
-              <div class="item-meta-label">{self._t("status_meta")}</div>
-              <div class="item-meta-lines">
-                <div><strong>{self._t("confidence")}:</strong> {row['merge_confidence']}</div>
-                <div><strong>{self._t("needs_review")}:</strong> {row['needs_review']}</div>
-                <div><strong>{self._t("last_sync")}:</strong> {html.escape(row['last_sync_time'] or "-")}</div>
-              </div>
-            </div>
-          </div>
-        """
-
-    def _series_detail(self, path: str) -> None:
-        raw_id = path.removeprefix("/series/").strip("/")
-        if not raw_id.isdigit():
-            self._send("Invalid series id", HTTPStatus.BAD_REQUEST, "text/plain")
-            return
-        series_id = int(raw_id)
-        conn = connect(self.settings.db_path)
-        migrate(conn)
-        try:
-            repo = SeriesRepository(conn)
-            series = repo.get_series(series_id)
-            if series is None:
-                self._send("Series not found", HTTPStatus.NOT_FOUND, "text/plain")
-                return
-            threads = repo.list_threads_for_series(series_id)
-            thread_rows = "\n".join(
-                "<tr>"
-                f'<td><a href="{self._url(f"/threads/{row["tid"]}")}">{row["tid"]}</a></td>'
-                f"<td>{html.escape(row['display_title'] or row['raw_title'] or '')}</td>"
-                f"<td>{html.escape(row['chapter_name'] or '')}</td>"
-                f"<td>{'' if row['chapter_index'] is None else row['chapter_index']}</td>"
-                f"<td>{html.escape(row['archive_status'] or '')}</td>"
-                f"<td>{html.escape(row['sync_time'] or '')}</td>"
-                "</tr>"
-                for row in threads
-            )
-            body = f"""
-              <div class="actions" style="margin-bottom:12px;">
-                {self._series_action_forms(series_id, len(threads), allow_merge=True)}
-              </div>
-              <table border="1" cellspacing="0" cellpadding="4">
-                <tr><th>{self._t("id")}</th><td>{series['series_id']}</td></tr>
-                <tr><th>{self._t("series_key")}</th><td>{html.escape(series['series_key'] or '')}</td></tr>
-                <tr><th>{self._t("author")}</th><td>{html.escape(series['author_guess'] or '')}</td></tr>
-                <tr><th>Creator key</th><td>{html.escape(series['creator_key'] or '')}</td></tr>
-                <tr><th>{self._t("aliases")}</th><td><pre>{html.escape(series['aliases_json'] or '[]')}</pre></td></tr>
-                <tr><th>Alias keys</th><td><pre>{html.escape(series['alias_keys_json'] or '[]')}</pre></td></tr>
-                <tr><th>{self._t("needs_review")}</th><td>{series['needs_review']}</td></tr>
-              </table>
-              <h2>{self._t("threads")}</h2>
-              <div class="table-wrap"><table class="compact" border="1" cellspacing="0" cellpadding="4">
-                <tr><th>{self._t("tid")}</th><th>{self._t("title")}</th><th>{self._t("chapter")}</th><th>Index</th><th>{self._t("archive")}</th><th>{self._t("synced")}</th></tr>
-                {thread_rows}
-              </table></div>
-            """
-            self._send(self._html_page(series["canonical_title"] or f"Series {series_id}", body))
-        finally:
-            conn.close()
-
-    def _title_review(self) -> None:
-        conn = connect(self.settings.db_path)
-        migrate(conn)
-        try:
-            threads_repo = ThreadsRepository(conn)
-            series_repo = SeriesRepository(conn)
-            title_rows = "\n".join(self._render_title_review_card(row) for row in threads_repo.list_title_review_items(limit=100))
-            series_rows = "\n".join(self._render_series_review_card(row) for row in series_repo.list_series_review_items(limit=100))
-            body = f"""
-              <h2>{self._t("thread_titles")}</h2>
-              {title_rows or f'<div class="panel muted">{self._t("no_review_items")}</div>'}
-              <h2>{self._t("series")}</h2>
-              <p class="muted">{self._t("review_series_hint")}</p>
-              <form method="post" action="{self._url("/jobs/rebuild-series")}">
-                {self._hidden_lang()}
-                <button type="submit">{self._t("rebuild_series")}</button>
-              </form>
-              <div class="item-list">{series_rows}</div>
-            """
-            self._send(self._html_page(self._t("title_review"), body))
-        finally:
-            conn.close()
-
-    def _render_series_review_card(self, row) -> str:
-        aliases_text = self._json_list_to_lines(row["aliases_json"])
-        series_id = row["series_id"]
-        return f"""
-          <div class="item-row">
-            <div class="item-main">
-              <div class="item-main-title"><a href="{self._url(f"/series/{series_id}")}">{html.escape(row['canonical_title'] or row['series_key'] or '')}</a></div>
-              <div class="item-main-sub">
-                <span><strong>{self._t("id")}:</strong> {series_id}</span>
-                <span><strong>{self._t("author")}:</strong> {html.escape(row['author_guess'] or "-")}</span>
-              </div>
-            </div>
-            <div class="item-meta">
-              <div class="item-meta-label">{self._t("review_meta")}</div>
-              <div class="item-meta-lines">
-                <div><strong>{self._t("series_key")}:</strong> {html.escape(row['series_key'] or "-")}</div>
-                <div><strong>{self._t("threads")}:</strong> {row['thread_count']}</div>
-                <div><strong>{self._t("aliases")}:</strong> <pre>{html.escape(aliases_text or "-")}</pre></div>
-              </div>
-            </div>
-            <div class="item-meta">
-              <div class="item-meta-label">{self._t("action")}</div>
-              <div class="item-meta-lines">
-                <div>
-                  <form method="post" action="{self._url("/title-review/confirm-series")}">
-                    {self._hidden_lang()}
-                    <input type="hidden" name="series_id" value="{series_id}">
-                    <button type="submit">{self._t("confirm_series")}</button>
-                  </form>
-                </div>
-                <div>
-                  <form method="post" action="{self._url("/title-review/merge-series")}">
-                    {self._hidden_lang()}
-                    <input type="hidden" name="source_series_id" value="{series_id}">
-                    <input type="text" name="target_series_id" placeholder="{self._t("target_series_id")}" size="10">
-                    <button type="submit">{self._t("merge_series")}</button>
-                  </form>
-                </div>
-              </div>
-            </div>
-          </div>
-        """
-
-    def _exports(self) -> None:
-        conn = connect(self.settings.db_path)
-        migrate(conn)
-        try:
-            exports = ThreadsRepository(conn).list_exports(limit=200)
-            rows = "\n".join(self._render_export_list_row(row) for row in exports)
-            body = f"""
-              <p class="muted">{self._t("export_list_hint")}</p>
-              <div class="item-list">{rows}</div>
-            """
-            self._send(self._html_page(self._t("exports"), body))
-        finally:
-            conn.close()
-
-    def _render_export_list_row(self, row) -> str:
-        tid = int(row["tid"])
-        return f"""
-          <div class="item-row">
-            <div class="item-main">
-              <div class="item-main-title">
-                <a href="{self._url(f"/threads/{tid}")}">{html.escape(row['display_title'] or row['raw_title'] or '')}</a>
-                {self._thread_action_forms(tid, compact=True)}
-              </div>
-              <div class="item-main-sub">
-                <span><strong>{self._t("tid")}:</strong> {tid}</span>
-              </div>
-            </div>
-            <div class="item-meta">
-              <div class="item-meta-label">{self._t("status_meta")}</div>
-              <div class="item-meta-lines">
-                <div><strong>{self._t("archive")}:</strong> {html.escape(row['archive_status'] or "-")}</div>
-                <div><a href="{self._url(f"/threads/{tid}")}">{self._t("open_thread")}</a></div>
-              </div>
-            </div>
-            <div class="item-meta">
-              <div class="item-meta-label">{self._t("export_meta")}</div>
-              <div class="item-meta-lines">
-                <div><strong>{self._t("export_path")}:</strong> {html.escape(row['export_path'] or "-")}</div>
-              </div>
-            </div>
-          </div>
-        """
 
     def _thread_detail(self, path: str) -> None:
         suffix = path.removeprefix("/threads/").strip("/")
         if suffix.endswith("/context"):
-            raw_tid = suffix.removesuffix("/context")
-            self._thread_file(raw_tid, "context")
+            self._thread_file(suffix.removesuffix("/context"), "context")
             return
         if suffix.endswith("/metadata"):
-            raw_tid = suffix.removesuffix("/metadata")
-            self._thread_file(raw_tid, "metadata")
+            self._thread_file(suffix.removesuffix("/metadata"), "metadata")
             return
         raw_tid = suffix
         if not raw_tid.isdigit():
@@ -1392,85 +1264,123 @@ class WebHandler(BaseHTTPRequestHandler):
             paths = self._storage_paths()
             metadata_text = self._read_text(paths.thread_metadata(tid))
             metadata = self._parse_metadata_json(metadata_text)
-            reading_view = self._render_thread_reading_view(tid, floors, metadata, image_width=image_width)
-            width_toolbar = self._thread_image_width_toolbar(tid, img_width=image_width)
-            floor_rows = "\n".join(
-                "<tr>"
-                f"<td>{floor['floor_no']}</td>"
-                f"<td>{floor['pid']}</td>"
-                f"<td>{html.escape(floor['publisher'] or '')}</td>"
-                f"<td><pre>{html.escape((floor['content'] or '')[:2000])}</pre></td>"
-                "</tr>"
-                for floor in floors
+
+            # Quick actions
+            actions_html = (
+                f'<div class="actions">'
+                f'<form method="post" action="{self._url("/jobs/resync-thread")}">{self._hidden_lang()}<input type="hidden" name="tid" value="{tid}"><button type="submit">{self._t("resync_thread")}</button></form>'
+                f'<form method="post" action="{self._url("/jobs/export-thread")}">{self._hidden_lang()}<input type="hidden" name="tid" value="{tid}"><input type="hidden" name="strategy" value="sync_if_stale"><button type="submit">{self._t("create_export_job")}</button></form>'
+                f'<form method="post" action="{self._url("/jobs/reexport-thread")}">{self._hidden_lang()}<input type="hidden" name="tid" value="{tid}"><button type="submit">{self._t("force_resync_export")}</button></form>'
+                f'<form method="post" action="{self._url("/threads/delete")}">{self._hidden_lang()}<input type="hidden" name="tid" value="{tid}"><button class="danger" type="submit">{self._t("delete_thread")}</button></form>'
+                f'</div>'
             )
+
+            # Thread info table
+            fid = thread["forum_id"] if "forum_id" in thread.keys() else None
+            kind = thread["content_kind"] if "content_kind" in thread.keys() else None
+            media = thread["primary_media_type"] if "primary_media_type" in thread.keys() else None
+            info_rows = [
+                (self._t("tid"), f'<span class="mono">{tid}</span>'),
+                (self._t("raw_title"), html.escape(thread["raw_title"] or "")),
+                (self._t("publisher"), html.escape(thread["publisher"] or "-")),
+                (self._t("forum_name"), f'{html.escape(_forum_name(fid))} ({fid or "-"})'),
+                (self._t("content_kind"), _badge(kind or "-", "accent") if kind else "-"),
+                (self._t("media_type"), html.escape(media or "-")),
+                (self._t("archive"), _status_badge(thread["archive_status"])),
+                (self._t("validation"), _status_badge(thread["validation_status"])),
+                (self._t("context_path"), html.escape(thread["context_path"] or "-")),
+                (self._t("export_path"), html.escape(thread["export_path"] or "-")),
+            ]
+            info_trs = "".join(f'<tr><th style="width:120px">{k}</th><td>{v}</td></tr>' for k, v in info_rows)
+
+            # Title parse table
             title_rows = ""
             if title is not None:
-                title_rows = f"""
-                <tr><th>{self._t("core_title")}</th><td>{html.escape(title['core_title_guess'] or '')}</td></tr>
-                <tr><th>{self._t("group_name")}</th><td>{html.escape(title['group_name'] or '')}</td></tr>
-                <tr><th>{self._t("author_guess")}</th><td>{html.escape(title['author_guess'] or '')}</td></tr>
-                <tr><th>{self._t("chapter")}</th><td>{html.escape(title['chapter_name'] or '')}</td></tr>
-                <tr><th>{self._t("chapter_title")}</th><td>{html.escape(title['chapter_title'] or '')}</td></tr>
-                <tr><th>{self._t("series_key")}</th><td>{html.escape(title['series_key'] or '')}</td></tr>
-                <tr><th>{self._t("aliases")}</th><td><pre>{html.escape(title['title_aliases_json'] or '[]')}</pre></td></tr>
-                <tr><th>{self._t("confidence")}</th><td>{title['confidence']}</td></tr>
-                <tr><th>{self._t("needs_review")}</th><td>{title['needs_review']}</td></tr>
-                """
-            body = f"""
-              <div class="panel">
-                <div class="actions">
-                  <a href="{self._url("/threads")}">{self._t("open_threads")}</a>
-                  <a href="{self._url("/jobs")}">{self._t("open_jobs")}</a>
-                </div>
-                <h2>{self._t("quick_actions")}</h2>
-              <div class="actions">
-                  <form method="post" action="{self._url("/jobs/resync-thread")}">
-                    {self._hidden_lang()}
-                    <input type="hidden" name="tid" value="{thread['tid']}">
-                    <button type="submit">{self._t("resync_thread")}</button>
-                  </form>
-                  <form method="post" action="{self._url("/jobs/export-thread")}">
-                    {self._hidden_lang()}
-                    <input type="hidden" name="tid" value="{thread['tid']}">
-                    <input type="hidden" name="strategy" value="sync_if_stale">
-                    <button type="submit">{self._t("create_export_job")}</button>
-                  </form>
-                  <form method="post" action="{self._url("/jobs/reexport-thread")}">
-                    {self._hidden_lang()}
-                    <input type="hidden" name="tid" value="{thread['tid']}">
-                    <button type="submit">{self._t("force_resync_export")}</button>
-                  </form>
-                  <form method="post" action="{self._url("/threads/delete")}">
-                    {self._hidden_lang()}
-                    <input type="hidden" name="tid" value="{thread['tid']}">
-                    <button class="danger" type="submit">{self._t("delete_thread")}</button>
-                  </form>
-                </div>
-              </div>
-              <table border="1" cellspacing="0" cellpadding="4">
-                <tr><th>{self._t("tid")}</th><td>{thread['tid']}</td></tr>
-                <tr><th>{self._t("raw_title")}</th><td>{html.escape(thread['raw_title'] or '')}</td></tr>
-                <tr><th>{self._t("publisher")}</th><td>{html.escape(thread['publisher'] or '')}</td></tr>
-                <tr><th>{self._t("archive")}</th><td>{html.escape(thread['archive_status'] or '')}</td></tr>
-                <tr><th>{self._t("validation")}</th><td>{html.escape(thread['validation_status'] or '')}</td></tr>
-                <tr><th>{self._t("context_path")}</th><td>{html.escape(thread['context_path'] or '')}</td></tr>
-                <tr><th>{self._t("export_path")}</th><td>{html.escape(thread['export_path'] or '')}</td></tr>
-                {title_rows}
-              </table>
-              <h2>{self._t("reading_preview")}</h2>
-              <p class="muted">{self._t("reading_preview_tip")}</p>
-              {width_toolbar}
-              <p><a href="{self._url(f"/threads/{tid}/context")}">{self._t("open_context")}</a></p>
-              {reading_view}
-              <h2>{self._t("floors")}</h2>
-              <table border="1" cellspacing="0" cellpadding="4">
-                <tr><th>{self._t("floor_no")}</th><th>{self._t("pid")}</th><th>{self._t("publisher")}</th><th>{self._t("content")}</th></tr>
-                {floor_rows}
-              </table>
-              <h2>{self._t("metadata_preview")}</h2>
-              <p><a href="{self._url(f"/threads/{tid}/metadata")}">{self._t("open_metadata")}</a></p>
-              <pre>{html.escape(self._preview(metadata_text))}</pre>
-            """
+                tp = [
+                    (self._t("core_title"), html.escape(title["core_title_guess"] or "")),
+                    (self._t("group_name"), html.escape(title["group_name"] or "")),
+                    (self._t("author_guess"), html.escape(title["author_guess"] or "")),
+                    (self._t("chapter"), html.escape(title["chapter_name"] or "")),
+                    (self._t("chapter_title"), html.escape(title["chapter_title"] or "")),
+                    (self._t("series_key"), f'<a href="{self._url(f"/series/{thread["series_id"]}")}">{html.escape(title["series_key"] or "")}</a>' if thread["series_id"] else html.escape(title["series_key"] or "")),
+                    (self._t("confidence"), str(title["confidence"] or "-")),
+                    (self._t("needs_review"), self._t("yes") if title["needs_review"] else self._t("no")),
+                ]
+                title_trs = "".join(f'<tr><th style="width:120px">{k}</th><td>{v}</td></tr>' for k, v in tp)
+                title_rows = f'<h2>{self._t("title_meta")}</h2><div class="table-wrap"><table>{title_trs}</table></div>'
+
+            # Assets table
+            assets = AssetsRepository(conn).list_assets(tid)
+            assets_section = ""
+            if assets:
+                asset_trs = "".join(
+                    f'<tr><td class="mono">{html.escape(a["asset_id"][:16])}</td>'
+                    f'<td class="nowrap">{html.escape(a["asset_type"])}</td>'
+                    f'<td>{_status_badge(a["status"])}</td>'
+                    f'<td>{a["pid"]}</td>'
+                    f'<td class="truncate">{html.escape(a["remote_url"] or "")}</td>'
+                    f'<td class="truncate">{html.escape(a["local_path"] or "-")}</td></tr>'
+                    for a in assets
+                )
+                assets_section = (
+                    f'<h2>{self._t("assets")} ({len(assets)})</h2>'
+                    f'<div class="table-wrap"><table>'
+                    f'<tr><th>{self._t("asset_id")}</th><th>{self._t("asset_type")}</th><th>{self._t("status")}</th>'
+                    f'<th>{self._t("pid")}</th><th>{self._t("remote_url_label")}</th><th>{self._t("local_path")}</th></tr>'
+                    f'{asset_trs}</table></div>'
+                )
+
+            # Content blocks table
+            blocks = ContentBlocksRepository(conn).list_blocks(tid)
+            blocks_section = ""
+            if blocks:
+                block_trs = "".join(
+                    f'<tr><td>{b["order_index"]}</td>'
+                    f'<td>{b["pid"]}</td>'
+                    f'<td class="nowrap">{html.escape(b["block_type"])}</td>'
+                    f'<td class="truncate">{html.escape((b["text"] or "")[:200])}</td></tr>'
+                    for b in blocks
+                )
+                blocks_section = (
+                    f'<h2>{self._t("content_blocks")} ({len(blocks)})</h2>'
+                    f'<div class="table-wrap"><table>'
+                    f'<tr><th>{self._t("order_index")}</th><th>{self._t("pid")}</th>'
+                    f'<th>{self._t("block_type")}</th><th>{self._t("content")}</th></tr>'
+                    f'{block_trs}</table></div>'
+                )
+
+            # Reading preview
+            reading_view = self._render_thread_reading_view(tid, floors, metadata, image_width=image_width)
+            width_toolbar = self._thread_image_width_toolbar(tid, img_width=image_width)
+
+            # Floors table
+            floor_trs = "".join(
+                f'<tr><td>{f["floor_no"]}</td><td class="mono">{f["pid"]}</td>'
+                f'<td>{html.escape(f["publisher"] or "")}</td>'
+                f'<td><pre style="margin:0;font-size:12px;max-height:200px;overflow:auto">{html.escape((f["content"] or "")[:2000])}</pre></td></tr>'
+                for f in floors
+            )
+
+            body = (
+                f'<div class="panel">{actions_html}</div>'
+                f'<h2>{self._t("archive_meta")}</h2>'
+                f'<div class="table-wrap"><table>{info_trs}</table></div>'
+                f'{title_rows}'
+                f'{assets_section}'
+                f'{blocks_section}'
+                f'<h2>{self._t("reading_preview")}</h2>'
+                f'<p style="color:var(--text-tertiary);font-size:13px">{self._t("reading_preview_tip")}</p>'
+                f'{width_toolbar}'
+                f'<p><a href="{self._url(f"/threads/{tid}/context")}">{self._t("open_context")}</a></p>'
+                f'{reading_view}'
+                f'<h2>{self._t("floors")}</h2>'
+                f'<div class="table-wrap"><table>'
+                f'<tr><th>{self._t("floor_no")}</th><th>{self._t("pid")}</th><th>{self._t("publisher")}</th><th>{self._t("content")}</th></tr>'
+                f'{floor_trs}</table></div>'
+                f'<h2>{self._t("metadata_preview")}</h2>'
+                f'<p><a href="{self._url(f"/threads/{tid}/metadata")}">{self._t("open_metadata")}</a></p>'
+                f'<pre style="font-size:12px;max-height:400px;overflow:auto;background:var(--bg-muted);padding:12px;border:1px solid var(--border-light)">{html.escape(self._preview(metadata_text))}</pre>'
+            )
             self._send(self._html_page(thread["display_title"] or thread["raw_title"] or f"Thread {tid}", body))
         finally:
             conn.close()
@@ -1488,6 +1398,59 @@ class WebHandler(BaseHTTPRequestHandler):
             return
         content_type = "text/markdown" if kind == "context" else "application/json"
         self._send(content, content_type=content_type)
+
+    def _serve_static(self, path: str) -> bool:
+        """Serve React SPA static files. Returns True if handled."""
+        static_dir = Path(__file__).parent / "static"
+        if not static_dir.exists():
+            return False
+
+        # API and media are handled elsewhere
+        if path.startswith("/api/") or path.startswith("/media/") or path.startswith("/artifacts/"):
+            return False
+
+        # Try exact file match
+        rel = path.lstrip("/")
+        if not rel:
+            rel = "index.html"
+        target = static_dir / rel
+        if target.is_file():
+            content_type = self._guess_static_content_type(target)
+            data = target.read_bytes()
+            self.send_response(HTTPStatus.OK.value)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return True
+
+        # SPA fallback: serve index.html for non-file routes
+        index = static_dir / "index.html"
+        if index.is_file():
+            data = index.read_bytes()
+            self.send_response(HTTPStatus.OK.value)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return True
+
+        return False
+
+    def _guess_static_content_type(self, path: Path) -> str:
+        suffix = path.suffix.lower()
+        return {
+            ".html": "text/html; charset=utf-8",
+            ".js": "application/javascript; charset=utf-8",
+            ".css": "text/css; charset=utf-8",
+            ".json": "application/json; charset=utf-8",
+            ".svg": "image/svg+xml",
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".ico": "image/x-icon",
+            ".woff2": "font/woff2",
+            ".woff": "font/woff",
+        }.get(suffix, "application/octet-stream")
 
     def _media_file(self, path: str) -> None:
         raw_rel = path.removeprefix("/media/").strip("/")
@@ -1512,58 +1475,6 @@ class WebHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
-
-    def _job_diagnostics(self, status: str, snapshot_text: str | None, failure_text: str | None, title_parse_log_text: str | None) -> str:
-        hints: list[str] = []
-        if snapshot_text:
-            hints.append(self._t("job_hint_snapshot"))
-        if failure_text:
-            hints.append(self._t("job_hint_failure"))
-        if title_parse_log_text:
-            hints.append(self._t("job_hint_title_parse_log"))
-        if status == "partial":
-            hints.append(self._t("job_hint_partial"))
-        if not hints:
-            return "<p class=\"muted\">No diagnostics available yet.</p>"
-        return "<ul class=\"hint-list\">" + "".join(f"<li>{html.escape(item)}</li>" for item in hints) + "</ul>"
-
-    def _parse_metadata_json(self, metadata_text: str | None) -> dict[str, object] | None:
-        if not metadata_text:
-            return None
-        try:
-            parsed = json.loads(metadata_text)
-        except json.JSONDecodeError:
-            return None
-        return parsed if isinstance(parsed, dict) else None
-
-    def _render_thread_image_gallery(self, tid: int, metadata: dict[str, object] | None) -> str:
-        if not metadata:
-            return f'<div class="panel muted">{html.escape(self._t("no_images"))}</div>'
-        floors = metadata.get("floors")
-        if not isinstance(floors, list):
-            return f'<div class="panel muted">{html.escape(self._t("no_images"))}</div>'
-        cards: list[str] = []
-        for floor in floors:
-            if not isinstance(floor, dict):
-                continue
-            image_urls = self._detail_image_sources(tid, floor)
-            if not isinstance(image_urls, list):
-                continue
-            floor_no = floor.get("floor_no")
-            publisher = floor.get("publisher") or ""
-            for idx, image_source in enumerate(image_urls, start=1):
-                if not isinstance(image_source, str) or not image_source.strip():
-                    continue
-                image_src = self._detail_image_src(tid, image_source)
-                cards.append(
-                    f'<div class="image-card">'
-                    f'<a href="{image_src}" target="_blank" rel="noreferrer"><img src="{image_src}" loading="lazy" alt="floor {html.escape(str(floor_no or ""))} image {idx}"></a>'
-                    f'<div class="meta">F{html.escape(str(floor_no or ""))} · {html.escape(str(publisher))} · <a href="{image_src}" target="_blank" rel="noreferrer">{html.escape(self._t("open_image"))}</a></div>'
-                    f"</div>"
-                )
-        if not cards:
-            return f'<div class="panel muted">{html.escape(self._t("no_images"))}</div>'
-        return '<div class="image-grid">' + "".join(cards) + "</div>"
 
     def _render_thread_reading_view(self, tid: int, floors, metadata: dict[str, object] | None, *, image_width: int) -> str:
         floor_meta_map: dict[int, dict[str, object]] = {}
@@ -1603,7 +1514,7 @@ class WebHandler(BaseHTTPRequestHandler):
                 f"</div>"
             )
         if not blocks:
-            return f'<div class="panel muted">{html.escape(self._t("thread_not_found"))}</div>'
+            return f'<div class="panel" style="color:var(--text-tertiary)">{html.escape(self._t("thread_not_found"))}</div>'
         return '<div class="reading-flow">' + "".join(blocks) + "</div>"
 
     def _media_relpath(self, tid: int, image_rel: str) -> str:
@@ -1651,6 +1562,287 @@ class WebHandler(BaseHTTPRequestHandler):
             return "image/webp"
         return "application/octet-stream"
 
+    def _parse_metadata_json(self, metadata_text: str | None) -> dict[str, object] | None:
+        if not metadata_text:
+            return None
+        try:
+            parsed = json.loads(metadata_text)
+        except json.JSONDecodeError:
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
+    # ─── Series ───
+
+    def _series(self) -> None:
+        conn = connect(self.settings.db_path)
+        migrate(conn)
+        try:
+            repo = SeriesRepository(conn)
+            series_rows = repo.list_series(limit=200)
+            rows = "".join(self._render_series_tr(row) for row in series_rows)
+            body = (
+                f'<div class="table-wrap"><table>'
+                f'<tr><th>{self._t("id")}</th><th>{self._t("canonical_title")}</th><th>{self._t("author")}</th>'
+                f'<th>{self._t("series_key")}</th><th>{self._t("threads_label")}</th><th>{self._t("needs_review")}</th></tr>'
+                f'{rows}</table></div>'
+            )
+            self._send(self._html_page(self._t("series"), body))
+        finally:
+            conn.close()
+
+    def _render_series_tr(self, row) -> str:
+        series_id = int(row["series_id"])
+        thread_count = int(row["thread_count"] or 0)
+        needs_review = row["needs_review"]
+        return (
+            f'<tr>'
+            f'<td class="mono"><a href="{self._url(f"/series/{series_id}")}">{series_id}</a></td>'
+            f'<td class="truncate"><a href="{self._url(f"/series/{series_id}")}">{html.escape(row["canonical_title"] or row["series_key"] or "")}</a></td>'
+            f'<td>{html.escape(row["author_guess"] or "-")}</td>'
+            f'<td class="mono">{html.escape(row["series_key"] or "-")}</td>'
+            f'<td>{thread_count}</td>'
+            f'<td>{_badge(self._t("yes"), "warn") if needs_review else _badge(self._t("no"), "ok")}</td>'
+            f'</tr>'
+        )
+
+    def _series_detail(self, path: str) -> None:
+        raw_id = path.removeprefix("/series/").strip("/")
+        if not raw_id.isdigit():
+            self._send("Invalid series id", HTTPStatus.BAD_REQUEST, "text/plain")
+            return
+        series_id = int(raw_id)
+        conn = connect(self.settings.db_path)
+        migrate(conn)
+        try:
+            repo = SeriesRepository(conn)
+            series = repo.get_series(series_id)
+            if series is None:
+                self._send("Series not found", HTTPStatus.NOT_FOUND, "text/plain")
+                return
+            threads = repo.list_threads_for_series(series_id)
+
+            # Actions
+            disabled = ' disabled title="' + html.escape(self._t("cannot_delete_nonempty_series"), quote=True) + '"' if len(threads) > 0 else ""
+            actions = (
+                f'<div class="actions">'
+                f'<form method="post" action="{self._url("/title-review/merge-series")}">{self._hidden_lang()}'
+                f'<input type="hidden" name="source_series_id" value="{series_id}">'
+                f'<input type="hidden" name="return_to" value="series_detail">'
+                f'<input type="text" name="target_series_id" placeholder="{self._t("target_series_id")}" size="10">'
+                f'<button type="submit">{self._t("merge_series")}</button></form>'
+                f'<form method="post" action="{self._url("/series/delete")}">{self._hidden_lang()}'
+                f'<input type="hidden" name="series_id" value="{series_id}">'
+                f'<button class="danger" type="submit"{disabled}>{self._t("delete_series")}</button></form>'
+                f'</div>'
+            )
+
+            # Info table
+            info_rows = [
+                (self._t("id"), str(series["series_id"])),
+                (self._t("series_key"), html.escape(series["series_key"] or "")),
+                (self._t("author"), html.escape(series["author_guess"] or "")),
+                ("Creator key", html.escape(series["creator_key"] or "")),
+                (self._t("aliases"), f'<pre style="margin:0;font-size:12px">{html.escape(series["aliases_json"] or "[]")}</pre>'),
+                ("Alias keys", f'<pre style="margin:0;font-size:12px">{html.escape(series["alias_keys_json"] or "[]")}</pre>'),
+                (self._t("needs_review"), _badge(self._t("yes"), "warn") if series["needs_review"] else _badge(self._t("no"), "ok")),
+            ]
+            info_trs = "".join(f'<tr><th style="width:100px">{k}</th><td>{v}</td></tr>' for k, v in info_rows)
+
+            # Threads table
+            thread_trs = "".join(
+                f'<tr><td class="mono"><a href="{self._url(f"/threads/{row["tid"]}")}">{row["tid"]}</a></td>'
+                f'<td class="truncate">{html.escape(row["display_title"] or row["raw_title"] or "")}</td>'
+                f'<td>{html.escape(row["chapter_name"] or "")}</td>'
+                f'<td>{"" if row["chapter_index"] is None else row["chapter_index"]}</td>'
+                f'<td>{_status_badge(row["archive_status"])}</td>'
+                f'<td class="nowrap">{html.escape(row["sync_time"] or "-")}</td></tr>'
+                for row in threads
+            )
+
+            body = (
+                f'<div class="panel">{actions}</div>'
+                f'<h2>{self._t("archive_meta")}</h2>'
+                f'<div class="table-wrap"><table>{info_trs}</table></div>'
+                f'<h2>{self._t("threads")}</h2>'
+                f'<div class="table-wrap"><table>'
+                f'<tr><th>{self._t("tid")}</th><th>{self._t("title")}</th><th>{self._t("chapter")}</th>'
+                f'<th>Index</th><th>{self._t("archive")}</th><th>{self._t("synced")}</th></tr>'
+                f'{thread_trs}</table></div>'
+            )
+            self._send(self._html_page(series["canonical_title"] or f"Series {series_id}", body))
+        finally:
+            conn.close()
+
+    # ─── Title Review ───
+
+    def _title_review(self) -> None:
+        conn = connect(self.settings.db_path)
+        migrate(conn)
+        try:
+            threads_repo = ThreadsRepository(conn)
+            series_repo = SeriesRepository(conn)
+            title_rows = "".join(self._render_title_review_card(row) for row in threads_repo.list_title_review_items(limit=100))
+            series_rows = "".join(self._render_series_review_tr(row) for row in series_repo.list_series_review_items(limit=100))
+
+            no_series = f'<tr><td colspan="6" style="color:var(--text-tertiary);text-align:center">{self._t("no_review_items")}</td></tr>'
+            series_table = (
+                f'<h2>{self._t("series")}</h2>'
+                f'<form method="post" action="{self._url("/jobs/rebuild-series")}">{self._hidden_lang()}<button type="submit">{self._t("rebuild_series")}</button></form>'
+                f'<div class="table-wrap" style="margin-top:8px"><table>'
+                f'<tr><th>{self._t("id")}</th><th>{self._t("canonical_title")}</th><th>{self._t("author")}</th>'
+                f'<th>{self._t("series_key")}</th><th>{self._t("threads_label")}</th><th>{self._t("action")}</th></tr>'
+                f'{series_rows or no_series}</table></div>'
+            )
+
+            no_review = f'<div class="panel" style="color:var(--text-tertiary)">{self._t("no_review_items")}</div>'
+            body = (
+                f'<h2>{self._t("thread_titles")}</h2>'
+                f'{title_rows or no_review}'
+                f'{series_table}'
+            )
+            self._send(self._html_page(self._t("title_review"), body))
+        finally:
+            conn.close()
+
+    def _render_title_review_card(self, row) -> str:
+        alias_text = self._json_list_to_lines(row["title_aliases_json"])
+        tags_text = self._json_list_to_lines(row["tags_json"])
+        summary_title = html.escape(row["display_title"] or row["raw_title"] or "")
+        return f"""
+        <details class="review-card">
+          <summary>
+            <div><strong><a href="{self._url(f"/threads/{row["tid"]}")}">{row["tid"]}</a></strong> · {summary_title}</div>
+            <div style="color:var(--text-tertiary);font-size:12px">{html.escape(row["core_title_guess"] or '')} | {html.escape(row["author_guess"] or '')} | {html.escape(row["series_key"] or '')} | conf:{row["confidence"]}</div>
+          </summary>
+          <div class="review-form">
+            <div class="review-meta">
+              <div style="color:var(--text-tertiary)">{self._t("raw_title")}</div><div style="font-size:13px">{html.escape(row["raw_title"] or "")}</div>
+              <div style="color:var(--text-tertiary)">{self._t("tid")}</div><div>{row["tid"]}</div>
+            </div>
+            <form method="post" action="{self._url("/title-review/update-title")}">
+              {self._hidden_lang()}
+              <input type="hidden" name="tid" value="{row["tid"]}">
+              <div class="review-grid">
+                <div class="field field-full"><label>{self._t("title")}</label><input type="text" name="display_title" value="{html.escape(row["display_title"] or row["raw_title"] or "", quote=True)}"></div>
+                <div class="field"><label>{self._t("group_name")}</label><input type="text" name="group_name" value="{html.escape(row["group_name"] or "", quote=True)}"></div>
+                <div class="field"><label>{self._t("author_guess")}</label><input type="text" name="author_guess" value="{html.escape(row["author_guess"] or "", quote=True)}"></div>
+                <div class="field"><label>{self._t("core_title")}</label><input type="text" name="core_title_guess" value="{html.escape(row["core_title_guess"] or "", quote=True)}"></div>
+                <div class="field"><label>{self._t("series_key")}</label><input type="text" name="series_key" value="{html.escape(row["series_key"] or "", quote=True)}"></div>
+                <div class="field"><label>{self._t("chapter")}</label><input type="text" name="chapter_name" value="{html.escape(row["chapter_name"] or "", quote=True)}"></div>
+                <div class="field"><label>{self._t("chapter_index")}</label><input type="number" step="0.01" name="chapter_index" value="{'' if row["chapter_index"] is None else row["chapter_index"]}"></div>
+                <div class="field"><label>{self._t("chapter_index_end")}</label><input type="number" step="0.01" name="chapter_index_end" value="{'' if row.get("chapter_index_end") is None else row["chapter_index_end"]}"></div>
+                <div class="field"><label>{self._t("chapter_title")}</label><input type="text" name="chapter_title" value="{html.escape(row["chapter_title"] or "", quote=True)}"></div>
+                <div class="field"><label>{self._t("confidence")}</label><input type="number" step="0.01" min="0" max="1" name="confidence" value="{'' if row["confidence"] is None else row["confidence"]}"></div>
+                <div class="field field-full"><label>{self._t("subtitle")}</label><input type="text" name="subtitle" value="{html.escape(row["subtitle"] or "", quote=True)}"></div>
+                <div class="field"><label>{self._t("aliases")} ({self._t("one_per_line")})</label><textarea name="title_aliases">{html.escape(alias_text)}</textarea></div>
+                <div class="field"><label>{self._t("tags")} ({self._t("one_per_line")})</label><textarea name="tags">{html.escape(tags_text)}</textarea></div>
+              </div>
+              <div class="actions" style="margin-top:10px">
+                <button class="primary" type="submit">{self._t("save_title_review")}</button>
+              </div>
+            </form>
+            <div class="actions" style="margin-top:8px">
+              <form method="post" action="{self._url("/title-review/confirm-title")}">
+                {self._hidden_lang()}
+                <input type="hidden" name="tid" value="{row["tid"]}">
+                <button type="submit">{self._t("confirm_title")}</button>
+              </form>
+            </div>
+          </div>
+        </details>
+        """
+
+    def _render_series_review_tr(self, row) -> str:
+        series_id = row["series_id"]
+        aliases_text = self._json_list_to_lines(row["aliases_json"])
+        return (
+            f'<tr>'
+            f'<td class="mono"><a href="{self._url(f"/series/{series_id}")}">{series_id}</a></td>'
+            f'<td class="truncate"><a href="{self._url(f"/series/{series_id}")}">{html.escape(row["canonical_title"] or row["series_key"] or "")}</a></td>'
+            f'<td>{html.escape(row["author_guess"] or "-")}</td>'
+            f'<td class="mono">{html.escape(row["series_key"] or "-")}</td>'
+            f'<td>{row["thread_count"]}</td>'
+            f'<td><div class="actions">'
+            f'<form method="post" action="{self._url("/title-review/confirm-series")}">{self._hidden_lang()}<input type="hidden" name="series_id" value="{series_id}"><button type="submit">{self._t("confirm_series")}</button></form>'
+            f'<form method="post" action="{self._url("/title-review/merge-series")}">{self._hidden_lang()}<input type="hidden" name="source_series_id" value="{series_id}"><input type="text" name="target_series_id" placeholder="{self._t("target_series_id")}" size="8"><button type="submit">{self._t("merge_series")}</button></form>'
+            f'</div></td></tr>'
+        )
+
+    # ─── Exports ───
+
+    def _exports(self) -> None:
+        conn = connect(self.settings.db_path)
+        migrate(conn)
+        try:
+            exports = ThreadsRepository(conn).list_exports(limit=200)
+            rows = "".join(self._render_export_tr(row) for row in exports)
+            body = (
+                f'<div class="table-wrap"><table>'
+                f'<tr><th>{self._t("tid")}</th><th>{self._t("title")}</th><th>{self._t("archive")}</th><th>{self._t("export_path")}</th><th>{self._t("operations")}</th></tr>'
+                f'{rows}</table></div>'
+            )
+            self._send(self._html_page(self._t("exports"), body))
+        finally:
+            conn.close()
+
+    def _render_export_tr(self, row) -> str:
+        tid = int(row["tid"])
+        actions = (
+            f'<div class="actions">'
+            f'<form method="post" action="{self._url("/jobs/resync-thread")}">{self._hidden_lang()}<input type="hidden" name="tid" value="{tid}"><button type="submit">{self._t("resync_thread")}</button></form>'
+            f'<form method="post" action="{self._url("/jobs/export-thread")}">{self._hidden_lang()}<input type="hidden" name="tid" value="{tid}"><input type="hidden" name="strategy" value="sync_if_stale"><button type="submit">{self._t("create_export_job")}</button></form>'
+            f'</div>'
+        )
+        return (
+            f'<tr>'
+            f'<td class="mono"><a href="{self._url(f"/threads/{tid}")}">{tid}</a></td>'
+            f'<td class="truncate"><a href="{self._url(f"/threads/{tid}")}">{html.escape(row["display_title"] or row["raw_title"] or "")}</a></td>'
+            f'<td>{_status_badge(row["archive_status"])}</td>'
+            f'<td class="truncate">{html.escape(row["export_path"] or "-")}</td>'
+            f'<td>{actions}</td></tr>'
+        )
+
+    # ─── Forums ───
+
+    def _forums(self) -> None:
+        conn = connect(self.settings.db_path)
+        migrate(conn)
+        try:
+            rows_db = conn.execute(
+                """
+                SELECT f.*, COUNT(t.tid) AS thread_count
+                FROM forums f
+                LEFT JOIN threads t ON t.forum_id = f.forum_id
+                GROUP BY f.forum_id
+                ORDER BY f.forum_id
+                """
+            ).fetchall()
+            rows = "".join(self._render_forum_tr(r) for r in rows_db)
+            body = (
+                f'<div class="table-wrap"><table>'
+                f'<tr><th>{self._t("forum_id")}</th><th>{self._t("forum_name")}</th>'
+                f'<th>{self._t("content_kind")}</th><th>{self._t("threads_label")}</th>'
+                f'<th>{self._t("enabled")}</th></tr>'
+                f'{rows}</table></div>'
+            )
+            self._send(self._html_page(self._t("forums"), body))
+        finally:
+            conn.close()
+
+    def _render_forum_tr(self, row) -> str:
+        enabled = row["enabled"]
+        return (
+            f'<tr>'
+            f'<td class="mono">{row["forum_id"]}</td>'
+            f'<td>{html.escape(row["name"])}</td>'
+            f'<td class="nowrap">{_badge(row["content_kind"], "accent")}</td>'
+            f'<td>{row["thread_count"]}</td>'
+            f'<td>{_badge(self._t("yes"), "ok") if enabled else _badge(self._t("no"), "muted")}</td>'
+            f'</tr>'
+        )
+
+    # ─── POST Handlers ───
+
     def _confirm_title_review(self) -> None:
         form = self._form()
         raw_tid = form.get("tid", "").strip()
@@ -1663,12 +1855,8 @@ class WebHandler(BaseHTTPRequestHandler):
         try:
             before, after = ThreadsRepository(conn).confirm_title_review(tid)
             AuditEventsRepository(conn).record(
-                actor="web",
-                action="confirm_title_review",
-                target_type="thread",
-                target_id=str(tid),
-                before=before,
-                after=after,
+                actor="web", action="confirm_title_review", target_type="thread",
+                target_id=str(tid), before=before, after=after,
             )
             conn.commit()
             self.send_response(HTTPStatus.SEE_OTHER.value)
@@ -1697,7 +1885,6 @@ class WebHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self._send(str(exc), HTTPStatus.BAD_REQUEST, "text/plain")
             return
-
         conn = connect(self.settings.db_path)
         migrate(conn)
         try:
@@ -1719,12 +1906,8 @@ class WebHandler(BaseHTTPRequestHandler):
                 needs_review=False,
             )
             AuditEventsRepository(conn).record(
-                actor="web",
-                action="update_title_review",
-                target_type="thread",
-                target_id=str(tid),
-                before=before,
-                after=after,
+                actor="web", action="update_title_review", target_type="thread",
+                target_id=str(tid), before=before, after=after,
             )
             conn.commit()
             title_after = after.get("title_parse") if isinstance(after, dict) else None
@@ -1755,12 +1938,8 @@ class WebHandler(BaseHTTPRequestHandler):
         try:
             before, after = SeriesRepository(conn).confirm_series_review(series_id)
             AuditEventsRepository(conn).record(
-                actor="web",
-                action="confirm_series_review",
-                target_type="series",
-                target_id=str(series_id),
-                before=before,
-                after=after,
+                actor="web", action="confirm_series_review", target_type="series",
+                target_id=str(series_id), before=before, after=after,
             )
             conn.commit()
             self.send_response(HTTPStatus.SEE_OTHER.value)
@@ -1787,12 +1966,8 @@ class WebHandler(BaseHTTPRequestHandler):
         try:
             before, after = SeriesRepository(conn).merge_series(source_series_id, target_series_id)
             AuditEventsRepository(conn).record(
-                actor="web",
-                action="merge_series",
-                target_type="series",
-                target_id=str(target_series_id),
-                before=before,
-                after=after,
+                actor="web", action="merge_series", target_type="series",
+                target_id=str(target_series_id), before=before, after=after,
             )
             conn.commit()
             self.send_response(HTTPStatus.SEE_OTHER.value)
@@ -1846,12 +2021,8 @@ class WebHandler(BaseHTTPRequestHandler):
             threads_repo = ThreadsRepository(conn)
             before, after = threads_repo.delete_thread(tid)
             AuditEventsRepository(conn).record(
-                actor="web",
-                action="delete_thread",
-                target_type="thread",
-                target_id=str(tid),
-                before=before,
-                after=after,
+                actor="web", action="delete_thread", target_type="thread",
+                target_id=str(tid), before=before, after=after,
             )
             conn.commit()
             self._delete_thread_files(tid, before.get("thread") if isinstance(before, dict) else None)
@@ -1877,12 +2048,8 @@ class WebHandler(BaseHTTPRequestHandler):
             repo = SeriesRepository(conn)
             before, after = repo.delete_series(series_id)
             AuditEventsRepository(conn).record(
-                actor="web",
-                action="delete_series",
-                target_type="series",
-                target_id=str(series_id),
-                before=before,
-                after=after,
+                actor="web", action="delete_series", target_type="series",
+                target_id=str(series_id), before=before, after=after,
             )
             conn.commit()
             self.send_response(HTTPStatus.SEE_OTHER.value)
@@ -2042,9 +2209,6 @@ def main() -> None:
             title_parse_use_llm=settings.title_parse_use_llm,
             common_scanlation_groups=settings.common_scanlation_groups,
             common_authors=settings.common_authors,
-            backup_dir=settings.backup_dir,
-            backup_keep_count=settings.backup_keep_count,
-            cleanup_staging_older_than_hours=settings.cleanup_staging_older_than_hours,
         )
     run(settings)
 
