@@ -124,13 +124,13 @@ class TestParseNewResourceUris:
 class TestReadForumsIndex:
     def test_forums_index_returns_all_forums(self, db):
         from unittest.mock import patch, MagicMock
-        from yamibo_mcp.server.tools import read_resource
+        from yamibo_mcp.server.resource_handlers import read_resource
         settings = MagicMock()
         settings.db_path = ":memory:"
         settings.data_dir = "/tmp"
         settings.export_dir = "/tmp/exports"
-        with patch("yamibo_mcp.server.tools.load_settings", return_value=settings), \
-             patch("yamibo_mcp.server.tools.connect", return_value=db):
+        with patch("yamibo_mcp.server.resource_handlers.load_settings", return_value=settings), \
+             patch("yamibo_mcp.server.resource_handlers.connect", return_value=db):
             result = read_resource("yamibo://forums/index")
         assert result["exists"] is True
         data = json.loads(result["text"])
@@ -142,13 +142,13 @@ class TestReadForumsIndex:
 class TestReadForumSummary:
     def test_forum_summary_returns_forum(self, db):
         from unittest.mock import patch, MagicMock
-        from yamibo_mcp.server.tools import read_resource
+        from yamibo_mcp.server.resource_handlers import read_resource
         settings = MagicMock()
         settings.db_path = ":memory:"
         settings.data_dir = "/tmp"
         settings.export_dir = "/tmp/exports"
-        with patch("yamibo_mcp.server.tools.load_settings", return_value=settings), \
-             patch("yamibo_mcp.server.tools.connect", return_value=db):
+        with patch("yamibo_mcp.server.resource_handlers.load_settings", return_value=settings), \
+             patch("yamibo_mcp.server.resource_handlers.connect", return_value=db):
             result = read_resource("yamibo://forums/30/summary")
         assert result["exists"] is True
         data = json.loads(result["text"])
@@ -157,13 +157,13 @@ class TestReadForumSummary:
 
     def test_forum_summary_not_found(self, db):
         from unittest.mock import patch, MagicMock
-        from yamibo_mcp.server.tools import read_resource
+        from yamibo_mcp.server.resource_handlers import read_resource
         settings = MagicMock()
         settings.db_path = ":memory:"
         settings.data_dir = "/tmp"
         settings.export_dir = "/tmp/exports"
-        with patch("yamibo_mcp.server.tools.load_settings", return_value=settings), \
-             patch("yamibo_mcp.server.tools.connect", return_value=db):
+        with patch("yamibo_mcp.server.resource_handlers.load_settings", return_value=settings), \
+             patch("yamibo_mcp.server.resource_handlers.connect", return_value=db):
             result = read_resource("yamibo://forums/999/summary")
         assert result["exists"] is False
         assert "not found" in result["error"]
@@ -173,7 +173,7 @@ class TestReadThreadSummary:
     def test_thread_summary_compact(self, db):
         """Thread summary should NOT read full context.md."""
         from unittest.mock import patch, MagicMock
-        from yamibo_mcp.server.tools import read_resource
+        from yamibo_mcp.server.resource_handlers import read_resource
         from yamibo_mcp.db.repositories.threads import ThreadsRepository
         from yamibo_mcp.domain.models import FloorSnapshot, ThreadSnapshot, TitleSnapshot
         # Seed a thread
@@ -201,8 +201,8 @@ class TestReadThreadSummary:
         settings.db_path = ":memory:"
         settings.data_dir = "/tmp"
         settings.export_dir = "/tmp/exports"
-        with patch("yamibo_mcp.server.tools.load_settings", return_value=settings), \
-             patch("yamibo_mcp.server.tools.connect", return_value=db):
+        with patch("yamibo_mcp.server.resource_handlers.load_settings", return_value=settings), \
+             patch("yamibo_mcp.server.resource_handlers.connect", return_value=db):
             result = read_resource("yamibo://threads/999/summary")
         assert result["exists"] is True
         data = json.loads(result["text"])
@@ -214,13 +214,13 @@ class TestReadThreadSummary:
 
     def test_thread_summary_not_found(self, db):
         from unittest.mock import patch, MagicMock
-        from yamibo_mcp.server.tools import read_resource
+        from yamibo_mcp.server.resource_handlers import read_resource
         settings = MagicMock()
         settings.db_path = ":memory:"
         settings.data_dir = "/tmp"
         settings.export_dir = "/tmp/exports"
-        with patch("yamibo_mcp.server.tools.load_settings", return_value=settings), \
-             patch("yamibo_mcp.server.tools.connect", return_value=db):
+        with patch("yamibo_mcp.server.resource_handlers.load_settings", return_value=settings), \
+             patch("yamibo_mcp.server.resource_handlers.connect", return_value=db):
             result = read_resource("yamibo://threads/99999/summary")
         assert result["exists"] is False
 
@@ -228,7 +228,7 @@ class TestReadThreadSummary:
 class TestReadThreadDiagnostics:
     def test_diagnostics_reports_status(self, db):
         from unittest.mock import patch, MagicMock
-        from yamibo_mcp.server.tools import read_resource
+        from yamibo_mcp.server.resource_handlers import read_resource
         from yamibo_mcp.db.repositories.threads import ThreadsRepository
         from yamibo_mcp.domain.models import FloorSnapshot, ThreadSnapshot, TitleSnapshot
         title = TitleSnapshot(
@@ -255,8 +255,8 @@ class TestReadThreadDiagnostics:
         settings.db_path = ":memory:"
         settings.data_dir = "/tmp"
         settings.export_dir = "/tmp/exports"
-        with patch("yamibo_mcp.server.tools.load_settings", return_value=settings), \
-             patch("yamibo_mcp.server.tools.connect", return_value=db):
+        with patch("yamibo_mcp.server.resource_handlers.load_settings", return_value=settings), \
+             patch("yamibo_mcp.server.resource_handlers.connect", return_value=db):
             result = read_resource("yamibo://threads/888/diagnostics")
         assert result["exists"] is True
         data = json.loads(result["text"])
@@ -274,14 +274,14 @@ class TestReadThreadDiagnostics:
 class TestReadThreadUpdateCheck:
     def test_update_check_resource_returns_json(self, db):
         from unittest.mock import patch, MagicMock
-        from yamibo_mcp.server.tools import read_resource
+        from yamibo_mcp.server.resource_handlers import read_resource
         settings = MagicMock()
         settings.db_path = ":memory:"
         settings.data_dir = "/tmp"
         settings.export_dir = "/tmp/exports"
-        with patch("yamibo_mcp.server.tools.load_settings", return_value=settings), \
-             patch("yamibo_mcp.server.tools.connect", return_value=db), \
-             patch("yamibo_mcp.server.tools.check_thread_updates", return_value={"tid": 1, "status": "up_to_date"}):
+        with patch("yamibo_mcp.server.resource_handlers.load_settings", return_value=settings), \
+             patch("yamibo_mcp.server.resource_handlers.connect", return_value=db), \
+             patch("yamibo_mcp.server.resource_handlers.check_thread_updates", return_value={"tid": 1, "status": "up_to_date"}):
             result = read_resource("yamibo://threads/1/update-check")
         assert result["exists"] is True
         data = json.loads(result["text"])
@@ -291,7 +291,7 @@ class TestReadThreadUpdateCheck:
 class TestReadJobEvents:
     def test_job_events_returns_ordered_events(self, db):
         from unittest.mock import patch, MagicMock
-        from yamibo_mcp.server.tools import read_resource
+        from yamibo_mcp.server.resource_handlers import read_resource
         from yamibo_mcp.db.repositories.jobs import JobsRepository
         repo = JobsRepository(db)
         job = repo.create("noop")
@@ -301,8 +301,8 @@ class TestReadJobEvents:
         settings.db_path = ":memory:"
         settings.data_dir = "/tmp"
         settings.export_dir = "/tmp/exports"
-        with patch("yamibo_mcp.server.tools.load_settings", return_value=settings), \
-             patch("yamibo_mcp.server.tools.connect", return_value=db):
+        with patch("yamibo_mcp.server.resource_handlers.load_settings", return_value=settings), \
+             patch("yamibo_mcp.server.resource_handlers.connect", return_value=db):
             result = read_resource(f"yamibo://jobs/{job.job_id}/events")
         assert result["exists"] is True
         data = json.loads(result["text"])
@@ -314,7 +314,7 @@ class TestReadJobEvents:
 class TestReadThreadPosts:
     def test_posts_returns_content_blocks(self, db):
         from unittest.mock import patch, MagicMock
-        from yamibo_mcp.server.tools import read_resource
+        from yamibo_mcp.server.resource_handlers import read_resource
         from yamibo_mcp.db.repositories.threads import ThreadsRepository
         from yamibo_mcp.db.repositories.content_blocks import ContentBlocksRepository
         from yamibo_mcp.domain.models import ContentBlock, FloorSnapshot, ThreadSnapshot, TitleSnapshot
@@ -345,8 +345,8 @@ class TestReadThreadPosts:
         settings.db_path = ":memory:"
         settings.data_dir = "/tmp"
         settings.export_dir = "/tmp/exports"
-        with patch("yamibo_mcp.server.tools.load_settings", return_value=settings), \
-             patch("yamibo_mcp.server.tools.connect", return_value=db):
+        with patch("yamibo_mcp.server.resource_handlers.load_settings", return_value=settings), \
+             patch("yamibo_mcp.server.resource_handlers.connect", return_value=db):
             result = read_resource("yamibo://threads/777/posts")
         assert result["exists"] is True
         data = json.loads(result["text"])
@@ -357,7 +357,7 @@ class TestReadThreadPosts:
 class TestReadThreadAssets:
     def test_assets_returns_asset_list(self, db):
         from unittest.mock import patch, MagicMock
-        from yamibo_mcp.server.tools import read_resource
+        from yamibo_mcp.server.resource_handlers import read_resource
         from yamibo_mcp.db.repositories.threads import ThreadsRepository
         from yamibo_mcp.db.repositories.assets import AssetsRepository
         from yamibo_mcp.domain.models import AssetSnapshot, FloorSnapshot, ThreadSnapshot, TitleSnapshot
@@ -390,8 +390,8 @@ class TestReadThreadAssets:
         settings.db_path = ":memory:"
         settings.data_dir = "/tmp"
         settings.export_dir = "/tmp/exports"
-        with patch("yamibo_mcp.server.tools.load_settings", return_value=settings), \
-             patch("yamibo_mcp.server.tools.connect", return_value=db):
+        with patch("yamibo_mcp.server.resource_handlers.load_settings", return_value=settings), \
+             patch("yamibo_mcp.server.resource_handlers.connect", return_value=db):
             result = read_resource("yamibo://threads/666/assets")
         assert result["exists"] is True
         data = json.loads(result["text"])
@@ -403,7 +403,7 @@ class TestReadThreadAssets:
 class TestSecretScrub:
     def test_diagnostics_no_secrets(self, db):
         from unittest.mock import patch, MagicMock
-        from yamibo_mcp.server.tools import read_resource
+        from yamibo_mcp.server.resource_handlers import read_resource
         settings = MagicMock()
         settings.db_path = ":memory:"
         settings.data_dir = "/tmp"
@@ -412,8 +412,8 @@ class TestSecretScrub:
         settings.cookie_value = "secret_cookie_12345"
         settings.api_key = "sk-12345"
         settings.login_password = "hunter2"
-        with patch("yamibo_mcp.server.tools.load_settings", return_value=settings), \
-             patch("yamibo_mcp.server.tools.connect", return_value=db):
+        with patch("yamibo_mcp.server.resource_handlers.load_settings", return_value=settings), \
+             patch("yamibo_mcp.server.resource_handlers.connect", return_value=db):
             result = read_resource("yamibo://threads/999/diagnostics")
         text = result["text"].lower() if result.get("text") else ""
         assert "secret_cookie" not in text
@@ -424,7 +424,7 @@ class TestSecretScrub:
 class TestDiagnosticsWithAssets:
     def test_diagnostics_reports_missing_required_assets(self, db):
         from unittest.mock import patch, MagicMock
-        from yamibo_mcp.server.tools import read_resource
+        from yamibo_mcp.server.resource_handlers import read_resource
         from yamibo_mcp.db.repositories.threads import ThreadsRepository
         from yamibo_mcp.db.repositories.assets import AssetsRepository
         from yamibo_mcp.domain.models import AssetSnapshot, FloorSnapshot, ThreadSnapshot, TitleSnapshot
@@ -461,8 +461,8 @@ class TestDiagnosticsWithAssets:
         settings.db_path = ":memory:"
         settings.data_dir = "/tmp"
         settings.export_dir = "/tmp/exports"
-        with patch("yamibo_mcp.server.tools.load_settings", return_value=settings), \
-             patch("yamibo_mcp.server.tools.connect", return_value=db):
+        with patch("yamibo_mcp.server.resource_handlers.load_settings", return_value=settings), \
+             patch("yamibo_mcp.server.resource_handlers.connect", return_value=db):
             result = read_resource("yamibo://threads/555/diagnostics")
         assert result["exists"] is True
         data = json.loads(result["text"])
@@ -472,7 +472,7 @@ class TestDiagnosticsWithAssets:
 
     def test_diagnostics_no_missing_required(self, db):
         from unittest.mock import patch, MagicMock
-        from yamibo_mcp.server.tools import read_resource
+        from yamibo_mcp.server.resource_handlers import read_resource
         from yamibo_mcp.db.repositories.threads import ThreadsRepository
         from yamibo_mcp.db.repositories.assets import AssetsRepository
         from yamibo_mcp.domain.models import AssetSnapshot, FloorSnapshot, ThreadSnapshot, TitleSnapshot
@@ -505,8 +505,8 @@ class TestDiagnosticsWithAssets:
         settings.db_path = ":memory:"
         settings.data_dir = "/tmp"
         settings.export_dir = "/tmp/exports"
-        with patch("yamibo_mcp.server.tools.load_settings", return_value=settings), \
-             patch("yamibo_mcp.server.tools.connect", return_value=db):
+        with patch("yamibo_mcp.server.resource_handlers.load_settings", return_value=settings), \
+             patch("yamibo_mcp.server.resource_handlers.connect", return_value=db):
             result = read_resource("yamibo://threads/444/diagnostics")
         data = json.loads(result["text"])
         assert data["required_assets_count"] == 1

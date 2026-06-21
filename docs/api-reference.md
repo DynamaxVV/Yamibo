@@ -300,9 +300,9 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
 
 ---
 
-### 1.13 兼容接口
+### 1.13 Deprecated / 兼容接口
 
-以下旧名称可能仍作为兼容包装存在，但不再推荐给 Agent：
+以下旧名称仍通过 CLI 或 legacy JSON-RPC 兼容层保留，但不再是 Agent-facing MCP 主接口：
 
 - `search_threads`
 - `archive_thread`
@@ -310,6 +310,8 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
 - `get_thread`
 - `get_job_status`
 - `update_thread`
+- `cleanup_job`
+- `sync_forum_range`
 
 ---
 

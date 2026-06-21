@@ -53,10 +53,10 @@ class TestBrowseForumPageForumId:
         mock_client = MagicMock()
         mock_client.fetch_forum_threads.return_value = (fake_result, [fake_item])
 
-        from yamibo_mcp.server.tools import browse_forum_page
-        with patch("yamibo_mcp.server.tools.load_settings", return_value=settings), \
-             patch("yamibo_mcp.server.tools.YamiboClient", return_value=mock_client), \
-             patch("yamibo_mcp.server.tools.connect", return_value=db):
+        from yamibo_mcp.application.remote_queries import browse_forum_page
+        with patch("yamibo_mcp.application.remote_queries.load_settings", return_value=settings), \
+             patch("yamibo_mcp.application.remote_queries.YamiboClient", return_value=mock_client), \
+             patch("yamibo_mcp.application.remote_queries.connect", return_value=db):
             # Act
             result = browse_forum_page(page=1)
         # Assert
@@ -73,10 +73,10 @@ class TestBrowseForumPageForumId:
         mock_client = MagicMock()
         mock_client.fetch_forum_threads.return_value = (fake_result, [fake_item])
 
-        from yamibo_mcp.server.tools import browse_forum_page
-        with patch("yamibo_mcp.server.tools.load_settings", return_value=settings), \
-             patch("yamibo_mcp.server.tools.YamiboClient", return_value=mock_client), \
-             patch("yamibo_mcp.server.tools.connect", return_value=db):
+        from yamibo_mcp.application.remote_queries import browse_forum_page
+        with patch("yamibo_mcp.application.remote_queries.load_settings", return_value=settings), \
+             patch("yamibo_mcp.application.remote_queries.YamiboClient", return_value=mock_client), \
+             patch("yamibo_mcp.application.remote_queries.connect", return_value=db):
             # Act
             result = browse_forum_page(page=1, forum_id=55)
         # Assert
@@ -92,10 +92,10 @@ class TestBrowseForumPageForumId:
         mock_client = MagicMock()
         mock_client.fetch_forum_threads.return_value = (fake_result, [])
 
-        from yamibo_mcp.server.tools import browse_forum_page
-        with patch("yamibo_mcp.server.tools.load_settings", return_value=settings), \
-             patch("yamibo_mcp.server.tools.YamiboClient", return_value=mock_client), \
-             patch("yamibo_mcp.server.tools.connect", return_value=db):
+        from yamibo_mcp.application.remote_queries import browse_forum_page
+        with patch("yamibo_mcp.application.remote_queries.load_settings", return_value=settings), \
+             patch("yamibo_mcp.application.remote_queries.YamiboClient", return_value=mock_client), \
+             patch("yamibo_mcp.application.remote_queries.connect", return_value=db):
             # Act
             browse_forum_page(page=1, forum_id=5)
         # Assert
@@ -108,10 +108,10 @@ class TestSearchThreadsForumId:
         # Arrange
         settings = _fake_settings(tmp_path)
 
-        from yamibo_mcp.server.tools import search_threads
-        with patch("yamibo_mcp.server.tools.load_settings", return_value=settings), \
-             patch("yamibo_mcp.server.tools._remote_search_items", return_value=([], [], 0)), \
-             patch("yamibo_mcp.server.tools.connect", return_value=db):
+        from yamibo_mcp.application.remote_queries import search_threads
+        with patch("yamibo_mcp.application.remote_queries.load_settings", return_value=settings), \
+             patch("yamibo_mcp.application.remote_queries._remote_search_items", return_value=([], [], 0)), \
+             patch("yamibo_mcp.application.remote_queries.connect", return_value=db):
             # Act
             result = search_threads(query="test")
         # Assert
@@ -121,10 +121,10 @@ class TestSearchThreadsForumId:
         # Arrange
         settings = _fake_settings(tmp_path)
 
-        from yamibo_mcp.server.tools import search_threads
-        with patch("yamibo_mcp.server.tools.load_settings", return_value=settings), \
-             patch("yamibo_mcp.server.tools._remote_search_items", return_value=([], [], 0)), \
-             patch("yamibo_mcp.server.tools.connect", return_value=db):
+        from yamibo_mcp.application.remote_queries import search_threads
+        with patch("yamibo_mcp.application.remote_queries.load_settings", return_value=settings), \
+             patch("yamibo_mcp.application.remote_queries._remote_search_items", return_value=([], [], 0)), \
+             patch("yamibo_mcp.application.remote_queries.connect", return_value=db):
             # Act
             result = search_threads(query="test", forum_id=55)
         # Assert
@@ -135,10 +135,10 @@ class TestSearchThreadsForumId:
         settings = _fake_settings(tmp_path)
         mock_remote = MagicMock(return_value=([], [], 0))
 
-        from yamibo_mcp.server.tools import search_threads
-        with patch("yamibo_mcp.server.tools.load_settings", return_value=settings), \
-             patch("yamibo_mcp.server.tools._remote_search_items", mock_remote), \
-             patch("yamibo_mcp.server.tools.connect", return_value=db):
+        from yamibo_mcp.application.remote_queries import search_threads
+        with patch("yamibo_mcp.application.remote_queries.load_settings", return_value=settings), \
+             patch("yamibo_mcp.application.remote_queries._remote_search_items", mock_remote), \
+             patch("yamibo_mcp.application.remote_queries.connect", return_value=db):
             # Act
             search_threads(query="test", forum_id=55)
         # Assert
@@ -156,10 +156,10 @@ class TestSyncForumRangeForumId:
         mock_client = MagicMock()
         mock_client.fetch_forum_threads.return_value = (fake_result, [fake_item])
 
-        from yamibo_mcp.server.tools import sync_forum_range
-        with patch("yamibo_mcp.server.tools.load_settings", return_value=settings), \
-             patch("yamibo_mcp.server.tools.YamiboClient", return_value=mock_client), \
-             patch("yamibo_mcp.server.tools.connect", return_value=db):
+        from yamibo_mcp.server.legacy_tools import sync_forum_range
+        with patch("yamibo_mcp.server.legacy_tools.load_settings", return_value=settings), \
+             patch("yamibo_mcp.server.legacy_tools.YamiboClient", return_value=mock_client), \
+             patch("yamibo_mcp.server.legacy_tools.connect", return_value=db):
             # Act
             result = sync_forum_range(start_page=1, end_page=1)
         # Assert
@@ -175,10 +175,10 @@ class TestSyncForumRangeForumId:
         mock_client = MagicMock()
         mock_client.fetch_forum_threads.return_value = (fake_result, [fake_item])
 
-        from yamibo_mcp.server.tools import sync_forum_range
-        with patch("yamibo_mcp.server.tools.load_settings", return_value=settings), \
-             patch("yamibo_mcp.server.tools.YamiboClient", return_value=mock_client), \
-             patch("yamibo_mcp.server.tools.connect", return_value=db):
+        from yamibo_mcp.server.legacy_tools import sync_forum_range
+        with patch("yamibo_mcp.server.legacy_tools.load_settings", return_value=settings), \
+             patch("yamibo_mcp.server.legacy_tools.YamiboClient", return_value=mock_client), \
+             patch("yamibo_mcp.server.legacy_tools.connect", return_value=db):
             # Act
             result = sync_forum_range(start_page=1, end_page=1, forum_id=55)
         # Assert

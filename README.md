@@ -171,8 +171,8 @@ uv run yamibo-backup-db
 
 ```
 src/yamibo_mcp/
-├── server/          # MCP Server + CLI 子命令
-├── application/     # 用例层（ensure_thread, archive_thread_job, get_job_status, thread_update_use_cases）
+├── server/          # MCP 注册、CLI、legacy JSON-RPC、资源处理适配
+├── application/     # Agent-facing commands/queries 与兼容用例
 ├── daemon/          # 后台任务消费 + 处理器
 ├── web/             # 嵌入式 Web 控制台
 ├── yamibo/          # 论坛 HTTP 客户端、HTML 解析器、标题解析

@@ -144,4 +144,5 @@ def agent_tool(fn: Callable[..., AgentResult]) -> Callable[..., dict[str, Any]]:
         except Exception as exc:  # noqa: BLE001 - adapter boundary
             return to_wire(map_exception(exc))
 
+    wrapper.__agent_tool__ = True  # type: ignore[attr-defined]
     return wrapper

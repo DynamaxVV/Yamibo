@@ -11,7 +11,24 @@ from yamibo_mcp.server.agent_tools import (
     read_archived_thread,
     search_forum_threads,
 )
-from yamibo_mcp.server.protocol import list_tools_payload
+from yamibo_mcp.server.legacy_protocol import TOOLS, handle_request, list_tools_payload
+from yamibo_mcp.server.mcp_registry import register_agent_tools
+
+
+RECOMMENDED_AGENT_TOOLS = {
+    "browse_forum_page",
+    "search_forum_threads",
+    "inspect_remote_thread",
+    "create_thread_archive_job",
+    "ensure_thread_archived",
+    "read_archived_thread",
+    "check_thread_updates",
+    "create_thread_update_job",
+    "create_thread_export_job",
+    "read_job",
+    "read_job_events",
+    "read_forum_profiles",
+}
 
 
 def _fake_settings(tmp_path: Path):
@@ -40,25 +57,20 @@ class TestPublicAgentTools:
         assert "llm_transform_text" not in names
         assert "parse_thread_title" not in names
 
-    def test_public_tools_include_new_agent_facing_names(self):
+    def test_public_tools_only_include_recommended_agent_facing_names(self):
         payload = list_tools_payload()
         names = {tool["name"] for tool in payload["tools"]}
 
-        expected = {
-            "browse_forum_page",
-            "search_forum_threads",
-            "inspect_remote_thread",
-            "create_thread_archive_job",
-            "ensure_thread_archived",
-            "read_archived_thread",
-            "check_thread_updates",
-            "create_thread_update_job",
-            "create_thread_export_job",
-            "read_job",
-            "read_job_events",
-            "read_forum_profiles",
-        }
-        assert expected.issubset(names)
+        assert names == RECOMMENDED_AGENT_TOOLS
+
+    def test_public_tool_handlers_are_agent_enveloped(self):
+        missing = [
+            name
+            for name, (handler, _) in TOOLS.items()
+            if not getattr(handler, "__agent_tool__", False)
+        ]
+
+        assert missing == []
 
     def test_public_search_tool_signature_does_not_expose_limit(self):
         signature = inspect.signature(search_forum_threads)
@@ -71,6 +83,40 @@ class TestPublicAgentTools:
         assert "view" in signature.parameters
         assert "floor_start" in signature.parameters
         assert "floor_end" in signature.parameters
+
+    def test_public_tools_list_does_not_expose_limit_parameter(self):
+        for name, (handler, _) in TOOLS.items():
+            assert "limit" not in inspect.signature(handler).parameters, name
+
+    def test_unknown_tool_errors_stay_outside_agent_envelope(self):
+        response = handle_request(
+            {
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "unknown", "arguments": {}},
+            }
+        )
+
+        assert response["error"]["type"] == "ValueError"
+
+    def test_mcp_registry_only_registers_recommended_agent_tools(self):
+        class FakeServer:
+            def __init__(self):
+                self.names: list[str] = []
+
+            def tool(self, *, name: str, description: str):
+                self.names.append(name)
+
+                def decorator(fn):
+                    return fn
+
+                return decorator
+
+        fake = FakeServer()
+
+        register_agent_tools(fake)
+
+        assert set(fake.names) == RECOMMENDED_AGENT_TOOLS
 
 
 class TestStructuredAgentWireFormat:

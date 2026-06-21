@@ -7,7 +7,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from yamibo_mcp.db.repositories.jobs import JobsRepository
-from yamibo_mcp.server.protocol import handle_request, list_tools_payload
+from yamibo_mcp.server.legacy_protocol import handle_request, list_tools_payload
 
 
 def _fake_settings(tmp_path: Path):

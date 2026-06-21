@@ -258,12 +258,17 @@ yamibo/
 │   ├── errors.py               # 自定义异常层次
 │   ├── logging.py              # 日志配置
 │   ├── time_utils.py           # UTC 时间工具
-│   ├── server/                 # MCP Server
-│   │   ├── app.py              # FastMCP 构建 + CLI 子命令
-│   │   ├── tools.py            # 工具实现（归档、搜索、导出等）
-│   │   ├── resources.py        # URI 模板 + 资源读取
-│   │   ├── schemas.py          # 响应结构构建
-│   │   └── protocol.py         # JSON-RPC 兼容层
+│   ├── server/                 # MCP/CLI 适配层
+│   │   ├── app.py              # 轻量入口委托
+│   │   ├── mcp_registry.py     # FastMCP tool/resource 注册
+│   │   ├── cli.py              # CLI 参数解析与分发
+│   │   ├── agent_tools.py      # Agent-facing tool 适配
+│   │   ├── resource_handlers.py # Resource 读取处理
+│   │   ├── legacy_tools.py     # 旧工具名兼容包装
+│   │   ├── legacy_protocol.py  # JSON-RPC 兼容层
+│   │   ├── tools.py            # legacy re-export
+│   │   ├── resources.py        # URI 模板
+│   │   └── schemas.py          # 响应结构构建
 │   ├── application/          # 应用层
 │   │   ├── contracts.py      # Agent Contract (AgentResponse)
 │   │   ├── thread_use_cases.py # 帖子用例（ensure_thread, archive_thread_job）

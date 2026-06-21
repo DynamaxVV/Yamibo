@@ -13,9 +13,9 @@ def browse_forum_page(
     include_sticky: bool = False,
     include_announcements: bool = False,
 ) -> AgentResult:
-    from yamibo_mcp.server.tools import browse_forum_page as legacy_browse_forum_page
+    from yamibo_mcp.application.remote_queries import browse_forum_page as remote_browse_forum_page
 
-    payload = legacy_browse_forum_page(
+    payload = remote_browse_forum_page(
         page=page,
         forum_id=forum_id,
         order=order,
@@ -39,9 +39,9 @@ def search_forum_threads(
     include_sticky: bool = False,
     include_announcements: bool = False,
 ) -> AgentResult:
-    from yamibo_mcp.server.tools import search_threads as legacy_search_threads
+    from yamibo_mcp.application.remote_queries import search_threads as remote_search_threads
 
-    payload = legacy_search_threads(
+    payload = remote_search_threads(
         query=query,
         forum_id=forum_id,
         start_page=start_page,
