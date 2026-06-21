@@ -15,6 +15,9 @@ from yamibo_mcp.server.agent_tools import (
     search_forum_threads,
 )
 from yamibo_mcp.server.resource_uris import (
+    agent_workflows_guide_uri,
+    archive_model_guide_uri,
+    error_codes_guide_uri,
     forum_summary_uri,
     forums_index_uri,
     job_events_uri,
@@ -28,6 +31,7 @@ from yamibo_mcp.server.resource_uris import (
     thread_posts_uri,
     thread_summary_uri,
     thread_update_check_uri,
+    tools_schema_uri,
 )
 from yamibo_mcp.server.resources import read_resource_content
 
@@ -130,8 +134,17 @@ def register_agent_tools(server) -> None:
         view: str,
         floor_start: int | None = None,
         floor_end: int | None = None,
+        cursor: str | None = None,
+        chunk_size: int | None = None,
     ) -> dict[str, object]:
-        return read_archived_thread(tid=tid, view=view, floor_start=floor_start, floor_end=floor_end)
+        return read_archived_thread(
+            tid=tid,
+            view=view,
+            floor_start=floor_start,
+            floor_end=floor_end,
+            cursor=cursor,
+            chunk_size=chunk_size,
+        )
 
     @server.tool(name="check_thread_updates", description="Remote read-only update inspection for archived novel threads. Does not create jobs.")
     def _check_thread_updates(tid: int, base_url: str | None = None) -> dict[str, object]:
@@ -159,6 +172,26 @@ def register_agent_tools(server) -> None:
 
 
 def register_resources(server) -> None:
+    @server.resource(agent_workflows_guide_uri(), mime_type="text/markdown", name="agent-workflows-guide")
+    def _agent_workflows_guide() -> str:
+        content, _ = read_resource_content(agent_workflows_guide_uri())
+        return str(content)
+
+    @server.resource(error_codes_guide_uri(), mime_type="text/markdown", name="error-codes-guide")
+    def _error_codes_guide() -> str:
+        content, _ = read_resource_content(error_codes_guide_uri())
+        return str(content)
+
+    @server.resource(archive_model_guide_uri(), mime_type="text/markdown", name="archive-model-guide")
+    def _archive_model_guide() -> str:
+        content, _ = read_resource_content(archive_model_guide_uri())
+        return str(content)
+
+    @server.resource(tools_schema_uri(), mime_type="application/json", name="tools-schema")
+    def _tools_schema() -> str:
+        content, _ = read_resource_content(tools_schema_uri())
+        return str(content)
+
     @server.resource(thread_context_uri("{tid}"), mime_type="text/markdown", name="thread-context")
     def _thread_context(tid: str) -> str:
         content, _ = read_resource_content(thread_context_uri(int(tid)))

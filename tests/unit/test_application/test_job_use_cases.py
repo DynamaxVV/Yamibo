@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-from yamibo_mcp.application.job_use_cases import get_job_status_payload
+from yamibo_mcp.application.job_queries import get_job_status_payload
 from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.server.schemas import job_status_payload as direct_job_status_payload
 
@@ -28,8 +28,8 @@ class TestGetJobStatusPayload:
         repo = JobsRepository(db)
         job = repo.create("sync_thread", tid=100, payload={"tid": 100})
         expected = direct_job_status_payload(job)
-        with patch("yamibo_mcp.application.job_use_cases.load_settings", return_value=settings), \
-             patch("yamibo_mcp.application.job_use_cases.connect", return_value=db):
+        with patch("yamibo_mcp.application.job_queries.load_settings", return_value=settings), \
+             patch("yamibo_mcp.application.job_queries.connect", return_value=db):
             # Act
             result = get_job_status_payload(job.job_id)
         # Assert
@@ -43,8 +43,8 @@ class TestGetJobStatusPayload:
         settings = _fake_settings(tmp_path)
         repo = JobsRepository(db)
         job = repo.create("noop")
-        with patch("yamibo_mcp.application.job_use_cases.load_settings", return_value=settings), \
-             patch("yamibo_mcp.application.job_use_cases.connect", return_value=db):
+        with patch("yamibo_mcp.application.job_queries.load_settings", return_value=settings), \
+             patch("yamibo_mcp.application.job_queries.connect", return_value=db):
             # Act
             result = get_job_status_payload(job.job_id)
         # Assert

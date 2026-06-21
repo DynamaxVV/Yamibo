@@ -6,7 +6,8 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from yamibo_mcp.application.thread_use_cases import archive_thread_job, ensure_thread
+from yamibo_mcp.application.archive_commands import archive_thread_job
+from yamibo_mcp.application.legacy_use_cases import ensure_thread
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
 
 
@@ -95,8 +96,8 @@ class TestEnsureThreadCacheHit:
         # Arrange
         settings = _fake_settings(tmp_path)
         _seed_thread(db, tid=100)
-        with patch("yamibo_mcp.application.thread_use_cases.load_settings", return_value=settings), \
-             patch("yamibo_mcp.application.thread_use_cases.connect", return_value=db):
+        with patch("yamibo_mcp.application.legacy_use_cases.load_settings", return_value=settings), \
+             patch("yamibo_mcp.application.legacy_use_cases.connect", return_value=db):
             # Act
             result = ensure_thread(tid=100)
         # Assert
@@ -110,8 +111,8 @@ class TestEnsureThreadCacheHit:
         # Arrange
         settings = _fake_settings(tmp_path)
         _seed_thread(db, tid=200)
-        with patch("yamibo_mcp.application.thread_use_cases.load_settings", return_value=settings), \
-             patch("yamibo_mcp.application.thread_use_cases.connect", return_value=db):
+        with patch("yamibo_mcp.application.legacy_use_cases.load_settings", return_value=settings), \
+             patch("yamibo_mcp.application.legacy_use_cases.connect", return_value=db):
             # Act
             result = ensure_thread(tid=200)
         # Assert
@@ -130,9 +131,9 @@ class TestEnsureThreadCacheMiss:
             _seed_thread(db, tid=tid)
             return {"job_id": "fake_job", "status": "succeeded", "artifacts": {}}
 
-        with patch("yamibo_mcp.application.thread_use_cases.load_settings", return_value=settings), \
-             patch("yamibo_mcp.application.thread_use_cases.connect", return_value=db), \
-             patch("yamibo_mcp.application.thread_use_cases._run_inline_sync", side_effect=fake_run_inline_sync):
+        with patch("yamibo_mcp.application.legacy_use_cases.load_settings", return_value=settings), \
+             patch("yamibo_mcp.application.legacy_use_cases.connect", return_value=db), \
+             patch("yamibo_mcp.application.legacy_use_cases._run_inline_sync", side_effect=fake_run_inline_sync):
             # Act
             result = ensure_thread(tid=300)
         # Assert
@@ -154,9 +155,9 @@ class TestEnsureThreadCacheMiss:
         def fake_run_inline_sync(*, tid, url, base_url, forum_id, settings):
             return error_payload
 
-        with patch("yamibo_mcp.application.thread_use_cases.load_settings", return_value=settings), \
-             patch("yamibo_mcp.application.thread_use_cases.connect", return_value=db), \
-             patch("yamibo_mcp.application.thread_use_cases._run_inline_sync", side_effect=fake_run_inline_sync):
+        with patch("yamibo_mcp.application.legacy_use_cases.load_settings", return_value=settings), \
+             patch("yamibo_mcp.application.legacy_use_cases.connect", return_value=db), \
+             patch("yamibo_mcp.application.legacy_use_cases._run_inline_sync", side_effect=fake_run_inline_sync):
             # Act
             result = ensure_thread(tid=400)
         # Assert
@@ -173,9 +174,9 @@ class TestEnsureThreadCacheMiss:
         def fake_run_inline_sync(*, tid, url, base_url, forum_id, settings):
             return {"job_id": "j2", "status": "succeeded", "artifacts": {}}
 
-        with patch("yamibo_mcp.application.thread_use_cases.load_settings", return_value=settings), \
-             patch("yamibo_mcp.application.thread_use_cases.connect", return_value=db), \
-             patch("yamibo_mcp.application.thread_use_cases._run_inline_sync", side_effect=fake_run_inline_sync):
+        with patch("yamibo_mcp.application.legacy_use_cases.load_settings", return_value=settings), \
+             patch("yamibo_mcp.application.legacy_use_cases.connect", return_value=db), \
+             patch("yamibo_mcp.application.legacy_use_cases._run_inline_sync", side_effect=fake_run_inline_sync):
             # Act
             result = ensure_thread(tid=999)
         # Assert
@@ -193,8 +194,8 @@ class TestArchiveThreadJob:
         conn.row_factory = _sqlite3.Row
         _migrate(conn)
         settings = _fake_settings(tmp_path)
-        with patch("yamibo_mcp.application.thread_use_cases.load_settings", return_value=settings), \
-             patch("yamibo_mcp.application.thread_use_cases.connect", return_value=conn):
+        with patch("yamibo_mcp.application.archive_commands.load_settings", return_value=settings), \
+             patch("yamibo_mcp.application.archive_commands.connect", return_value=conn):
             # Act
             result = archive_thread_job(tid=42)
         # Assert
@@ -211,8 +212,8 @@ class TestArchiveThreadJob:
         conn.row_factory = _sqlite3.Row
         _migrate(conn)
         settings = _fake_settings(tmp_path)
-        with patch("yamibo_mcp.application.thread_use_cases.load_settings", return_value=settings), \
-             patch("yamibo_mcp.application.thread_use_cases.connect", return_value=conn):
+        with patch("yamibo_mcp.application.archive_commands.load_settings", return_value=settings), \
+             patch("yamibo_mcp.application.archive_commands.connect", return_value=conn):
             # Act
             result = archive_thread_job(tid=42, url="https://example.com/t/42", base_url="https://bbs.yamibo.com")
         # Assert - use a fresh connection since archive_thread_job closes the patched one
@@ -246,8 +247,8 @@ class TestArchiveThreadJob:
         conn.row_factory = _sqlite3.Row
         _migrate(conn)
         settings = _fake_settings(tmp_path)
-        with patch("yamibo_mcp.application.thread_use_cases.load_settings", return_value=settings), \
-             patch("yamibo_mcp.application.thread_use_cases.connect", return_value=conn):
+        with patch("yamibo_mcp.application.archive_commands.load_settings", return_value=settings), \
+             patch("yamibo_mcp.application.archive_commands.connect", return_value=conn):
             # Act
             result = archive_thread_job(html_path="/tmp/test.html", tid=10)
         # Assert - use a fresh connection

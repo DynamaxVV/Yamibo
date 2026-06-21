@@ -274,14 +274,17 @@ yamibo/
 │   │   └── schemas.py          # 响应结构构建
 │   ├── application/            # 应用层
 │   │   ├── contracts.py        # AgentResult / AgentError / AgentAction
-│   │   ├── archive_commands.py # archive/update/export job 创建
+│   │   ├── archive_commands.py # archive/export job 创建
 │   │   ├── archive_queries.py  # 本地归档 summary/content/assets/diagnostics
+│   │   ├── update_commands.py  # update job 创建
+│   │   ├── update_queries.py   # 远端只读 update check
 │   │   ├── remote_queries.py   # browse/search/inspect remote
 │   │   ├── job_queries.py      # read_job/read_job_events
 │   │   ├── forum_queries.py    # forum profiles/index
 │   │   ├── legacy_use_cases.py # get_thread 等旧行为聚合
-│   │   ├── thread_use_cases.py # compatibility implementation module
-│   │   └── job_use_cases.py    # compatibility implementation module
+│   │   ├── thread_use_cases.py # compatibility re-export
+│   │   ├── thread_update_use_cases.py # compatibility re-export
+│   │   └── job_use_cases.py    # compatibility re-export
 │   ├── daemon/                 # 后台任务消费
 │   │   ├── main.py             # Daemon 入口
 │   │   ├── runner.py           # 轮询 + 抢占 + 执行循环

@@ -51,9 +51,16 @@
 - `read_job_events`
 - `read_forum_profiles`
 
+## 导航资源
+
+- `yamibo://guide/agent-workflows`
+- `yamibo://guide/error-codes`
+- `yamibo://guide/archive-model`
+- `yamibo://schema/tools`
+
 ## 本地读取
 
-`read_archived_thread(tid, view, floor_start=None, floor_end=None)`
+`read_archived_thread(tid, view, floor_start=None, floor_end=None, cursor=None, chunk_size=None)`
 
 支持视图：
 
@@ -65,6 +72,8 @@
 - `metadata`
 
 该工具绝不触发远端抓取。
+
+`content` 视图默认按 chunk 返回，响应包含 `has_more`、`next_cursor` 和 `resource_hints`。读取大帖时应在 `has_more=true` 时用同一参数加 `cursor=next_cursor` 继续分页，不要假设一次调用返回全量楼层。
 
 ## 推荐工作流
 

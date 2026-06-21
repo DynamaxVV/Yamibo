@@ -567,8 +567,46 @@ class ThreadsRepository:
         row = self.conn.execute("SELECT COUNT(*) AS c FROM floors WHERE tid = ?", (tid,)).fetchone()
         return int(row["c"]) if row is not None else 0
 
+    def count_floors_window(self, tid: int, *, floor_start: int | None = None, floor_end: int | None = None) -> int:
+        where = ["tid = ?"]
+        params: list[object] = [tid]
+        if floor_start is not None:
+            where.append("floor_no >= ?")
+            params.append(floor_start)
+        if floor_end is not None:
+            where.append("floor_no <= ?")
+            params.append(floor_end)
+        row = self.conn.execute(
+            f"SELECT COUNT(*) AS c FROM floors WHERE {' AND '.join(where)}",
+            params,
+        ).fetchone()
+        return int(row["c"]) if row is not None else 0
+
     def list_floors_page(self, tid: int, *, limit: int, offset: int) -> list[sqlite3.Row]:
         return self.conn.execute(
             "SELECT * FROM floors WHERE tid = ? ORDER BY floor_no ASC LIMIT ? OFFSET ?",
             (tid, limit, offset),
+        ).fetchall()
+
+    def list_floors_window(
+        self,
+        tid: int,
+        *,
+        floor_start: int | None = None,
+        floor_end: int | None = None,
+        limit: int,
+        offset: int = 0,
+    ) -> list[sqlite3.Row]:
+        where = ["tid = ?"]
+        params: list[object] = [tid]
+        if floor_start is not None:
+            where.append("floor_no >= ?")
+            params.append(floor_start)
+        if floor_end is not None:
+            where.append("floor_no <= ?")
+            params.append(floor_end)
+        params.extend([limit, offset])
+        return self.conn.execute(
+            f"SELECT * FROM floors WHERE {' AND '.join(where)} ORDER BY floor_no ASC LIMIT ? OFFSET ?",
+            params,
         ).fetchall()

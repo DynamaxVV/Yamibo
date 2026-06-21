@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import inspect
 from pathlib import Path
 
 from yamibo_mcp.config import load_settings
@@ -10,6 +11,9 @@ from yamibo_mcp.db.repositories.series import SeriesRepository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
 from yamibo_mcp.server.resource_uris import (
     build_resource_payload,
+    agent_workflows_guide_uri,
+    archive_model_guide_uri,
+    error_codes_guide_uri,
     guess_content_type,
     job_events_uri,
     parse_resource_uri,
@@ -25,13 +29,19 @@ from yamibo_mcp.server.resource_uris import (
     thread_posts_uri,
     thread_summary_uri,
     thread_update_check_uri,
+    tools_schema_uri,
 )
 from yamibo_mcp.storage.paths import StoragePaths
 
 
 def read_resource(uri: str) -> dict[str, object]:
-    settings = load_settings()
     kind_root, tid, kind = parse_resource_uri(uri)
+    if kind_root == "guide":
+        return _build_guide_resource(uri, kind)
+    if kind_root == "schema" and kind == "tools":
+        return _build_tools_schema_resource(uri)
+
+    settings = load_settings()
     paths = StoragePaths(settings.data_dir, export_dir=settings.export_dir)
     if kind_root == "threads":
         assert tid is not None
@@ -87,6 +97,106 @@ def read_resource(uri: str) -> dict[str, object]:
         job_id = kind.split("/")[0]
         return _build_job_events_resource(uri, job_id, settings)
     raise ValueError(f"unsupported resource root: {kind_root}")
+
+
+def _build_guide_resource(uri: str, kind: str) -> dict[str, object]:
+    guide_text = {
+        "agent-workflows": _agent_workflows_guide(),
+        "error-codes": _error_codes_guide(),
+        "archive-model": _archive_model_guide(),
+    }.get(kind)
+    if guide_text is None:
+        raise ValueError(f"unsupported guide resource: {kind}")
+    return {"uri": uri, "content_type": "text/markdown", "exists": True, "text": guide_text}
+
+
+def _build_tools_schema_resource(uri: str) -> dict[str, object]:
+    from yamibo_mcp.server.legacy_protocol import TOOLS
+
+    tools = []
+    for name, (handler, description) in TOOLS.items():
+        signature = inspect.signature(handler)
+        parameters = []
+        for param_name, param in signature.parameters.items():
+            parameters.append(
+                {
+                    "name": param_name,
+                    "required": param.default is inspect.Parameter.empty,
+                    "default": None if param.default is inspect.Parameter.empty else param.default,
+                    "annotation": None if param.annotation is inspect.Parameter.empty else str(param.annotation),
+                }
+            )
+        tools.append({"name": name, "description": description, "parameters": parameters})
+    text = json.dumps({"tools": tools}, ensure_ascii=False, indent=2)
+    return {"uri": uri, "content_type": "application/json", "exists": True, "text": text}
+
+
+def _agent_workflows_guide() -> str:
+    return f"""# Yamibo Agent Workflows
+
+Start here when you do not know which tool to call.
+
+## Remote discovery
+- Use `read_forum_profiles` to understand available forums.
+- Use `browse_forum_page` for page-by-page browsing.
+- Use `search_forum_threads` for remote-first search.
+- Use `inspect_remote_thread` before archiving when you need a small remote preview.
+
+## Local archive workflow
+- Use `ensure_thread_archived` when you need a local copy and can tolerate queued work.
+- Use `create_thread_archive_job` for explicit job creation.
+- Poll `read_job`, then `read_job_events`.
+- Read local content with `read_archived_thread`.
+- For large content, call `read_archived_thread` with `view="content"` and follow `next_cursor`.
+
+## Update/export workflow
+- Use `check_thread_updates` for read-only update inspection.
+- Use `create_thread_update_job` only after update inspection or when the user requests it.
+- Use `create_thread_export_job` after a local archive exists.
+
+Useful resources:
+- `{tools_schema_uri()}`
+- `{error_codes_guide_uri()}`
+- `{archive_model_guide_uri()}`
+"""
+
+
+def _error_codes_guide() -> str:
+    return """# Yamibo Agent Error Codes
+
+- `INVALID_ARGUMENT`: Tool arguments are invalid. Fix the request before retrying.
+- `LOCAL_ARCHIVE_NOT_FOUND`: The thread is not archived locally. Use `create_thread_archive_job` or `ensure_thread_archived`.
+- `JOB_NOT_FOUND`: The job id is unknown. Check the id or create a new job.
+- `REMOTE_LOGIN_REQUIRED`: Remote access needs a valid cookie/login.
+- `REMOTE_MAINTENANCE`: The forum appears to be in maintenance mode. Retry later.
+- `UNEXPECTED_REMOTE_PAGE`: The remote page is not the expected forum/thread page.
+- `REMOTE_FETCH_FAILED`: Remote fetch failed for network or HTTP reasons.
+- `EXPORT_PRECHECK_FAILED`: Export cannot start until archive preconditions are fixed.
+- `INTERNAL_ERROR`: Unexpected server error. Prefer a narrower retry or inspect job events.
+"""
+
+
+def _archive_model_guide() -> str:
+    return f"""# Yamibo Archive Model
+
+The MCP interface separates remote reads, local archives, and background jobs.
+
+## State model
+- `browse_forum_page`, `search_forum_threads`, `inspect_remote_thread`, and `check_thread_updates` are remote read-only tools.
+- `create_thread_archive_job`, `create_thread_update_job`, and `create_thread_export_job` create SQLite jobs.
+- The daemon consumes queued jobs and materializes local files/resources.
+
+## Local content model
+- `read_archived_thread(view="summary")` returns compact metadata and resource URIs.
+- `read_archived_thread(view="content")` returns a bounded chunk of floors and content blocks.
+- Follow `next_cursor` while `has_more` is true.
+- Full materialized text is exposed through `{thread_context_uri('{tid}')}`.
+- Structured posts are exposed through `{thread_posts_uri('{tid}')}`.
+
+## Job model
+- Job status is read through `read_job`.
+- Job event history is read through `read_job_events` or `{job_events_uri('{job_id}')}`.
+"""
 
 
 def read_resource_content(uri: str) -> tuple[str | bytes, str]:
@@ -367,7 +477,7 @@ def _build_thread_assets_resource(uri: str, tid: int, settings) -> dict[str, obj
 
 
 def _build_thread_update_check_resource(uri: str, tid: int) -> dict[str, object]:
-    from yamibo_mcp.application.thread_update_use_cases import check_thread_updates
+    from yamibo_mcp.application.update_queries import check_thread_updates
 
     result = check_thread_updates(tid=tid)
     if result.get("status") == "failed" and result.get("reason") == f"thread {tid} not found":

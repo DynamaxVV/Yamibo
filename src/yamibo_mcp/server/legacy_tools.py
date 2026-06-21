@@ -4,10 +4,8 @@ import json
 from pathlib import Path
 
 from yamibo_mcp.application.remote_queries import browse_forum_page, search_threads
-from yamibo_mcp.application.thread_update_use_cases import (
-    check_thread_updates,
-    create_update_thread_job as _create_update_thread_job,
-)
+from yamibo_mcp.application.update_commands import create_update_thread_job as _create_update_thread_job
+from yamibo_mcp.application.update_queries import check_thread_updates
 from yamibo_mcp.application.legacy_use_cases import archive_thread_job, ensure_thread, get_thread as legacy_get_thread
 from yamibo_mcp.config import load_settings
 from yamibo_mcp.db.connection import connect
@@ -170,7 +168,7 @@ def sync_forum_range(
 
 
 def get_job_status(job_id: str) -> dict[str, object]:
-    from yamibo_mcp.application.job_use_cases import get_job_status_payload
+    from yamibo_mcp.application.job_queries import get_job_status_payload
 
     return get_job_status_payload(job_id)
 

@@ -207,9 +207,9 @@ class TestArchiveThreadJobForumId:
         _migrate(conn)
         settings = _fake_settings(tmp_path)
 
-        from yamibo_mcp.application.thread_use_cases import archive_thread_job
-        with patch("yamibo_mcp.application.thread_use_cases.load_settings", return_value=settings), \
-             patch("yamibo_mcp.application.thread_use_cases.connect", return_value=conn):
+        from yamibo_mcp.application.archive_commands import archive_thread_job
+        with patch("yamibo_mcp.application.archive_commands.load_settings", return_value=settings), \
+             patch("yamibo_mcp.application.archive_commands.connect", return_value=conn):
             # Act
             result = archive_thread_job(tid=42, forum_id=55)
         # Assert
@@ -232,9 +232,9 @@ class TestArchiveThreadJobForumId:
         _migrate(conn)
         settings = _fake_settings(tmp_path)
 
-        from yamibo_mcp.application.thread_use_cases import archive_thread_job
-        with patch("yamibo_mcp.application.thread_use_cases.load_settings", return_value=settings), \
-             patch("yamibo_mcp.application.thread_use_cases.connect", return_value=conn):
+        from yamibo_mcp.application.archive_commands import archive_thread_job
+        with patch("yamibo_mcp.application.archive_commands.load_settings", return_value=settings), \
+             patch("yamibo_mcp.application.archive_commands.connect", return_value=conn):
             # Act
             result = archive_thread_job(tid=42)
         # Assert

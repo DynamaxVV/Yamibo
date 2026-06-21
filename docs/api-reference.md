@@ -181,6 +181,17 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
 - `export`
 - `metadata`
 
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| tid | int | 是 | - | 帖子 ID |
+| view | string | 是 | - | `summary/content/assets/diagnostics/export/metadata` |
+| floor_start | int \| null | 否 | null | content 视图楼层范围起点 |
+| floor_end | int \| null | 否 | null | content 视图楼层范围终点 |
+| cursor | string \| null | 否 | null | content 视图分页 cursor，例如 `offset:20` |
+| chunk_size | int \| null | 否 | 20 | content 视图每页楼层数，最大 50 |
+
+`content` 视图返回 `has_more`、`next_cursor`、`resource_hints`，大帖应按 cursor 分页读取。
+
 ### 1.7 create_thread_export_job
 
 创建帖子导出任务。

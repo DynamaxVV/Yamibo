@@ -74,8 +74,8 @@ class TestLegacyJsonRpcDispatch:
             "method": "tools/call",
             "params": {"name": "create_thread_update_job", "arguments": {"tid": 42}},
         }
-        with patch("yamibo_mcp.application.thread_update_use_cases.load_settings", return_value=settings), \
-             patch("yamibo_mcp.application.thread_update_use_cases.connect", return_value=db):
+        with patch("yamibo_mcp.application.update_commands.load_settings", return_value=settings), \
+             patch("yamibo_mcp.application.update_commands.connect", return_value=db):
             response = handle_request(request)
         result = response["result"]
         assert result["ok"] is True
@@ -89,8 +89,8 @@ class TestLegacyJsonRpcDispatch:
             "method": "tools/call",
             "params": {"name": "create_thread_archive_job", "arguments": {"tid": 42}},
         }
-        with patch("yamibo_mcp.application.thread_use_cases.load_settings", return_value=settings), \
-             patch("yamibo_mcp.application.thread_use_cases.connect", return_value=db):
+        with patch("yamibo_mcp.application.archive_commands.load_settings", return_value=settings), \
+             patch("yamibo_mcp.application.archive_commands.connect", return_value=db):
             # Act
             response = handle_request(request)
         # Assert
@@ -108,8 +108,8 @@ class TestLegacyJsonRpcDispatch:
             "method": "tools/call",
             "params": {"name": "read_job", "arguments": {"job_id": job.job_id}},
         }
-        with patch("yamibo_mcp.application.job_use_cases.load_settings", return_value=settings), \
-             patch("yamibo_mcp.application.job_use_cases.connect", return_value=db):
+        with patch("yamibo_mcp.application.job_queries.load_settings", return_value=settings), \
+             patch("yamibo_mcp.application.job_queries.connect", return_value=db):
             # Act
             response = handle_request(request)
         # Assert
@@ -151,8 +151,8 @@ class TestLegacyProtocolSecurity:
             "method": "tools/call",
             "params": {"name": "read_job", "arguments": {"job_id": "nonexistent"}},
         }
-        with patch("yamibo_mcp.application.job_use_cases.load_settings", return_value=settings), \
-             patch("yamibo_mcp.application.job_use_cases.connect", return_value=db):
+        with patch("yamibo_mcp.application.job_queries.load_settings", return_value=settings), \
+             patch("yamibo_mcp.application.job_queries.connect", return_value=db):
             # Act
             response = handle_request(request)
         # Assert

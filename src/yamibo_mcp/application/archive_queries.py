@@ -24,6 +24,8 @@ from yamibo_mcp.storage.paths import StoragePaths
 from yamibo_mcp.yamibo.client import YamiboClient
 
 ARCHIVED_THREAD_VIEWS = {"summary", "content", "assets", "diagnostics", "export", "metadata"}
+DEFAULT_CONTENT_CHUNK_SIZE = 20
+MAX_CONTENT_CHUNK_SIZE = 50
 
 
 def read_archived_thread(
@@ -32,6 +34,8 @@ def read_archived_thread(
     view: str,
     floor_start: int | None = None,
     floor_end: int | None = None,
+    cursor: str | None = None,
+    chunk_size: int | None = None,
 ) -> AgentResult:
     if view not in ARCHIVED_THREAD_VIEWS:
         raise ValueError(f"unsupported view: {view}")
@@ -66,8 +70,7 @@ def read_archived_thread(
             )
 
         title = repo.get_title_parse(tid)
-        floors = repo.list_floors(tid)
-        selected_floors = _slice_floors(floors, floor_start=floor_start, floor_end=floor_end)
+        floor_count = repo.count_floors(tid)
         paths = StoragePaths(
             settings.data_dir,
             export_dir=settings.export_dir,
@@ -86,13 +89,31 @@ def read_archived_thread(
 
         data: dict[str, object]
         if view == "summary":
-            data = _build_summary(thread, title, floor_count=len(floors))
+            data = _build_summary(thread, title, floor_count=floor_count)
         elif view == "content":
-            blocks = ContentBlocksRepository(conn).list_blocks(tid)
+            offset = _parse_content_cursor(cursor)
+            limit = _normalize_chunk_size(chunk_size)
+            total_in_range = repo.count_floors_window(tid, floor_start=floor_start, floor_end=floor_end)
+            selected_floors = repo.list_floors_window(
+                tid,
+                floor_start=floor_start,
+                floor_end=floor_end,
+                limit=limit,
+                offset=offset,
+            )
+            next_offset = offset + len(selected_floors)
+            has_more = next_offset < total_in_range
+            next_cursor = f"offset:{next_offset}" if has_more else None
+            selected_pids = [int(floor["pid"]) for floor in selected_floors]
+            blocks = ContentBlocksRepository(conn).list_blocks_for_pids(tid, selected_pids)
             data = {
-                **_build_summary(thread, title, floor_count=len(floors)),
+                **_build_summary(thread, title, floor_count=floor_count),
                 "view": "content",
-                "floor_range": {"start": floor_start, "end": floor_end},
+                "floor_range": {"start": floor_start, "end": floor_end, "total": total_in_range},
+                "cursor": cursor,
+                "chunk_size": limit,
+                "next_cursor": next_cursor,
+                "has_more": has_more,
                 "floors": [
                     {
                         "pid": floor["pid"],
@@ -114,11 +135,19 @@ def read_archived_thread(
                     }
                     for block in blocks
                 ],
+                "resource_hints": _content_resource_hints(
+                    tid=tid,
+                    next_cursor=next_cursor,
+                    chunk_size=limit,
+                    floor_start=floor_start,
+                    floor_end=floor_end,
+                    resources=resources,
+                ),
             }
         elif view == "assets":
             assets = AssetsRepository(conn).list_assets(tid)
             data = {
-                **_build_summary(thread, title, floor_count=len(floors)),
+                **_build_summary(thread, title, floor_count=floor_count),
                 "view": "assets",
                 "assets": [
                     {
@@ -138,7 +167,7 @@ def read_archived_thread(
             missing_images = json.loads(thread["missing_images_json"] or "[]")
             validation_errors = json.loads(thread["validation_errors_json"] or "[]") if thread["validation_errors_json"] else []
             data = {
-                **_build_summary(thread, title, floor_count=len(floors)),
+                **_build_summary(thread, title, floor_count=floor_count),
                 "view": "diagnostics",
                 "missing_images": missing_images,
                 "validation_errors": validation_errors,
@@ -148,7 +177,7 @@ def read_archived_thread(
         elif view == "metadata":
             metadata_path = paths.thread_metadata(tid)
             data = {
-                **_build_summary(thread, title, floor_count=len(floors)),
+                **_build_summary(thread, title, floor_count=floor_count),
                 "view": "metadata",
                 "metadata_exists": metadata_path.exists(),
                 "metadata": _read_json_file(metadata_path),
@@ -156,7 +185,7 @@ def read_archived_thread(
         else:
             export_path = _resolve_export_path(settings.data_dir, paths, tid, thread["export_path"])
             data = {
-                **_build_summary(thread, title, floor_count=len(floors)),
+                **_build_summary(thread, title, floor_count=floor_count),
                 "view": "export",
                 "export_exists": export_path.exists(),
                 "export_path": str(export_path),
@@ -219,13 +248,54 @@ def _build_summary(thread, title, *, floor_count: int) -> dict[str, object]:
     return summary
 
 
-def _slice_floors(floors, *, floor_start: int | None, floor_end: int | None):
-    return [
-        floor
-        for floor in floors
-        if (floor_start is None or floor["floor_no"] >= floor_start)
-        and (floor_end is None or floor["floor_no"] <= floor_end)
-    ]
+def _parse_content_cursor(cursor: str | None) -> int:
+    if cursor is None or cursor == "":
+        return 0
+    raw_offset = cursor.removeprefix("offset:")
+    try:
+        offset = int(raw_offset)
+    except ValueError as exc:
+        raise ValueError(f"invalid content cursor: {cursor}") from exc
+    if offset < 0:
+        raise ValueError("content cursor offset must be non-negative")
+    return offset
+
+
+def _normalize_chunk_size(chunk_size: int | None) -> int:
+    if chunk_size is None:
+        return DEFAULT_CONTENT_CHUNK_SIZE
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be positive")
+    return min(chunk_size, MAX_CONTENT_CHUNK_SIZE)
+
+
+def _content_resource_hints(
+    *,
+    tid: int,
+    next_cursor: str | None,
+    chunk_size: int,
+    floor_start: int | None,
+    floor_end: int | None,
+    resources: dict[str, str],
+) -> dict[str, object]:
+    hints: dict[str, object] = {
+        "summary_resource": resources["summary"],
+        "posts_resource": resources["posts"],
+        "context_resource": resources["context"],
+    }
+    if next_cursor is not None:
+        hints["next_page_tool_call"] = {
+            "tool": "read_archived_thread",
+            "args": {
+                "tid": tid,
+                "view": "content",
+                "cursor": next_cursor,
+                "chunk_size": chunk_size,
+                **({} if floor_start is None else {"floor_start": floor_start}),
+                **({} if floor_end is None else {"floor_end": floor_end}),
+            },
+        }
+    return hints
 
 
 def _read_json_file(path: Path) -> dict[str, object] | None:

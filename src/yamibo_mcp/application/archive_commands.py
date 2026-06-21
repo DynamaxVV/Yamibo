@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from typing import Any
+
 from yamibo_mcp.application.contracts import AgentAction, AgentError, AgentResult
-from yamibo_mcp.application.thread_update_use_cases import create_update_thread_job
-from yamibo_mcp.application.thread_use_cases import archive_thread_job
+from yamibo_mcp.application.update_commands import create_update_thread_job
 from yamibo_mcp.config import load_settings
 from yamibo_mcp.db.connection import connect
 from yamibo_mcp.db.migrations import migrate
@@ -10,6 +11,38 @@ from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
 from yamibo_mcp.domain.enums import JobType
 from yamibo_mcp.server.resource_uris import job_events_uri, thread_summary_uri
+
+
+def archive_thread_job(
+    *,
+    html_path: str | None = None,
+    tid: int | None = None,
+    url: str | None = None,
+    base_url: str | None = None,
+    forum_id: int | None = None,
+) -> dict[str, Any]:
+    if not html_path and not tid and not url:
+        raise ValueError("archive_thread requires html_path or tid or url")
+    settings = load_settings()
+    conn = connect(settings.db_path)
+    try:
+        migrate(conn)
+        repo = JobsRepository(conn)
+        payload = {
+            key: value
+            for key, value in {
+                "html_path": html_path,
+                "tid": tid,
+                "url": url,
+                "base_url": base_url,
+                "forum_id": forum_id,
+            }.items()
+            if value is not None
+        }
+        job = repo.create(JobType.SYNC_THREAD.value, tid=tid, payload=payload)
+        return {"job_id": job.job_id}
+    finally:
+        conn.close()
 
 
 def create_thread_archive_job(

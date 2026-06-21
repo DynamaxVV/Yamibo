@@ -83,6 +83,8 @@ class TestPublicAgentTools:
         assert "view" in signature.parameters
         assert "floor_start" in signature.parameters
         assert "floor_end" in signature.parameters
+        assert "cursor" in signature.parameters
+        assert "chunk_size" in signature.parameters
 
     def test_public_tools_list_does_not_expose_limit_parameter(self):
         for name, (handler, _) in TOOLS.items():

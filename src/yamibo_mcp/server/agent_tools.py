@@ -15,7 +15,7 @@ from yamibo_mcp.application.job_queries import read_job_events as _read_job_even
 from yamibo_mcp.application.remote_queries import inspect_remote_thread as _inspect_remote_thread
 from yamibo_mcp.application.search_use_cases import browse_forum_page as _browse_forum_page
 from yamibo_mcp.application.search_use_cases import search_forum_threads as _search_forum_threads
-from yamibo_mcp.application.thread_update_use_cases import check_thread_updates as _check_thread_updates
+from yamibo_mcp.application.update_queries import check_thread_updates as _check_thread_updates
 from yamibo_mcp.application.contracts import AgentResult
 from yamibo_mcp.server.agent_adapter import agent_tool
 
@@ -119,12 +119,16 @@ def read_archived_thread(
     view: str,
     floor_start: int | None = None,
     floor_end: int | None = None,
+    cursor: str | None = None,
+    chunk_size: int | None = None,
 ) -> AgentResult:
     return _read_archived_thread(
         tid=tid,
         view=view,
         floor_start=floor_start,
         floor_end=floor_end,
+        cursor=cursor,
+        chunk_size=chunk_size,
     )
 
 
