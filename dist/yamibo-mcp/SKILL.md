@@ -1,6 +1,6 @@
 ---
 name: yamibo-mcp
-description: 使用 YamiboMCP 检索、查看、归档、导出百合会论坛帖子。支持多分区（漫画区/轻小说区/动漫区/水区）。适用于按标题找帖子、浏览论坛某一页、按 tid 查看帖子、获取章节内容、检查归档或导出任务状态、人工复核标题信息等场景。用户提到百合会、Yamibo、漫画帖子、轻小说、章节归档、导出 ZIP、标题解析、系列归并时使用。
+description: 使用 YamiboMCP 检索、查看、归档、检查更新、追加更新和导出百合会论坛帖子。支持多分区（漫画区/轻小说区/动漫区/水区）。适用于按标题找帖子、浏览论坛某一页、按 tid 查看帖子、获取章节内容、检查归档或导出任务状态、人工复核标题信息、判断轻小说是否有新内容等场景。用户提到百合会、Yamibo、漫画帖子、轻小说、章节归档、导出 ZIP/TXT、标题解析、系列归并时使用。
 ---
 
 # YamiboMCP 中文 Skill
@@ -111,7 +111,7 @@ description: 使用 YamiboMCP 检索、查看、归档、导出百合会论坛�
 用于导出帖子归档结果。
 
 适用场景：
-- 用户要求导出 ZIP
+- 用户要求导出 ZIP 或轻小说 TXT
 - 用户要离线阅读
 - 用户要整理某一话到本地文件
 
@@ -119,6 +119,34 @@ description: 使用 YamiboMCP 检索、查看、归档、导出百合会论坛�
 - 这是长操作，优先返回 `job_id`
 - 如果用户指定了某个帖子，按该帖子发起导出
 - 如果用户需要批量导出，逐个创建任务并分别汇报状态
+
+### `check_thread_updates`
+
+用于检查已归档的轻小说贴子是否有新内容。
+
+适用场景：
+- 用户问“这个轻小说贴子有没有更新”
+- 用户要在重新归档前先确认是否需要追加更新
+- 需要只读地判断远端只看楼主页面与本地归档是否一致
+
+调用建议：
+- 输入 `tid`
+- 这是只读操作，不创建任务
+- 如果结果是 `updated`，再继续调用 `update_thread`
+
+### `update_thread`
+
+用于对轻小说贴子执行追加更新。
+
+适用场景：
+- `check_thread_updates` 返回 `updated`
+- 用户要求“只补上新增楼层，不要全量重抓”
+- 需要把远端新增内容追加到本地 TXT / 归档里
+
+调用建议：
+- 先确认 `check_thread_updates` 结果
+- 输入 `tid`
+- 这是长操作，发起后关注返回的 `job_id`
 
 ### `get_job_status`
 
@@ -171,10 +199,11 @@ Agent 工作流优先读取紧凑资源，按需深入：
 
 1. **summary**（`yamibo://threads/{tid}/summary`）— 紧凑摘要，不读完整 context.md，适合快速判断状态
 2. **diagnostics**（`yamibo://threads/{tid}/diagnostics`）— 归档状态、缺失资产数、建议下一步操作
-3. **posts**（`yamibo://threads/{tid}/posts`）— 有序内容块列表（text/image/quote/link），需要时读取
-4. **assets**（`yamibo://threads/{tid}/assets`）— 资产详情（图片/附件/共享资源状态），需要时读取
-5. **context**（`yamibo://threads/{tid}/context`）— 完整正文 Markdown，仅在需要完整内容时读取
-6. **metadata**（`yamibo://threads/{tid}/metadata`）— 完整元数据 JSON
+3. **update-check**（`yamibo://threads/{tid}/update-check`）— 轻小说更新检测结果
+4. **posts**（`yamibo://threads/{tid}/posts`）— 有序内容块列表（text/image/quote/link），需要时读取
+5. **assets**（`yamibo://threads/{tid}/assets`）— 资产详情（图片/附件/共享资源状态），需要时读取
+6. **context**（`yamibo://threads/{tid}/context`）— 完整正文 Markdown，仅在需要完整内容时读取
+7. **metadata**（`yamibo://threads/{tid}/metadata`）— 完整元数据 JSON
 
 ### 其他资源
 
@@ -219,14 +248,21 @@ Agent 工作流优先读取紧凑资源，按需深入：
 3. 需要追踪时调用 `get_job_status`
 4. 可读取 `yamibo://jobs/{job_id}/events` 查看事件时间线
 
-### 5. 导出帖子
+### 5. 检查轻小说更新
+
+1. 调用 `check_thread_updates`
+2. 读取 `yamibo://threads/{tid}/update-check` 复核结果
+3. 如果结果是 `updated`，再调用 `update_thread`
+4. 需要追踪时调用 `get_job_status`
+
+### 6. 导出帖子
 
 1. 先确认帖子对象
 2. 调用 `export_thread`
 3. 向用户返回 `job_id`
 4. 需要追踪时调用 `get_job_status`
 
-### 6. 诊断归档问题
+### 7. 诊断归档问题
 
 1. 读取 `yamibo://threads/{tid}/diagnostics`
 2. 检查 `archive_status`、`missing_required_assets_count`、`warnings`、`next_actions`

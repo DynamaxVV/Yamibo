@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from http import HTTPStatus
 from urllib.parse import parse_qs, urlparse
 from urllib.parse import quote
@@ -16,7 +17,9 @@ from yamibo_mcp.db.repositories.series import SeriesRepository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
 from yamibo_mcp.domain.enums import JobStatus
 from yamibo_mcp.config import Settings
+from yamibo_mcp.application.thread_update_use_cases import check_thread_updates
 from yamibo_mcp.services.title_hints import update_title_hints
+from yamibo_mcp.yamibo.parsers.thread_detail import normalize_rich_body_html
 from yamibo_mcp.yamibo.urls import thread_author_url_from_tid, thread_url_from_tid
 
 
@@ -94,6 +97,9 @@ def _route(handler, route: str, params, conn, settings):
     elif route.startswith("/threads/") and route.endswith("/blocks"):
         tid = int(route[9:-7])
         _thread_blocks(handler, tid, conn)
+    elif route.startswith("/threads/") and route.endswith("/update-check") and handler.command == "GET":
+        tid = int(route[9:-13])
+        _thread_update_check(handler, tid, settings)
     elif route.startswith("/threads/") and handler.command == "GET":
         tid = int(route[9:])
         _thread_detail(handler, tid, conn, params, settings)
@@ -131,6 +137,8 @@ def _route(handler, route: str, params, conn, settings):
         _update_series(handler, conn, settings)
     elif route == "/threads/resync" and handler.command == "POST":
         _resync_thread(handler, conn)
+    elif route == "/threads/update" and handler.command == "POST":
+        _update_thread(handler, conn)
     elif route == "/threads/export" and handler.command == "POST":
         _export_thread(handler, conn, settings)
     elif route == "/threads/delete" and handler.command == "POST":
@@ -341,6 +349,17 @@ def _load_thread_archive_metadata(settings: Settings, tid: int) -> dict:
         return {}
 
 
+def _strip_anchor_tags(html: str) -> str:
+    return re.sub(r"</?a\b[^>]*>", "", html, flags=re.IGNORECASE)
+
+
+def _clean_rich_body_html(html: str | None) -> str | None:
+    if not html:
+        return None
+    cleaned = _strip_anchor_tags(html)
+    return normalize_rich_body_html(cleaned)
+
+
 def _load_thread_archive_summary(settings: Settings, tid: int) -> dict:
     meta = _load_thread_archive_metadata(settings, tid)
     if not meta:
@@ -402,7 +421,7 @@ def _thread_detail(handler, tid, conn, params, settings):
         if pid is None or not rich_body_html:
             continue
         try:
-            rich_body_map[int(pid)] = str(rich_body_html)
+            rich_body_map[int(pid)] = _clean_rich_body_html(str(rich_body_html)) or ""
         except (TypeError, ValueError):
             continue
     if rich_body_map:
@@ -443,6 +462,14 @@ def _thread_assets(handler, tid, conn):
 def _thread_blocks(handler, tid, conn):
     blocks = ContentBlocksRepository(conn).list_blocks(tid)
     _json_response(handler, [_block_to_dict(b) for b in blocks])
+
+
+def _thread_update_check(handler, tid: int, settings: Settings) -> None:
+    result = check_thread_updates(tid=tid)
+    if result.get("status") == "failed" and result.get("reason") == f"thread {tid} not found":
+        _error_response(handler, "Thread not found", HTTPStatus.NOT_FOUND)
+        return
+    _json_response(handler, result)
 
 
 def _series_list(handler, conn):
@@ -631,21 +658,26 @@ def _update_title(handler, conn, settings):
         return
     try:
         repo = ThreadsRepository(conn)
+        thread_row = repo.get_thread(int(tid))
+        title_row = repo.get_title_parse(int(tid))
+        if thread_row is None or title_row is None:
+            _error_response(handler, "Thread not found", HTTPStatus.NOT_FOUND)
+            return
         before, after = repo.update_title_review(
             int(tid),
-            display_title=body.get("display_title", ""),
-            group_name=body.get("group_name"),
-            author_guess=body.get("author_guess"),
-            core_title_guess=body.get("core_title_guess", ""),
-            series_key=body.get("series_key", ""),
-            title_aliases=body.get("title_aliases"),
-            chapter_name=body.get("chapter_name"),
-            chapter_index=body.get("chapter_index"),
-            chapter_index_end=body.get("chapter_index_end"),
-            chapter_title=body.get("chapter_title"),
-            subtitle=body.get("subtitle"),
-            tags=body.get("tags"),
-            confidence=body.get("confidence"),
+            display_title=body.get("display_title") or thread_row["display_title"] or thread_row["raw_title"] or "",
+            group_name=body.get("group_name") if body.get("group_name") is not None else (title_row["group_name"] if "group_name" in title_row.keys() else None),
+            author_guess=body.get("author_guess") if body.get("author_guess") is not None else (title_row["author_guess"] if "author_guess" in title_row.keys() else None),
+            core_title_guess=body.get("core_title_guess") or (title_row["core_title_guess"] if "core_title_guess" in title_row.keys() else thread_row["raw_title"] or ""),
+            series_key=body.get("series_key") or (title_row["series_key"] if "series_key" in title_row.keys() else ""),
+            title_aliases=body.get("title_aliases") if body.get("title_aliases") is not None else json.loads(title_row["title_aliases_json"] or "[]"),
+            chapter_name=body.get("chapter_name") if body.get("chapter_name") is not None else (title_row["chapter_name"] if "chapter_name" in title_row.keys() else None),
+            chapter_index=body.get("chapter_index") if body.get("chapter_index") is not None else (title_row["chapter_index"] if "chapter_index" in title_row.keys() else None),
+            chapter_index_end=body.get("chapter_index_end") if body.get("chapter_index_end") is not None else (title_row["chapter_index_end"] if "chapter_index_end" in title_row.keys() else None),
+            chapter_title=body.get("chapter_title") if body.get("chapter_title") is not None else (title_row["chapter_title"] if "chapter_title" in title_row.keys() else None),
+            subtitle=body.get("subtitle") if body.get("subtitle") is not None else (title_row["subtitle"] if "subtitle" in title_row.keys() else None),
+            tags=body.get("tags") if body.get("tags") is not None else json.loads(title_row["tags_json"] or "[]"),
+            confidence=body.get("confidence") if body.get("confidence") is not None else (title_row["confidence"] if "confidence" in title_row.keys() else None),
             needs_review=False,
         )
         AuditEventsRepository(conn).record(
@@ -731,6 +763,19 @@ def _resync_thread(handler, conn):
     if body.get("forum_id") is not None:
         payload["forum_id"] = int(body["forum_id"])
     job = JobsRepository(conn).create("sync_thread", tid=int(tid), payload=payload)
+    _json_response(handler, {"ok": True, "job_id": job.job_id})
+
+
+def _update_thread(handler, conn):
+    body = _read_json_body(handler)
+    tid = body.get("tid")
+    if not tid:
+        _error_response(handler, "tid required")
+        return
+    payload = {"tid": int(tid)}
+    if body.get("base_url"):
+        payload["base_url"] = body["base_url"]
+    job = JobsRepository(conn).create("update_thread", tid=int(tid), payload=payload)
     _json_response(handler, {"ok": True, "job_id": job.job_id})
 
 
@@ -884,6 +929,7 @@ def _logs(handler, params):
 
 _JOB_TYPE_LABELS = {
     "sync_thread": "同步贴子",
+    "update_thread": "追加更新贴子",
     "export_thread": "导出贴子",
     "title_refine": "重算标题/系列",
     "cleanup_job": "清理任务",
@@ -898,6 +944,7 @@ _EXPORT_STRATEGY_LABELS = {
 
 _JOB_TYPE_LABELS_EN = {
     "sync_thread": "Sync thread",
+    "update_thread": "Append update thread",
     "export_thread": "Export thread",
     "title_refine": "Rebuild titles/series",
     "cleanup_job": "Cleanup",
@@ -928,6 +975,15 @@ def _describe_job(conn, job) -> str:
 
     if job.job_type == "sync_thread":
         desc = "同步贴子"
+        if tid:
+            desc += f" #{tid}"
+            s = _short()
+            if s:
+                desc += f"「{s}」"
+        return desc
+
+    if job.job_type == "update_thread":
+        desc = "追加更新贴子"
         if tid:
             desc += f" #{tid}"
             s = _short()
@@ -978,6 +1034,15 @@ def _describe_job_en(conn, job) -> str:
 
     if job.job_type == "sync_thread":
         desc = "Sync thread"
+        if tid:
+            desc += f" #{tid}"
+            s = _short()
+            if s:
+                desc += f" \"{s}\""
+        return desc
+
+    if job.job_type == "update_thread":
+        desc = "Append update thread"
         if tid:
             desc += f" #{tid}"
             s = _short()
@@ -1052,6 +1117,7 @@ def _thread_summary_dict(row) -> dict:
 
 
 def _floor_to_dict(row) -> dict:
+    rich_body_html = row["rich_body_html"] if "rich_body_html" in row.keys() else None
     return {
         "pid": row["pid"], "floor_no": row["floor_no"],
         "publisher": row["publisher"], "content": row["content"] or "",
@@ -1059,7 +1125,7 @@ def _floor_to_dict(row) -> dict:
         "publisher_uid": row["publisher_uid"] if "publisher_uid" in row.keys() else None,
         "quote_text": row["quote_text"] if "quote_text" in row.keys() else None,
         "reply_text": row["reply_text"] if "reply_text" in row.keys() else None,
-        "rich_body_html": row["rich_body_html"] if "rich_body_html" in row.keys() else None,
+        "rich_body_html": _clean_rich_body_html(rich_body_html),
     }
 
 

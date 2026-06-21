@@ -16,13 +16,16 @@ from yamibo_mcp.storage.images import ImageDownloadResult
 def _make_settings(tmp_path: Path) -> SimpleNamespace:
     data_dir = tmp_path / "data"
     export_dir = tmp_path / "exports"
+    novel_export_dir = tmp_path / "novel_exports"
     data_dir.mkdir(parents=True, exist_ok=True)
     export_dir.mkdir(parents=True, exist_ok=True)
+    novel_export_dir.mkdir(parents=True, exist_ok=True)
     cookie_file = tmp_path / "cookies.txt"
     cookie_file.write_text("", encoding="utf-8")
     return SimpleNamespace(
         data_dir=data_dir,
         export_dir=export_dir,
+        novel_txt_export_dir=novel_export_dir,
         project_root=tmp_path,
         cookie_file=cookie_file,
         use_system_proxy=False,
@@ -31,6 +34,12 @@ def _make_settings(tmp_path: Path) -> SimpleNamespace:
         image_download_timeout_seconds=5,
         image_download_retries=0,
         worker_lease_seconds=300,
+        novel_author_only_max_pages=5,
+        novel_author_only_page_delay_seconds=0.0,
+        novel_txt_include_filtered_notes=False,
+        novel_txt_debug_markers=False,
+        request_interval_seconds=0.0,
+        request_interval_jitter_seconds=0.0,
     )
 
 
@@ -149,3 +158,38 @@ def test_sync_thread_partial_updates_forum_blocks_assets_and_events(db, tmp_path
     assert len(asset_rows) == 1
     assert asset_rows[0]["status"] == "missing"
     assert any(event.event_type == "job.partial" for event in events)
+
+
+def test_sync_thread_author_only_mode_merges_multiple_pages(db, tmp_path, monkeypatch):
+    from yamibo_mcp.daemon.handlers.sync_thread import _merge_thread_snapshots
+
+    snap1 = _make_snapshot()
+    snap2 = ThreadSnapshot(
+        tid=42,
+        url="https://bbs.yamibo.com/forum.php?mod=viewthread&tid=42&page=2&authorid=100",
+        page_type="thread_detail",
+        raw_title=snap1.raw_title,
+        display_title=snap1.display_title,
+        title=snap1.title,
+        publisher=snap1.publisher,
+        publisher_uid=snap1.publisher_uid,
+        pub_time=snap1.pub_time,
+        permission=0,
+        floors=[
+            FloorSnapshot(
+                pid=1002,
+                tid=42,
+                floor_no=1,
+                publisher="u1",
+                content="第二页正文",
+                pub_time="2025-01-02 00:00",
+                has_images=False,
+                image_urls=[],
+            )
+        ],
+        image_count=0,
+    )
+    merged = _merge_thread_snapshots([snap1, snap2])
+    assert [floor.pid for floor in merged.floors] == [1001, 1002]
+    assert [floor.floor_no for floor in merged.floors] == [1, 2]
+    assert "authorid=100" in str(merged.url)

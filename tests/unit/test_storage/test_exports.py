@@ -6,6 +6,7 @@ import pytest
 
 from yamibo_mcp.storage.exports import (
     ExportPrecheckError,
+    export_thread_txt,
     export_thread_zip,
     inspect_export_readiness,
     is_thread_stale,
@@ -32,6 +33,26 @@ def _setup_thread_archive(paths: StoragePaths, tid: int, *, with_images=True, mi
     (thread_dir / "metadata.json").write_text(
         json.dumps(metadata, ensure_ascii=False), encoding="utf-8",
     )
+
+
+def _setup_novel_archive(paths: StoragePaths, tid: int):
+    thread_dir = paths.thread_dir(tid)
+    thread_dir.mkdir(parents=True, exist_ok=True)
+    (thread_dir / "context.md").write_text("# novel\n", encoding="utf-8")
+    metadata = {
+        "tid": tid,
+        "url": f"https://bbs.yamibo.com/forum.php?mod=viewthread&tid={tid}",
+        "missing_image_urls": [],
+        "archived_images": {},
+        "non_export_images": {},
+        "floors": [
+            {"pid": 40852497, "floor_no": 1, "pub_time": "2023-11-15 22:52", "content": "作品名：测试小说\n作者：作者甲\n简介：...", "publisher": "zyq102"},
+            {"pid": 40852498, "floor_no": 2, "pub_time": "2023-11-15 22:54", "content": "第1话 最讨厌的妹妹\n正文" * 100, "publisher": "zyq102"},
+            {"pid": 40852499, "floor_no": 3, "pub_time": "2023-11-15 22:55", "content": "感谢大家支持，我会继续更新", "publisher": "zyq102"},
+            {"pid": 40852500, "floor_no": 4, "pub_time": "2023-11-16 11:50", "content": "第2话 复仇的初吻\n正文" * 100, "publisher": "zyq102"},
+        ],
+    }
+    (thread_dir / "metadata.json").write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
 
 
 class TestInspectExportReadiness:
@@ -112,3 +133,83 @@ class TestExportThreadZip:
         with zipfile.ZipFile(export_path) as zf:
             names = zf.namelist()
             assert any("images" in n for n in names)
+
+
+class TestExportThreadTxt:
+    def test_creates_txt_and_manifest(self, tmp_path):
+        paths = StoragePaths(tmp_path, novel_txt_export_dir=tmp_path / "novel_exports")
+        (tmp_path / "novel_exports").mkdir(parents=True, exist_ok=True)
+        _setup_novel_archive(paths, 3001)
+        result = export_thread_txt(
+            paths,
+            3001,
+            title="夺走了最讨厌的妹妹的初吻",
+            source_url="https://bbs.yamibo.com/forum.php?mod=viewthread&tid=3001",
+            forum_name="轻小说/译文区",
+            translator="zyq102",
+        )
+        assert result.export_path.exists()
+        assert result.manifest_path.exists()
+        text = result.export_path.read_text(encoding="utf-8")
+        assert "夺走了最讨厌的妹妹的初吻" in text
+        assert "第1话 最讨厌的妹妹" in text
+        assert "感谢大家支持" not in text
+        manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+        assert manifest["filtered_floors"]
+        assert manifest["needs_full_regenerate"] is False
+
+    def test_second_export_only_appends_new_body_floors(self, tmp_path):
+        paths = StoragePaths(tmp_path, novel_txt_export_dir=tmp_path / "novel_exports")
+        (tmp_path / "novel_exports").mkdir(parents=True, exist_ok=True)
+        _setup_novel_archive(paths, 3002)
+        first = export_thread_txt(
+            paths,
+            3002,
+            title="测试小说",
+            source_url="https://bbs.yamibo.com/forum.php?mod=viewthread&tid=3002",
+            forum_name="轻小说/译文区",
+            translator="zyq102",
+        )
+        metadata_path = paths.thread_metadata(3002)
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata["floors"].append(
+            {"pid": 40852501, "floor_no": 5, "pub_time": "2023-11-16 12:00", "content": "第3话 新章节\n正文" * 100, "publisher": "zyq102"}
+        )
+        metadata_path.write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
+        second = export_thread_txt(
+            paths,
+            3002,
+            title="测试小说",
+            source_url="https://bbs.yamibo.com/forum.php?mod=viewthread&tid=3002",
+            forum_name="轻小说/译文区",
+            translator="zyq102",
+        )
+        assert first.appended_floors == 3
+        assert second.appended_floors == 1
+        text = second.export_path.read_text(encoding="utf-8")
+        assert "第3话 新章节" in text
+
+    def test_export_cleans_edit_note_from_existing_archive_content(self, tmp_path):
+        paths = StoragePaths(tmp_path, novel_txt_export_dir=tmp_path / "novel_exports")
+        (tmp_path / "novel_exports").mkdir(parents=True, exist_ok=True)
+        _setup_novel_archive(paths, 3003)
+        metadata_path = paths.thread_metadata(3003)
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata["floors"][1]["content"] = (
+            "本帖最后由 zyq102 于 2023-11-23 17:01 编辑\n\n"
+            + ("第1话 最讨厌的妹妹\n正文" * 100)
+        )
+        metadata_path.write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
+
+        result = export_thread_txt(
+            paths,
+            3003,
+            title="测试小说",
+            source_url="https://bbs.yamibo.com/forum.php?mod=viewthread&tid=3003",
+            forum_name="轻小说/译文区",
+            translator="zyq102",
+        )
+
+        text = result.export_path.read_text(encoding="utf-8")
+        assert "本帖最后由 zyq102 于 2023-11-23 17:01 编辑" not in text
+        assert "第1话 最讨厌的妹妹" in text

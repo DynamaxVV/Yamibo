@@ -31,7 +31,7 @@ def validate_thread_snapshot(snapshot: ThreadSnapshot) -> ValidationResult:
     if not snapshot.title.core_title_guess:
         errors.append("title.core_title_guess is required")
     if not snapshot.title.series_key:
-        errors.append("title.series_key is required")
+        warnings.append("title.series_key is missing")
 
     seen_pids: set[int] = set()
     thread_publisher = (snapshot.publisher or "").strip()

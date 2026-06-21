@@ -103,3 +103,18 @@ class TestThreadExportZip:
         result = paths.thread_export_zip(999, zip_basename=zip_basename)
         # Assert
         assert result.name == expected_name
+
+
+class TestThreadExportTxt:
+    def test_defaults_to_data_dir_novel_exports(self, tmp_path):
+        paths = StoragePaths(tmp_path)
+        assert paths.thread_export_txt(999) == tmp_path / "novel_exports" / "thread_999.txt"
+
+    def test_uses_custom_novel_txt_dir(self, tmp_path):
+        custom = tmp_path / "novel_txt_exports"
+        paths = StoragePaths(tmp_path, novel_txt_export_dir=custom)
+        assert paths.thread_export_txt(999, txt_basename="custom.txt") == custom / "custom.txt"
+
+    def test_manifest_path(self, tmp_path):
+        paths = StoragePaths(tmp_path)
+        assert paths.thread_export_txt_manifest(999).name == "thread_999.txt.export.json"

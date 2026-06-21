@@ -15,6 +15,7 @@ from yamibo_mcp.server.resources import (
     thread_metadata_uri,
     thread_posts_uri,
     thread_summary_uri,
+    thread_update_check_uri,
 )
 
 
@@ -38,6 +39,9 @@ class TestNewUriHelpers:
 
     def test_thread_assets_uri(self):
         assert thread_assets_uri(101) == "yamibo://threads/101/assets"
+
+    def test_thread_update_check_uri(self):
+        assert thread_update_check_uri(102) == "yamibo://threads/102/update-check"
 
     def test_job_events_uri(self):
         assert job_events_uri("sync_thread_abc") == "yamibo://jobs/sync_thread_abc/events"
@@ -81,6 +85,12 @@ class TestParseNewResourceUris:
         assert root == "threads"
         assert tid == 101
         assert kind == "assets"
+
+    def test_parse_thread_update_check(self):
+        root, tid, kind = parse_resource_uri("yamibo://threads/102/update-check")
+        assert root == "threads"
+        assert tid == 102
+        assert kind == "update-check"
 
     def test_parse_job_events(self):
         root, tid, kind = parse_resource_uri("yamibo://jobs/sync_thread_abc/events")
@@ -259,6 +269,23 @@ class TestReadThreadDiagnostics:
         assert "cookie" not in text
         assert "password" not in text
         assert "api_key" not in text
+
+
+class TestReadThreadUpdateCheck:
+    def test_update_check_resource_returns_json(self, db):
+        from unittest.mock import patch, MagicMock
+        from yamibo_mcp.server.tools import read_resource
+        settings = MagicMock()
+        settings.db_path = ":memory:"
+        settings.data_dir = "/tmp"
+        settings.export_dir = "/tmp/exports"
+        with patch("yamibo_mcp.server.tools.load_settings", return_value=settings), \
+             patch("yamibo_mcp.server.tools.connect", return_value=db), \
+             patch("yamibo_mcp.server.tools.check_thread_updates", return_value={"tid": 1, "status": "up_to_date"}):
+            result = read_resource("yamibo://threads/1/update-check")
+        assert result["exists"] is True
+        data = json.loads(result["text"])
+        assert data["status"] == "up_to_date"
 
 
 class TestReadJobEvents:

@@ -13,6 +13,7 @@ from yamibo_mcp.server.resources import (
     thread_posts_uri,
     thread_assets_uri,
     thread_summary_uri,
+    thread_update_check_uri,
 )
 from yamibo_mcp.yamibo.urls import thread_url_from_tid
 
@@ -60,6 +61,7 @@ def thread_summary_payload(row, *, include_export: bool = True) -> dict[str, Any
         "diagnostics": thread_diagnostics_uri(tid),
         "posts": thread_posts_uri(tid),
         "assets": thread_assets_uri(tid),
+        "update_check": thread_update_check_uri(tid),
     }
     if include_export and export_path:
         resources["export"] = thread_export_uri(tid)

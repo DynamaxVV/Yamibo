@@ -140,6 +140,30 @@ class TestTitleParseAndFloors:
         assert floors[1]["floor_no"] == 2
         assert floors[1]["content"] == "第二层"
 
+    def test_upsert_removes_stale_floors_for_same_thread(self, db):
+        repo = ThreadsRepository(db)
+        repo.upsert_snapshot(
+            _make_snapshot(
+                tid=3003,
+                floors=[
+                    _make_floor(pid=3101, tid=3003, floor_no=1),
+                    _make_floor(pid=3102, tid=3003, floor_no=2),
+                ],
+            )
+        )
+
+        repo.upsert_snapshot(
+            _make_snapshot(
+                tid=3003,
+                floors=[_make_floor(pid=3101, tid=3003, floor_no=1, content="仅楼主")],
+            )
+        )
+
+        floors = repo.list_floors(3003)
+        assert len(floors) == 1
+        assert floors[0]["pid"] == 3101
+        assert floors[0]["content"] == "仅楼主"
+
 
 class TestDeleteThread:
     def test_delete_removes_all_related_data(self, db):

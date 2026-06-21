@@ -155,6 +155,7 @@ CREATE TABLE IF NOT EXISTS floors (
   tid INTEGER NOT NULL REFERENCES threads(tid),
   floor_no INTEGER NOT NULL CHECK(floor_no > 0),
   publisher TEXT,
+  publisher_uid TEXT,
   content TEXT,
   pub_time TEXT,
   has_images INTEGER NOT NULL DEFAULT 0,
@@ -239,6 +240,7 @@ def migrate(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "forums", "name_en", "TEXT")
     _ensure_column(conn, "floors", "quote_text", "TEXT")
     _ensure_column(conn, "floors", "reply_text", "TEXT")
+    _ensure_column(conn, "floors", "publisher_uid", "TEXT")
     _seed_default_forums(conn)
     conn.execute(
         "INSERT OR IGNORE INTO schema_migrations(version) VALUES (?)",

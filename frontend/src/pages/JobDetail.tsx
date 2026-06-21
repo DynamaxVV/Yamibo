@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, type JobSummary, type JobEvent } from '../api/client'
 import { Badge } from '../components/Badge'
 import { useI18n } from '../context/I18nContext'
 import { formatDateTime } from '../utils/time'
+import { getArchiveBreakdown, getPartialArchiveReason, hasPartialArchiveBreakdown } from '../utils/archiveSummary'
 
 export function JobDetail() {
   const { t, lang } = useI18n()
@@ -12,11 +13,36 @@ export function JobDetail() {
   const [job, setJob] = useState<JobSummary | null>(null)
   const [events, setEvents] = useState<JobEvent[]>([])
   const [error, setError] = useState<string | null>(null)
+  const [refreshNotice, setRefreshNotice] = useState<string | null>(null)
+  const jobRef = useRef<JobSummary | null>(null)
 
   useEffect(() => {
-    api.job(id).then(setJob).catch(e => setError(e.message))
+    api.job(id).then(next => {
+      setJob(next)
+      jobRef.current = next
+    }).catch(e => setError(e.message))
     api.jobEvents(id).then(setEvents).catch(() => {})
   }, [id])
+
+  useEffect(() => {
+    let active = true
+    const poll = window.setInterval(async () => {
+      try {
+        const next = await api.job(id)
+        if (!active) return
+        const prev = jobRef.current
+        if (prev && (prev.status !== next.status || prev.stage !== next.stage || prev.updated_at !== next.updated_at)) {
+          setRefreshNotice(`${t('job_status_updated')} ${t(next.status)}。`)
+        }
+        jobRef.current = next
+        setJob(next)
+      } catch { /* ignore */ }
+    }, 4000)
+    return () => {
+      active = false
+      window.clearInterval(poll)
+    }
+  }, [id, t])
 
   if (error) return <div className="panel" style={{ color: 'var(--status-error)' }}>{error}</div>
   if (!job) return <div className="panel" style={{ color: 'var(--text-tertiary)' }}>{t('loading')}</div>
@@ -37,6 +63,15 @@ export function JobDetail() {
 
   const payloadEntries = Object.entries(job.payload || {})
   const artifactEntries = Object.entries(job.artifacts || {})
+  const archiveBreakdown = getArchiveBreakdown(null, job.artifacts)
+  const showPartialSummary = (job.status === 'partial' || job.artifacts?.archive_status === 'partial')
+    && hasPartialArchiveBreakdown(archiveBreakdown)
+  const downloadedCount = Number(job.artifacts?.downloaded_image_count || 0)
+  const nonExportCount = Number(job.artifacts?.non_export_image_count || 0)
+  const sharedCount = Number(job.artifacts?.shared_image_count || 0)
+  const skippedCount = Number(job.artifacts?.skipped_image_count || 0)
+  const missingCount = Number(job.artifacts?.missing_image_count || 0)
+  const missingSharedCount = Number(job.artifacts?.missing_shared_image_count || 0)
 
   return (
     <>
@@ -44,6 +79,61 @@ export function JobDetail() {
       <div className="table-wrap"><table>
         <tbody>{rows.map(([k, v], i) => <tr key={i}><th style={{ width: 120 }}>{k}</th><td style={{ textAlign: 'left' }}>{v}</td></tr>)}</tbody>
       </table></div>
+
+      {refreshNotice && (
+        <div className="panel notice-panel">
+          <div className="notice-panel-body">
+            <span>{refreshNotice}</span>
+            <div className="notice-actions">
+              <button className="btn-subtle" onClick={() => setRefreshNotice(null)}>{t('dismiss')}</button>
+              <button className="btn-primary" onClick={() => {
+                setRefreshNotice(null)
+                api.job(id).then(next => {
+                  setJob(next)
+                  jobRef.current = next
+                }).catch(() => {})
+                api.jobEvents(id).then(setEvents).catch(() => {})
+              }}>{t('refresh_content')}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showPartialSummary && archiveBreakdown && (
+        <details className="archive-summary-card" open>
+          <summary className="archive-summary-title">
+            <span>{t('archive_partial_detail')}</span>
+            <span className="archive-summary-arrow">▾</span>
+          </summary>
+          <div className="archive-summary-grid">
+            <div><span>{t('archive_success')}</span><strong>{downloadedCount + nonExportCount + sharedCount + skippedCount}</strong></div>
+            <div><span>{t('archive_failed')}</span><strong>{missingCount + missingSharedCount}</strong></div>
+            <div><span>{t('downloaded')}</span><strong>{downloadedCount}</strong></div>
+            <div><span>{t('downloaded_shared')}</span><strong>{sharedCount}</strong></div>
+            <div><span>{t('non_export')}</span><strong>{nonExportCount}</strong></div>
+            <div><span>{t('skipped')}</span><strong>{skippedCount}</strong></div>
+          </div>
+          <p className="archive-summary-reason">{getPartialArchiveReason(archiveBreakdown)}</p>
+          <div className="archive-summary-list-group">
+            {archiveBreakdown.missing_image_urls?.length ? (
+              <div className="archive-summary-list">
+                <span>{t('missing_image_urls')}</span>
+                <ul>
+                  {archiveBreakdown.missing_image_urls.map(url => <li key={url}>{url}</li>)}
+                </ul>
+              </div>
+            ) : null}
+            {archiveBreakdown.missing_shared_image_urls?.length ? (
+              <div className="archive-summary-list">
+                <span>{t('missing_shared_image_urls')}</span>
+                <ul>
+                  {archiveBreakdown.missing_shared_image_urls.map(url => <li key={url}>{url}</li>)}
+                </ul>
+              </div>
+            ) : null}
+          </div>
+        </details>
+      )}
 
       {payloadEntries.length > 0 && (
         <>

@@ -5,9 +5,10 @@ from urllib.parse import urlparse
 
 
 class StoragePaths:
-    def __init__(self, data_dir: Path, *, export_dir: Path | None = None):
+    def __init__(self, data_dir: Path, *, export_dir: Path | None = None, novel_txt_export_dir: Path | None = None):
         self.data_dir = data_dir
         self._export_dir = export_dir
+        self._novel_txt_export_dir = novel_txt_export_dir
 
     def series_dir(self) -> Path:
         return self.data_dir / "series"
@@ -49,8 +50,18 @@ class StoragePaths:
     def exports_dir(self) -> Path:
         return self._export_dir or (self.data_dir / "exports")
 
+    def novel_txt_exports_dir(self) -> Path:
+        return self._novel_txt_export_dir or (self.data_dir / "novel_exports")
+
     def thread_export_zip(self, tid: int, *, series_dirname: str | None = None, zip_basename: str | None = None) -> Path:
         base = self.exports_dir()
         if series_dirname:
             base = base / series_dirname
         return base / (zip_basename or f"thread_{tid}.zip")
+
+    def thread_export_txt(self, tid: int, *, txt_basename: str | None = None) -> Path:
+        return self.novel_txt_exports_dir() / (txt_basename or f"thread_{tid}.txt")
+
+    def thread_export_txt_manifest(self, tid: int, *, txt_basename: str | None = None) -> Path:
+        txt_path = self.thread_export_txt(tid, txt_basename=txt_basename)
+        return txt_path.with_suffix(txt_path.suffix + ".export.json")

@@ -1,123 +1,52 @@
 # 百合会归档助手 — 版本发布说明
 
-> 版本：0.4.0 | 发布日期：2026-06-21
+> 版本：0.6.0 | 发布日期：2026-06-21
 
 ## 版本信息
 
 | 项目 | 值 |
 |------|-----|
-| 版本号 | 0.4.0 |
+| 版本号 | 0.6.0 |
 | Python 要求 | >= 3.11 |
 | MCP SDK | >= 1.27.2 |
 
 ---
 
-## v0.4.0 新增功能
+## v0.6.0 新增功能
 
-### 国际化 (i18n)
+### 轻小说专用更新链路
 
-- 中英文双语支持，~170 个翻译键覆盖全部 UI 文本
-- `I18nProvider` + `useI18n()` hook，`t(key, params?)` 调用
-- 顶栏语言切换按钮（中/En），`localStorage` 持久化
-- 主题名在英文模式下显示英文标签（Minimalist / Rational / Brutalist / Retro 1957）
+- 新增 `check_thread_updates` 只读接口，用于判断已归档轻小说是否有新内容
+- 新增 `update_thread` 追加更新任务，仅在检测到远端变化时抓取新增楼层
+- 追加更新使用只看楼主 URL、尾页楼层指纹和页数快照进行增量判断
+- 轻小说 TXT 导出改为独立文件，可按楼层增量追加，导出目录可单独配置
 
-### 暗黑模式
+### 富文本阅读与导出
 
-- 4 套主题各含独立暗色配色面板（30+ CSS 变量）
-- 浮动操作栏切换（☾/☀ 图标），`localStorage` 持久化
-- Badge 颜色改用 CSS 变量，暗黑模式自适应
+- 阅读预览保留正文中的颜色、加粗、斜体、链接等富文本语义
+- 导出仍然保持纯文本，不把论坛样式带入 TXT
+- 过滤编辑提示、无关链接和装饰性富文本，降低脏内容
 
-### 论坛版块扩展与自动识别
+### WebUI 改进
 
-- 论坛注册从 4 个扩展到 11 个：漫画区(30)、轻小说区(55)、动漫区(5)、海域区(33)、贴图区(13)、管理版(16)、资源交流區(19)、遊戲區(44)、文學區(49)、使用指南(370)、影視區(379)
-- 从帖子 HTML 自动提取论坛链接和 typeid 分类标签，含 100+ typeid 映射
-- `threads.category` 列存储子分类（如 [長篇連載]、[短篇完結]）
-- `forums.name_en` 列存储英文名
+- 贴子详情信息编辑支持标题，并让标题单独占一行
+- 任务详情可查看部分成功的失败原因与成功项明细
+- 阅读模式支持更多预设、自定义方案和字体大小控制
+- 移动端阅读预览修复段落叠加和宽度利用问题
 
-### Dashboard 增强
+### 稳定性与配置
 
-- 统计行显示各版块帖子数明细（flex: 2 宽度）
-- 最近归档按"漫画·轻小说"和"其他板块"分区展示
-- 各分区独立数量选择器（10/25/50）
+- `YAMIBO_NOVEL_TXT_EXPORT_DIR` 独立控制轻小说 TXT 导出目录
+- `YAMIBO_NOVEL_AUTHOR_ONLY_MAX_PAGES` 与 `YAMIBO_NOVEL_AUTHOR_ONLY_PAGE_DELAY_SECONDS` 控制增量更新范围和请求间隔
+- 更新检查和追加更新接口共用同一份只看楼主归档快照，避免重复全量同步
 
-### 搜索与筛选增强
+### 论坛版块与元数据
 
-- 多关键词搜索 AND 逻辑（空格分隔，FTS + LIKE 双路径）
-- 帖子列表版块筛选改为标签/药丸按钮（显示帖子数，0 贴版块隐藏）
-- `tableLayout: 'fixed'` 防止筛选时列宽跳动
-- 日志页新增最低级别过滤（DEBUG/INFO/WARNING/ERROR/CRITICAL）
-- 系列页前端多关键词搜索
+- 论坛注册继续覆盖漫画、轻小说、动漫和扩展分区
+- 自动提取论坛链接、分类标签与作者信息
+- 贴子详情与系列信息继续保持结构化返回
 
-### 系列与贴子管理
-
-- 自动删除空系列：删除帖子后若系列无剩余帖子，自动删除
-- `forum_id` 透传到后端重新同步/导出任务
-- 论坛级系列归类：非漫画/轻小说论坛帖子自动归入论坛级系列
-
-### UI/UX 改进
-
-- 表格默认居中对齐，标题列左对齐
-- 品牌 Logo 和多尺寸 Favicon
-- Layout 顶栏重构：语言切换 + 品牌 Logo
-- 复核页面区域顺序调整
-- 内容块表和图片宽度工具栏仅对漫画类型显示
-- 帖子列表新增 Category 列
-
-### 修复
-
-- `thread_summary_payload()` 缺少 `forum_id`、`content_kind`、`category` 字段
-- `_thread_summary_dict()` 缺少 `category` 返回
-- 贴子详情返回导航：从系列进入正确回到 `/series/{id}`
-- `_forums_list()` 中 `name_en` 访问安全检查
-
-### 重构
-
-- 共享时间格式化 `utils/time.ts`（`formatDateTime`、`formatLogTime`）
-- `ContentBadge` 改用 `useI18n()` 翻译
-
----
-
-## v0.2.0 新增功能
-
-### 多分区支持
-
-- 新增 `forum_id` 参数：`browse_forum_page`、`search_threads`、`sync_forum_range`、`archive_thread`
-- 支持漫画区(30)、轻小说区(55)、动漫区(5)、水区(33)
-- 新增 `ForumProfile` 领域模型，`resolve_forum()` 按 forum_id 返回分区配置
-- 本地 fallback search 支持按 forum_id 过滤
-
-### 内容类型模型
-
-- 新增 `ContentBlock`、`AssetSnapshot`、`PostSnapshot`、`ThreadContentSnapshot` 数据类
-- 支持 comic/novel/discussion/mixed 四种内容形态
-- `classify_content_kind()` 基于 forum_id 和内容特征自动分类
-- `validate_by_profile()` 按内容类型校验归档完整性
-
-### Job Event Outbox
-
-- 新增 `job_events` 表，任务状态变更追加耐久化事件
-- 支持的事件类型：`job.created` / `job.started` / `job.progressed` / `job.succeeded` / `job.partial` / `job.failed` / `job.cancelled`
-- `JobEventsRepository` 提供 `append` 和 `list` 接口
-- 事件追加失败不回滚主任务状态变更
-
-### 面向 Agent 的 Resources
-
-- 新增 7 个只读 resource URI：
-  - `yamibo://forums/index` — 论坛分区列表
-  - `yamibo://forums/{forum_id}/summary` — 分区摘要
-  - `yamibo://threads/{tid}/summary` — 帖子紧凑摘要
-  - `yamibo://threads/{tid}/diagnostics` — 帖子诊断（缺失资产、建议操作）
-  - `yamibo://threads/{tid}/posts` — 内容块列表
-  - `yamibo://threads/{tid}/assets` — 资产列表
-  - `yamibo://jobs/{job_id}/events` — 任务事件时间线
-- `search_threads` 返回的 items 现在包含 `summary`/`diagnostics`/`posts`/`assets` URI
-
-### 应用层
-
-- 新增 `application/` 包，包含 `ensure_thread`、`archive_thread_job`、`get_job_status_payload` 用例
-- `server/tools.py` 退化为薄适配器，委托给应用层
-
-### 数据库迁移
+### 数据库与迁移
 
 - 新增 `forums`、`content_blocks`、`assets`、`job_events` 表
 - `threads` 表新增 `forum_id`、`content_kind`、`primary_media_type` 列
@@ -182,7 +111,8 @@ Web 控制台随 Daemon 自动启动（`http://127.0.0.1:8765`），无需单独
 
 ### 导出系统
 
-- ZIP 打包（按系列分目录）
+- 漫画/通用贴子 ZIP 打包（按系列分目录）
+- 轻小说 TXT 导出（独立目录、支持增量追加）
 - 三种导出策略：cache_only / sync_if_stale / force_resync
 - 导出前完整性检查
 

@@ -5,6 +5,7 @@ import re
 
 def clean_content(value: str) -> str:
     value = value.replace("\xa0", " ")
+    value = re.sub(r"(?mi)^\s*本帖最后由\s+.+?\s+于\s+\d{4}-\d{1,2}-\d{1,2}\s+\d{1,2}:\d{2}\s+编辑\s*$", "", value)
     # 先去掉附件下载提示和裸文件名，再整理空白，尽量保留人真正会读的正文。
     value = re.sub(r"\(\s*[\d.]+\s*(?:K|M|G)?B,\s*下载次数:\s*\d+\s*\)", "", value, flags=re.IGNORECASE)
     value = re.sub(r"下载附件\s*保存到相册", "", value)
@@ -15,6 +16,9 @@ def clean_content(value: str) -> str:
     value = re.sub(r"(?m)^[ \t\r]+$", "", value)
     value = re.sub(r"\r\n", "\n", value)
     value = re.sub(r"\r", "\n", value)
+    value = re.sub(r"\n[ \t]+", "\n", value)
+    value = re.sub(r"(?m)^(Episode\s*\d+)(?=\S)", r"\1\n", value)
+    value = re.sub(r"(?m)^(第\s*[0-9一二三四五六七八九十百千零0-9]+\s*[话章节卷篇])(?=\S)", r"\1\n", value)
     value = re.sub(r"\n[ \t]*\n(?:[ \t]*\n)+", "\n\n", value)
     value = re.sub(r"[ \t]+\n", "\n", value)
     value = re.sub(r"\n{3,}", "\n\n", value)

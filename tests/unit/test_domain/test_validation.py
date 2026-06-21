@@ -100,11 +100,12 @@ class TestMissingTitles:
         result = validate_thread_snapshot(snapshot)
         assert any("core_title_guess is required" in e for e in result.errors)
 
-    def test_empty_series_key_is_error(self):
+    def test_empty_series_key_is_warning(self):
         title = _make_title(series_key="")
         snapshot = _make_snapshot(title=title)
         result = validate_thread_snapshot(snapshot)
-        assert any("series_key is required" in e for e in result.errors)
+        assert result.valid
+        assert any("series_key is missing" in w for w in result.warnings)
 
 
 class TestFloorValidation:

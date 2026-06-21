@@ -1,6 +1,6 @@
 # 核心模块开发说明
 
-> 版本：0.2.0 | 更新日期：2026-06-21
+> 版本：0.6.0 | 更新日期：2026-06-21
 
 ## 1. 标题解析引擎
 
@@ -352,6 +352,11 @@ class AgentResponse:
 | db_path | YAMIBO_DB_PATH | data/forum.db | 数据库路径 |
 | cookie_file | YAMIBO_COOKIE_FILE | .cookie | Cookie 文件 |
 | export_dir | YAMIBO_EXPORT_DIR | data/exports | 导出目录 |
+| novel_txt_export_dir | YAMIBO_NOVEL_TXT_EXPORT_DIR | data/novel_exports | 轻小说 TXT 导出目录 |
+| novel_author_only_max_pages | YAMIBO_NOVEL_AUTHOR_ONLY_MAX_PAGES | 50 | 轻小说追加更新时允许新增的最大页数 |
+| novel_author_only_page_delay_seconds | YAMIBO_NOVEL_AUTHOR_ONLY_PAGE_DELAY_SECONDS | 0.5 | 轻小说追加更新时逐页请求间隔 |
+| novel_txt_include_filtered_notes | YAMIBO_NOVEL_TXT_INCLUDE_FILTERED_NOTES | false | 导出 TXT 时是否保留被过滤段落的说明 |
+| novel_txt_debug_markers | YAMIBO_NOVEL_TXT_DEBUG_MARKERS | false | 导出 TXT 时是否写入调试标记 |
 | web_host | YAMIBO_WEB_HOST | 127.0.0.1 | Web 监听地址 |
 | web_port | YAMIBO_WEB_PORT | 8765 | Web 端口 |
 | worker_poll_seconds | YAMIBO_WORKER_POLL_SECONDS | 2 | Daemon 轮询间隔 |
@@ -401,8 +406,15 @@ class AgentResponse:
   },
   "export": {
     "dir": "data/exports",
+    "novel_txt_dir": "data/novel_exports",
     "default_strategy": "cache_only",
-    "stale_after_hours": 24
+    "stale_after_hours": 24,
+    "novel_txt_include_filtered_notes": false,
+    "novel_txt_debug_markers": false
+  },
+  "yamibo": {
+    "novel_author_only_max_pages": 50,
+    "novel_author_only_page_delay_seconds": 0.5
   },
   "maintenance": {
     "backup_dir": "data/backups",

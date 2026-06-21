@@ -177,6 +177,12 @@ class TestBuildContentSnapshot:
         assert content.assets[0].remote_url == "http://img/a.jpg"
         assert content.assets[0].asset_type == "image"
 
+    def test_embedded_data_urls_do_not_become_required_image_assets(self):
+        snap = _snapshot(floors=[_floor(has_images=True, image_urls=["http://data:image/jpeg;base64,abc123"])])
+        content = build_content_snapshot(snap, forum_id=30)
+        assert content.assets[0].asset_type == "external_link"
+        assert content.assets[0].required is False
+
     def test_shared_assets_classified(self):
         snap = _snapshot(floors=[_floor(has_images=True, image_urls=["https://bbs.yamibo.com/static/image/smiley/default.png"])])
         content = build_content_snapshot(snap, forum_id=30)

@@ -59,6 +59,9 @@ def download_images_to_staging(
         floor_shared_relpaths: list[str] = []
         floor_skipped: list[str] = []
         for index, image_url in enumerate(floor.image_urls, start=1):
+            if _is_embedded_image_url(image_url):
+                floor_skipped.append(image_url)
+                continue
             if _is_shared_forum_asset(image_url):
                 shared_target = _shared_target_path(paths, image_url)
                 try:
@@ -312,6 +315,12 @@ def _suffix_from_bytes(data: bytes) -> str | None:
 def _is_shared_forum_asset(image_url: str) -> bool:
     parsed = urlparse(image_url)
     return parsed.path.startswith("/static/image/")
+
+
+def _is_embedded_image_url(image_url: str) -> bool:
+    parsed = urlparse(image_url)
+    lower = image_url.strip().lower()
+    return lower.startswith("data:") or (parsed.scheme in {"http", "https"} and parsed.netloc.lower().startswith("data:"))
 
 
 def _shared_target_path(paths: StoragePaths, image_url: str) -> Path:

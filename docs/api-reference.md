@@ -1,6 +1,6 @@
 # API 接口文档
 
-> 版本：0.5.0 | 更新日期：2026-06-21
+> 版本：0.6.0 | 更新日期：2026-06-21
 
 ## 1. MCP 工具 (Tools)
 
@@ -175,9 +175,42 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
 | `sync_if_stale` | 若本地归档过旧或缺失，先同步再导出 |
 | `force_resync` | 强制重新从远端同步后再导出 |
 
+轻小说贴子导出为 TXT 文件，默认输出到独立的轻小说导出目录；漫画和其他帖子继续导出为 ZIP。
+
 ---
 
-### 1.6 sync_forum_range
+### 1.6 check_thread_updates
+
+检查已归档轻小说贴子是否有新更新；只读，不创建任务。
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| tid | int | 是 | - | 帖子 ID |
+| base_url | string \| null | 否 | null | 站点根 URL |
+
+返回结果包含：
+
+- `status`：`up_to_date` / `updated` / `unknown` / `not_supported` / `failed`
+- `local_snapshot`：本地归档快照
+- `remote_snapshot`：远端作者只看楼主快照
+- `evidence`：判断依据与字段差异
+
+---
+
+### 1.7 update_thread
+
+创建轻小说贴子追加更新任务；会先执行更新检测，检测到新内容后再追加归档。
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| tid | int | 是 | - | 帖子 ID |
+| base_url | string \| null | 否 | null | 站点根 URL |
+
+返回 `{"job_id": "update_thread_xxxx"}`。
+
+---
+
+### 1.8 sync_forum_range
 
 按论坛页码范围抓取真实帖子列表并批量创建同步任务。
 
@@ -193,7 +226,7 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
 
 ---
 
-### 1.7 get_job_status
+### 1.9 get_job_status
 
 读取后台任务状态。
 
@@ -230,7 +263,7 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
 
 ---
 
-### 1.8 cleanup_job
+### 1.10 cleanup_job
 
 创建后台清理任务。
 
@@ -244,7 +277,7 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
 
 ---
 
-### 1.9 parse_thread_title
+### 1.11 parse_thread_title
 
 解析帖子标题；低置信度时可自动调用内置 LLM 做二次提取。
 
@@ -280,6 +313,7 @@ MCP Server 暴露以下只读资源，通过 `yamibo://` URI scheme 访问。
 | `yamibo://threads/{tid}/diagnostics` | application/json | 帖子诊断信息（归档状态、缺失资产、建议操作） |
 | `yamibo://threads/{tid}/posts` | application/json | 帖子内容块列表（text/image/attachment/quote/link） |
 | `yamibo://threads/{tid}/assets` | application/json | 帖子资产列表（图片、附件、共享资源） |
+| `yamibo://threads/{tid}/update-check` | application/json | 轻小说更新检测结果（只读） |
 | `yamibo://threads/{tid}/context` | text/markdown | 帖子正文 Markdown（含 frontmatter） |
 | `yamibo://threads/{tid}/metadata` | application/json | 帖子完整元数据 |
 | `yamibo://threads/{tid}/export` | application/zip | 帖子导出 ZIP 包 |
@@ -342,6 +376,12 @@ yamibo-mcp-server create-sync-thread-job --tid 572313
 # 创建导出任务
 yamibo-mcp-server create-export-thread-job --tid 572313
 
+# 检查轻小说更新
+yamibo-mcp-server check-thread-updates --tid 544422
+
+# 创建轻小说追加更新任务
+yamibo-mcp-server update-thread --tid 544422
+
 # 批量同步
 yamibo-mcp-server create-sync-forum-range-jobs --start-page 1 --end-page 5
 
@@ -363,6 +403,7 @@ yamibo-mcp-server read-resource "yamibo://threads/572313/summary"
 yamibo-mcp-server read-resource "yamibo://threads/572313/diagnostics"
 yamibo-mcp-server read-resource "yamibo://threads/572313/posts"
 yamibo-mcp-server read-resource "yamibo://threads/572313/assets"
+yamibo-mcp-server read-resource "yamibo://threads/544422/update-check"
 yamibo-mcp-server read-resource "yamibo://forums/index"
 yamibo-mcp-server read-resource "yamibo://jobs/sync_thread_xxxx/events"
 ```

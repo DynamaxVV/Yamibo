@@ -1,24 +1,30 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, type DashboardData, type ThreadSummary } from '../api/client'
-import { Badge, ContentBadge } from '../components/Badge'
+import { Badge } from '../components/Badge'
 import { useI18n } from '../context/I18nContext'
 import { formatDateTime } from '../utils/time'
 
-function RecentTable({ threads, t }: { threads: ThreadSummary[]; t: (k: string) => string }) {
+function RecentTable({ threads, forumNames, t, liveStatuses }: { threads: ThreadSummary[]; forumNames: Record<number, string>; t: (k: string) => string; liveStatuses: Record<number, string> }) {
   if (threads.length === 0) return <div className="panel" style={{ color: 'var(--text-tertiary)', padding: '8px 12px', fontSize: 12 }}>{t('no_data')}</div>
   return (
       <div className="table-wrap"><table>
-        <thead><tr><th style={{ width: 75 }}>{t('tid')}</th><th>{t('title')}</th><th>{t('content_kind')}</th><th>{t('archive_status')}</th><th>{t('sync_time')}</th></tr></thead>
+        <thead><tr><th style={{ width: 75 }}>{t('tid')}</th><th>{t('title')}</th><th>{t('forum')}</th><th>{t('archive_status')}</th><th>{t('sync_time')}</th></tr></thead>
         <tbody>
           {threads.map(t_ => (
+            (() => {
+              const liveStatus = liveStatuses[t_.tid]
+              const status = liveStatus || t_.archive_status
+              return (
             <tr key={t_.tid}>
               <td className="mono"><Link to={`/threads/${t_.tid}`}>{t_.tid}</Link></td>
               <td className="truncate" title={t_.display_title || t_.raw_title}><Link to={`/threads/${t_.tid}`}>{t_.display_title || t_.raw_title}</Link></td>
-              <td><ContentBadge kind={t_.content_kind || 'unknown'} /></td>
-              <td><Badge status={t_.archive_status} /></td>
-              <td className="nowrap col-time">{formatDateTime(t_.sync_time)}</td>
+              <td>{forumNames[t_.forum_id ?? 0] || '-'}</td>
+              <td><Badge status={status} /></td>
+              <td className="nowrap col-time">{liveStatus ? formatDateTime(t_.sync_time) : formatDateTime(t_.sync_time)}</td>
             </tr>
+              )
+            })()
           ))}
         </tbody>
       </table></div>
@@ -56,6 +62,7 @@ export function Dashboard() {
   const [forumNames, setForumNames] = useState<Record<number, string>>({})
   const [primaryLimit, setPrimaryLimit] = useState(10)
   const [otherLimit, setOtherLimit] = useState(10)
+  const [dashboardTick, setDashboardTick] = useState(0)
 
   useEffect(() => {
     api.forums().then(fs => {
@@ -65,21 +72,36 @@ export function Dashboard() {
     }).catch(() => {})
   }, [lang])
 
-  const fetchDashboard = () => api.dashboard(Math.max(primaryLimit, otherLimit))
-
   useEffect(() => {
+    let active = true
     Promise.all([
-      fetchDashboard(),
+      api.dashboard(Math.max(primaryLimit, otherLimit)),
       api.threads({ forum_id: 30 }).then(ts => ts.slice(0, primaryLimit)),
       api.threads({ forum_id: 55 }).then(ts => ts.slice(0, primaryLimit)),
       api.threads({ forum_id: 33 }).then(ts => ts.slice(0, otherLimit)),
       api.threads({ forum_id: 5 }).then(ts => ts.slice(0, otherLimit)),
     ]).then(([d, comic, novel, sea, anime]) => {
+      if (!active) return
       setData(d)
       setPrimaryThreads([...comic, ...novel].sort((a, b) => (b.sync_time || '').localeCompare(a.sync_time || '')).slice(0, primaryLimit))
       setOtherThreads([...sea, ...anime].sort((a, b) => (b.sync_time || '').localeCompare(a.sync_time || '')).slice(0, otherLimit))
     }).catch(e => setError(e.message))
+    const timer = window.setInterval(() => setDashboardTick(t => t + 1), 5000)
+    return () => {
+      active = false
+      window.clearInterval(timer)
+    }
   }, [primaryLimit, otherLimit])
+
+  useEffect(() => {
+    let active = true
+    api.dashboard(Math.max(primaryLimit, otherLimit)).then(d => {
+      if (active) setData(d)
+    }).catch(e => setError(e.message))
+    return () => { active = false }
+  }, [primaryLimit, otherLimit, dashboardTick])
+
+  const liveStatuses = data?.live_thread_statuses ?? {}
 
   if (error) return <div className="panel" style={{ color: 'var(--status-error)' }}>{error}</div>
   if (!data) return <div className="panel" style={{ color: 'var(--text-tertiary)' }}>{t('loading')}</div>
@@ -107,10 +129,10 @@ export function Dashboard() {
       <h2 style={{ margin: '16px 0 8px' }}>{t('recent_threads')}</h2>
 
       <SectionHeader title={t('comic_novel')} limit={primaryLimit} onLimitChange={setPrimaryLimit} t={t} />
-      <RecentTable threads={primaryThreads} t={t} />
+      <RecentTable threads={primaryThreads} forumNames={forumNames} t={t} liveStatuses={liveStatuses} />
 
       <SectionHeader title={t('other_forums')} limit={otherLimit} onLimitChange={setOtherLimit} t={t} />
-      <RecentTable threads={otherThreads} t={t} />
+      <RecentTable threads={otherThreads} forumNames={forumNames} t={t} liveStatuses={liveStatuses} />
 
       <h2>{t('recent_jobs')}</h2>
       <div className="table-wrap"><table>

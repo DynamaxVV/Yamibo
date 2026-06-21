@@ -4,9 +4,12 @@
 """
 
 from pathlib import Path
+import re
+import json
 
 import pytest
 from tests.fixtures.loader import load_thread, load_edge_case
+from yamibo_mcp.web.api import _clean_rich_body_html
 from yamibo_mcp.yamibo.parsers.thread_detail import _extract_post_meta, extract_author_only_total_pages, extract_forum_id_from_html, parse_thread_detail
 
 
@@ -102,8 +105,21 @@ class TestThreadDetailParser:
 
     @staticmethod
     def _load_rich_text_sample() -> str:
-        repo_root = Path(__file__).resolve().parents[3]
-        matches = sorted(repo_root.glob("【授权转载】【个人翻译】*Powered by Discuz!.html"))
+        sample_roots = [
+            Path("/Users/vv/Code/html_sample"),
+            Path(__file__).resolve().parents[3],
+        ]
+        matches: list[Path] = []
+        for root in sample_roots:
+            if not root.exists():
+                continue
+            matches = sorted(root.glob("【授权转载】【个人翻译】*Powered by Discuz!.html"))
+            if matches:
+                break
+        if not matches:
+            meta = json.loads(Path("data/threads/544422/metadata.json").read_text(encoding="utf-8"))
+            rich = meta["floors"][0]["rich_body_html"]
+            return f"<html><body><span id=\"thread_subject\">sample</span><td id=\"postmessage_1\">{rich}</td></body></html>"
         assert matches, "sample html not found"
         return matches[0].read_text(encoding="utf-8", errors="ignore")
 
@@ -309,8 +325,12 @@ class TestThreadDetailParser:
         assert "font-size:" in first_floor.rich_body_html
         assert "text-align:left" in first_floor.rich_body_html
         assert "<strong>" in first_floor.rich_body_html or "<em>" in first_floor.rich_body_html
+        assert "<a" not in first_floor.rich_body_html
         assert "本帖最后由" not in first_floor.content
         assert "本帖最后由" not in first_floor.rich_body_html
+        assert "font-size:1em" not in first_floor.rich_body_html
+        assert "color:#000000" not in first_floor.rich_body_html
+        assert "『起始』" in first_floor.rich_body_html
 
     def test_font_color_is_preserved_in_rich_body_html(self):
         """font color 应映射为可展示的富文本样式"""
@@ -326,8 +346,37 @@ class TestThreadDetailParser:
         rich = summary.floors[0].rich_body_html or ""
         assert "#a0522d" in rich
         assert "#ff0000" in rich
+        assert "<a" not in rich
         assert "标题" in rich
         assert "译名：测试" in rich
+
+    def test_embedded_data_image_url_is_ignored(self):
+        """伪装成 http 的 data:image 不应进入图片列表"""
+        html = """
+        <html><body>
+          <td id="postmessage_1">
+            <img src="http://data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2w==" />
+            <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB" />
+            <img src="https://example.com/a.jpg" />
+          </td>
+        </body></html>
+        """
+        summary = parse_thread_detail(html)
+        floor = summary.floors[0]
+        assert floor.image_urls == ["https://example.com/a.jpg"]
+
+    def test_archived_rich_body_html_is_paragraphized(self):
+        """旧归档的富文本也应在读取时被归一化"""
+        meta = json.loads(Path("data/threads/540745/metadata.json").read_text(encoding="utf-8"))
+        rich = meta["floors"][0]["rich_body_html"]
+        cleaned = _clean_rich_body_html(rich) or ""
+
+        assert cleaned
+        assert "font-size:1em" not in cleaned
+        assert "color:#000000" not in cleaned
+        assert re.search(r"<p[^>]*>.*?第6话 扭曲的喜悦.*?</p>", cleaned, re.S)
+        assert re.search(r"<p[^>]*>.*?第7话 扭曲关系的开始.*?</p>", cleaned, re.S)
+        assert re.search(r"<p[^>]*>.*?第8话 如同诅咒的爱之形态.*?</p>", cleaned, re.S)
 
     def test_exported_thread_has_zip_path(self):
         """572530 应有导出路径"""

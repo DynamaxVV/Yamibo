@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from dataclasses import replace
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 from yamibo_mcp.config import Settings
 from yamibo_mcp.db.connection import transaction
@@ -11,7 +12,8 @@ from yamibo_mcp.db.repositories.content_blocks import ContentBlocksRepository
 from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
 from yamibo_mcp.domain.content import build_content_snapshot
-from yamibo_mcp.domain.models import Job
+from yamibo_mcp.domain.models import Job, ThreadSnapshot
+from yamibo_mcp.domain.thread_fingerprint import floor_content_hash
 from yamibo_mcp.domain.validation import validate_thread_snapshot
 from yamibo_mcp.storage.paths import StoragePaths
 from yamibo_mcp.storage.images import download_images_to_staging
@@ -21,13 +23,27 @@ from yamibo_mcp.services.title_hints import update_title_hints
 from yamibo_mcp.services.title_llm import refine_title_parse_with_llm, title_parse_to_dict
 from yamibo_mcp.yamibo.client import YamiboClient
 from yamibo_mcp.yamibo.parsers.thread_detail import parse_thread_snapshot
+from yamibo_mcp.yamibo.urls import thread_page_url_from_tid
 from yamibo_mcp.yamibo.urls import extract_tid_from_input
 
 LOG = logging.getLogger(__name__)
 
 
+class JobCancelled(Exception):
+    pass
+
+
+def _check_cancelled(repo: JobsRepository, job_id: str) -> None:
+    if repo.is_cancelled(job_id):
+        raise JobCancelled(f"Job {job_id} was cancelled")
+
+
 def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_seconds: int, settings: Settings) -> None:
-    paths = StoragePaths(settings.data_dir, export_dir=settings.export_dir)
+    paths = StoragePaths(
+        settings.data_dir,
+        export_dir=settings.export_dir,
+        novel_txt_export_dir=settings.novel_txt_export_dir,
+    )
     html_path_value = job.payload.get("html_path")
     url_value = job.payload.get("url")
     base_url = job.payload.get("base_url")
@@ -37,6 +53,7 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
     snapshot = None
     client: YamiboClient | None = None
     title_parse_log: dict[str, object] | None = None
+    fetch_artifacts: dict[str, object] = {"archive_mode": "default"}
 
     try:
         if html_path_value:
@@ -59,7 +76,29 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
                 request_interval=settings.request_interval_seconds,
                 request_interval_jitter=settings.request_interval_jitter_seconds,
             )
-            fetched = client.fetch_thread(tid=tid, url=str(url_value) if url_value else None, base_url=str(base_url) if base_url else None)
+            author_uid_from_url = _extract_author_uid_from_url(str(url_value)) if url_value else None
+            if tid is None:
+                raise ValueError("sync_thread requires tid")
+            if author_uid_from_url:
+                fetched = client.fetch_thread_page(
+                    tid=tid,
+                    page=1,
+                    author_uid=author_uid_from_url,
+                    base_url=str(base_url) if base_url else None,
+                )
+                fetch_artifacts = {
+                    "archive_mode": "novel_author_only",
+                    "author_uid": author_uid_from_url,
+                    "pages_fetched": 1,
+                    "page_urls": [fetched.final_url],
+                    "stopped_reason": "input_author_page",
+                }
+            else:
+                fetched = client.fetch_thread(
+                    tid=tid,
+                    url=str(url_value) if url_value else None,
+                    base_url=str(base_url) if base_url else None,
+                )
             html = fetched.html
             source_url = fetched.final_url
 
@@ -70,6 +109,43 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
             forum_id = extract_forum_id_from_html(html)
         from yamibo_mcp.yamibo.parsers.thread_detail import extract_category_from_html
         category = extract_category_from_html(html)
+        _check_cancelled(repo, job.job_id)
+        if client is not None and forum_id == 55:
+            if tid is None:
+                raise ValueError("novel author-only sync requires tid")
+            author_uid = fetch_artifacts.get("author_uid") or snapshot.publisher_uid
+            if not author_uid:
+                raise ValueError(f"unable to resolve publisher_uid for novel author-only thread {tid}")
+            page_results, total_pages, stopped_reason = client.fetch_author_only_thread_pages(
+                tid=tid,
+                author_uid=str(author_uid),
+                base_url=str(base_url) if base_url else None,
+                max_pages=max(settings.novel_author_only_max_pages, 1),
+                page_delay_seconds=max(settings.novel_author_only_page_delay_seconds, 0.0),
+            )
+            page_snapshots = [
+                parse_thread_snapshot(result.html, url=result.final_url, tid=tid)
+                for result in page_results
+            ]
+            snapshot = _merge_thread_snapshots(page_snapshots)
+            source_url = page_results[0].final_url
+            fetch_artifacts = {
+                "archive_mode": "novel_author_only",
+                "author_uid": str(author_uid),
+                "pages_fetched": len(page_results),
+                "total_pages_detected": total_pages,
+                "page_urls": [result.final_url for result in page_results],
+                "stopped_reason": stopped_reason,
+                "unique_floors": len(snapshot.floors),
+            }
+            if snapshot.floors:
+                fetch_artifacts["archive_signature"] = {
+                    "author_uid": str(author_uid),
+                    "last_pid": snapshot.floors[-1].pid,
+                    "floor_count": len(snapshot.floors),
+                    "last_floor_hash": floor_content_hash(snapshot.floors[-1].content),
+                    "author_only_total_pages": total_pages,
+                }
 
         COMIC_NOVEL_FORUMS = {30, 55}
         if forum_id is not None and forum_id not in COMIC_NOVEL_FORUMS:
@@ -102,13 +178,13 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
             llm_title_meta = None
         else:
             refined_title, llm_title_meta = refine_title_parse_with_llm(
-            settings,
-            raw_title=snapshot.raw_title,
-            parsed=replace(
-                snapshot.title,
-                parser_version=snapshot.title.parser_version,
-            ),
-        )
+                settings,
+                raw_title=snapshot.raw_title,
+                parsed=replace(
+                    snapshot.title,
+                    parser_version=snapshot.title.parser_version,
+                ),
+            )
 
         title_parse_log = {
             "tid": snapshot.tid,
@@ -175,6 +251,7 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
             raise ValueError("; ".join(validation.errors))
 
         # 图片下载先走 staging，失败 URL 先记录下来，后续再演进成 partial 状态。
+        _check_cancelled(repo, job.job_id)
         repo.update_stage(job.job_id, "download_images", progress_current=4, progress_total=6)
         image_result = download_images_to_staging(
             paths,
@@ -258,10 +335,26 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
             "downloaded_image_count": image_result.downloaded_count,
             "non_export_image_count": image_result.non_export_count,
             "shared_image_count": image_result.shared_downloaded_count,
+            "skipped_image_count": sum(len(paths) for paths in image_result.skipped_relpaths.values()),
             "missing_image_count": len(image_result.missing_urls),
             "missing_shared_image_count": len(image_result.missing_shared_urls),
             "archive_status": archive_status,
+            "archive_breakdown": {
+                "downloaded_relpaths": image_result.downloaded_relpaths,
+                "non_export_relpaths": image_result.non_export_relpaths,
+                "shared_relpaths": image_result.shared_relpaths,
+                "skipped_relpaths": image_result.skipped_relpaths,
+                "missing_image_urls": image_result.missing_urls,
+                "missing_shared_image_urls": image_result.missing_shared_urls,
+            },
+            "archive_signature": {
+                "author_uid": None if snapshot.publisher_uid is None else str(snapshot.publisher_uid),
+                "last_pid": None if not snapshot.floors else snapshot.floors[-1].pid,
+                "floor_count": len(snapshot.floors),
+                "last_floor_hash": None if not snapshot.floors else floor_content_hash(snapshot.floors[-1].content),
+            },
         }
+        artifacts.update(fetch_artifacts)
         if llm_title_meta is not None:
             artifacts["title_llm"] = {
                 "attempted": bool(llm_title_meta.get("attempted")),
@@ -271,6 +364,28 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
                 "error": llm_title_meta.get("error"),
             }
         if image_result.missing_urls:
+            LOG.info(
+                "Thread %s archived as partial: downloaded=%s non_export=%s shared=%s skipped=%s missing=%s missing_shared=%s",
+                snapshot.tid,
+                image_result.downloaded_count,
+                image_result.non_export_count,
+                image_result.shared_downloaded_count,
+                sum(len(paths) for paths in image_result.skipped_relpaths.values()),
+                len(image_result.missing_urls),
+                len(image_result.missing_shared_urls),
+            )
+            if image_result.missing_urls:
+                LOG.warning(
+                    "Thread %s missing image urls: %s",
+                    snapshot.tid,
+                    ", ".join(image_result.missing_urls[:20]),
+                )
+            if image_result.missing_shared_urls:
+                LOG.warning(
+                    "Thread %s missing shared image urls: %s",
+                    snapshot.tid,
+                    ", ".join(image_result.missing_shared_urls[:20]),
+                )
             update_title_hints(
                 settings,
                 group_name=snapshot.title.group_name,
@@ -279,6 +394,14 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
             # 图片不完整时保留正式归档，但线程状态必须明确标成 partial，不能伪装成 complete。
             repo.partial(job.job_id, artifacts)
         else:
+            LOG.info(
+                "Thread %s archived successfully: downloaded=%s non_export=%s shared=%s skipped=%s",
+                snapshot.tid,
+                image_result.downloaded_count,
+                image_result.non_export_count,
+                image_result.shared_downloaded_count,
+                sum(len(paths) for paths in image_result.skipped_relpaths.values()),
+            )
             update_title_hints(
                 settings,
                 group_name=snapshot.title.group_name,
@@ -301,3 +424,46 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
             },
         )
         raise
+
+
+def _extract_author_uid_from_url(value: str) -> str | None:
+    parsed = urlparse(value)
+    if not parsed.query:
+        return None
+    query = parse_qs(parsed.query, keep_blank_values=True)
+    author_uid = query.get("authorid", [None])[0]
+    if author_uid in {None, ""}:
+        return None
+    return str(author_uid)
+
+
+def _merge_thread_snapshots(snapshots: list[ThreadSnapshot]) -> ThreadSnapshot:
+    if not snapshots:
+        raise ValueError("at least one snapshot is required")
+    primary = snapshots[0]
+    seen_pids: set[int] = set()
+    merged_floors = []
+    for snapshot in snapshots:
+        for floor in snapshot.floors:
+            if floor.pid in seen_pids:
+                continue
+            seen_pids.add(floor.pid)
+            merged_floors.append(floor)
+    reindexed_floors = [
+        replace(floor, floor_no=index)
+        for index, floor in enumerate(merged_floors, start=1)
+    ]
+    return replace(
+        primary,
+        floors=reindexed_floors,
+        image_count=sum(len(floor.image_urls) if floor.image_urls else int(floor.has_images) for floor in reindexed_floors),
+        url=thread_page_url_from_tid(primary.tid, page=1, author_uid=primary.publisher_uid, base_url=_base_url_for_snapshot(primary)),
+    )
+
+
+def _base_url_for_snapshot(snapshot) -> str:
+    if snapshot.url:
+        parsed = urlparse(str(snapshot.url))
+        if parsed.scheme and parsed.netloc:
+            return f"{parsed.scheme}://{parsed.netloc}"
+    return "https://bbs.yamibo.com"

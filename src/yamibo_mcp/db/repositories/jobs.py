@@ -305,6 +305,33 @@ class JobsRepository:
             payload={"artifacts": artifacts or {}},
         )
 
+    def request_cancel(self, job_id: str) -> bool:
+        now = utc_now_iso()
+        cur = self.conn.execute(
+            """
+            UPDATE jobs
+            SET status = ?, cancel_requested_at = ?, updated_at = ?
+            WHERE job_id = ? AND status = ?
+            """,
+            (JobStatus.CANCEL_REQUESTED.value, now, now, job_id, JobStatus.RUNNING.value),
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def is_cancelled(self, job_id: str) -> bool:
+        row = self.conn.execute(
+            "SELECT status FROM jobs WHERE job_id = ?",
+            (job_id,),
+        ).fetchone()
+        return row is not None and row["status"] == JobStatus.CANCEL_REQUESTED.value
+        self.conn.commit()
+        self._append_event(
+            job_id,
+            "job.partial",
+            status=JobStatus.PARTIAL.value,
+            payload={"artifacts": artifacts or {}},
+        )
+
     def mark_expired_running_interrupted(self) -> int:
         now = utc_now_iso()
         expired_job_ids = [

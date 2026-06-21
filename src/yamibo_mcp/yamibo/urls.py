@@ -16,6 +16,32 @@ def thread_url_from_tid(tid: int, *, base_url: str = DEFAULT_THREAD_BASE) -> str
     return f"{base}/forum.php?mod=viewthread&tid={tid}"
 
 
+def thread_author_url_from_tid(
+    tid: int,
+    *,
+    author_uid: str,
+    base_url: str = DEFAULT_THREAD_BASE,
+) -> str:
+    base = base_url.rstrip("/")
+    return f"{base}/forum.php?mod=viewthread&tid={tid}&authorid={author_uid}"
+
+
+def thread_page_url_from_tid(
+    tid: int,
+    *,
+    page: int,
+    author_uid: str | None = None,
+    base_url: str = DEFAULT_THREAD_BASE,
+) -> str:
+    if page <= 0:
+        raise ValueError(f"page must be positive: {page}")
+    base = base_url.rstrip("/")
+    query_items = [("mod", "viewthread"), ("tid", str(tid)), ("page", str(page))]
+    if author_uid:
+        query_items.append(("authorid", str(author_uid)))
+    return f"{base}/forum.php?{urlencode(query_items)}"
+
+
 def forum_page_url(page: int, *, forum_id: int = DEFAULT_FORUM_ID, base_url: str = DEFAULT_THREAD_BASE) -> str:
     if page <= 0:
         raise ValueError(f"page must be positive: {page}")

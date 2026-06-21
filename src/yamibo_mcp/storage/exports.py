@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -8,7 +9,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from yamibo_mcp.storage.atomic import atomic_write_text
 from yamibo_mcp.storage.paths import StoragePaths
+from yamibo_mcp.yamibo.cleaners.content_cleaner import clean_content
 
 
 class ExportPrecheckError(ValueError):
@@ -22,6 +25,15 @@ class ExportReadiness:
     images_complete: bool
     missing_image_count: int
     missing_files: list[str]
+
+
+@dataclass(frozen=True)
+class NovelTxtExportResult:
+    export_path: Path
+    manifest_path: Path
+    appended_floors: int
+    filtered_floors: int
+    needs_full_regenerate: bool
 
 
 def inspect_export_readiness(paths: StoragePaths, tid: int) -> ExportReadiness:
@@ -123,6 +135,130 @@ def export_thread_zip(
             tmp_path.unlink()
 
 
+def export_thread_txt(
+    paths: StoragePaths,
+    tid: int,
+    *,
+    title: str,
+    source_url: str | None,
+    forum_name: str | None,
+    translator: str | None,
+    include_filtered_notes: bool = False,
+    debug_markers: bool = False,
+) -> NovelTxtExportResult:
+    inspect_export_readiness(paths, tid)
+    metadata = json.loads(paths.thread_metadata(tid).read_text(encoding="utf-8"))
+    floors = metadata.get("floors") or []
+    if not floors:
+        raise ExportPrecheckError(f"thread archive has no floors to export: {tid}")
+
+    txt_basename = _build_txt_basename(tid, title=title)
+    export_path = paths.thread_export_txt(tid, txt_basename=txt_basename)
+    manifest_path = paths.thread_export_txt_manifest(tid, txt_basename=txt_basename)
+    export_path.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_directory_writable(export_path.parent)
+
+    manifest = _load_manifest(manifest_path)
+    exported_by_pid = {
+        int(item["pid"]): str(item["content_hash"])
+        for item in manifest.get("exported_pids", [])
+        if "pid" in item and "content_hash" in item
+    }
+
+    filtered_records: list[dict[str, object]] = []
+    exportable_records: list[dict[str, object]] = []
+    for floor in floors:
+        content = clean_content(str(floor.get("content") or ""))
+        kind, reasons = _classify_novel_floor_for_export(
+            content,
+            floor_no=int(floor.get("floor_no") or 0),
+            is_first_floor=int(floor.get("floor_no") or 0) == 1,
+        )
+        record = {
+            "pid": int(floor["pid"]),
+            "floor_no": int(floor["floor_no"]),
+            "kind": kind,
+            "content": content,
+            "content_hash": _content_hash(content),
+            "char_count": len(content),
+            "reasons": reasons,
+            "pub_time": floor.get("pub_time"),
+        }
+        if kind == "filtered":
+            filtered_records.append(record)
+            if include_filtered_notes:
+                exportable_records.append(record | {"kind": "note"})
+            continue
+        exportable_records.append(record)
+
+    existing_exported = [item for item in manifest.get("exported_pids", []) if isinstance(item, dict)]
+    appended_records = [
+        record
+        for record in exportable_records
+        if record["pid"] not in exported_by_pid
+    ]
+    needs_full_regenerate = any(
+        exported_by_pid.get(record["pid"]) not in {None, record["content_hash"]}
+        for record in exportable_records
+    )
+
+    if not export_path.exists():
+        header = _render_novel_txt_header(
+            title=title,
+            translator=translator,
+            source_url=source_url,
+            forum_name=forum_name,
+        )
+        body = "".join(
+            _render_novel_txt_record(record, debug_markers=debug_markers)
+            for record in exportable_records
+        )
+        atomic_write_text(export_path, header + body)
+        appended_records = exportable_records
+        existing_exported = []
+        needs_full_regenerate = False
+    elif appended_records:
+        with export_path.open("a", encoding="utf-8") as handle:
+            for record in appended_records:
+                handle.write(_render_novel_txt_record(record, debug_markers=debug_markers))
+
+    manifest_payload = {
+        "tid": tid,
+        "export_format": "txt",
+        "txt_path": str(export_path),
+        "source_url": source_url,
+        "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "exported_pids": existing_exported + [
+            {
+                "pid": record["pid"],
+                "floor_no": record["floor_no"],
+                "kind": record["kind"],
+                "content_hash": record["content_hash"],
+                "char_count": record["char_count"],
+            }
+            for record in appended_records
+        ],
+        "filtered_floors": [
+            {
+                "pid": record["pid"],
+                "floor_no": record["floor_no"],
+                "char_count": record["char_count"],
+                "reasons": record["reasons"],
+            }
+            for record in filtered_records
+        ],
+        "needs_full_regenerate": needs_full_regenerate,
+    }
+    atomic_write_text(manifest_path, json.dumps(manifest_payload, ensure_ascii=False, indent=2) + "\n")
+    return NovelTxtExportResult(
+        export_path=export_path,
+        manifest_path=manifest_path,
+        appended_floors=len(appended_records),
+        filtered_floors=len(filtered_records),
+        needs_full_regenerate=needs_full_regenerate,
+    )
+
+
 def _verify_zip(path: Path) -> None:
     with zipfile.ZipFile(path, "r") as zf:
         bad_file = zf.testzip()
@@ -162,9 +298,85 @@ def _build_zip_basename(
     return f"{_safe_export_segment(preferred)}.zip"
 
 
+def _build_txt_basename(tid: int, *, title: str | None) -> str:
+    preferred = title or f"thread_{tid}"
+    return f"{_safe_export_segment(preferred)}.txt"
+
+
 def _safe_export_segment(value: str) -> str:
     value = value.strip()
     value = re.sub(r"[\\/:*?\"<>|]+", "_", value)
     value = re.sub(r"\s+", " ", value).strip(" .")
     value = value[:120].strip()
     return value or "untitled"
+
+
+def _load_manifest(path: Path) -> dict[str, object]:
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _content_hash(content: str) -> str:
+    return f"sha256:{hashlib.sha256(content.encode('utf-8')).hexdigest()}"
+
+
+def _classify_novel_floor_for_export(content: str, *, floor_no: int, is_first_floor: bool) -> tuple[str, list[str]]:
+    normalized = content.strip()
+    if is_first_floor:
+        return "info", ["first_floor"]
+    chapter_signal = re.search(
+        r"(^|\n)\s*(第\s*[0-9一二三四五六七八九十百千零0-9]+\s*[话章节卷篇]|chapter\s*\d+|番外|后记|终章|extra)",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if chapter_signal:
+        return "body", ["chapter_signal"]
+    if len(normalized) >= 500:
+        return "body", ["length_threshold"]
+    reply_signal = re.search(
+        r"(发表于|感谢|谢谢|更新|推荐|我看|回复|楼上|顺便|另外|说明)",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if reply_signal:
+        return "filtered", ["short_reply_like"]
+    return "filtered", ["short_non_body"]
+
+
+def _render_novel_txt_header(
+    *,
+    title: str,
+    translator: str | None,
+    source_url: str | None,
+    forum_name: str | None,
+) -> str:
+    lines = [
+        title.strip(),
+        "",
+    ]
+    if translator:
+        lines.append(f"译者：{translator}")
+    if source_url:
+        lines.append(f"来源：{source_url}")
+    if forum_name:
+        lines.append(f"分区：{forum_name}")
+    lines.append(f"导出时间：{datetime.now(timezone.utc).astimezone().strftime('%Y-%m-%d %H:%M')}")
+    lines.extend(["", "=" * 60, "", ""])
+    return "\n".join(lines)
+
+
+def _render_novel_txt_record(record: dict[str, object], *, debug_markers: bool) -> str:
+    content = str(record["content"]).strip()
+    lines: list[str] = []
+    if debug_markers:
+        lines.append(
+            f"--- pid:{record['pid']} floor:{record['floor_no']} kind:{record['kind']} ---"
+        )
+        lines.append("")
+    if record["kind"] == "note":
+        lines.append("[过滤备注]")
+        lines.append("")
+    lines.append(content)
+    lines.extend(["", "", "=" * 60, "", ""])
+    return "\n".join(lines)

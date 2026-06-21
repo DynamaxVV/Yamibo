@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from html import escape as html_escape
+from html.parser import HTMLParser
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -54,16 +55,18 @@ def _parse_style_map(style_value: str | None) -> dict[str, str]:
         if key == "font-weight":
             weight = _sanitize_font_weight(value)
             if weight:
+                if weight in {"normal", "400"}:
+                    continue
                 result[key] = weight
             continue
         if key == "font-style":
             style = value.lower()
-            if style in {"italic", "oblique", "normal"}:
+            if style in {"italic", "oblique"}:
                 result[key] = style
             continue
         if key == "text-decoration":
             decoration = _sanitize_text_decoration(value)
-            if decoration:
+            if decoration and decoration != "none":
                 result[key] = decoration
             continue
         if key == "text-align":
@@ -73,8 +76,10 @@ def _parse_style_map(style_value: str | None) -> dict[str, str]:
             continue
         if key == "font-size":
             size = _sanitize_font_size(value)
-            if size:
+            if size and size not in {"1em", "16px"}:
                 result[key] = size
+    if result.get("color") in {"#000000", "black"}:
+        result.pop("color", None)
     return result
 
 
@@ -141,6 +146,120 @@ def _format_style(style_map: dict[str, str]) -> str | None:
     if not style_map:
         return None
     return ";".join(f"{key}:{value}" for key, value in style_map.items())
+
+
+_RICH_BLOCK_TAGS = {"div", "p", "blockquote", "ul", "ol", "li", "pre"}
+_RICH_IGNORED_TAGS = {"a"}
+
+
+class _RichBodyNormalizer(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self._parts: list[str] = []
+        self._top_level_parts: list[str] = []
+        self._block_depth = 0
+        self._tag_stack: list[tuple[str, bool]] = []
+
+    def result(self) -> str:
+        self._flush_top_level()
+        return "".join(self._parts).strip()
+
+    def handle_starttag(self, tag: str, attrs):
+        if tag == "br":
+            if self._block_depth == 0:
+                self._flush_top_level()
+            else:
+                self._parts.append("<br>")
+            self._tag_stack.append((tag, True))
+            return
+        if tag in _RICH_IGNORED_TAGS:
+            self._tag_stack.append((tag, True))
+            return
+        rendered = self._render_starttag(tag, attrs)
+        dropped = rendered == ""
+        self._tag_stack.append((tag, dropped))
+        if tag in _RICH_BLOCK_TAGS:
+            if self._block_depth == 0:
+                self._flush_top_level()
+            if not dropped:
+                self._parts.append(rendered)
+            self._block_depth += 1
+            return
+        if self._block_depth == 0:
+            if not dropped:
+                self._top_level_parts.append(rendered)
+            return
+        if not dropped:
+            self._parts.append(rendered)
+
+    def handle_endtag(self, tag: str):
+        if tag in _RICH_IGNORED_TAGS:
+            self._pop_tag(tag)
+            return
+        dropped = self._pop_tag(tag)
+        rendered = f"</{tag}>"
+        if tag in _RICH_BLOCK_TAGS:
+            if self._block_depth > 0:
+                self._block_depth -= 1
+            if not dropped:
+                self._parts.append(rendered)
+            return
+        if self._block_depth == 0:
+            if not dropped:
+                self._top_level_parts.append(rendered)
+            return
+        if not dropped:
+            self._parts.append(rendered)
+
+    def handle_data(self, data: str):
+        if not data:
+            return
+        escaped = html_escape(data)
+        if self._block_depth == 0:
+            if data.strip():
+                self._top_level_parts.append(escaped)
+            return
+        self._parts.append(escaped)
+
+    def _flush_top_level(self):
+        text = "".join(self._top_level_parts).strip()
+        if text:
+            self._parts.append(f"<p>{text}</p>")
+        self._top_level_parts = []
+
+    def _pop_tag(self, tag: str) -> bool:
+        for index in range(len(self._tag_stack) - 1, -1, -1):
+            stack_tag, dropped = self._tag_stack[index]
+            del self._tag_stack[index]
+            if stack_tag == tag:
+                return dropped
+        return False
+
+    def _render_starttag(self, tag: str, attrs) -> str:
+        rendered_attrs: list[str] = []
+        for key, value in attrs:
+            if value is None:
+                continue
+            if key.lower() == "style":
+                style_map = _parse_style_map(value)
+                style = _format_style(style_map)
+                if style:
+                    rendered_attrs.append(f'style="{html_escape(style, quote=True)}"')
+                continue
+            rendered_attrs.append(f'{key}="{html_escape(value, quote=True)}"')
+        if tag == "span" and not rendered_attrs:
+            return ""
+        if not rendered_attrs:
+            return f"<{tag}>"
+        return f"<{tag}{(' ' + ' '.join(rendered_attrs)) if rendered_attrs else ''}>"
+
+
+def normalize_rich_body_html(html: str | None) -> str | None:
+    if not html:
+        return None
+    parser = _RichBodyNormalizer()
+    parser.feed(html)
+    return parser.result() or None
 
 
 class _ThreadSubjectParser(TextCaptureParser):
@@ -246,7 +365,7 @@ class _ThreadSubjectParser(TextCaptureParser):
                         _, close_tag = self._rich_tag_stack.pop()
                         if close_tag:
                             self._rich_parts.append(close_tag)
-                    rich_body_html = "".join(self._rich_parts).strip() or None
+                    rich_body_html = normalize_rich_body_html("".join(self._rich_parts))
                     self._floors.append(
                         FloorSnapshot(
                             pid=self._floor_pid,
@@ -324,10 +443,7 @@ class _ThreadSubjectParser(TextCaptureParser):
         if tag == "blockquote":
             return "<blockquote>", "</blockquote>"
         if tag == "a":
-            href = _sanitize_href(data.get("href", ""), base_url=self._base_url)
-            if href:
-                return f'<a href="{html_escape(href, quote=True)}">', "</a>"
-            return "<a>", "</a>"
+            return None, None
         if tag == "font":
             style_map: dict[str, str] = {}
             color = _sanitize_color(data.get("color", ""))
@@ -677,7 +793,21 @@ def _resolve_image_url_from_attrs(attrs: dict[str, str], *, base_url: str | None
     raw = raw.strip()
     if not raw or raw.lstrip("/").startswith(("data:", "javascript:")):
         return None
-    return urljoin(base_url, raw) if base_url else raw
+    resolved = urljoin(base_url, raw) if base_url else raw
+    parsed = urlparse(resolved)
+    if _is_embedded_image_url(resolved, parsed=parsed):
+        return None
+    return resolved
+
+
+def _is_embedded_image_url(image_url: str, *, parsed=None) -> bool:
+    parsed = parsed or urlparse(image_url)
+    lower = image_url.strip().lower()
+    if lower.startswith("data:"):
+        return True
+    if parsed.scheme in {"http", "https"} and parsed.netloc.lower().startswith("data:"):
+        return True
+    return False
 
 
 def _resolve_local_saved_image(attrs: dict[str, str], *, base_url: str | None) -> str | None:

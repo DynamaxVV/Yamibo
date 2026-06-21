@@ -29,9 +29,14 @@ class Settings:
     use_system_proxy: bool
     image_download_timeout_seconds: float
     image_download_retries: int
+    novel_author_only_max_pages: int
+    novel_author_only_page_delay_seconds: float
     export_dir: Path
+    novel_txt_export_dir: Path
     export_default_strategy: str
     export_stale_after_hours: int
+    novel_txt_include_filtered_notes: bool
+    novel_txt_debug_markers: bool
     llm_base_url: str
     llm_api_key: str | None
     llm_model: str
@@ -97,6 +102,12 @@ def load_settings() -> Settings:
         export_dir = (data_dir / "exports").expanduser()
     else:
         export_dir = Path(_cfg_value(config, "export", "dir", str(data_dir / "exports"))).expanduser()
+    novel_txt_export_dir = Path(
+        os.environ.get(
+            "YAMIBO_NOVEL_TXT_EXPORT_DIR",
+            str(_cfg_value(config, "export", "novel_txt_dir", str(data_dir / "novel_exports"))),
+        )
+    ).expanduser()
     return Settings(
         project_root=root,
         config_path=config_path,
@@ -142,7 +153,20 @@ def load_settings() -> Settings:
                 str(_cfg_value(config, "yamibo", "image_download_retries", 2)),
             )
         ),
+        novel_author_only_max_pages=int(
+            os.environ.get(
+                "YAMIBO_NOVEL_AUTHOR_ONLY_MAX_PAGES",
+                str(_cfg_value(config, "yamibo", "novel_author_only_max_pages", 50)),
+            )
+        ),
+        novel_author_only_page_delay_seconds=float(
+            os.environ.get(
+                "YAMIBO_NOVEL_AUTHOR_ONLY_PAGE_DELAY_SECONDS",
+                str(_cfg_value(config, "yamibo", "novel_author_only_page_delay_seconds", 0.5)),
+            )
+        ),
         export_dir=export_dir,
+        novel_txt_export_dir=novel_txt_export_dir,
         export_default_strategy=str(
             os.environ.get(
                 "YAMIBO_EXPORT_DEFAULT_STRATEGY",
@@ -155,6 +179,20 @@ def load_settings() -> Settings:
                 str(_cfg_value(config, "export", "stale_after_hours", 24)),
             )
         ),
+        novel_txt_include_filtered_notes=str(
+            os.environ.get(
+                "YAMIBO_NOVEL_TXT_INCLUDE_FILTERED_NOTES",
+                str(_cfg_value(config, "export", "novel_txt_include_filtered_notes", False)),
+            )
+        ).lower()
+        in {"1", "true", "yes", "on"},
+        novel_txt_debug_markers=str(
+            os.environ.get(
+                "YAMIBO_NOVEL_TXT_DEBUG_MARKERS",
+                str(_cfg_value(config, "export", "novel_txt_debug_markers", False)),
+            )
+        ).lower()
+        in {"1", "true", "yes", "on"},
         llm_base_url=str(
             os.environ.get(
                 "YAMIBO_LLM_BASE_URL",

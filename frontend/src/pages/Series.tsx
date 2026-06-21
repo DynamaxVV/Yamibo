@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, type SeriesSummary } from '../api/client'
 import { Badge } from '../components/Badge'
+import { PaginationControls } from '../components/PaginationControls'
 import { useI18n } from '../context/I18nContext'
 
 export function Series() {
@@ -51,6 +52,7 @@ export function Series() {
         </div>
       </div>
 
+      <div id="series-pagination-top" />
       <div className="table-wrap"><table>
         <thead><tr><th>{t('id')}</th><th>{t('title')}</th><th>{t('author')}</th><th>{t('series_key')}</th><th>{t('thread_count')}</th><th>{t('review')}</th></tr></thead>
         <tbody>
@@ -69,15 +71,7 @@ export function Series() {
         </tbody>
       </table></div>
 
-      {totalPages > 1 && (
-        <div className="row-actions" style={{ justifyContent: 'center', gap: 4 }}>
-          <button className="btn-subtle" disabled={page <= 1} onClick={() => setPage(1)}>&laquo;</button>
-          <button className="btn-subtle" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>&lsaquo;</button>
-          <span style={{ fontSize: 12, color: 'var(--text-tertiary)', padding: '4px 8px' }}>{page} / {totalPages}</span>
-          <button className="btn-subtle" disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>&rsaquo;</button>
-          <button className="btn-subtle" disabled={page >= totalPages} onClick={() => setPage(totalPages)}>&raquo;</button>
-        </div>
-      )}
+      <PaginationControls page={page} totalPages={totalPages} onPageChange={setPage} scrollTargetId="series-pagination-top" />
     </>
   )
 }

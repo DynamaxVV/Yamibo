@@ -18,6 +18,7 @@ class JobStatus(StrEnum):
 class JobType(StrEnum):
     NOOP = "noop"
     SYNC_THREAD = "sync_thread"
+    UPDATE_THREAD = "update_thread"
     EXPORT_THREAD = "export_thread"
     CLEANUP_JOB = "cleanup_job"
     TITLE_REFINE = "title_refine"

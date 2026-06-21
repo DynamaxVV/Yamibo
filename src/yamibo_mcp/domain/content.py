@@ -182,9 +182,13 @@ def _build_assets(snapshot: ThreadSnapshot) -> list[AssetSnapshot]:
 
 
 def _classify_asset_type(url: str) -> str:
+    lower = url.lower().strip()
+    if lower.startswith("data:"):
+        return "external_link"
+    if lower.startswith("http://data:") or lower.startswith("https://data:"):
+        return "external_link"
     if "/static/image/" in url:
         return "shared"
-    lower = url.lower()
     if any(lower.endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")):
         return "image"
     if "attachment" in lower or "forum.php" in lower:

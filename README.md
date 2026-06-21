@@ -1,6 +1,6 @@
 # 百合会归档助手
 
-百合会 (yamibo.com) 论坛本地归档系统。通过 MCP 协议让 LLM 客户端浏览、搜索、归档和导出论坛贴子；内嵌 React WebUI 控制台，支持多主题切换。
+百合会 (yamibo.com) 论坛本地归档系统。通过 MCP 协议让 LLM 客户端浏览、搜索、归档、检查更新和导出论坛贴子；内嵌 React WebUI 控制台，支持多主题切换。
 
 ## 功能特性
 
@@ -8,9 +8,10 @@
 - **多分区支持** — 漫画区(30)、轻小说区(55)、动漫区(5)、海域区(33) + 7 个扩展分区，通过 `forum_id` 参数切换
 - **智能标题解析** — 规则引擎 + LLM 辅助，自动提取汉化组、作者、漫画名、章节信息
 - **自动归档** — 抓取帖子 HTML，解析楼层，下载图片，生成结构化本地存档
+- **轻小说更新检测** — 独立 `check_thread_updates` / `update_thread` 流程，轻小说贴子支持只看楼主增量更新
 - **内容模型** — 支持 comic/novel/discussion/mixed 四种内容形态，有序内容块 + 资产管理
 - **系列管理** — 按 series_key 自动聚合同一系列的多个章节帖子
-- **标准化导出** — ZIP 打包（context.md + metadata.json + 图片），按系列分目录
+- **标准化导出** — 漫画/通用贴子 ZIP 打包（context.md + metadata.json + 图片），轻小说导出为可追加的 TXT 文件
 - **Job Event Outbox** — 任务状态变更追加耐久化事件，支持诊断和未来通知
 - **Agent-Friendly Resources** — 紧凑 summary、diagnostics、posts、assets 资源，低 token 开销
 - **Web 控制台** — React+Vite SPA，中英文双语，4 套可切换主题 + 暗黑模式
@@ -35,7 +36,15 @@ uv sync --extra dev
 ```json
 {
   "yamibo": {
-    "cookie_file": ".cookie"
+    "cookie_file": ".cookie",
+    "novel_author_only_max_pages": 50,
+    "novel_author_only_page_delay_seconds": 0.5
+  },
+  "export": {
+    "dir": "data/exports",
+    "novel_txt_dir": "data/novel_exports",
+    "novel_txt_include_filtered_notes": false,
+    "novel_txt_debug_markers": false
   },
   "llm": {
     "base_url": "https://api.openai.com/v1",
@@ -46,6 +55,8 @@ uv sync --extra dev
 ```
 
 所有配置项均可通过 `YAMIBO_*` 环境变量覆盖。详见 [`.env.example`](.env.example)。
+
+其中轻小说 TXT 导出目录对应 `YAMIBO_NOVEL_TXT_EXPORT_DIR`，轻小说只看楼主更新检测阈值对应 `YAMIBO_NOVEL_AUTHOR_ONLY_MAX_PAGES` 和 `YAMIBO_NOVEL_AUTHOR_ONLY_PAGE_DELAY_SECONDS`。
 
 ### 初始化数据库
 
@@ -71,7 +82,8 @@ LLM Client (Claude Desktop / Cursor)
 yamibo-mcp-server ──创建任务──▶ SQLite (jobs + job_events)
     │                               ▲
     │ application layer             │ 轮询 + 抢占
-    │ (ensure_thread, archive)      │
+    │ (ensure_thread, archive,      │
+    │  update_thread)               │
 yamibo-daemon ──────────────────────┘
     ├── 论坛 HTTP 客户端（多分区支持）
     ├── HTML 解析器
@@ -130,6 +142,12 @@ uv run yamibo-mcp-server search-threads --query "星灵感应"
 # 获取帖子详情（自动归档）
 uv run yamibo-mcp-server get-thread --tid 572313
 
+# 检查轻小说更新
+uv run yamibo-mcp-server check-thread-updates --tid 544422
+
+# 创建轻小说追加更新任务
+uv run yamibo-mcp-server update-thread --tid 544422
+
 # 批量同步
 uv run yamibo-mcp-server create-sync-forum-range-jobs --start-page 1 --end-page 5
 
@@ -145,6 +163,9 @@ uv run yamibo-mcp-server read-resource "yamibo://threads/572313/summary"
 # 读取帖子诊断（缺失资产、建议操作）
 uv run yamibo-mcp-server read-resource "yamibo://threads/572313/diagnostics"
 
+# 读取轻小说更新检测结果
+uv run yamibo-mcp-server read-resource "yamibo://threads/544422/update-check"
+
 # 解析标题
 uv run yamibo-mcp-server parse-thread-title "【提灯喵汉化组】[ポテトルス] ray 第13话"
 
@@ -157,7 +178,7 @@ uv run yamibo-backup-db
 ```
 src/yamibo_mcp/
 ├── server/          # MCP Server + CLI 子命令
-├── application/     # 用例层（ensure_thread, archive_thread_job, get_job_status）
+├── application/     # 用例层（ensure_thread, archive_thread_job, get_job_status, thread_update_use_cases）
 ├── daemon/          # 后台任务消费 + 处理器
 ├── web/             # 嵌入式 Web 控制台
 ├── yamibo/          # 论坛 HTTP 客户端、HTML 解析器、标题解析

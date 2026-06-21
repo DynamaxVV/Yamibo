@@ -17,6 +17,10 @@ class TestCleanContent:
         result = clean_content("2026-6-10 18:28 上传")
         assert result == ""
 
+    def test_removes_last_edited_banner(self):
+        result = clean_content("本帖最后由 zyq102 于 2026-6-11 23:30 编辑")
+        assert result == ""
+
     def test_removes_standalone_image_filename(self):
         result = clean_content("photo.jpg")
         assert result == ""
@@ -37,6 +41,14 @@ class TestCleanContent:
     def test_collapses_multiple_blank_lines(self):
         result = clean_content("a\n\n\n\nb")
         assert result == "a\n\nb"
+
+    def test_strips_indentation_after_newlines(self):
+        result = clean_content("a\n    b\n\tc")
+        assert result == "a\nb\nc"
+
+    def test_splits_episode_heading_from_body(self):
+        result = clean_content("Episode 6今天是开学日")
+        assert result == "Episode 6\n今天是开学日"
 
     def test_strips_trailing_whitespace_per_line(self):
         result = clean_content("hello   \nworld  ")

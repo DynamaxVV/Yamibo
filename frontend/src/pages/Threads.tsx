@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api, type ThreadSummary, type Forum } from '../api/client'
 import { ContentBadge } from '../components/Badge'
+import { PaginationControls } from '../components/PaginationControls'
 import { useI18n } from '../context/I18nContext'
 import { formatDateTime } from '../utils/time'
 
@@ -132,6 +133,7 @@ export function Threads() {
         ))}
       </div>
 
+      <div id="threads-pagination-top" />
       <div className="table-wrap"><table style={{ tableLayout: 'fixed', width: '100%' }}>
         <thead>
           <tr>
@@ -161,15 +163,7 @@ export function Threads() {
         </tbody>
       </table></div>
 
-      {totalPages > 1 && (
-        <div className="row-actions" style={{ justifyContent: 'center', gap: 4 }}>
-          <button className="btn-subtle" disabled={page <= 1} onClick={() => setPage(1)}>&laquo;</button>
-          <button className="btn-subtle" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>&lsaquo;</button>
-          <span style={{ fontSize: 12, color: 'var(--text-tertiary)', padding: '4px 8px' }}>{page} / {totalPages}</span>
-          <button className="btn-subtle" disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>&rsaquo;</button>
-          <button className="btn-subtle" disabled={page >= totalPages} onClick={() => setPage(totalPages)}>&raquo;</button>
-        </div>
-      )}
+      <PaginationControls page={page} totalPages={totalPages} onPageChange={setPage} scrollTargetId="threads-pagination-top" />
     </>
   )
 }

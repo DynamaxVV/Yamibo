@@ -21,7 +21,7 @@ class TestJobStatus:
 
 class TestJobType:
     def test_all_expected_values(self):
-        expected = {"noop", "sync_thread", "export_thread", "cleanup_job", "title_refine"}
+        expected = {"noop", "sync_thread", "update_thread", "export_thread", "cleanup_job", "title_refine"}
         actual = {t.value for t in JobType}
         assert actual == expected
 

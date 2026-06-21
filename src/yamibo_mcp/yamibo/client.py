@@ -14,9 +14,18 @@ from pathlib import Path
 
 from yamibo_mcp.errors import LoginRequiredError, RemoteFetchError, RemoteMaintenanceError, UnexpectedPageError
 from yamibo_mcp.yamibo.parsers.forum_list import ForumThreadItem, extract_total_pages, parse_forum_list
+from yamibo_mcp.yamibo.parsers.thread_detail import extract_author_only_total_pages
 from yamibo_mcp.yamibo.parsers.search_results import SearchResultItem, parse_search_results
 from yamibo_mcp.yamibo.page_classifier import PageType, classify_html
-from yamibo_mcp.yamibo.urls import DEFAULT_FORUM_ID, dateline_forum_page_url, forum_page_url, normalize_forum_page_url, normalize_thread_url, thread_url_from_tid
+from yamibo_mcp.yamibo.urls import (
+    DEFAULT_FORUM_ID,
+    dateline_forum_page_url,
+    forum_page_url,
+    normalize_forum_page_url,
+    normalize_thread_url,
+    thread_page_url_from_tid,
+    thread_url_from_tid,
+)
 
 
 DEFAULT_HEADERS = {
@@ -119,6 +128,55 @@ class YamiboClient:
         if tid is None:
             raise ValueError("fetch_thread requires tid or url")
         return self.fetch_thread_by_tid(tid, base_url=base_url)
+
+    def fetch_thread_page(
+        self,
+        *,
+        tid: int,
+        page: int,
+        author_uid: str | None = None,
+        base_url: str | None = None,
+    ) -> FetchResult:
+        return self.fetch_url(
+            thread_page_url_from_tid(
+                tid,
+                page=page,
+                author_uid=author_uid,
+                base_url=base_url or "https://bbs.yamibo.com",
+            )
+        )
+
+    def fetch_author_only_thread_pages(
+        self,
+        *,
+        tid: int,
+        author_uid: str,
+        base_url: str | None = None,
+        max_pages: int,
+        page_delay_seconds: float,
+    ) -> tuple[list[FetchResult], int | None, str]:
+        if max_pages <= 0:
+            raise ValueError("max_pages must be positive")
+        if page_delay_seconds < 0:
+            raise ValueError("page_delay_seconds must be non-negative")
+
+        first_page = self.fetch_thread_page(tid=tid, page=1, author_uid=author_uid, base_url=base_url)
+        total_pages = extract_author_only_total_pages(first_page.html, tid=tid, author_uid=author_uid)
+        results = [first_page]
+        max_target_page = max_pages if total_pages is None else min(total_pages, max_pages)
+
+        for page in range(2, max_target_page + 1):
+            if page_delay_seconds > 0:
+                time.sleep(page_delay_seconds)
+            results.append(self.fetch_thread_page(tid=tid, page=page, author_uid=author_uid, base_url=base_url))
+
+        if total_pages is not None and total_pages > max_pages:
+            stopped_reason = "max_pages"
+        elif total_pages is None and len(results) >= max_pages:
+            stopped_reason = "max_pages"
+        else:
+            stopped_reason = "last_page"
+        return results, total_pages, stopped_reason
 
     def fetch_forum_page(self, *, page: int | None = None, url: str | None = None, base_url: str | None = None, forum_id: int = DEFAULT_FORUM_ID) -> FetchResult:
         if url:

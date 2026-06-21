@@ -11,6 +11,7 @@ from yamibo_mcp.db.migrations import migrate
 from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.errors import LeaseNotAcquired
 from yamibo_mcp.daemon.handlers import get_handler
+from yamibo_mcp.daemon.handlers.sync_thread import JobCancelled
 from yamibo_mcp.daemon.recovery import recover_expired_jobs
 
 LOG = logging.getLogger(__name__)
@@ -42,6 +43,9 @@ class DaemonRunner:
                 return DaemonResult(processed=1)
             try:
                 handler(repo, job, self.worker_id, self.settings.worker_lease_seconds, self.settings)
+            except JobCancelled:
+                LOG.info("Job %s was cancelled", job.job_id)
+                repo.fail(job.job_id, "CANCELLED", "Job was cancelled by user")
             except Exception as exc:  # noqa: BLE001 - top-level daemon boundary
                 LOG.exception("Job %s failed", job.job_id)
                 repo.fail(job.job_id, exc.__class__.__name__, str(exc))

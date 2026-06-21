@@ -54,9 +54,23 @@ class TestLegacyJsonRpcDispatch:
         expected = {
             "search_threads", "get_thread", "browse_forum_page",
             "archive_thread", "export_thread", "get_job_status",
-            "cleanup_job", "sync_forum_range",
+            "cleanup_job", "sync_forum_range", "update_thread", "create_update_thread_job",
         }
         assert expected.issubset(tool_names)
+
+    def test_tools_call_update_thread_returns_job_id(self, tmp_path, db):
+        settings = _fake_settings(tmp_path)
+        request = {
+            "id": 4,
+            "method": "tools/call",
+            "params": {"name": "update_thread", "arguments": {"tid": 42}},
+        }
+        with patch("yamibo_mcp.application.thread_update_use_cases.load_settings", return_value=settings), \
+             patch("yamibo_mcp.application.thread_update_use_cases.connect", return_value=db):
+            response = handle_request(request)
+        result = response["result"]
+        assert isinstance(result, str)
+        assert result.startswith("update_thread_")
 
     def test_tools_call_archive_thread_returns_job_id(self, tmp_path, db):
         # Arrange

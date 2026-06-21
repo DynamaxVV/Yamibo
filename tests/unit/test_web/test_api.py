@@ -5,10 +5,12 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 import logging
+from unittest.mock import patch
 
 from yamibo_mcp.domain.models import FloorSnapshot, ThreadSnapshot, TitleSnapshot
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
-from yamibo_mcp.web.api import _thread_detail
+from yamibo_mcp.db.repositories.jobs import JobsRepository
+from yamibo_mcp.web.api import _thread_detail, _thread_update_check, _update_thread, _update_title
 from yamibo_mcp.logging import configure_logging
 from yamibo_mcp.web.log_buffer import get_log_buffer
 
@@ -146,7 +148,7 @@ def test_thread_detail_merges_rich_body_html_from_metadata(db, tmp_path: Path):
                         "floor_no": 1,
                         "publisher": "u1",
                         "content": "正文",
-                        "rich_body_html": "<div><strong>富文本</strong></div>",
+                        "rich_body_html": "<div><strong>富文本</strong><a href=\"https://example.com\">链接</a></div>",
                     }
                 ],
             },
@@ -159,7 +161,46 @@ def test_thread_detail_merges_rich_body_html_from_metadata(db, tmp_path: Path):
     _thread_detail(handler, 42, db, {"preview_page": ["1"], "preview_page_size": ["10"]}, settings)
 
     payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
-    assert payload["floors"][0]["rich_body_html"] == "<div><strong>富文本</strong></div>"
+    assert payload["floors"][0]["rich_body_html"] == "<div><strong>富文本</strong>链接</div>"
+
+
+def test_thread_update_check_endpoint_returns_json(db):
+    handler = _CaptureHandler()
+    settings = SimpleNamespace()
+    with patch("yamibo_mcp.web.api.check_thread_updates", return_value={"tid": 42, "status": "up_to_date"}):
+        _thread_update_check(handler, 42, settings)
+    payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
+    assert payload["status"] == "up_to_date"
+
+
+def test_thread_update_endpoint_creates_update_job(db):
+    handler = _CaptureHandler()
+    body = {"tid": 42, "base_url": "https://bbs.yamibo.com"}
+    handler.headers["Content-Length"] = str(len(json.dumps(body)))
+    handler.rfile = io.BytesIO(json.dumps(body).encode("utf-8"))
+    _update_thread(handler, db)
+    payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
+    assert payload["ok"] is True
+    job = JobsRepository(db).get(payload["job_id"])
+    assert job.job_type == "update_thread"
+
+
+def test_update_title_defaults_missing_fields_from_existing_title(db):
+    settings = SimpleNamespace()
+    snapshot = _make_snapshot()
+    ThreadsRepository(db).upsert_snapshot(snapshot, forum_id=55)
+
+    handler = _CaptureHandler()
+    body = {"tid": 42, "display_title": "新的标题"}
+    handler.headers["Content-Length"] = str(len(json.dumps(body)))
+    handler.rfile = io.BytesIO(json.dumps(body).encode("utf-8"))
+    with patch("yamibo_mcp.web.api.update_title_hints", return_value=None):
+        _update_title(handler, db, settings)
+
+    payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
+    assert payload["ok"] is True
+    refreshed = ThreadsRepository(db).get_thread(42)
+    assert refreshed["display_title"] == "新的标题"
 
 
 def test_configure_logging_attaches_web_log_buffer():

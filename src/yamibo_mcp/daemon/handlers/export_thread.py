@@ -6,14 +6,24 @@ from yamibo_mcp.config import Settings
 from yamibo_mcp.db.connection import transaction
 from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
+from yamibo_mcp.domain.forums import resolve_forum
 from yamibo_mcp.domain.models import Job
 from yamibo_mcp.domain.enums import JobType
-from yamibo_mcp.storage.exports import ExportPrecheckError, export_thread_zip, inspect_export_readiness, is_thread_stale
+from yamibo_mcp.storage.exports import (
+    ExportPrecheckError,
+    export_thread_txt,
+    export_thread_zip,
+    inspect_export_readiness,
+    is_thread_stale,
+)
 from yamibo_mcp.storage.paths import StoragePaths
 from yamibo_mcp.daemon.handlers.sync_thread import handle_sync_thread
+from yamibo_mcp.daemon.handlers.sync_thread import JobCancelled, _check_cancelled
+from yamibo_mcp.yamibo.urls import thread_url_from_tid
 
 
 def handle_export_thread(repo: JobsRepository, job: Job, worker_id: str, lease_seconds: int, settings: Settings) -> None:
+    _check_cancelled(repo, job.job_id)
     tid = job.tid or job.payload.get("tid")
     if tid is None:
         raise ValueError("export_thread requires tid")
@@ -27,7 +37,11 @@ def handle_export_thread(repo: JobsRepository, job: Job, worker_id: str, lease_s
     thread_repo = ThreadsRepository(repo.conn)
     thread = thread_repo.get_thread(tid)
     sync_job_info: dict[str, object] | None = None
-    paths = StoragePaths(settings.data_dir, export_dir=settings.export_dir)
+    paths = StoragePaths(
+        settings.data_dir,
+        export_dir=settings.export_dir,
+        novel_txt_export_dir=settings.novel_txt_export_dir,
+    )
 
     should_resync = strategy == "force_resync"
     if thread is None:
@@ -84,21 +98,36 @@ def handle_export_thread(repo: JobsRepository, job: Job, worker_id: str, lease_s
             raise ValueError(f"thread archive is partial: {tid}{detail}")
         raise ValueError(f"thread archive is not complete: {tid}; archive_status={thread['archive_status']}")
     readiness = inspect_export_readiness(paths, tid)
-    if not readiness.images_complete:
+    is_novel = thread["content_kind"] == "novel" or thread["forum_id"] == 55
+    if not is_novel and not readiness.images_complete:
         raise ExportPrecheckError(
             f"thread archive images are incomplete: missing_urls={readiness.missing_image_count}, missing_files={len(readiness.missing_files)}"
         )
 
-    repo.update_stage(job.job_id, "zip_write", progress_current=2, progress_total=4)
+    repo.update_stage(job.job_id, "export_write", progress_current=2, progress_total=4)
     title = thread_repo.get_title_parse(tid)
-    export_path = export_thread_zip(
-        paths,
-        tid,
-        series_name=None if title is None else (title["series_key"] or title["core_title_guess"]),
-        chapter_name=None if title is None else title["chapter_name"],
-        chapter_title=None if title is None else title["chapter_title"],
-        display_title=thread["display_title"] or thread["raw_title"],
-    )
+    if is_novel:
+        forum_name = resolve_forum(thread["forum_id"]).name if thread["forum_id"] is not None else "轻小说区"
+        txt_result = export_thread_txt(
+            paths,
+            tid,
+            title=(thread["display_title"] or thread["raw_title"]),
+            source_url=thread_url_from_tid(tid),
+            forum_name=forum_name,
+            translator=thread["publisher"],
+            include_filtered_notes=settings.novel_txt_include_filtered_notes,
+            debug_markers=settings.novel_txt_debug_markers,
+        )
+        export_path = txt_result.export_path
+    else:
+        export_path = export_thread_zip(
+            paths,
+            tid,
+            series_name=None if title is None else (title["series_key"] or title["core_title_guess"]),
+            chapter_name=None if title is None else title["chapter_name"],
+            chapter_title=None if title is None else title["chapter_title"],
+            display_title=thread["display_title"] or thread["raw_title"],
+        )
     try:
         relative_export = str(export_path.relative_to(settings.data_dir))
     except ValueError:
@@ -109,13 +138,17 @@ def handle_export_thread(repo: JobsRepository, job: Job, worker_id: str, lease_s
         ThreadsRepository(repo.conn).mark_exported(tid, relative_export)
 
     repo.update_stage(job.job_id, "finalize", progress_current=4, progress_total=4)
-    repo.succeed(
-        job.job_id,
-        {
-            "tid": tid,
-            "strategy": strategy,
-            "export_path": str(export_path),
-            "relative_export_path": relative_export,
-            "sync_job": sync_job_info,
-        },
-    )
+    artifacts = {
+        "tid": tid,
+        "strategy": strategy,
+        "export_path": str(export_path),
+        "relative_export_path": relative_export,
+        "sync_job": sync_job_info,
+        "export_format": "txt" if is_novel else "zip",
+    }
+    if is_novel:
+        artifacts["manifest_path"] = str(txt_result.manifest_path)
+        artifacts["appended_floors"] = txt_result.appended_floors
+        artifacts["filtered_floors"] = txt_result.filtered_floors
+        artifacts["needs_full_regenerate"] = txt_result.needs_full_regenerate
+    repo.succeed(job.job_id, artifacts)

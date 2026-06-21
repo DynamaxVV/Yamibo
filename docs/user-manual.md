@@ -1,6 +1,6 @@
 # 用户操作手册
 
-> 版本：0.5.0 | 更新日期：2026-06-21
+> 版本：0.6.0 | 更新日期：2026-06-21
 
 ## 1. 快速开始
 
@@ -68,13 +68,23 @@ MCP Server 会调用 `export_thread` 创建导出任务。支持三种策略：
 - **sync_if_stale**：本地数据过旧时先同步
 - **force_resync**：强制重新同步
 
-### 2.5 批量归档
+轻小说帖子会导出为独立 TXT 文件，默认输出到 `data/novel_exports`，可通过 `YAMIBO_NOVEL_TXT_EXPORT_DIR` 修改。
+
+### 2.5 检查轻小说更新
+
+> "检查一下帖子 544422 是否有更新"
+
+MCP Server 会调用 `check_thread_updates` 只读接口，先比较本地归档快照和远端只看楼主页面。
+
+如果结果显示有更新，再调用 `update_thread` 创建追加更新任务。
+
+### 2.6 批量归档
 
 > "帮我把漫画区前 5 页的帖子都归档"
 
 MCP Server 会调用 `sync_forum_range` 创建批量同步任务。
 
-### 2.6 读取归档内容
+### 2.7 读取归档内容
 
 MCP 资源可以通过 URI 访问：
 
@@ -83,6 +93,7 @@ MCP 资源可以通过 URI 访问：
 - `yamibo://threads/{tid}/diagnostics` — 诊断信息（缺失资产、建议操作）
 - `yamibo://threads/{tid}/posts` — 内容块列表
 - `yamibo://threads/{tid}/assets` — 资产列表
+- `yamibo://threads/{tid}/update-check` — 轻小说更新检测结果
 - `yamibo://threads/{tid}/context` — 帖子正文 Markdown
 - `yamibo://threads/{tid}/metadata` — 完整元数据 JSON
 - `yamibo://threads/{tid}/export` — 导出 ZIP 包

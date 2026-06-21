@@ -35,6 +35,10 @@ from yamibo_mcp.yamibo.title.parser import parse_title
 from yamibo_mcp.yamibo.title.normalizer import normalize_series_key
 from yamibo_mcp.yamibo.urls import forum_page_url, thread_url_from_tid
 from yamibo_mcp.application.thread_use_cases import ensure_thread, archive_thread_job
+from yamibo_mcp.application.thread_update_use_cases import (
+    check_thread_updates as _check_thread_updates,
+    create_update_thread_job as _create_update_thread_job,
+)
 from yamibo_mcp.application.job_use_cases import get_job_status_payload as _get_job_status_payload
 
 
@@ -86,6 +90,14 @@ def export_thread(*, tid: int, strategy: str | None = None) -> dict[str, object]
         return {"job_id": job.job_id}
     finally:
         conn.close()
+
+
+def check_thread_updates(*, tid: int, base_url: str | None = None) -> dict[str, object]:
+    return _check_thread_updates(tid=tid, base_url=base_url)
+
+
+def update_thread(*, tid: int, base_url: str | None = None) -> dict[str, object]:
+    return _create_update_thread_job(tid=tid, base_url=base_url)
 
 
 def cleanup_job(*, job_id: str | None = None, mode: str = "job_staging", older_than_hours: int | None = None) -> dict[str, object]:
@@ -635,9 +647,14 @@ def read_resource(uri: str) -> dict[str, object]:
             return _build_thread_posts_resource(uri, tid, settings)
         elif kind == "assets":
             return _build_thread_assets_resource(uri, tid, settings)
+        elif kind == "update-check":
+            return _build_thread_update_check_resource(uri, tid, settings)
         else:
             raise ValueError(f"unsupported resource kind: {kind}")
-        payload = build_resource_payload(uri=uri, path=path, content_type=guess_content_type(kind))
+        content_type = guess_content_type(kind)
+        if kind == "export":
+            content_type = "text/plain" if path.suffix.lower() == ".txt" else "application/zip"
+        payload = build_resource_payload(uri=uri, path=path, content_type=content_type)
         if payload["exists"]:
             if kind == "export":
                 payload["size_bytes"] = path.stat().st_size
@@ -676,7 +693,7 @@ def read_resource_content(uri: str) -> tuple[str | bytes, str]:
     content_type = str(payload["content_type"])
     if not payload.get("exists"):
         raise FileNotFoundError(f"resource does not exist: {uri}")
-    if content_type == "application/zip":
+    if content_type in {"application/zip", "application/octet-stream"}:
         path = Path(str(payload["path"]))
         return path.read_bytes(), content_type
     return str(payload.get("text") or ""), content_type
@@ -914,6 +931,23 @@ def _build_thread_assets_resource(uri: str, tid: int, settings) -> dict[str, obj
     }
 
 
+def _build_thread_update_check_resource(uri: str, tid: int, settings) -> dict[str, object]:
+    result = check_thread_updates(tid=tid)
+    if result.get("status") == "failed" and result.get("reason") == f"thread {tid} not found":
+        return {
+            "uri": uri,
+            "content_type": "application/json",
+            "exists": False,
+            "error": result["reason"],
+        }
+    return {
+        "uri": uri,
+        "content_type": "application/json",
+        "exists": True,
+        "text": json.dumps(result, ensure_ascii=False, indent=2),
+    }
+
+
 def _build_job_events_resource(uri: str, job_id: str, settings) -> dict[str, object]:
     conn = connect(settings.db_path)
     try:
@@ -999,6 +1033,10 @@ def create_sync_thread_job(*, html_path: str, tid: int | None = None, url: str |
 
 def create_export_thread_job(*, tid: int) -> str:
     return str(export_thread(tid=tid)["job_id"])
+
+
+def create_update_thread_job(*, tid: int, base_url: str | None = None) -> str:
+    return str(update_thread(tid=tid, base_url=base_url)["job_id"])
 
 
 def generate_series_index_markdown(*, limit: int = 100, write_path: Path | None = None) -> str:

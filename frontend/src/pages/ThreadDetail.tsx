@@ -165,7 +165,7 @@ const READING_CONFIG_STORAGE_KEYS: Record<ReadingPlatform, Record<ThemeVariant, 
     dark: 'yamibo.reading-config.mobile.dark.v4',
   },
 }
-const THREAD_DETAIL_CACHE_PREFIX = 'yamibo.thread-detail-cache.v1'
+const THREAD_DETAIL_CACHE_PREFIX = 'yamibo.thread-detail-cache.v2'
 
 function buildReadingConfig(mode: ReadingPresetKey, variant: ThemeVariant, textSize = 100, fontFamily = 'system'): ReadingConfig {
   const preset = READING_PRESETS[mode][variant]
@@ -511,7 +511,7 @@ export function ThreadDetail() {
   const [readingConfig, setReadingConfig] = useState<ReadingConfig>(() => loadReadingConfig(readingPlatform, themeVariant) ?? buildReadingConfig('paper', themeVariant, getDefaultReadingTextSize(readingPlatform)))
   const [fontAssets, setFontAssets] = useState<import('../api/client').FontAsset[]>([])
   const [editingChapter, setEditingChapter] = useState(false)
-  const [chapterForm, setChapterForm] = useState({ chapter_name: '', chapter_index: '', author_guess: '', group_name: '' })
+  const [chapterForm, setChapterForm] = useState({ display_title: '', chapter_name: '', chapter_index: '', author_guess: '', group_name: '' })
   const [activeSyncStatus, setActiveSyncStatus] = useState<string | null>(null)
   const [statusRefreshNotice, setStatusRefreshNotice] = useState<string | null>(null)
   const readingConfigRef = useRef(readingConfig)
@@ -576,22 +576,18 @@ export function ThreadDetail() {
       setThread(nextThread)
       fs.forEach(f => { FORUM_NAMES[f.forum_id] = lang === 'en' ? (f.name_en || f.name) : f.name })
       let nextBlocks: ContentBlock[] = []
-      let nextImages: ThreadImage[] = []
-      if (nextThread.content_kind === 'novel') {
-        setBlocks(nextBlocks)
-        setImages(nextImages)
-      } else {
-        const [fetchedBlocks, fetchedImages] = await Promise.all([api.threadBlocks(tid), api.threadImages(tid)])
-        if (!active) return
-        nextBlocks = fetchedBlocks
-        nextImages = fetchedImages
-        setBlocks(nextBlocks)
-        setImages(nextImages)
-      }
+      const [fetchedImages, fetchedBlocks] = await Promise.all([
+        api.threadImages(tid),
+        nextThread.content_kind === 'novel' ? Promise.resolve([] as ContentBlock[]) : api.threadBlocks(tid),
+      ])
+      if (!active) return
+      nextBlocks = fetchedBlocks
+      setBlocks(nextBlocks)
+      setImages(fetchedImages)
       saveThreadDetailCache(tid, previewPageParam, {
         thread: nextThread,
         blocks: nextBlocks,
-        images: nextImages,
+        images: fetchedImages,
         cached_at: new Date().toISOString(),
       })
     }
@@ -728,6 +724,7 @@ export function ThreadDetail() {
 
   const handleEditChapter = () => {
     setChapterForm({
+      display_title: thread?.display_title || thread?.raw_title || '',
       chapter_name: thread?.chapter_name || '',
       chapter_index: thread?.chapter_index != null ? String(thread.chapter_index) : '',
       author_guess: thread?.author_guess || '',
@@ -739,6 +736,10 @@ export function ThreadDetail() {
   const handleSaveChapter = async () => {
     setActionLoading('chapter')
     try {
+      await api.updateTitle({
+        tid,
+        display_title: chapterForm.display_title || thread?.display_title || thread?.raw_title || '',
+      })
       await api.updateChapter(
         tid,
         chapterForm.chapter_name || null,
@@ -1099,6 +1100,7 @@ export function ThreadDetail() {
       {editingChapter && (
         <div className="inline-edit">
           <div className="inline-edit-grid">
+            <label className="inline-edit-title-field">{t('title')}<input value={chapterForm.display_title} onChange={e => setChapterForm(f => ({ ...f, display_title: e.target.value }))} /></label>
             <label>{t('chapter_number')}<input type="number" value={chapterForm.chapter_index} onChange={e => setChapterForm(f => ({ ...f, chapter_index: e.target.value }))} /></label>
             <label>{t('chapter_name')}<input value={chapterForm.chapter_name} onChange={e => setChapterForm(f => ({ ...f, chapter_name: e.target.value }))} /></label>
             <label>{t('author')}<input value={chapterForm.author_guess} onChange={e => setChapterForm(f => ({ ...f, author_guess: e.target.value }))} /></label>

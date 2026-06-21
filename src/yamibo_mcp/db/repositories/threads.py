@@ -152,15 +152,25 @@ class ThreadsRepository:
         )
 
     def _upsert_floors(self, snapshot: ThreadSnapshot) -> None:
+        current_pids = [floor.pid for floor in snapshot.floors]
+        if current_pids:
+            placeholders = ",".join("?" for _ in current_pids)
+            self.conn.execute(
+                f"DELETE FROM floors WHERE tid = ? AND pid NOT IN ({placeholders})",
+                (snapshot.tid, *current_pids),
+            )
+        else:
+            self.conn.execute("DELETE FROM floors WHERE tid = ?", (snapshot.tid,))
         for floor in snapshot.floors:
             self.conn.execute(
                 """
-                INSERT INTO floors (pid, tid, floor_no, publisher, content, pub_time, has_images, content_hash, quote_text, reply_text)
-                VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+                INSERT INTO floors (pid, tid, floor_no, publisher, publisher_uid, content, pub_time, has_images, content_hash, quote_text, reply_text)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
                 ON CONFLICT(pid) DO UPDATE SET
                   tid = excluded.tid,
                   floor_no = excluded.floor_no,
                   publisher = excluded.publisher,
+                  publisher_uid = excluded.publisher_uid,
                   content = excluded.content,
                   pub_time = excluded.pub_time,
                   has_images = excluded.has_images,
@@ -172,6 +182,7 @@ class ThreadsRepository:
                     floor.tid,
                     floor.floor_no,
                     floor.publisher,
+                    floor.publisher_uid,
                     floor.content,
                     floor.pub_time,
                     1 if floor.has_images else 0,
@@ -550,4 +561,14 @@ class ThreadsRepository:
         return self.conn.execute(
             "SELECT * FROM floors WHERE tid = ? ORDER BY floor_no ASC",
             (tid,),
+        ).fetchall()
+
+    def count_floors(self, tid: int) -> int:
+        row = self.conn.execute("SELECT COUNT(*) AS c FROM floors WHERE tid = ?", (tid,)).fetchone()
+        return int(row["c"]) if row is not None else 0
+
+    def list_floors_page(self, tid: int, *, limit: int, offset: int) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            "SELECT * FROM floors WHERE tid = ? ORDER BY floor_no ASC LIMIT ? OFFSET ?",
+            (tid, limit, offset),
         ).fetchall()

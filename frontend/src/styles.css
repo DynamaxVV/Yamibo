@@ -323,6 +323,9 @@ input[type="checkbox"] { width: 14px; height: 14px; cursor: pointer; accent-colo
 .inline-edit-grid label {
   display: block; font-size: 11px; color: var(--text-tertiary); margin-bottom: 2px;
 }
+.inline-edit-title-field {
+  grid-column: 1 / -1;
+}
 .inline-edit-grid input {
   width: 100%; padding: 4px 8px; border: 1px solid var(--border);
   border-radius: var(--radius-sm); font-size: 13px;
@@ -614,10 +617,15 @@ input[type="checkbox"] { width: 14px; height: 14px; cursor: pointer; accent-colo
   line-height: var(--reading-line-height, 1.7);
   font-size: inherit;
   display: block;
+  text-indent: var(--reading-indent, 0);
   margin-bottom: 8px;
 }
 .floor-rich-body > div,
 .floor-rich-body > p,
+.floor-rich-body > span,
+.floor-rich-body > strong,
+.floor-rich-body > em,
+.floor-rich-body > a,
 .floor-rich-body > blockquote,
 .floor-rich-body > ul,
 .floor-rich-body > ol,
@@ -628,6 +636,10 @@ input[type="checkbox"] { width: 14px; height: 14px; cursor: pointer; accent-colo
 }
 .floor-rich-body > div:last-child,
 .floor-rich-body > p:last-child,
+.floor-rich-body > span:last-child,
+.floor-rich-body > strong:last-child,
+.floor-rich-body > em:last-child,
+.floor-rich-body > a:last-child,
 .floor-rich-body > blockquote:last-child,
 .floor-rich-body > ul:last-child,
 .floor-rich-body > ol:last-child,
@@ -639,6 +651,16 @@ input[type="checkbox"] { width: 14px; height: 14px; cursor: pointer; accent-colo
   display: block;
   content: "";
   margin: 0 0 0.65em;
+}
+.floor-rich-body > div[style*="text-align:center"],
+.floor-rich-body > div[style*="text-align:right"],
+.floor-rich-body > p[style*="text-align:center"],
+.floor-rich-body > p[style*="text-align:right"] {
+  text-indent: 0;
+}
+.floor-rich-body > div,
+.floor-rich-body > p {
+  text-indent: var(--reading-indent, 0);
 }
 .floor-rich-body a {
   color: var(--reading-accent, var(--accent));
@@ -677,8 +699,10 @@ input[type="checkbox"] { width: 14px; height: 14px; cursor: pointer; accent-colo
 .floor-rich-body div {
   line-height: var(--reading-line-height, 1.7);
 }
-.floor-rich-body p,
-.floor-rich-body li {
+.floor-rich-body > span,
+.floor-rich-body > strong,
+.floor-rich-body > em,
+.floor-rich-body > a {
   text-indent: var(--reading-indent, 0);
 }
 .floor-rich-body p:first-child,
@@ -744,6 +768,10 @@ input[type="checkbox"] { width: 14px; height: 14px; cursor: pointer; accent-colo
   }
   .floor-rich-body > div,
   .floor-rich-body > p,
+  .floor-rich-body > span,
+  .floor-rich-body > strong,
+  .floor-rich-body > em,
+  .floor-rich-body > a,
   .floor-rich-body > blockquote,
   .floor-rich-body > ul,
   .floor-rich-body > ol,

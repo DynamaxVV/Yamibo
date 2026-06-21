@@ -51,12 +51,14 @@ export function Layout() {
           </div>
         </div>
         <Outlet />
+        <div id="bottom" />
       </div>
       <div className="float-actions">
         <button className="float-btn" onClick={toggleDark} title={dark ? 'Light' : 'Dark'}>
           {dark ? '☀' : '☾'}
         </button>
-        <a className="float-btn" href="#top">{t('back_to_top')}</a>
+        <a className="float-btn float-btn-nav" href="#top" title={t('back_to_top')} aria-label={t('back_to_top')}>⬆︎</a>
+        <a className="float-btn float-btn-nav" href="#bottom" title={t('back_to_bottom')} aria-label={t('back_to_bottom')}>⬇︎</a>
       </div>
     </>
   )

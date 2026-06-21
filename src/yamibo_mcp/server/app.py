@@ -18,10 +18,12 @@ from yamibo_mcp.server.resources import (
     thread_posts_uri,
     thread_assets_uri,
     thread_summary_uri,
+    thread_update_check_uri,
 )
 from yamibo_mcp.server.tools import (
     archive_thread,
     browse_forum_page,
+    check_thread_updates,
     cleanup_job,
     create_export_thread_job,
     create_noop_job,
@@ -37,6 +39,7 @@ from yamibo_mcp.server.tools import (
     read_resource_content,
     search_threads,
     sync_forum_range,
+    update_thread,
 )
 
 
@@ -123,6 +126,14 @@ def build_mcp_server():
     def _export_thread(tid: int, strategy: str | None = None) -> dict[str, object]:
         return export_thread(tid=tid, strategy=strategy)
 
+    @server.tool(name="check_thread_updates", description="检查已归档轻小说贴子是否有新更新；只读，不创建任务。")
+    def _check_thread_updates(tid: int) -> dict[str, object]:
+        return check_thread_updates(tid=tid)
+
+    @server.tool(name="update_thread", description="创建轻小说贴子追加更新任务；先检查后更新。")
+    def _update_thread(tid: int, base_url: str | None = None) -> dict[str, object]:
+        return update_thread(tid=tid, base_url=base_url)
+
     @server.tool(name="get_job_status", description="读取后台任务状态。")
     def _get_job_status(job_id: str) -> dict[str, object]:
         return get_job_status(job_id)
@@ -178,7 +189,7 @@ def build_mcp_server():
         content, _ = read_resource_content(thread_metadata_uri(int(tid)))
         return str(content)
 
-    @server.resource(thread_export_uri("{tid}"), mime_type="application/zip", name="thread-export")
+    @server.resource(thread_export_uri("{tid}"), mime_type="application/octet-stream", name="thread-export")
     def _thread_export(tid: str) -> bytes:
         content, _ = read_resource_content(thread_export_uri(int(tid)))
         if isinstance(content, bytes):
@@ -223,6 +234,11 @@ def build_mcp_server():
     @server.resource(thread_assets_uri("{tid}"), mime_type="application/json", name="thread-assets")
     def _thread_assets(tid: str) -> str:
         content, _ = read_resource_content(thread_assets_uri(int(tid)))
+        return str(content)
+
+    @server.resource(thread_update_check_uri("{tid}"), mime_type="application/json", name="thread-update-check")
+    def _thread_update_check(tid: str) -> str:
+        content, _ = read_resource_content(thread_update_check_uri(int(tid)))
         return str(content)
 
     @server.resource(job_events_uri("{job_id}"), mime_type="application/json", name="job-events")
@@ -277,6 +293,9 @@ def main() -> None:
     browse_forum_page_parser.add_argument("--cookie-file")
     browse_forum_page_parser.add_argument("--include-sticky", action="store_true")
     browse_forum_page_parser.add_argument("--include-announcements", action="store_true")
+    update_check_parser = sub.add_parser("check-thread-updates")
+    update_check_parser.add_argument("--tid", type=int, required=True)
+    update_check_parser.add_argument("--base-url")
     forum_range_parser = sub.add_parser("create-sync-forum-range-jobs")
     forum_range_parser.add_argument("--start-page", type=int, required=True)
     forum_range_parser.add_argument("--end-page", type=int, required=True)
@@ -288,6 +307,9 @@ def main() -> None:
     export_parser = sub.add_parser("create-export-thread-job")
     export_parser.add_argument("--tid", type=int, required=True)
     export_parser.add_argument("--strategy")
+    update_parser = sub.add_parser("update-thread")
+    update_parser.add_argument("--tid", type=int, required=True)
+    update_parser.add_argument("--base-url")
     search_parser = sub.add_parser("search-threads")
     search_parser.add_argument("--query", default="")
     search_parser.add_argument("--forum-id", type=int, default=30)
@@ -362,6 +384,10 @@ def main() -> None:
         )
     elif command == "create-export-thread-job":
         print(dump_json(export_thread(tid=args.tid, strategy=args.strategy)))
+    elif command == "update-thread":
+        print(dump_json(update_thread(tid=args.tid, base_url=args.base_url)))
+    elif command == "check-thread-updates":
+        print(dump_json(check_thread_updates(tid=args.tid, base_url=args.base_url)))
     elif command == "search-threads":
         print(
             dump_json(

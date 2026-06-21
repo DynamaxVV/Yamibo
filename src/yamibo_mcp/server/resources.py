@@ -47,6 +47,10 @@ def thread_assets_uri(tid: int) -> str:
     return f"yamibo://threads/{tid}/assets"
 
 
+def thread_update_check_uri(tid: int) -> str:
+    return f"yamibo://threads/{tid}/update-check"
+
+
 def job_events_uri(job_id: str) -> str:
     return f"yamibo://jobs/{job_id}/events"
 
@@ -79,12 +83,14 @@ def guess_content_type(kind: str) -> str:
     if kind == "metadata":
         return "application/json"
     if kind == "export":
-        return "application/zip"
+        return "application/octet-stream"
     if kind == "index":
         return "text/markdown"
     if kind == "chapters":
         return "application/json"
     if kind in ("summary", "diagnostics", "posts", "assets"):
+        return "application/json"
+    if kind == "update-check":
         return "application/json"
     if kind.startswith("/") and kind.endswith("/events"):
         return "application/json"

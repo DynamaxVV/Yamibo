@@ -15,7 +15,7 @@ class AssetsRepository:
             return
         self.conn.executemany(
             """
-            INSERT INTO assets (asset_id, tid, pid, asset_type, remote_url, local_path, exportable, required, status)
+            INSERT OR REPLACE INTO assets (asset_id, tid, pid, asset_type, remote_url, local_path, exportable, required, status)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
