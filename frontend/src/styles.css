@@ -613,7 +613,32 @@ input[type="checkbox"] { width: 14px; height: 14px; cursor: pointer; accent-colo
   word-break: break-word;
   line-height: var(--reading-line-height, 1.7);
   font-size: inherit;
+  display: block;
   margin-bottom: 8px;
+}
+.floor-rich-body > div,
+.floor-rich-body > p,
+.floor-rich-body > blockquote,
+.floor-rich-body > ul,
+.floor-rich-body > ol,
+.floor-rich-body > table,
+.floor-rich-body > pre {
+  display: block;
+  margin: 0 0 0.9em;
+}
+.floor-rich-body > div:last-child,
+.floor-rich-body > p:last-child,
+.floor-rich-body > blockquote:last-child,
+.floor-rich-body > ul:last-child,
+.floor-rich-body > ol:last-child,
+.floor-rich-body > table:last-child,
+.floor-rich-body > pre:last-child {
+  margin-bottom: 0;
+}
+.floor-rich-body > br {
+  display: block;
+  content: "";
+  margin: 0 0 0.65em;
 }
 .floor-rich-body a {
   color: var(--reading-accent, var(--accent));
@@ -646,6 +671,20 @@ input[type="checkbox"] { width: 14px; height: 14px; cursor: pointer; accent-colo
 .floor-rich-body img {
   max-width: 100%;
   height: auto;
+}
+.floor-rich-body p,
+.floor-rich-body li,
+.floor-rich-body div {
+  line-height: var(--reading-line-height, 1.7);
+}
+.floor-rich-body p,
+.floor-rich-body li {
+  text-indent: var(--reading-indent, 0);
+}
+.floor-rich-body p:first-child,
+.floor-rich-body li:first-child,
+.floor-rich-body div:first-child {
+  margin-top: 0;
 }
 .floor-paragraph {
   margin: 0 0 0.9em;
@@ -699,6 +738,18 @@ input[type="checkbox"] { width: 14px; height: 14px; cursor: pointer; accent-colo
     max-width: 100%;
     align-self: stretch;
     box-sizing: border-box;
+  }
+  .floor-rich-body {
+    line-height: calc(var(--reading-line-height, 1.7) * 1.02);
+  }
+  .floor-rich-body > div,
+  .floor-rich-body > p,
+  .floor-rich-body > blockquote,
+  .floor-rich-body > ul,
+  .floor-rich-body > ol,
+  .floor-rich-body > table,
+  .floor-rich-body > pre {
+    margin-bottom: 1em;
   }
 }
 
