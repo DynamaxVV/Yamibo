@@ -8,14 +8,14 @@ from yamibo_mcp.application.thread_update_use_cases import (
     check_thread_updates,
     create_update_thread_job as _create_update_thread_job,
 )
-from yamibo_mcp.application.thread_use_cases import archive_thread_job, ensure_thread
+from yamibo_mcp.application.legacy_use_cases import archive_thread_job, ensure_thread, get_thread as legacy_get_thread
 from yamibo_mcp.config import load_settings
 from yamibo_mcp.db.connection import connect
 from yamibo_mcp.db.migrations import migrate
 from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
 from yamibo_mcp.domain.enums import JobType
-from yamibo_mcp.server.resource_handlers import (
+from yamibo_mcp.server.resources import (
     generate_series_chapters_json,
     generate_series_index_markdown,
     read_resource,
@@ -176,7 +176,7 @@ def get_job_status(job_id: str) -> dict[str, object]:
 
 
 def get_thread(*, tid: int, url: str | None = None, base_url: str | None = None, forum_id: int | None = None) -> dict[str, object]:
-    return ensure_thread(tid=tid, url=url, base_url=base_url, forum_id=forum_id)
+    return legacy_get_thread(tid=tid, url=url, base_url=base_url, forum_id=forum_id)
 
 
 def list_exports(*, limit: int = 100) -> dict[str, object]:

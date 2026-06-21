@@ -24,7 +24,7 @@ from yamibo_mcp.server.legacy_tools import (
     search_threads as legacy_search_threads,
     update_thread as legacy_update_thread,
 )
-from yamibo_mcp.server.resource_handlers import read_resource
+from yamibo_mcp.server.resources import read_resource
 
 
 ToolHandler = Callable[..., Any]

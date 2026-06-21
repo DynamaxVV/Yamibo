@@ -14,7 +14,7 @@ from yamibo_mcp.server.agent_tools import (
     read_job_events,
     search_forum_threads,
 )
-from yamibo_mcp.server.resources import (
+from yamibo_mcp.server.resource_uris import (
     forum_summary_uri,
     forums_index_uri,
     job_events_uri,
@@ -29,7 +29,7 @@ from yamibo_mcp.server.resources import (
     thread_summary_uri,
     thread_update_check_uri,
 )
-from yamibo_mcp.server.resource_handlers import read_resource_content
+from yamibo_mcp.server.resources import read_resource_content
 
 
 def _fastmcp_imports():

@@ -9,7 +9,7 @@ from yamibo_mcp.db.migrations import migrate
 from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
 from yamibo_mcp.domain.enums import JobType
-from yamibo_mcp.server.resources import job_events_uri, thread_summary_uri
+from yamibo_mcp.server.resource_uris import job_events_uri, thread_summary_uri
 
 
 def create_thread_archive_job(

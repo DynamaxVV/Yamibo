@@ -8,11 +8,11 @@ from yamibo_mcp.application.archive_commands import (
 )
 from yamibo_mcp.application.archive_queries import (
     read_archived_thread as _read_archived_thread,
-    read_forum_profiles as _read_forum_profiles,
 )
+from yamibo_mcp.application.forum_queries import read_forum_profiles as _read_forum_profiles
 from yamibo_mcp.application.job_queries import read_job as _read_job
 from yamibo_mcp.application.job_queries import read_job_events as _read_job_events
-from yamibo_mcp.application.remote_inspection import inspect_remote_thread as _inspect_remote_thread
+from yamibo_mcp.application.remote_queries import inspect_remote_thread as _inspect_remote_thread
 from yamibo_mcp.application.search_use_cases import browse_forum_page as _browse_forum_page
 from yamibo_mcp.application.search_use_cases import search_forum_threads as _search_forum_threads
 from yamibo_mcp.application.thread_update_use_cases import check_thread_updates as _check_thread_updates

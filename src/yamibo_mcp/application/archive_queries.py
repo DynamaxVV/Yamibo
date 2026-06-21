@@ -10,7 +10,7 @@ from yamibo_mcp.db.migrations import migrate
 from yamibo_mcp.db.repositories.assets import AssetsRepository
 from yamibo_mcp.db.repositories.content_blocks import ContentBlocksRepository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
-from yamibo_mcp.server.resources import (
+from yamibo_mcp.server.resource_uris import (
     thread_assets_uri,
     thread_context_uri,
     thread_diagnostics_uri,

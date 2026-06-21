@@ -262,17 +262,26 @@ yamibo/
 │   │   ├── app.py              # 轻量入口委托
 │   │   ├── mcp_registry.py     # FastMCP tool/resource 注册
 │   │   ├── cli.py              # CLI 参数解析与分发
-│   │   ├── agent_tools.py      # Agent-facing tool 适配
-│   │   ├── resource_handlers.py # Resource 读取处理
-│   │   ├── legacy_tools.py     # 旧工具名兼容包装
 │   │   ├── legacy_protocol.py  # JSON-RPC 兼容层
-│   │   ├── tools.py            # legacy re-export
-│   │   ├── resources.py        # URI 模板
+│   │   ├── legacy_tools.py     # 旧工具名兼容包装
+│   │   ├── agent_adapter.py    # AgentResult -> wire dict，异常映射
+│   │   ├── agent_tools.py      # Agent-facing tool 适配
+│   │   ├── resources.py        # Resource URI + 读取注册主入口
+│   │   ├── resource_uris.py    # 内部 URI helper
+│   │   ├── resource_handlers.py # compatibility re-export
+│   │   ├── tools.py            # compatibility re-export
+│   │   ├── protocol.py         # compatibility re-export
 │   │   └── schemas.py          # 响应结构构建
-│   ├── application/          # 应用层
-│   │   ├── contracts.py      # Agent Contract (AgentResponse)
-│   │   ├── thread_use_cases.py # 帖子用例（ensure_thread, archive_thread_job）
-│   │   └── job_use_cases.py  # 任务用例（get_job_status_payload）
+│   ├── application/            # 应用层
+│   │   ├── contracts.py        # AgentResult / AgentError / AgentAction
+│   │   ├── archive_commands.py # archive/update/export job 创建
+│   │   ├── archive_queries.py  # 本地归档 summary/content/assets/diagnostics
+│   │   ├── remote_queries.py   # browse/search/inspect remote
+│   │   ├── job_queries.py      # read_job/read_job_events
+│   │   ├── forum_queries.py    # forum profiles/index
+│   │   ├── legacy_use_cases.py # get_thread 等旧行为聚合
+│   │   ├── thread_use_cases.py # compatibility implementation module
+│   │   └── job_use_cases.py    # compatibility implementation module
 │   ├── daemon/                 # 后台任务消费
 │   │   ├── main.py             # Daemon 入口
 │   │   ├── runner.py           # 轮询 + 抢占 + 执行循环

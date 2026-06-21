@@ -12,6 +12,7 @@ from yamibo_mcp.yamibo.parsers.forum_list import ForumThreadItem
 from yamibo_mcp.yamibo.parsers.search_results import SearchResultItem
 from yamibo_mcp.yamibo.title.normalizer import normalize_series_key
 from yamibo_mcp.yamibo.urls import thread_url_from_tid
+from yamibo_mcp.application.remote_inspection import inspect_remote_thread
 
 
 def browse_forum_page(
