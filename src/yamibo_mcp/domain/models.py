@@ -37,9 +37,11 @@ class FloorSnapshot:
     content: str
     pub_time: str | None
     has_images: bool
+    publisher_uid: str | None = None
     image_urls: list[str] = field(default_factory=list)
     quote_text: str | None = None
     reply_text: str | None = None
+    rich_body_html: str | None = None
 
 
 @dataclass(frozen=True)

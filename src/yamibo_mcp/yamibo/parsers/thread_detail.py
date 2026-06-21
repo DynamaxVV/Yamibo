@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from html import escape as html_escape
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,7 +21,132 @@ class ThreadDetailSummary:
     floors: list[FloorSnapshot]
 
 
+_FONT_SIZE_SCALE = {
+    1: "0.75em",
+    2: "0.875em",
+    3: "1em",
+    4: "1.125em",
+    5: "1.375em",
+    6: "1.75em",
+    7: "2.25em",
+}
+
+_SAFE_STYLE_KEYS = {"color", "font-weight", "font-style", "text-decoration", "font-size", "text-align"}
+
+
+def _parse_style_map(style_value: str | None) -> dict[str, str]:
+    if not style_value:
+        return {}
+    result: dict[str, str] = {}
+    for part in style_value.split(";"):
+        if ":" not in part:
+            continue
+        key, value = part.split(":", 1)
+        key = key.strip().lower()
+        value = value.strip()
+        if not key or not value or key not in _SAFE_STYLE_KEYS:
+            continue
+        if key == "color":
+            color = _sanitize_color(value)
+            if color:
+                result[key] = color
+            continue
+        if key == "font-weight":
+            weight = _sanitize_font_weight(value)
+            if weight:
+                result[key] = weight
+            continue
+        if key == "font-style":
+            style = value.lower()
+            if style in {"italic", "oblique", "normal"}:
+                result[key] = style
+            continue
+        if key == "text-decoration":
+            decoration = _sanitize_text_decoration(value)
+            if decoration:
+                result[key] = decoration
+            continue
+        if key == "text-align":
+            align = value.lower()
+            if align in {"left", "center", "right", "justify"}:
+                result[key] = align
+            continue
+        if key == "font-size":
+            size = _sanitize_font_size(value)
+            if size:
+                result[key] = size
+    return result
+
+
+def _sanitize_color(value: str) -> str | None:
+    value = value.strip()
+    if re.fullmatch(r"#[0-9a-fA-F]{3,8}", value):
+        return value
+    if re.fullmatch(r"[a-zA-Z]+", value):
+        return value.lower()
+    if re.fullmatch(r"rgba?\([0-9.,\s%]+\)", value):
+        return value
+    return None
+
+
+def _sanitize_font_weight(value: str) -> str | None:
+    value = value.strip().lower()
+    if value in {"normal", "bold", "bolder", "lighter"}:
+        return "700" if value == "bold" else value
+    if value.isdigit():
+        return value
+    return None
+
+
+def _sanitize_text_decoration(value: str) -> str | None:
+    parts = [part for part in re.split(r"\s+", value.strip().lower()) if part]
+    if not parts:
+        return None
+    allowed = [part for part in parts if part in {"underline", "line-through", "overline", "none"}]
+    if not allowed:
+        return None
+    if "none" in allowed:
+        return "none"
+    return " ".join(dict.fromkeys(allowed))
+
+
+def _sanitize_font_size(value: str) -> str | None:
+    value = value.strip().lower()
+    if re.fullmatch(r"\d+(?:\.\d+)?(px|em|rem|pt|%)", value):
+        return value
+    if value.isdigit():
+        return _FONT_SIZE_SCALE.get(int(value))
+    return None
+
+
+def _sanitize_href(value: str, *, base_url: str | None = None) -> str | None:
+    href = value.strip()
+    if not href:
+        return None
+    if href.startswith("//"):
+        href = f"https:{href}"
+    lower = href.lower()
+    if lower.startswith(("javascript:", "data:", "vbscript:")):
+        return None
+    parsed = urlparse(href)
+    if not parsed.scheme and base_url:
+        href = urljoin(base_url, href)
+        parsed = urlparse(href)
+    if parsed.scheme and parsed.scheme not in {"http", "https", "mailto", "tel"}:
+        return None
+    return href
+
+
+def _format_style(style_map: dict[str, str]) -> str | None:
+    if not style_map:
+        return None
+    return ";".join(f"{key}:{value}" for key, value in style_map.items())
+
+
 class _ThreadSubjectParser(TextCaptureParser):
+    _BLOCK_BREAK_START_TAGS = {"br"}
+    _BLOCK_BREAK_END_TAGS = {"div", "p", "li", "tr", "blockquote"}
+
     def __init__(self, *, base_url: str | None = None):
         super().__init__()
         self._base_url = base_url
@@ -30,6 +156,8 @@ class _ThreadSubjectParser(TextCaptureParser):
         self._floor_td_depth = 0
         self._floor_pid: int | None = None
         self._floor_parts: list[str] = []
+        self._rich_parts: list[str] = []
+        self._rich_tag_stack: list[tuple[str, str | None]] = []
         self._floor_no = 0
         self._floors: list[FloorSnapshot] = []
         self._floor_has_images = False
@@ -37,6 +165,7 @@ class _ThreadSubjectParser(TextCaptureParser):
         self._in_quote = False
         self._quote_parts: list[str] = []
         self._reply_parts: list[str] = []
+        self._skip_depth = 0
 
     def handle_starttag(self, tag: str, attrs):
         data = attrs_dict(attrs)
@@ -50,11 +179,14 @@ class _ThreadSubjectParser(TextCaptureParser):
             self._capture_floor = True
             self._floor_td_depth = 1
             self._floor_parts = []
+            self._rich_parts = []
+            self._rich_tag_stack = []
             self._floor_has_images = False
             self._floor_image_urls = []
             self._in_quote = False
             self._quote_parts = []
             self._reply_parts = []
+            self._skip_depth = 0
         elif self._capture_floor and tag == "td":
             self._floor_td_depth += 1
         if self._capture_floor and tag == "img":
@@ -62,16 +194,46 @@ class _ThreadSubjectParser(TextCaptureParser):
             if image_url:
                 self._floor_image_urls.append(image_url)
             self._floor_has_images = self._floor_has_images or bool(image_url) or True
-        if self._capture_floor and tag == "div" and data.get("class") == "quote":
+        if self._capture_floor and tag == "div" and "quote" in set(data.get("class", "").split()):
             self._in_quote = True
             self._quote_parts = []
+        if self._capture_floor:
+            if self._skip_depth > 0:
+                self._skip_depth += 1
+                super().handle_starttag(tag, attrs)
+                return
+            if self._should_skip_tag(tag, data):
+                self._skip_depth = 1
+                super().handle_starttag(tag, attrs)
+                return
+            rich_open, rich_close = self._render_rich_start(tag, data)
+            if rich_open is not None:
+                self._rich_parts.append(rich_open)
+                if rich_close is not None:
+                    self._rich_tag_stack.append((tag, rich_close))
         super().handle_starttag(tag, attrs)
+        if self._capture_floor and tag in self._BLOCK_BREAK_START_TAGS:
+            self._append_floor_break()
 
     def handle_endtag(self, tag: str):
         if tag == "span" and self._capture_subject:
             self._capture_subject = False
         if tag == "div" and self._in_quote:
             self._in_quote = False
+        if self._capture_floor and self._skip_depth > 0:
+            self._skip_depth -= 1
+            super().handle_endtag(tag)
+            return
+        if self._capture_floor and tag in self._BLOCK_BREAK_END_TAGS:
+            self._append_floor_break()
+        if self._capture_floor:
+            for index in range(len(self._rich_tag_stack) - 1, -1, -1):
+                source_tag, close_tag = self._rich_tag_stack[index]
+                if source_tag != tag:
+                    continue
+                self._rich_parts.append(close_tag or "")
+                del self._rich_tag_stack[index]
+                break
         if tag == "td" and self._capture_floor:
             self._floor_td_depth -= 1
             if self._floor_td_depth <= 0:
@@ -80,6 +242,11 @@ class _ThreadSubjectParser(TextCaptureParser):
                     content = clean_content("".join(self._floor_parts))
                     quote_text = clean_content("".join(self._quote_parts)) if self._quote_parts else None
                     reply_text = clean_content("".join(self._reply_parts)) if self._reply_parts else None
+                    while self._rich_tag_stack:
+                        _, close_tag = self._rich_tag_stack.pop()
+                        if close_tag:
+                            self._rich_parts.append(close_tag)
+                    rich_body_html = "".join(self._rich_parts).strip() or None
                     self._floors.append(
                         FloorSnapshot(
                             pid=self._floor_pid,
@@ -89,9 +256,11 @@ class _ThreadSubjectParser(TextCaptureParser):
                             content=content,
                             pub_time=None,
                             has_images=self._floor_has_images,
+                            publisher_uid=None,
                             image_urls=self._floor_image_urls.copy(),
                             quote_text=quote_text,
                             reply_text=reply_text,
+                            rich_body_html=rich_body_html,
                         )
                     )
                 self._capture_floor = False
@@ -103,15 +272,106 @@ class _ThreadSubjectParser(TextCaptureParser):
         if self._capture_subject:
             self._subject_parts.append(data)
         if self._capture_floor:
+            if self._skip_depth > 0:
+                return
+            if data:
+                self._rich_parts.append(html_escape(data))
+            if not data.strip():
+                return
             self._floor_parts.append(data)
             if self._in_quote:
                 self._quote_parts.append(data)
             else:
                 self._reply_parts.append(data)
 
+    def _append_floor_break(self):
+        if not self._capture_floor:
+            return
+        if self._floor_parts and not self._floor_parts[-1].endswith("\n"):
+            self._floor_parts.append("\n")
+        if self._in_quote:
+            if self._quote_parts and not self._quote_parts[-1].endswith("\n"):
+                self._quote_parts.append("\n")
+        else:
+            if self._reply_parts and not self._reply_parts[-1].endswith("\n"):
+                self._reply_parts.append("\n")
+
     def result(self) -> ThreadDetailSummary:
         title = normalize_display_title("".join(self._subject_parts)) if self._subject_parts else None
         return ThreadDetailSummary(title=title, floors=self._floors)
+
+    def _should_skip_tag(self, tag: str, data: dict[str, str]) -> bool:
+        class_name = data.get("class", "")
+        classes = set(class_name.split())
+        return tag == "ignore_js_op" or "ignore_js_op" in classes or (tag == "i" and "pstatus" in classes)
+
+    def _render_rich_start(self, tag: str, data: dict[str, str]) -> tuple[str | None, str | None]:
+        classes = set(data.get("class", "").split())
+        if "quote" in classes and tag in {"div", "blockquote"}:
+            return "<blockquote>", "</blockquote>"
+        if tag in {"html", "body", "tbody", "thead", "tfoot", "tr", "td", "th"}:
+            return None, None
+        if tag == "br":
+            return "<br>", None
+        if tag in {"strong", "b"}:
+            return "<strong>", "</strong>"
+        if tag in {"em", "i"}:
+            return "<em>", "</em>"
+        if tag == "u":
+            return "<u>", "</u>"
+        if tag in {"s", "strike", "del"}:
+            return "<s>", "</s>"
+        if tag == "blockquote":
+            return "<blockquote>", "</blockquote>"
+        if tag == "a":
+            href = _sanitize_href(data.get("href", ""), base_url=self._base_url)
+            if href:
+                return f'<a href="{html_escape(href, quote=True)}">', "</a>"
+            return "<a>", "</a>"
+        if tag == "font":
+            style_map: dict[str, str] = {}
+            color = _sanitize_color(data.get("color", ""))
+            if color:
+                style_map["color"] = color
+            size = _sanitize_font_size(data.get("size", ""))
+            if size:
+                style_map["font-size"] = size
+            inline_style = _parse_style_map(data.get("style"))
+            style_map.update(inline_style)
+            if style_map:
+                style = _format_style(style_map)
+                return f'<span style="{html_escape(style, quote=True)}">', "</span>"
+            return "<span>", "</span>"
+        if tag == "span":
+            style_map = _parse_style_map(data.get("style"))
+            if style_map:
+                style = _format_style(style_map)
+                return f'<span style="{html_escape(style, quote=True)}">', "</span>"
+            return None, None
+        if tag == "div":
+            style_map = _parse_style_map(data.get("style"))
+            align = data.get("align", "").strip().lower()
+            if align in {"left", "center", "right", "justify"}:
+                style_map.setdefault("text-align", align)
+            if style_map:
+                style = _format_style(style_map)
+                return f'<div style="{html_escape(style, quote=True)}">', "</div>"
+            return "<div>", "</div>"
+        if tag == "p":
+            style_map = _parse_style_map(data.get("style"))
+            if style_map:
+                style = _format_style(style_map)
+                return f'<p style="{html_escape(style, quote=True)}">', "</p>"
+            return "<p>", "</p>"
+        if tag == "center":
+            return '<div style="text-align:center">', "</div>"
+        if tag == "li":
+            return "<li>", "</li>"
+        if tag == "ol":
+            return "<ol>", "</ol>"
+        if tag == "ul":
+            return "<ul>", "</ul>"
+        return None, None
 
     def _resolve_image_url(self, attrs: dict[str, str]) -> str | None:
         return _resolve_image_url_from_attrs(attrs, base_url=self._base_url)
@@ -141,9 +401,11 @@ def parse_thread_detail(html: str, *, base_url: str | None = None) -> ThreadDeta
                     content=floor.content,
                     pub_time=floor.pub_time,
                     has_images=bool(deduped_urls),
+                    publisher_uid=None,
                     image_urls=deduped_urls,
                     quote_text=floor.quote_text,
                     reply_text=floor.reply_text,
+                    rich_body_html=floor.rich_body_html,
                 )
             )
         else:
@@ -171,9 +433,11 @@ def parse_thread_snapshot(html: str, *, url: str | None = None, tid: int | None 
             content=floor.content,
             pub_time=post_meta.get(floor.pid, {}).get("pub_time"),
             has_images=floor.has_images,
+            publisher_uid=post_meta.get(floor.pid, {}).get("publisher_uid"),
             image_urls=[attachment_download_map.get(image_url, image_url) for image_url in floor.image_urls],
             quote_text=floor.quote_text,
             reply_text=floor.reply_text,
+            rich_body_html=floor.rich_body_html,
         )
         for floor in summary.floors
     ]
@@ -269,6 +533,22 @@ _FID_TYPEID_NAMES: dict[int, dict[int, str]] = {
 }
 
 
+def _extract_forum_id_from_links(html: str) -> int | None:
+    matches = _FORUM_LINK_RE.findall(html)
+    if not matches:
+        return None
+    from yamibo_mcp.domain.forums import resolve_forum
+    recognized: list[int] = []
+    for fid_str in matches:
+        fid = int(fid_str)
+        profile = resolve_forum(fid)
+        if profile.content_kind != "unknown":
+            recognized.append(fid)
+    if recognized:
+        return recognized[-1]
+    return int(matches[-1])
+
+
 def extract_forum_id_from_html(html: str) -> int | None:
     for m in _TYPEID_RE.finditer(html):
         fid = int(m.group(1))
@@ -278,16 +558,17 @@ def extract_forum_id_from_html(html: str) -> int | None:
         fid = int(m.group(1))
         if fid in _FID_FORUM_NAMES:
             return fid
-    matches = _FORUM_LINK_RE.findall(html)
-    if not matches:
-        return None
-    from yamibo_mcp.domain.forums import resolve_forum
-    for fid_str in matches:
-        fid = int(fid_str)
-        profile = resolve_forum(fid)
-        if profile.content_kind != "unknown":
-            return fid
-    return int(matches[0])
+    subject_marker = 'id="thread_subject"'
+    if subject_marker in html:
+        # 面包屑导航通常位于帖子标题前面，优先在标题之前的区域取最后一个已知版块。
+        breadcrumb_html = html[:html.find(subject_marker)]
+        forum_id = _extract_forum_id_from_links(breadcrumb_html)
+        if forum_id is not None:
+            return forum_id
+    forum_id = _extract_forum_id_from_links(html)
+    if forum_id is not None:
+        return forum_id
+    return None
 
 
 def extract_category_from_html(html: str) -> str | None:
@@ -302,6 +583,18 @@ def extract_category_from_html(html: str) -> str | None:
     if match:
         return _TAG_RE.sub("", match.group("category")).strip() or None
     return None
+
+
+def extract_author_only_total_pages(html: str, *, tid: int, author_uid: str) -> int | None:
+    href_pattern = re.compile(
+        rf'href="[^"]*mod=viewthread[^"]*tid={tid}[^"]*authorid={re.escape(str(author_uid))}[^"]*page=(\d+)[^"]*"',
+        re.IGNORECASE,
+    )
+    pages = [int(value) for value in href_pattern.findall(html)]
+    span_match = re.search(r'<span title="共 (\d+) 页">', html)
+    if span_match is not None:
+        pages.append(int(span_match.group(1)))
+    return max(pages) if pages else None
 
 
 def _extract_post_meta(html: str) -> dict[int, dict[str, str | None]]:
@@ -382,7 +675,7 @@ def _resolve_image_url_from_attrs(attrs: dict[str, str], *, base_url: str | None
         return preferred_local
     raw = attrs.get("file") or attrs.get("zoomfile") or attrs.get("src") or attrs.get("data-src") or ""
     raw = raw.strip()
-    if not raw or raw.startswith(("data:", "javascript:")):
+    if not raw or raw.lstrip("/").startswith(("data:", "javascript:")):
         return None
     return urljoin(base_url, raw) if base_url else raw
 
@@ -402,4 +695,3 @@ def _resolve_local_saved_image(attrs: dict[str, str], *, base_url: str | None) -
         return None
     local_path = Path(resolved_parsed.path)
     return resolved if local_path.exists() else None
-

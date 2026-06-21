@@ -79,22 +79,40 @@ export interface ThreadDetail extends ThreadSummary {
   pub_time: string | null
   image_count: number
   primary_media_type: string | null
+  archive_summary?: ArchiveSummary
+  missing_image_urls?: string[]
   floors: FloorSummary[]
+  floor_count?: number
+  floor_page?: number | null
+  floor_page_size?: number | null
+  floor_total_pages?: number | null
   series_title: string | null
   chapter_index: number | null
   group_name: string | null
   author_guess: string | null
 }
 
+export interface ArchiveSummary {
+  context_path?: string | null
+  archived_images?: Record<string, string[]>
+  non_export_images?: Record<string, string[]>
+  shared_images?: Record<string, string[]>
+  skipped_image_urls?: Record<string, string[]>
+  missing_image_urls?: string[]
+  missing_shared_image_urls?: string[]
+}
+
 export interface FloorSummary {
   pid: number
   floor_no: number
   publisher: string | null
+  publisher_uid: string | null
   content: string | null
   pub_time: string | null
   has_images: boolean
   quote_text: string | null
   reply_text: string | null
+  rich_body_html: string | null
 }
 
 export interface Asset {
@@ -177,15 +195,24 @@ export interface DashboardData {
   export_count: number
   forum_counts: Record<number, number>
   recent_jobs: JobSummary[]
+  live_thread_statuses: Record<number, string>
   workers: WorkerHeartbeat[]
   recent_audits: AuditEvent[]
   recent_threads: ThreadSummary[]
+}
+
+export interface FontAsset {
+  name: string
+  label: string
+  family: string
+  url: string
 }
 
 // API methods
 export const api = {
   dashboard: (limit?: number) => fetchJson<DashboardData>(`/dashboard${limit ? `?limit=${limit}` : ''}`),
   jobs: (status?: string) => fetchJson<JobSummary[]>(`/jobs${status ? `?status=${status}` : ''}`),
+  jobCounts: () => fetchJson<Record<string, number>>('/jobs/counts'),
   job: (id: string) => fetchJson<JobSummary>(`/jobs/${id}`),
   jobEvents: (id: string) => fetchJson<JobEvent[]>(`/jobs/${id}/events`),
   threads: (params?: { q?: string; forum_id?: number; days?: number }) => {
@@ -196,7 +223,13 @@ export const api = {
     const s = qs.toString()
     return fetchJson<ThreadSummary[]>(`/threads${s ? `?${s}` : ''}`)
   },
-  thread: (tid: number) => fetchJson<ThreadDetail>(`/threads/${tid}`),
+  thread: (tid: number, params?: { preview_page?: number; preview_page_size?: number }) => {
+    const qs = new URLSearchParams()
+    if (params?.preview_page) qs.set('preview_page', String(params.preview_page))
+    if (params?.preview_page_size) qs.set('preview_page_size', String(params.preview_page_size))
+    const s = qs.toString()
+    return fetchJson<ThreadDetail>(`/threads/${tid}${s ? `?${s}` : ''}`)
+  },
   threadAssets: (tid: number) => fetchJson<Asset[]>(`/threads/${tid}/assets`),
   threadBlocks: (tid: number) => fetchJson<ContentBlock[]>(`/threads/${tid}/blocks`),
   threadImages: (tid: number) => fetchJson<ThreadImage[]>(`/threads/${tid}/images`),
@@ -205,6 +238,7 @@ export const api = {
   deleteSeries: (seriesId: number) => postJson<{ ok: boolean }>('/series/delete', { series_id: seriesId }),
   similarSeries: (seriesId: number) => fetchJson<SeriesSummary[]>(`/series/${seriesId}/similar`),
   forums: () => fetchJson<Forum[]>('/forums'),
+  fonts: () => fetchJson<FontAsset[]>('/fonts'),
   exports: () => fetchJson<ThreadSummary[]>('/exports'),
   reviewItems: () => fetchJson<{ titles: ThreadSummary[]; series: SeriesSummary[] }>('/review'),
   confirmSeries: (seriesId: number) => postJson<{ ok: boolean }>('/review/confirm-series', { series_id: seriesId }),
@@ -226,5 +260,7 @@ export const api = {
   deleteThread: (tid: number) => postJson<{ ok: boolean; deleted_series_id?: number }>('/threads/delete', { tid }),
   deleteJob: (job_id: string) => postJson<{ ok: boolean }>('/jobs/delete', { job_id }),
   batchDeleteJobs: (status: string) => postJson<{ ok: boolean; deleted: number }>('/jobs/batch-delete', { status }),
+  batchDeleteJobIds: (jobIds: string[]) => postJson<{ ok: boolean; deleted: number }>('/jobs/batch-delete-ids', { job_ids: jobIds }),
+  safeDeleteJob: (jobId: string) => postJson<{ ok: boolean; action: string; job_id: string }>('/jobs/safe-delete', { job_id: jobId }),
   updateChapter: (tid: number, chapter_name: string | null, chapter_index: number | null, author_guess?: string | null, group_name?: string | null) => postJson<{ ok: boolean }>('/threads/update-chapter', { tid, chapter_name, chapter_index, author_guess, group_name }),
 }

@@ -44,6 +44,24 @@ class TestRenderThreadMarkdown:
         assert "正文内容" in md
         assert "1F · user1" in md
 
+    def test_ignores_rich_body_html_for_txt_output(self):
+        floor = FloorSnapshot(
+            pid=1002,
+            tid=999,
+            floor_no=1,
+            publisher="user1",
+            content="纯文本正文",
+            pub_time="2025-01-01 12:00",
+            has_images=False,
+            image_urls=[],
+            rich_body_html='<div><font color="#ff0000"><strong>富文本</strong></font></div>',
+        )
+        md = render_thread_markdown(_make_snapshot(floors=[floor]))
+        assert "纯文本正文" in md
+        assert "富文本" not in md
+        assert "<font" not in md
+        assert "color=" not in md
+
     def test_image_only_floor_placeholder(self):
         floor = FloorSnapshot(pid=2001, tid=999, floor_no=1, publisher="u",
                               content="", pub_time=None, has_images=True,

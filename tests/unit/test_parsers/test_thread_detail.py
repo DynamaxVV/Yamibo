@@ -3,8 +3,11 @@
 基于原始标题逐项分析正确的 chapter_name / chapter_index / group_name / author / core_title。
 """
 
+from pathlib import Path
+
 import pytest
 from tests.fixtures.loader import load_thread, load_edge_case
+from yamibo_mcp.yamibo.parsers.thread_detail import _extract_post_meta, extract_author_only_total_pages, extract_forum_id_from_html, parse_thread_detail
 
 
 # ── 每个帖子的人工预期值 ──────────────────────────────────────
@@ -96,6 +99,13 @@ EXPECTED = {
 
 class TestThreadDetailParser:
     """帖子详情解析器测试 - 预期值由人工判断"""
+
+    @staticmethod
+    def _load_rich_text_sample() -> str:
+        repo_root = Path(__file__).resolve().parents[3]
+        matches = sorted(repo_root.glob("【授权转载】【个人翻译】*Powered by Discuz!.html"))
+        assert matches, "sample html not found"
+        return matches[0].read_text(encoding="utf-8", errors="ignore")
 
     # ── 核心字段逐项断言 ──────────────────────────────────────
 
@@ -218,6 +228,22 @@ class TestThreadDetailParser:
         assert isinstance(chapter_name, str), f"[tid={tid}] chapter_name is not a string: {chapter_name!r}"
         assert len(chapter_name) > 0
 
+    def test_extract_forum_id_prefers_breadcrumb_forum(self):
+        html = """
+        <div id="pt">
+          <a href="https://bbs.yamibo.com/">百合会</a>»
+          <a href="https://bbs.yamibo.com/forum.php">论坛</a>›
+          <a href="https://bbs.yamibo.com/forum.php?gid=2">江湖</a>›
+          <a href="https://bbs.yamibo.com/forum-49-1.html">文學區</a>›
+          <a href="https://bbs.yamibo.com/forum-55-1.html">轻小说/译文区</a>
+        </div>
+        <span id="thread_subject">示例标题</span>
+        <div class="content">
+          <a href="https://bbs.yamibo.com/forum-30-1.html">漫画区</a>
+        </div>
+        """
+        assert extract_forum_id_from_html(html) == 55
+
     @pytest.mark.parametrize(
         "tid", [572627, 572617, 572458, 569610, 571281, 572427, 572530, 572448],
         ids=str,
@@ -253,6 +279,55 @@ class TestThreadDetailParser:
         # Act / Assert
         assert data["floor_count"] == 1
         assert len(data["floors"]) == 1
+
+    def test_parsed_floor_content_preserves_block_breaks(self):
+        """楼层正文中的块级结构应保留成换行"""
+        html = """
+        <html><body>
+          <span id="thread_subject">测试帖</span>
+          <td id="postmessage_1001">
+            仙台同学的价格正好五千元Episode 1
+            <div>其实并没有非仙台同学不可的理由，市尾同学也可以，后藤同学也可以。</div>
+            <div>一周一次，三个小时。</div>
+          </td>
+        </body></html>
+        """
+        summary = parse_thread_detail(html)
+        assert summary.floors[0].content == (
+            "仙台同学的价格正好五千元Episode 1\n"
+            "其实并没有非仙台同学不可的理由，市尾同学也可以，后藤同学也可以。\n"
+            "一周一次，三个小时。"
+        )
+
+    def test_rich_text_sample_floor_preserves_html_style(self):
+        """样本贴应保留可展示的富文本样式"""
+        html = self._load_rich_text_sample()
+        summary = parse_thread_detail(html)
+        first_floor = summary.floors[0]
+
+        assert first_floor.rich_body_html is not None
+        assert "font-size:" in first_floor.rich_body_html
+        assert "text-align:left" in first_floor.rich_body_html
+        assert "<strong>" in first_floor.rich_body_html or "<em>" in first_floor.rich_body_html
+        assert "本帖最后由" not in first_floor.content
+        assert "本帖最后由" not in first_floor.rich_body_html
+
+    def test_font_color_is_preserved_in_rich_body_html(self):
+        """font color 应映射为可展示的富文本样式"""
+        html = """
+        <html><body>
+          <td id="postmessage_1">
+            <div align="left"><font face="微软雅黑"><font size="5"><font color="#a0522d">标题</font></font></font></div>
+            <font face="微软雅黑"><font size="3"><font color="#ff0000">译名：测试</font></font></font>
+          </td>
+        </body></html>
+        """
+        summary = parse_thread_detail(html)
+        rich = summary.floors[0].rich_body_html or ""
+        assert "#a0522d" in rich
+        assert "#ff0000" in rich
+        assert "标题" in rich
+        assert "译名：测试" in rich
 
     def test_exported_thread_has_zip_path(self):
         """572530 应有导出路径"""
@@ -309,3 +384,27 @@ class TestThreadDetailParser:
         assert data["floor_count"] == 1
         assert len(data["floors"]) == 1
         assert data["floors"][0]["floor_no"] == 1
+
+
+class TestAuthorOnlyPagination:
+    def test_extracts_total_pages_from_author_only_pagination(self):
+        html = """
+        <div class="pg">
+          <strong>1</strong>
+          <a href="forum.php?mod=viewthread&amp;tid=540745&amp;extra=&amp;authorid=229047&amp;page=2">2</a>
+          <a href="forum.php?mod=viewthread&amp;tid=540745&amp;extra=&amp;authorid=229047&amp;page=3">3</a>
+          <span title="共 3 页"> / 3 页</span>
+        </div>
+        """
+        assert extract_author_only_total_pages(html, tid=540745, author_uid="229047") == 3
+
+    def test_extract_post_meta_extracts_floor_publisher_uid(self):
+        html = """
+        <div id="post_1">
+          <div class="authi"><a href="space-uid-229047.html">楼主</a></div>
+          <em id="authorposton1">发表于 2026-06-14 12:00</em>
+          <td id="postmessage_1">正文</td>
+        </div>
+        """
+        meta = _extract_post_meta(html)
+        assert meta[1]["publisher_uid"] == "229047"
