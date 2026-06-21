@@ -1,0 +1,153 @@
+from __future__ import annotations
+
+import inspect
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+from yamibo_mcp.application.contracts import AgentAction, AgentError, AgentResult
+from yamibo_mcp.server.agent_adapter import to_wire
+from yamibo_mcp.server.agent_tools import (
+    inspect_remote_thread,
+    read_archived_thread,
+    search_forum_threads,
+)
+from yamibo_mcp.server.protocol import list_tools_payload
+
+
+def _fake_settings(tmp_path: Path):
+    settings = MagicMock()
+    settings.db_path = str(tmp_path / "test.db")
+    settings.data_dir = tmp_path / "data"
+    settings.export_dir = tmp_path / "exports"
+    settings.novel_txt_export_dir = tmp_path / "novel_exports"
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    settings.export_dir.mkdir(parents=True, exist_ok=True)
+    settings.novel_txt_export_dir.mkdir(parents=True, exist_ok=True)
+    settings.cookie_file = tmp_path / "cookies.txt"
+    settings.use_system_proxy = False
+    settings.login_username = None
+    settings.login_password = None
+    settings.request_interval_seconds = 0.0
+    settings.request_interval_jitter_seconds = 0.0
+    return settings
+
+
+class TestPublicAgentTools:
+    def test_public_tools_exclude_internal_llm_helpers(self):
+        payload = list_tools_payload()
+        names = {tool["name"] for tool in payload["tools"]}
+
+        assert "llm_transform_text" not in names
+        assert "parse_thread_title" not in names
+
+    def test_public_tools_include_new_agent_facing_names(self):
+        payload = list_tools_payload()
+        names = {tool["name"] for tool in payload["tools"]}
+
+        expected = {
+            "browse_forum_page",
+            "search_forum_threads",
+            "inspect_remote_thread",
+            "create_thread_archive_job",
+            "ensure_thread_archived",
+            "read_archived_thread",
+            "check_thread_updates",
+            "create_thread_update_job",
+            "create_thread_export_job",
+            "read_job",
+            "read_job_events",
+            "read_forum_profiles",
+        }
+        assert expected.issubset(names)
+
+    def test_public_search_tool_signature_does_not_expose_limit(self):
+        signature = inspect.signature(search_forum_threads)
+
+        assert "limit" not in signature.parameters
+
+    def test_read_archived_thread_signature_exposes_view_and_floor_range(self):
+        signature = inspect.signature(read_archived_thread)
+
+        assert "view" in signature.parameters
+        assert "floor_start" in signature.parameters
+        assert "floor_end" in signature.parameters
+
+
+class TestStructuredAgentWireFormat:
+    def test_to_wire_omits_empty_optional_fields(self):
+        result = AgentResult(ok=True, data={"tid": 1})
+
+        assert to_wire(result) == {"ok": True, "data": {"tid": 1}}
+
+    def test_to_wire_serializes_actions_and_errors(self):
+        result = AgentResult(
+            ok=False,
+            error=AgentError(
+                code="LOCAL_ARCHIVE_NOT_FOUND",
+                message="Thread 572313 is not archived locally.",
+                agent_hint="Create an archive job before reading local content.",
+                suggested_actions=[
+                    AgentAction(
+                        tool="create_thread_archive_job",
+                        args={"tid": 572313},
+                        reason="Archive the thread locally before reading content.",
+                    )
+                ],
+            ),
+        )
+
+        assert to_wire(result) == {
+            "ok": False,
+            "error": {
+                "code": "LOCAL_ARCHIVE_NOT_FOUND",
+                "message": "Thread 572313 is not archived locally.",
+                "agent_hint": "Create an archive job before reading local content.",
+                "retryable": False,
+                "suggested_actions": [
+                    {
+                        "tool": "create_thread_archive_job",
+                        "args": {"tid": 572313},
+                        "reason": "Archive the thread locally before reading content.",
+                    }
+                ],
+            },
+        }
+
+
+class TestLocalVsRemoteIsolation:
+    def test_read_archived_thread_does_not_fetch_remote_when_local_missing(self, tmp_path, db):
+        settings = _fake_settings(tmp_path)
+
+        with patch("yamibo_mcp.application.archive_queries.load_settings", return_value=settings), \
+             patch("yamibo_mcp.application.archive_queries.connect", return_value=db), \
+             patch("yamibo_mcp.application.archive_queries.YamiboClient") as mock_client:
+            result = read_archived_thread(tid=572313, view="summary")
+
+        assert result["ok"] is False
+        assert result["error"]["code"] == "LOCAL_ARCHIVE_NOT_FOUND"
+        mock_client.assert_not_called()
+
+    def test_inspect_remote_thread_does_not_write_sqlite(self, tmp_path):
+        settings = _fake_settings(tmp_path)
+        fake_fetch = MagicMock()
+        fake_fetch.final_url = "https://bbs.yamibo.com/forum.php?mod=viewthread&tid=572313"
+        fake_fetch.html = "<html></html>"
+        fake_snapshot = MagicMock()
+        fake_snapshot.tid = 572313
+        fake_snapshot.display_title = "Remote Title"
+        fake_snapshot.publisher = "publisher"
+        fake_snapshot.publisher_uid = "42"
+        fake_snapshot.floors = [MagicMock(content="floor 1", floor_no=1), MagicMock(content="floor 2", floor_no=2)]
+        fake_snapshot.image_count = 3
+
+        with patch("yamibo_mcp.application.remote_inspection.load_settings", return_value=settings), \
+             patch("yamibo_mcp.application.remote_inspection.YamiboClient") as mock_client_cls, \
+             patch("yamibo_mcp.application.remote_inspection.parse_thread_snapshot", return_value=fake_snapshot), \
+             patch("yamibo_mcp.application.remote_inspection.extract_forum_id_from_html", return_value=30), \
+             patch("yamibo_mcp.application.remote_inspection.extract_category_from_html", return_value="漫画区"):
+            mock_client_cls.return_value.fetch_thread.return_value = fake_fetch
+            result = inspect_remote_thread(tid=572313)
+
+        assert result["ok"] is True
+        assert result["data"]["tid"] == 572313
+        assert result["side_effects"] == ["remote_fetch_only"]

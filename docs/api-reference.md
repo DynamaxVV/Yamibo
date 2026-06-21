@@ -6,7 +6,15 @@
 
 MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调用。
 
-### 1.1 search_threads
+新的 Agent-facing 主接口见 [agent-interface.md](agent-interface.md)。核心原则：
+
+- 远端工具只做发现、预览、更新检查和创建任务
+- 本地工具只读 SQLite 与物化归档
+- 公共工具统一返回 `ok/data/error/resources/next_actions/warnings/side_effects`
+- 公共 Agent 工具不再暴露 `limit`
+- `llm_transform_text` 与 `parse_thread_title` 不再属于公共 Agent 接口
+
+### 1.1 search_forum_threads
 
 统一搜索帖子：优先按论坛页搜索和筛选，再结合本地归档补充详情。
 
@@ -14,7 +22,6 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
 |------|------|------|--------|------|
 | query | string | 否 | "" | 搜索关键词 |
 | forum_id | int | 否 | 30 | 论坛分区 ID（30=漫画, 55=轻小说, 5=动漫, 33=水区） |
-| limit | int | 否 | 0 | 最大返回数，0 表示不限 |
 | start_page | int | 否 | 1 | 起始页码 |
 | end_page | int \| null | 否 | null | 结束页码，null 表示到最后一页 |
 | posted_on | string \| null | 否 | null | 按发布日期筛选（YYYY-MM-DD） |
@@ -69,17 +76,18 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
 
 ---
 
-### 1.2 get_thread
+### 1.2 inspect_remote_thread
 
-读取帖子详情；若本地未归档则自动远端抓取并归档后返回。
+远端只读预览；不会写 SQLite、下载图片或创建任务。
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | tid | int | 是 | 帖子 ID |
-| url | string \| null | 否 | 帖子 URL（可选） |
+| forum_id | int \| null | 否 | 论坛分区 ID |
+| author_only | bool | 否 | 是否按只看楼主语义预览 |
 | base_url | string \| null | 否 | 站点根 URL |
 
-**返回**：完整的帖子详情，包含楼层列表、标题解析结果、系列信息等。
+**返回**：紧凑快照，包含标题、分区、发布者、楼层数、图片数和少量 preview。
 
 ```json
 {
@@ -143,7 +151,7 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
 
 ---
 
-### 1.4 archive_thread
+### 1.4 create_thread_archive_job
 
 创建帖子归档任务；长操作只返回 job_id。
 
@@ -158,7 +166,22 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
 
 ---
 
-### 1.5 export_thread
+### 1.5 ensure_thread_archived
+
+检查本地是否已有归档；若缺失则创建归档任务。
+
+### 1.6 read_archived_thread
+
+读取本地归档视图。支持：
+
+- `summary`
+- `content`
+- `assets`
+- `diagnostics`
+- `export`
+- `metadata`
+
+### 1.7 create_thread_export_job
 
 创建帖子导出任务。
 
@@ -179,7 +202,7 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
 
 ---
 
-### 1.6 check_thread_updates
+### 1.8 check_thread_updates
 
 检查已归档轻小说贴子是否有新更新；只读，不创建任务。
 
@@ -197,7 +220,7 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
 
 ---
 
-### 1.7 update_thread
+### 1.9 create_thread_update_job
 
 创建轻小说贴子追加更新任务；会先执行更新检测，检测到新内容后再追加归档。
 
@@ -210,7 +233,7 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
 
 ---
 
-### 1.8 sync_forum_range
+### 1.10 sync_forum_range
 
 按论坛页码范围抓取真实帖子列表并批量创建同步任务。
 
@@ -226,7 +249,7 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
 
 ---
 
-### 1.9 get_job_status
+### 1.11 read_job
 
 读取后台任务状态。
 
@@ -263,7 +286,7 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
 
 ---
 
-### 1.10 cleanup_job
+### 1.12 cleanup_job
 
 创建后台清理任务。
 
@@ -277,27 +300,16 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
 
 ---
 
-### 1.11 parse_thread_title
+### 1.13 兼容接口
 
-解析帖子标题；低置信度时可自动调用内置 LLM 做二次提取。
+以下旧名称可能仍作为兼容包装存在，但不再推荐给 Agent：
 
-| 参数 | 类型 | 必填 | 默认值 | 说明 |
-|------|------|------|--------|------|
-| title | string | 是 | - | 原始标题 |
-| use_llm_on_low_confidence | bool | 否 | true | 低置信度时是否调用 LLM |
-
----
-
-### 1.10 llm_transform_text
-
-调用内置 OpenAI-compatible LLM 做文本提取或清洗。
-
-| 参数 | 类型 | 必填 | 默认值 | 说明 |
-|------|------|------|--------|------|
-| task | string | 是 | - | 任务描述 |
-| text | string | 是 | - | 输入文本 |
-| system_prompt | string \| null | 否 | null | 系统提示词 |
-| temperature | float | 否 | 0.0 | 温度参数 |
+- `search_threads`
+- `archive_thread`
+- `export_thread`
+- `get_thread`
+- `get_job_status`
+- `update_thread`
 
 ---
 
@@ -343,7 +355,7 @@ MCP Server 暴露以下只读资源，通过 `yamibo://` URI scheme 访问。
 推荐的资源读取顺序：
 
 ```
-search_threads → items[].resources.summary
+search_forum_threads → items[].resources.summary
   → yamibo://threads/{tid}/summary        (紧凑摘要)
   → yamibo://threads/{tid}/diagnostics    (缺失资产、建议操作)
   → yamibo://threads/{tid}/posts          (内容块，仅需要时)
@@ -367,9 +379,6 @@ yamibo-mcp-server browse-forum-page --page 1 --forum-id 55
 # 搜索帖子
 yamibo-mcp-server search-threads --query "星灵感应"
 
-# 获取帖子详情（自动归档）
-yamibo-mcp-server get-thread --tid 572313
-
 # 创建归档任务
 yamibo-mcp-server create-sync-thread-job --tid 572313
 
@@ -387,12 +396,6 @@ yamibo-mcp-server create-sync-forum-range-jobs --start-page 1 --end-page 5
 
 # 任务状态
 yamibo-mcp-server job-status <job_id>
-
-# 解析标题
-yamibo-mcp-server parse-thread-title "【提灯喵汉化组】[ポテトルス] ray 第13话"
-
-# LLM 文本处理
-yamibo-mcp-server llm-transform-text --task "提取作者名" --text "..."
 
 # 列出导出包
 yamibo-mcp-server list-exports

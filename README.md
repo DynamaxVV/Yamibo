@@ -6,14 +6,14 @@
 
 - **MCP Server** — 基于 FastMCP，支持 stdio/SSE/HTTP 传输，LLM 客户端直接调用
 - **多分区支持** — 漫画区(30)、轻小说区(55)、动漫区(5)、海域区(33) + 7 个扩展分区，通过 `forum_id` 参数切换
-- **智能标题解析** — 规则引擎 + LLM 辅助，自动提取汉化组、作者、漫画名、章节信息
+- **智能标题解析** — 规则引擎 + LLM 辅助作为内部归档实现细节
 - **自动归档** — 抓取帖子 HTML，解析楼层，下载图片，生成结构化本地存档
 - **轻小说更新检测** — 独立 `check_thread_updates` / `update_thread` 流程，轻小说贴子支持只看楼主增量更新
 - **内容模型** — 支持 comic/novel/discussion/mixed 四种内容形态，有序内容块 + 资产管理
 - **系列管理** — 按 series_key 自动聚合同一系列的多个章节帖子
 - **标准化导出** — 漫画/通用贴子 ZIP 打包（context.md + metadata.json + 图片），轻小说导出为可追加的 TXT 文件
 - **Job Event Outbox** — 任务状态变更追加耐久化事件，支持诊断和未来通知
-- **Agent-Friendly Resources** — 紧凑 summary、diagnostics、posts、assets 资源，低 token 开销
+- **Agent-Friendly Interface** — 区分远端预览/任务创建与本地归档读取，统一结构化错误和紧凑输出
 - **Web 控制台** — React+Vite SPA，中英文双语，4 套可切换主题 + 暗黑模式
 - **CLI** — 所有工具均可通过命令行直接调用
 
@@ -139,9 +139,6 @@ uv run yamibo-mcp-server browse-forum-page --page 1 --forum-id 55
 # 搜索帖子
 uv run yamibo-mcp-server search-threads --query "星灵感应"
 
-# 获取帖子详情（自动归档）
-uv run yamibo-mcp-server get-thread --tid 572313
-
 # 检查轻小说更新
 uv run yamibo-mcp-server check-thread-updates --tid 544422
 
@@ -165,9 +162,6 @@ uv run yamibo-mcp-server read-resource "yamibo://threads/572313/diagnostics"
 
 # 读取轻小说更新检测结果
 uv run yamibo-mcp-server read-resource "yamibo://threads/544422/update-check"
-
-# 解析标题
-uv run yamibo-mcp-server parse-thread-title "【提灯喵汉化组】[ポテトルス] ray 第13话"
 
 # 数据库备份
 uv run yamibo-backup-db
@@ -205,6 +199,7 @@ uv run pytest -k "test_name"       # 按名称过滤
 |------|------|
 | [产品需求 & 架构设计](docs/product-requirements.md) | PRD + 系统架构 |
 | [API 接口文档](docs/api-reference.md) | MCP 工具/资源、CLI、Web 路由 |
+| [Agent 接口说明](docs/agent-interface.md) | Agent-facing 工具、错误契约、推荐工作流 |
 | [数据库设计](docs/database-design.md) | 表结构、文件存储格式 |
 | [核心模块开发说明](docs/development-guide.md) | 标题解析、Job 系统、配置 |
 | [部署指南 & 运维手册](docs/deployment-guide.md) | 安装、配置、运维操作 |

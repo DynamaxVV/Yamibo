@@ -20,21 +20,29 @@ from yamibo_mcp.server.resources import (
     thread_summary_uri,
     thread_update_check_uri,
 )
-from yamibo_mcp.server.tools import (
-    archive_thread,
+from yamibo_mcp.server.agent_tools import (
     browse_forum_page,
     check_thread_updates,
+    create_thread_archive_job,
+    create_thread_export_job,
+    create_thread_update_job,
+    ensure_thread_archived,
+    inspect_remote_thread,
+    read_archived_thread,
+    read_forum_profiles,
+    read_job,
+    read_job_events,
+    search_forum_threads,
+)
+from yamibo_mcp.server.tools import (
+    archive_thread,
     cleanup_job,
-    create_export_thread_job,
     create_noop_job,
-    create_sync_thread_job,
     dump_json,
     export_thread,
     get_job_status,
     get_thread,
-    llm_transform_text,
     list_exports,
-    parse_thread_title,
     read_resource,
     read_resource_content,
     search_threads,
@@ -63,11 +71,10 @@ def build_mcp_server():
         ),
     )
 
-    @server.tool(name="search_threads", description="统一搜索帖子：按论坛页搜索和筛选，再结合本地归档补充详情。posted_on 与 start_page/end_page 互斥——指定 posted_on 时自动按发帖日期排序并使用指数跳转+二分查找策略。")
-    def _search_threads(
+    @server.tool(name="search_forum_threads", description="Remote-first, read-only forum search. Uses forum pagination and compact archive hints; does not expose a limit parameter.")
+    def _search_forum_threads(
         query: str = "",
         forum_id: int = 30,
-        limit: int = 0,
         start_page: int = 1,
         end_page: int | None = None,
         posted_on: str | None = None,
@@ -76,10 +83,9 @@ def build_mcp_server():
         include_sticky: bool = False,
         include_announcements: bool = False,
     ) -> dict[str, object]:
-        return search_threads(
+        return search_forum_threads(
             query=query,
             forum_id=forum_id,
-            limit=limit,
             start_page=start_page,
             end_page=end_page,
             posted_on=posted_on,
@@ -89,11 +95,7 @@ def build_mcp_server():
             include_announcements=include_announcements,
         )
 
-    @server.tool(name="get_thread", description="读取帖子详情；若本地未归档则自动远端抓取并归档后返回。")
-    def _get_thread(tid: int, url: str | None = None, base_url: str | None = None) -> dict[str, object]:
-        return get_thread(tid=tid, url=url, base_url=base_url)
-
-    @server.tool(name="browse_forum_page", description="读取论坛某一页的帖子列表；短调用，直接返回该页帖子信息，不创建后台任务。order=\"dateline\" 按发帖时间排序（返回 total_pages），默认按最后回复排序。")
+    @server.tool(name="browse_forum_page", description="Remote read-only forum page browse. Returns one page of compact thread items and never creates jobs.")
     def _browse_forum_page(
         page: int,
         forum_id: int = 30,
@@ -113,30 +115,61 @@ def build_mcp_server():
             include_announcements=include_announcements,
         )
 
-    @server.tool(name="archive_thread", description="创建帖子归档任务；长操作只返回 job_id。")
-    def _archive_thread(
+    @server.tool(name="inspect_remote_thread", description="Remote read-only thread preview. Fetches and parses a compact snapshot without writing SQLite, downloading assets, or creating jobs.")
+    def _inspect_remote_thread(
+        tid: int,
+        forum_id: int | None = None,
+        author_only: bool = False,
+        base_url: str | None = None,
+    ) -> dict[str, object]:
+        return inspect_remote_thread(tid=tid, forum_id=forum_id, author_only=author_only, base_url=base_url)
+
+    @server.tool(name="create_thread_archive_job", description="Create a background archive job for a thread or local HTML input. Side effect: writes a queued job to SQLite; daemon execution is required.")
+    def _create_thread_archive_job(
         html_path: str | None = None,
         tid: int | None = None,
         url: str | None = None,
         base_url: str | None = None,
+        forum_id: int | None = None,
     ) -> dict[str, object]:
-        return archive_thread(html_path=html_path, tid=tid, url=url, base_url=base_url)
+        return create_thread_archive_job(html_path=html_path, tid=tid, url=url, base_url=base_url, forum_id=forum_id)
 
-    @server.tool(name="export_thread", description="创建帖子导出任务；支持 cache_only、sync_if_stale、force_resync 策略。")
-    def _export_thread(tid: int, strategy: str | None = None) -> dict[str, object]:
-        return export_thread(tid=tid, strategy=strategy)
+    @server.tool(name="ensure_thread_archived", description="Local archive check plus job creation fallback. Returns local archive state if present, otherwise creates an archive job.")
+    def _ensure_thread_archived(tid: int, base_url: str | None = None, forum_id: int | None = None) -> dict[str, object]:
+        return ensure_thread_archived(tid=tid, base_url=base_url, forum_id=forum_id)
 
-    @server.tool(name="check_thread_updates", description="检查已归档轻小说贴子是否有新更新；只读，不创建任务。")
-    def _check_thread_updates(tid: int) -> dict[str, object]:
-        return check_thread_updates(tid=tid)
+    @server.tool(name="read_archived_thread", description="Read local archive views from SQLite and materialized files. Views are local-only and never trigger remote fetches.")
+    def _read_archived_thread(
+        tid: int,
+        view: str,
+        floor_start: int | None = None,
+        floor_end: int | None = None,
+    ) -> dict[str, object]:
+        return read_archived_thread(tid=tid, view=view, floor_start=floor_start, floor_end=floor_end)
 
-    @server.tool(name="update_thread", description="创建轻小说贴子追加更新任务；先检查后更新。")
-    def _update_thread(tid: int, base_url: str | None = None) -> dict[str, object]:
-        return update_thread(tid=tid, base_url=base_url)
+    @server.tool(name="check_thread_updates", description="Remote read-only update inspection for archived novel threads. Does not create jobs.")
+    def _check_thread_updates(tid: int, base_url: str | None = None) -> dict[str, object]:
+        return check_thread_updates(tid=tid, base_url=base_url)
 
-    @server.tool(name="get_job_status", description="读取后台任务状态。")
-    def _get_job_status(job_id: str) -> dict[str, object]:
-        return get_job_status(job_id)
+    @server.tool(name="create_thread_update_job", description="Create a background incremental update job for an archived novel thread. Side effect: writes a queued job to SQLite.")
+    def _create_thread_update_job(tid: int, base_url: str | None = None) -> dict[str, object]:
+        return create_thread_update_job(tid=tid, base_url=base_url)
+
+    @server.tool(name="create_thread_export_job", description="Create a background export job for a local archive. Side effect: writes a queued job to SQLite.")
+    def _create_thread_export_job(tid: int, strategy: str | None = None) -> dict[str, object]:
+        return create_thread_export_job(tid=tid, strategy=strategy)
+
+    @server.tool(name="read_job", description="Read compact job status from the local SQLite queue.")
+    def _read_job(job_id: str) -> dict[str, object]:
+        return read_job(job_id=job_id)
+
+    @server.tool(name="read_job_events", description="Read persisted job event history for a queued or completed job.")
+    def _read_job_events(job_id: str) -> dict[str, object]:
+        return read_job_events(job_id=job_id)
+
+    @server.tool(name="read_forum_profiles", description="Read configured forum profiles and content-type guidance from local metadata.")
+    def _read_forum_profiles() -> dict[str, object]:
+        return read_forum_profiles()
 
     @server.tool(name="cleanup_job", description="创建后台清理任务，支持按 job 清理 staging 或批量清理过期 staging。")
     def _cleanup_job(
@@ -146,7 +179,7 @@ def build_mcp_server():
     ) -> dict[str, object]:
         return cleanup_job(job_id=job_id, mode=mode, older_than_hours=older_than_hours)
 
-    @server.tool(name="sync_forum_range", description="按论坛页码范围抓真实帖子列表并批量创建同步任务。")
+    @server.tool(name="sync_forum_range", description="Legacy bulk job creator. Prefer browse_forum_page plus create_thread_archive_job for agent-facing flows.")
     def _sync_forum_range(
         start_page: int,
         end_page: int,
@@ -165,19 +198,6 @@ def build_mcp_server():
             include_sticky=include_sticky,
             include_announcements=include_announcements,
         )
-
-    @server.tool(name="parse_thread_title", description="解析帖子标题；低置信度时可自动调用内置 LLM 做二次提取。")
-    def _parse_thread_title(title: str, use_llm_on_low_confidence: bool = True) -> dict[str, object]:
-        return parse_thread_title(title=title, use_llm_on_low_confidence=use_llm_on_low_confidence)
-
-    @server.tool(name="llm_transform_text", description="调用内置 OpenAI-compatible LLM 做文本提取或清洗。")
-    def _llm_transform_text(
-        task: str,
-        text: str,
-        system_prompt: str | None = None,
-        temperature: float = 0.0,
-    ) -> dict[str, object]:
-        return llm_transform_text(task=task, text=text, system_prompt=system_prompt, temperature=temperature)
 
     @server.resource(thread_context_uri("{tid}"), mime_type="text/markdown", name="thread-context")
     def _thread_context(tid: str) -> str:
@@ -328,14 +348,6 @@ def main() -> None:
     sub.add_parser("list-exports")
     read_resource_parser = sub.add_parser("read-resource")
     read_resource_parser.add_argument("uri")
-    parse_title_parser = sub.add_parser("parse-thread-title")
-    parse_title_parser.add_argument("title")
-    parse_title_parser.add_argument("--no-llm-fallback", action="store_true")
-    llm_parser = sub.add_parser("llm-transform-text")
-    llm_parser.add_argument("--task", required=True)
-    llm_parser.add_argument("--text", required=True)
-    llm_parser.add_argument("--system-prompt")
-    llm_parser.add_argument("--temperature", type=float, default=0.0)
     cleanup_parser = sub.add_parser("cleanup-job")
     cleanup_parser.add_argument("job_id", nargs="?")
     cleanup_parser.add_argument("--mode", default="job_staging")
@@ -411,19 +423,6 @@ def main() -> None:
         print(dump_json(list_exports()))
     elif command == "read-resource":
         print(dump_json(read_resource(args.uri)))
-    elif command == "parse-thread-title":
-        print(dump_json(parse_thread_title(title=args.title, use_llm_on_low_confidence=not args.no_llm_fallback)))
-    elif command == "llm-transform-text":
-        print(
-            dump_json(
-                llm_transform_text(
-                    task=args.task,
-                    text=args.text,
-                    system_prompt=args.system_prompt,
-                    temperature=args.temperature,
-                )
-            )
-        )
     elif command == "cleanup-job":
         print(dump_json(cleanup_job(job_id=args.job_id, mode=args.mode, older_than_hours=args.older_than_hours)))
     elif command == "job-status":

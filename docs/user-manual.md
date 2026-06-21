@@ -29,8 +29,8 @@ uv run yamibo-daemon
 # 浏览论坛第 1 页
 uv run yamibo-mcp-server browse-forum-page --page 1
 
-# 解析一个标题
-uv run yamibo-mcp-server parse-thread-title "【提灯喵汉化组】[ポテトルス] ray 第13话"
+# 读取论坛分区列表
+uv run yamibo-mcp-server read-resource "yamibo://forums/index"
 ```
 
 ---
@@ -49,21 +49,21 @@ MCP Server 会调用 `browse_forum_page` 工具返回帖子列表。
 
 > "搜索一下有没有 '星灵感应' 相关的帖子"
 
-MCP Server 会调用 `search_threads` 工具，优先从论坛搜索，失败时降级到本地搜索。
+MCP Server 会调用 `search_forum_threads` 工具，优先从论坛搜索，失败时降级到本地搜索。
 
 ### 2.3 归档帖子
 
 > "帮我归档帖子 572313"
 
-MCP Server 会调用 `archive_thread` 创建后台任务。返回 job_id 后，可以通过 `get_job_status` 轮询进度。
+MCP Server 会调用 `create_thread_archive_job` 创建后台任务。返回 job_id 后，可以通过 `read_job` 轮询进度。
 
-`get_thread` 工具更方便：它会自动检查本地是否有归档，没有则自动抓取并归档后返回完整详情。
+如果需要先确认本地是否已有归档，可调用 `ensure_thread_archived`；读取内容则使用 `read_archived_thread`。
 
 ### 2.4 导出帖子
 
 > "把帖子 572313 导出成 ZIP"
 
-MCP Server 会调用 `export_thread` 创建导出任务。支持三种策略：
+MCP Server 会调用 `create_thread_export_job` 创建导出任务。支持三种策略：
 - **cache_only**（默认）：仅使用本地已有数据
 - **sync_if_stale**：本地数据过旧时先同步
 - **force_resync**：强制重新同步
@@ -76,7 +76,7 @@ MCP Server 会调用 `export_thread` 创建导出任务。支持三种策略：
 
 MCP Server 会调用 `check_thread_updates` 只读接口，先比较本地归档快照和远端只看楼主页面。
 
-如果结果显示有更新，再调用 `update_thread` 创建追加更新任务。
+如果结果显示有更新，再调用 `create_thread_update_job` 创建追加更新任务。
 
 ### 2.6 批量归档
 
@@ -211,9 +211,6 @@ uv run yamibo-mcp-server browse-forum-page --page 1 --forum-id 55
 # 搜索
 uv run yamibo-mcp-server search-threads --query "关键词"
 
-# 获取帖子详情（自动归档）
-uv run yamibo-mcp-server get-thread --tid 572313
-
 # 创建归档任务
 uv run yamibo-mcp-server create-sync-thread-job --tid 572313
 
@@ -225,9 +222,6 @@ uv run yamibo-mcp-server create-sync-forum-range-jobs --start-page 1 --end-page 
 
 # 查看任务状态
 uv run yamibo-mcp-server job-status <job_id>
-
-# 解析标题
-uv run yamibo-mcp-server parse-thread-title "标题内容"
 
 # 列出导出包
 uv run yamibo-mcp-server list-exports

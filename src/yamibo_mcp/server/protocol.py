@@ -2,45 +2,55 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from yamibo_mcp.server.tools import (
-    archive_thread,
+from yamibo_mcp.server.agent_tools import (
     browse_forum_page,
     check_thread_updates,
-    cleanup_job,
-    create_export_thread_job,
-    create_noop_job,
-    create_sync_thread_job,
-    create_update_thread_job,
-    export_thread,
-    get_job_status,
-    get_thread,
-    llm_transform_text,
-    list_exports,
-    parse_thread_title,
+    create_thread_archive_job,
+    create_thread_export_job,
+    create_thread_update_job,
+    ensure_thread_archived,
+    inspect_remote_thread,
+    read_archived_thread,
+    read_forum_profiles,
+    read_job,
+    read_job_events,
+    search_forum_threads,
+)
+from yamibo_mcp.server.tools import (
+    archive_thread as legacy_archive_thread,
+    export_thread as legacy_export_thread,
+    get_job_status as legacy_get_job_status,
+    get_thread as legacy_get_thread,
     read_resource,
-    search_threads,
-    sync_forum_range,
+    search_threads as legacy_search_threads,
+    update_thread as legacy_update_thread,
 )
 
 
 ToolHandler = Callable[..., Any]
 
 TOOLS: dict[str, tuple[ToolHandler, str]] = {
-    "create_noop_job": (create_noop_job, "创建 no-op 后台任务，用于验证任务系统。"),
-    "create_sync_thread_job": (create_sync_thread_job, "创建帖子同步任务；当前支持本地 HTML 样例路径。"),
-    "create_update_thread_job": (create_update_thread_job, "创建轻小说贴子追加更新任务；先检查再更新。"),
-    "create_export_thread_job": (create_export_thread_job, "为已归档帖子创建 ZIP 导出任务。"),
-    "update_thread": (create_update_thread_job, "创建轻小说贴子追加更新任务；先检查再更新。"),
-    "browse_forum_page": (browse_forum_page, "读取漫画区某一页的帖子列表；短调用，直接返回该页帖子信息。"),
-    "archive_thread": (archive_thread, "创建帖子归档任务；长操作仅返回 job_id。"),
-    "export_thread": (export_thread, "创建帖子导出任务，支持 cache_only、sync_if_stale、force_resync 策略。"),
-    "check_thread_updates": (check_thread_updates, "检查已归档轻小说贴子是否有新更新；只读，不创建任务。"),
-    "cleanup_job": (cleanup_job, "创建后台清理任务，支持按 job 清理 staging 或批量清理过期 staging。"),
-    "sync_forum_range": (sync_forum_range, "按漫画区页码范围抓取真实帖子列表并批量创建同步任务。"),
-    "get_job_status": (get_job_status, "读取后台任务状态。"),
-    "search_threads": (search_threads, "统一搜索帖子：优先按论坛页搜索和筛选，再结合本地归档补充详情。"),
-    "get_thread": (get_thread, "读取帖子详情；若本地未归档则自动远端抓取并归档后返回。"),
-    "list_exports": (list_exports, "列出已经生成的导出包。")
+    "browse_forum_page": (browse_forum_page, "Remote read-only forum page browse; does not create jobs."),
+    "search_forum_threads": (search_forum_threads, "Remote-first forum search with compact archive hints; does not expose limit."),
+    "inspect_remote_thread": (inspect_remote_thread, "Remote read-only thread preview; never writes SQLite or materialized files."),
+    "create_thread_archive_job": (create_thread_archive_job, "Create a background archive job and return the job id."),
+    "ensure_thread_archived": (ensure_thread_archived, "Check whether a thread is archived locally; create an archive job if missing."),
+    "read_archived_thread": (read_archived_thread, "Read compact local archive views from SQLite and materialized files."),
+    "check_thread_updates": (check_thread_updates, "Inspect novel-thread updates without creating a job."),
+    "create_thread_update_job": (create_thread_update_job, "Create a background incremental update job for an archived novel thread."),
+    "create_thread_export_job": (create_thread_export_job, "Create a background export job for a local archive."),
+    "read_job": (read_job, "Read compact job status from the local queue."),
+    "read_job_events": (read_job_events, "Read persisted job event history from the local queue."),
+    "read_forum_profiles": (read_forum_profiles, "Read configured forum profiles from local metadata."),
+}
+
+COMPAT_TOOLS: dict[str, ToolHandler] = {
+    "search_threads": legacy_search_threads,
+    "archive_thread": legacy_archive_thread,
+    "export_thread": legacy_export_thread,
+    "get_job_status": legacy_get_job_status,
+    "get_thread": legacy_get_thread,
+    "update_thread": legacy_update_thread,
 }
 
 
@@ -83,9 +93,9 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:
         if method == "tools/call":
             name = params.get("name")
             arguments = params.get("arguments") or {}
-            if name not in TOOLS:
+            handler = TOOLS.get(name, (COMPAT_TOOLS.get(name), ""))[0]
+            if handler is None:
                 raise ValueError(f"unknown tool: {name}")
-            handler = TOOLS[name][0]
             result = handler(**arguments)
             return {"id": request_id, "result": result}
         if method == "resources/read":
