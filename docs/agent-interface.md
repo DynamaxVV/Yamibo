@@ -118,13 +118,32 @@
 | `interrupted` | worker 中断，可被 daemon 恢复 | 先观察是否回到 `running`；长期停留再人工处理 |
 | `cancelled` | 任务已取消 | 停止轮询，必要时重新创建新任务 |
 
+`read_job` 额外暴露以下运行态诊断字段，用于长时间 `running` 或 `queued` 的自动判定：
+
+- `running_duration_seconds`
+- `seconds_since_update`
+- `execution_state`
+  - `queued`：正常排队
+  - `normal`：正常推进
+  - `attention`：还在推进或等待恢复，但已经值得关注
+  - `stalled`：长时间没有进度更新，应进入排障面
+  - `terminal`：已终态
+- `diagnostic_summary`
+- `needs_attention`
+
+推荐约定：
+
+- `execution_state=normal`：继续按 `recommended_poll_after_seconds` 轮询
+- `execution_state=attention`：允许继续轮询，但应准备切到 `read_job_events`
+- `execution_state=stalled`：优先读 `read_job_events`，检查 daemon / 网络 / 图片下载阶段
+
 ## 任务轮询与恢复建议
 
 推荐顺序：
 
 1. 创建任务：`create_thread_archive_job` / `create_thread_update_job` / `create_thread_export_job`
 2. 轮询主状态：`read_job(job_id)`
-3. 出现 `failed`、`partial`、长时间 `running` 或 `interrupted` 时，再读 `read_job_events(job_id)`
+3. 出现 `failed`、`partial`、`execution_state in {attention, stalled}` 或 `interrupted` 时，再读 `read_job_events(job_id)`
 4. 状态进入 `succeeded` 或 `partial` 后，切到 `read_archived_thread`
 
 约定：

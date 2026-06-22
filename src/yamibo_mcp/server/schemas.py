@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from yamibo_mcp.time_utils import utc_now_iso
 from yamibo_mcp.server.resource_uris import (
     series_chapters_uri,
     series_index_uri,
@@ -20,10 +22,121 @@ from yamibo_mcp.yamibo.urls import thread_url_from_tid
 
 _TERMINAL_JOB_STATUSES = {"succeeded", "partial", "failed", "cancelled"}
 _RESULT_READY_STATUSES = {"succeeded", "partial"}
+_ACTIVE_JOB_STATUSES = {"queued", "running", "retrying", "interrupted", "cancel_requested"}
+
+
+def _parse_iso8601(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _seconds_between(later: datetime | None, earlier: datetime | None) -> int | None:
+    if later is None or earlier is None:
+        return None
+    return max(0, int((later - earlier).total_seconds()))
+
+
+def _job_execution_diagnostics(job) -> dict[str, Any]:
+    now = _parse_iso8601(utc_now_iso())
+    created_at = _parse_iso8601(job.created_at)
+    updated_at = _parse_iso8601(job.updated_at)
+    running_duration_seconds = _seconds_between(now, created_at)
+    seconds_since_update = _seconds_between(now, updated_at)
+
+    if job.status in _TERMINAL_JOB_STATUSES:
+        if job.status == "partial":
+            summary = "Job completed partially; archived content is usually readable, but diagnostics and events should be checked."
+        elif job.status == "failed":
+            summary = "Job failed; inspect job events before retrying."
+        elif job.status == "cancelled":
+            summary = "Job was cancelled before completion."
+        else:
+            summary = "Job completed successfully."
+        return {
+            "running_duration_seconds": running_duration_seconds,
+            "seconds_since_update": seconds_since_update,
+            "execution_state": "terminal",
+            "diagnostic_summary": summary,
+            "needs_attention": job.status in {"partial", "failed", "cancelled"},
+            "recommended_poll_after_seconds": None,
+        }
+
+    if job.status == "interrupted":
+        return {
+            "running_duration_seconds": running_duration_seconds,
+            "seconds_since_update": seconds_since_update,
+            "execution_state": "attention",
+            "diagnostic_summary": "Job is interrupted and waiting for daemon recovery or operator action.",
+            "needs_attention": True,
+            "recommended_poll_after_seconds": 5,
+        }
+
+    if job.status == "queued":
+        if (running_duration_seconds or 0) >= 30:
+            return {
+                "running_duration_seconds": running_duration_seconds,
+                "seconds_since_update": seconds_since_update,
+                "execution_state": "attention",
+                "diagnostic_summary": "Job has remained queued for an extended period; verify that the daemon is running.",
+                "needs_attention": True,
+                "recommended_poll_after_seconds": 10,
+            }
+        return {
+            "running_duration_seconds": running_duration_seconds,
+            "seconds_since_update": seconds_since_update,
+            "execution_state": "queued",
+            "diagnostic_summary": "Job is queued and waiting for a daemon worker to acquire it.",
+            "needs_attention": False,
+            "recommended_poll_after_seconds": 2,
+        }
+
+    if (seconds_since_update or 0) >= 120:
+        return {
+            "running_duration_seconds": running_duration_seconds,
+            "seconds_since_update": seconds_since_update,
+            "execution_state": "stalled",
+            "diagnostic_summary": "Job is still running but has no progress update for over 120 seconds; inspect job events.",
+            "needs_attention": True,
+            "recommended_poll_after_seconds": 10,
+        }
+
+    if job.stage == "download_images" and (running_duration_seconds or 0) >= 180:
+        return {
+            "running_duration_seconds": running_duration_seconds,
+            "seconds_since_update": seconds_since_update,
+            "execution_state": "attention",
+            "diagnostic_summary": "Job is spending a long time in download_images; remote images may be slow or retrying.",
+            "needs_attention": True,
+            "recommended_poll_after_seconds": 5,
+        }
+
+    if job.status in _ACTIVE_JOB_STATUSES:
+        return {
+            "running_duration_seconds": running_duration_seconds,
+            "seconds_since_update": seconds_since_update,
+            "execution_state": "normal",
+            "diagnostic_summary": "Job is actively progressing.",
+            "needs_attention": False,
+            "recommended_poll_after_seconds": 2,
+        }
+
+    return {
+        "running_duration_seconds": running_duration_seconds,
+        "seconds_since_update": seconds_since_update,
+        "execution_state": "unknown",
+        "diagnostic_summary": "Job state is not recognized; inspect job events.",
+        "needs_attention": True,
+        "recommended_poll_after_seconds": 10,
+    }
 
 
 def job_status_payload(job) -> dict[str, Any]:
     is_terminal = job.status in _TERMINAL_JOB_STATUSES
+    diagnostics = _job_execution_diagnostics(job)
     return {
         "job_id": job.job_id,
         "job_type": job.job_type,
@@ -40,7 +153,12 @@ def job_status_payload(job) -> dict[str, Any]:
         "finished_at": job.finished_at,
         "is_terminal": is_terminal,
         "result_ready": job.status in _RESULT_READY_STATUSES,
-        "recommended_poll_after_seconds": None if is_terminal else 2,
+        "running_duration_seconds": diagnostics["running_duration_seconds"],
+        "seconds_since_update": diagnostics["seconds_since_update"],
+        "execution_state": diagnostics["execution_state"],
+        "diagnostic_summary": diagnostics["diagnostic_summary"],
+        "needs_attention": diagnostics["needs_attention"],
+        "recommended_poll_after_seconds": diagnostics["recommended_poll_after_seconds"],
     }
 
 

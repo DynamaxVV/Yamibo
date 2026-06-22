@@ -204,6 +204,13 @@ tests/
 
 当前已落地的 Agent 工作流基线位于 `tests/integration/test_agent_workflows.py`，对应的人类可读说明见 [agent-evaluation.md](agent-evaluation.md)。
 
+针对真实 Agent 的回归补充了两层能力：
+
+- `tests/unit/test_benchmark/test_hermes.py`
+  - 覆盖 Hermes transcript 解析、任务卡打分逻辑。
+- `scripts/run_hermes_benchmark.sh`
+  - 面向真实 Hermes CLI 的黑盒回归入口，自动执行 7 张标准任务卡、导出 session transcript、汇总打分报告。
+
 ---
 
 ## 4. 测试数据管理

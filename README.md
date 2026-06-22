@@ -195,6 +195,9 @@ uv run pytest                      # 全部测试
 uv run pytest tests/unit/          # 单元测试
 uv run pytest tests/unit/test_parsers/  # 解析器测试
 uv run pytest -k "test_name"       # 按名称过滤
+
+# 真实 Hermes Agent 回归
+scripts/run_hermes_benchmark.sh
 ```
 
 ## 文档

@@ -12,6 +12,8 @@ _JOB_STATUS_KEYS = {
     "job_id", "job_type", "status", "stage", "progress_current", "progress_total",
     "worker_id", "error_code", "error_message", "artifacts", "created_at",
     "updated_at", "finished_at", "is_terminal", "result_ready",
+    "running_duration_seconds", "seconds_since_update", "execution_state",
+    "diagnostic_summary", "needs_attention",
     "recommended_poll_after_seconds",
 }
 
@@ -68,3 +70,61 @@ class TestGetJobStatusPayload:
         assert result["is_terminal"] is True
         assert result["result_ready"] is True
         assert result["recommended_poll_after_seconds"] is None
+
+    def test_marks_old_running_download_job_as_attention_with_diagnostic_summary(self, tmp_path, db):
+        settings = _fake_settings(tmp_path)
+        repo = JobsRepository(db)
+        job = repo.create("sync_thread", tid=100, payload={"tid": 100})
+        db.execute(
+            """
+            UPDATE jobs
+            SET status = 'running',
+                stage = 'download_images',
+                progress_current = 4,
+                progress_total = 6,
+                created_at = '2026-06-22T14:00:00+00:00',
+                updated_at = '2026-06-22T14:03:10+00:00'
+            WHERE job_id = ?
+            """,
+            (job.job_id,),
+        )
+        db.commit()
+        with patch("yamibo_mcp.application.job_queries.load_settings", return_value=settings), \
+             patch("yamibo_mcp.application.job_queries.connect", return_value=db), \
+             patch("yamibo_mcp.server.schemas.utc_now_iso", return_value="2026-06-22T14:03:40+00:00"):
+            result = get_job_status_payload(job.job_id)
+
+        assert result["execution_state"] == "attention"
+        assert result["needs_attention"] is True
+        assert result["running_duration_seconds"] == 220
+        assert result["seconds_since_update"] == 30
+        assert "download_images" in result["diagnostic_summary"]
+        assert result["recommended_poll_after_seconds"] == 5
+
+    def test_marks_stale_running_job_as_stalled(self, tmp_path, db):
+        settings = _fake_settings(tmp_path)
+        repo = JobsRepository(db)
+        job = repo.create("sync_thread", tid=100, payload={"tid": 100})
+        db.execute(
+            """
+            UPDATE jobs
+            SET status = 'running',
+                stage = 'download_images',
+                progress_current = 4,
+                progress_total = 6,
+                created_at = '2026-06-22T14:00:00+00:00',
+                updated_at = '2026-06-22T14:01:00+00:00'
+            WHERE job_id = ?
+            """,
+            (job.job_id,),
+        )
+        db.commit()
+        with patch("yamibo_mcp.application.job_queries.load_settings", return_value=settings), \
+             patch("yamibo_mcp.application.job_queries.connect", return_value=db), \
+             patch("yamibo_mcp.server.schemas.utc_now_iso", return_value="2026-06-22T14:03:40+00:00"):
+            result = get_job_status_payload(job.job_id)
+
+        assert result["execution_state"] == "stalled"
+        assert result["needs_attention"] is True
+        assert "no progress update" in result["diagnostic_summary"]
+        assert result["recommended_poll_after_seconds"] == 10

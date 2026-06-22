@@ -75,10 +75,19 @@ Agent 通过验收，应同时满足以下条件：
 - `token_efficiency`
   - Agent 是否优先使用 compact view、resource hint、cursor 分页。
 
+建议新增两个回归维度：
+
+- `running_diagnostics`
+  - Agent 是否能利用 `read_job.execution_state`、`diagnostic_summary`、`needs_attention` 区分正常长任务、需关注任务与疑似卡住任务。
+- `fanout_pressure`
+  - Agent 是否能在多线程、多 forum 的一轮任务中维持状态纪律，而不是串台、漏轮询或重复建 job。
+
 建议通过线：
 
 - 总分至少 16/20
 - `state_discipline` 和 `recovery` 不得低于 4/5
+
+如果纳入扩展维度，建议采用 `24/30` 作为通过线，并要求 `running_diagnostics` 不低于 `4/5`。
 
 ## 4. 证据要求
 
@@ -90,6 +99,8 @@ Agent 通过验收，应同时满足以下条件：
 - 是否创建了重复 job
 - 是否正确跟随 `next_cursor`
 - 是否需要人工纠正
+- 长时间 `running` 时的 `execution_state` 与 `diagnostic_summary`
+- 多线程 fanout 时每个 `tid` 对应的 job id 与状态
 
 ## 5. 当前仓库内置支撑
 
@@ -101,5 +112,38 @@ Agent 通过验收，应同时满足以下条件：
 - `yamibo://guide/agent-evaluation`
 - `yamibo://schema/tools`
 - `tests/integration/test_agent_workflows.py`
+- `scripts/run_hermes_benchmark.sh`
+- `artifacts/hermes-benchmark/benchmark-report.{md,json}`（运行后生成）
 
 建议先跑仓库内置 integration，再接真实 Agent transcript 做二次验证。
+
+## 6. 自动化 Hermes 回归
+
+默认 benchmark 任务卡覆盖以下 7 类场景：
+
+- `forum_profiles_discovery`
+- `multi_forum_readonly_browse`
+- `local_missing_recovery_plan`
+- `archive_job_launch_and_poll`
+- `duplicate_archive_job_reuse`
+- `export_strategy_split`
+- `multi_thread_fanout_pressure`
+
+运行方式：
+
+```bash
+scripts/run_hermes_benchmark.sh
+```
+
+只跑部分任务：
+
+```bash
+scripts/run_hermes_benchmark.sh --tasks archive_job_launch_and_poll multi_thread_fanout_pressure
+```
+
+输出内容：
+
+- 每个任务的 Hermes session transcript 导出
+- transcript 解析后的 tool call / tool result 报告
+- 每个任务的可打分结论
+- 汇总 Markdown 报告与 JSON 原始报告

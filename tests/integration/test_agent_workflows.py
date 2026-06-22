@@ -225,7 +225,9 @@ def test_job_recovery_workflow_exposes_partial_and_interrupted_states(tmp_path):
     assert interrupted_status["data"]["status"] == "interrupted"
     assert interrupted_status["data"]["is_terminal"] is False
     assert interrupted_status["data"]["result_ready"] is False
-    assert interrupted_status["data"]["recommended_poll_after_seconds"] == 2
+    assert interrupted_status["data"]["execution_state"] == "attention"
+    assert interrupted_status["data"]["needs_attention"] is True
+    assert interrupted_status["data"]["recommended_poll_after_seconds"] == 5
 
     assert interrupted_events["ok"] is True
     assert interrupted_events["data"]["events"][0]["event_type"] == "job.created"
