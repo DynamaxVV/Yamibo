@@ -341,7 +341,16 @@ MCP Server 暴露以下只读资源，通过 `yamibo://` URI scheme 访问。
 |-----|-------------|------|
 | `yamibo://jobs/{job_id}/events` | application/json | 任务事件时间线（append-only） |
 
-### 2.5 Agent 工作流
+### 2.5 Guide / Schema 资源
+
+| URI | Content-Type | 说明 |
+|-----|-------------|------|
+| `yamibo://guide/agent-workflows` | text/markdown | Agent 推荐调用顺序与典型工作流 |
+| `yamibo://guide/error-codes` | text/markdown | 公共错误码、修复建议、重试边界 |
+| `yamibo://guide/archive-model` | text/markdown | 远端只读 / 本地只读 / 后台任务 三层模型 |
+| `yamibo://schema/tools` | application/json | 兼容工具参数签名与描述 |
+
+### 2.6 Agent 工作流
 
 推荐的资源读取顺序：
 
@@ -354,9 +363,59 @@ search_forum_threads → items[].resources.summary
   → yamibo://threads/{tid}/context        (完整正文，仅需要时)
 ```
 
+如果涉及长任务，推荐补充以下顺序：
+
+```text
+create_thread_archive_job
+  → read_job
+  → read_job_events                  (仅在失败、部分成功、长时间运行时)
+  → yamibo://threads/{tid}/summary
+  → yamibo://threads/{tid}/diagnostics
+  → yamibo://threads/{tid}/context
+```
+
 ---
 
-## 3. CLI 命令
+## 3. 任务状态机说明
+
+### 3.1 状态枚举
+
+`read_job` 返回的 `status` 当前包含以下语义：
+
+| 状态 | 含义 | 后续建议 |
+|------|------|----------|
+| `queued` | 已创建，等待 daemon 抢占 | 继续轮询 |
+| `running` | 已被 worker 抢占，正在执行 | 继续轮询，必要时读取事件 |
+| `retrying` | 正在内部重试 | 继续轮询，不要重复建任务 |
+| `succeeded` | 已成功完成 | 读取本地归档或导出产物 |
+| `partial` | 主体成功，但部分资产或步骤未完成 | 读取 `diagnostics` 与任务事件评估后续补救 |
+| `failed` | 已失败结束 | 先检查 `error_code` / `error_message` / 事件流 |
+| `interrupted` | worker 中断，可被恢复 | 等待 recovery 或人工判断 |
+| `cancelled` | 已取消 | 结束跟踪，需要时新建任务 |
+
+### 3.2 典型轮询流程
+
+1. 调用创建类工具，拿到 `job_id`
+2. 使用 `read_job(job_id)` 作为主轮询接口
+3. 在以下情况补读 `read_job_events(job_id)`：
+   - 状态为 `failed`
+   - 状态为 `partial`
+   - `running` 持续过久
+   - 状态进入 `interrupted`
+4. 状态到达 `succeeded` 或 `partial` 后，再读取帖子资源或导出资源
+
+### 3.3 事件时间线用途
+
+`read_job_events` 与 `yamibo://jobs/{job_id}/events` 都读取同一类 append-only 事件流，适合以下场景：
+
+- 查看阶段切换，例如 `fetch_remote`、`parse_html`、`download_images`、`finalize`
+- 定位失败点，而不只看最终 `error_message`
+- 分辨 `partial` 是“正文已落地但缺图”，还是“导出完成但收尾失败”
+- 给具备长期记忆或计划能力的 Agent 保留更稳定的排障上下文
+
+---
+
+## 4. CLI 命令
 
 所有 CLI 命令通过 `yamibo-mcp-server` 入口执行，直接返回 JSON 结果。
 
@@ -404,7 +463,7 @@ yamibo-mcp-server read-resource "yamibo://jobs/sync_thread_xxxx/events"
 
 ---
 
-## 4. Web API
+## 5. Web API
 
 Web 控制台基于 HTTP，提供 HTML 页面和表单操作。
 
@@ -442,7 +501,7 @@ Web 控制台基于 HTTP，提供 HTML 页面和表单操作。
 
 ---
 
-## 5. 错误码
+## 6. 错误码
 
 | 异常类 | HTTP 等价 | 说明 |
 |--------|----------|------|

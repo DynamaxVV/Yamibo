@@ -176,3 +176,65 @@ MCP 客户端
 | 全量 Python 测试 | `uv run pytest` |
 
 当前 Python 包没有单独配置 lint/typecheck；前端构建会先跑 TypeScript 编译再执行 Vite build。
+
+## 7. 工作流资源与任务状态机
+
+### 7.1 工作流资源入口
+
+Agent 初次接入时，建议优先阅读以下资源，而不是直接扫全量代码：
+
+| 资源 | 作用 | 适用时机 |
+|------|------|----------|
+| `yamibo://guide/agent-workflows` | 给出远端搜索、本地读取、归档/更新/导出的推荐调用顺序 | 不确定先调用哪个 tool 时 |
+| `yamibo://guide/archive-model` | 说明远端只读、本地只读、后台 job 三层边界 | 需要判断副作用边界时 |
+| `yamibo://guide/error-codes` | 给出公共错误码、重试建议和前置修复方向 | 调用失败时 |
+| `yamibo://schema/tools` | 暴露兼容层工具参数签名 | 需要动态生成调用参数时 |
+
+推荐顺序是：先 workflow，再 archive-model，失败时读 error-codes，最后仅在需要动态探测参数时读 schema。
+
+### 7.2 任务状态机
+
+Yamibo 的长任务不是“tool 内同步执行”，而是“tool 创建 job，daemon 消费 job”。因此 Agent 必须把 `read_job` / `read_job_events` 视为主状态面，而不是把一次工具调用当成最终完成。
+
+| 状态 | 语义 | Agent 应对 |
+|------|------|-----------|
+| `queued` | 任务已入库，尚未被 worker 抢占 | 继续轮询，不要并发创建重复任务 |
+| `running` | 正在执行 handler | 主看 `read_job`，排障时看 `read_job_events` |
+| `retrying` | handler 或 runner 正在内部重试 | 继续等待，不要抢着新建第二个 job |
+| `succeeded` | 任务完成，产物可读 | 切到 `archive_queries`、资源读取或导出读取 |
+| `partial` | 主体成功，但部分图片、附件或收尾步骤失败 | 允许继续读归档，同时看 `diagnostics` 和事件日志 |
+| `failed` | 任务失败并结束 | 优先读错误码和事件，不要无条件重试 |
+| `interrupted` | worker 中断，可由 recovery/其他 daemon 接手 | 观察是否恢复到 `running`，否则人工介入 |
+| `cancelled` | 任务被取消 | 结束当前跟踪，需要时重新创建新任务 |
+
+### 7.3 推荐轮询 / 恢复策略
+
+对 Agent 最友好的调用节奏如下：
+
+1. 调用命令工具创建任务，只拿到 `job_id`
+2. 使用 `read_job(job_id)` 做轻量轮询
+3. 只有出现 `failed`、`partial`、长期 `running` 或 `interrupted` 时，再读取 `read_job_events(job_id)`
+4. 状态进入 `succeeded` 或 `partial` 后，切换到 `read_archived_thread` 或资源 URI 读取
+
+这样设计的优点：
+
+- 正常路径 token 成本低，因为多数轮询只读一个小 payload
+- 排障路径信息充分，因为事件流保留阶段切换和错误上下文
+- 工具职责清晰，避免 Agent 误以为“创建任务”等于“已经完成归档”
+
+### 7.4 工具与资源的分工
+
+在这个项目里，tool 和 resource 的分工是明确的：
+
+- tool 负责“触发一次意图”或“读取一次结构化快照”
+- resource 负责“按 URI 挂出稳定只读内容”
+
+对 Agent 来说，最重要的分工边界是：
+
+- `create_thread_archive_job` / `create_thread_update_job` / `create_thread_export_job` 只写 job，不执行主体
+- `read_job` / `read_job_events` 读取任务过程，不替代归档内容本身
+- `read_archived_thread` 读取应用层整理后的本地视图，适合结构化消费
+- `yamibo://threads/{tid}/context` / `posts` / `assets` / `diagnostics` 提供面向 URI 的稳定只读入口
+- `yamibo://jobs/{job_id}/events` 让“不方便继续调 tool 的客户端”也能读取任务时间线
+
+这个边界对 OpenClaw、Hermes 这类会自己规划多步工具调用的 Agent 框架尤其重要，因为它减少了“隐式副作用”和“状态混叠”。
