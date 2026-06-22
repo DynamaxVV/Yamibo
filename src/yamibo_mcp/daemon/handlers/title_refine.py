@@ -6,7 +6,7 @@ from yamibo_mcp.db.connection import connect
 from yamibo_mcp.db.migrations import migrate
 from yamibo_mcp.db.repositories.series import SeriesRepository
 from yamibo_mcp.domain.models import TitleSnapshot
-from yamibo_mcp.server.resources import series_chapters_uri
+from yamibo_mcp.server.resource_uris import series_chapters_uri
 from yamibo_mcp.server.schemas import thread_summary_payload
 from yamibo_mcp.time_utils import utc_now_iso
 from yamibo_mcp.storage.paths import StoragePaths

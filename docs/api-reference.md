@@ -1,12 +1,20 @@
 # API 接口文档
 
-> 版本：0.6.0 | 更新日期：2026-06-21
+> 版本：0.7.0 | 更新日期：2026-06-22
 
 ## 1. MCP 工具 (Tools)
 
 MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调用。
 
-### 1.1 search_threads
+新的 Agent-facing 主接口见 [agent-interface.md](agent-interface.md)。核心原则：
+
+- 远端工具只做发现、预览、更新检查和创建任务
+- 本地工具只读 SQLite 与物化归档
+- 公共工具统一返回 `ok/data/error/resources/next_actions/warnings/side_effects`
+- 公共 Agent 工具不再暴露 `limit`
+- `llm_transform_text` 与 `parse_thread_title` 不再属于公共 Agent 接口
+
+### 1.1 search_forum_threads
 
 统一搜索帖子：优先按论坛页搜索和筛选，再结合本地归档补充详情。
 
@@ -14,7 +22,6 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
 |------|------|------|--------|------|
 | query | string | 否 | "" | 搜索关键词 |
 | forum_id | int | 否 | 30 | 论坛分区 ID（30=漫画, 55=轻小说, 5=动漫, 33=水区） |
-| limit | int | 否 | 0 | 最大返回数，0 表示不限 |
 | start_page | int | 否 | 1 | 起始页码 |
 | end_page | int \| null | 否 | null | 结束页码，null 表示到最后一页 |
 | posted_on | string \| null | 否 | null | 按发布日期筛选（YYYY-MM-DD） |
@@ -69,59 +76,38 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
 
 ---
 
-### 1.2 get_thread
+### 1.2 inspect_remote_thread
 
-读取帖子详情；若本地未归档则自动远端抓取并归档后返回。
+远端只读预览；不会写 SQLite、下载图片或创建任务。
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | tid | int | 是 | 帖子 ID |
-| url | string \| null | 否 | 帖子 URL（可选） |
+| forum_id | int \| null | 否 | 论坛分区 ID |
+| author_only | bool | 否 | 是否按只看楼主语义预览 |
 | base_url | string \| null | 否 | 站点根 URL |
 
-**返回**：完整的帖子详情，包含楼层列表、标题解析结果、系列信息等。
+**返回**：紧凑快照，包含标题、分区、发布者、楼层数、图片数和少量 preview。
 
 ```json
 {
   "tid": 572313,
-  "url": "...",
-  "display_title": "...",
-  "raw_title": "...",
+  "title": "...",
   "publisher": "...",
   "publisher_uid": "...",
-  "pub_time": "...",
-  "image_count": 24,
-  "archive_status": "complete",
-  "title_parse": {
-    "group_name": "...",
-    "author_guess": "...",
-    "core_title_guess": "...",
-    "series_key": "...",
-    "chapter_name": "...",
-    "chapter_index": 1.0,
-    "confidence": 0.9,
-    "needs_review": false
-  },
-  "floors": [
+  "forum_id": 30,
+  "category": "漫画区",
+  "floor_count": 2,
+  "image_url_count": 24,
+  "author_only": false,
+  "preview": [
     {
-      "pid": 12345,
       "floor_no": 1,
       "publisher": "...",
-      "pub_time": "...",
-      "has_images": true,
-      "content": "...",
       "content_preview": "..."
     }
   ],
-  "floor_count": 2,
-  "series": {
-    "series_id": 1,
-    "canonical_title": "...",
-    "resources": {
-      "index": "yamibo://series/index",
-      "chapters": "yamibo://series/1/chapters"
-    }
-  }
+  "remote_url": "https://bbs.yamibo.com/forum.php?mod=viewthread&tid=572313"
 }
 ```
 
@@ -143,7 +129,7 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
 
 ---
 
-### 1.4 archive_thread
+### 1.4 create_thread_archive_job
 
 创建帖子归档任务；长操作只返回 job_id。
 
@@ -158,7 +144,33 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
 
 ---
 
-### 1.5 export_thread
+### 1.5 ensure_thread_archived
+
+检查本地是否已有归档；若缺失则创建归档任务。
+
+### 1.6 read_archived_thread
+
+读取本地归档视图。支持：
+
+- `summary`
+- `content`
+- `assets`
+- `diagnostics`
+- `export`
+- `metadata`
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| tid | int | 是 | - | 帖子 ID |
+| view | string | 是 | - | `summary/content/assets/diagnostics/export/metadata` |
+| floor_start | int \| null | 否 | null | content 视图楼层范围起点 |
+| floor_end | int \| null | 否 | null | content 视图楼层范围终点 |
+| cursor | string \| null | 否 | null | content 视图分页 cursor，例如 `offset:20` |
+| chunk_size | int \| null | 否 | 20 | content 视图每页楼层数，最大 50 |
+
+`content` 视图返回 `has_more`、`next_cursor`、`resource_hints`，大帖应按 cursor 分页读取。
+
+### 1.7 create_thread_export_job
 
 创建帖子导出任务。
 
@@ -179,7 +191,7 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
 
 ---
 
-### 1.6 check_thread_updates
+### 1.8 check_thread_updates
 
 检查已归档轻小说贴子是否有新更新；只读，不创建任务。
 
@@ -197,7 +209,7 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
 
 ---
 
-### 1.7 update_thread
+### 1.9 create_thread_update_job
 
 创建轻小说贴子追加更新任务；会先执行更新检测，检测到新内容后再追加归档。
 
@@ -210,7 +222,7 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
 
 ---
 
-### 1.8 sync_forum_range
+### 1.10 sync_forum_range
 
 按论坛页码范围抓取真实帖子列表并批量创建同步任务。
 
@@ -226,7 +238,7 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
 
 ---
 
-### 1.9 get_job_status
+### 1.11 read_job
 
 读取后台任务状态。
 
@@ -263,7 +275,7 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
 
 ---
 
-### 1.10 cleanup_job
+### 1.12 cleanup_job
 
 创建后台清理任务。
 
@@ -277,27 +289,18 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
 
 ---
 
-### 1.11 parse_thread_title
+### 1.13 已废弃 / 兼容接口
 
-解析帖子标题；低置信度时可自动调用内置 LLM 做二次提取。
+以下旧名称仍通过 CLI 或 legacy JSON-RPC 兼容层保留，但不再是 Agent-facing MCP 主接口，也不建议新接入方继续依赖：
 
-| 参数 | 类型 | 必填 | 默认值 | 说明 |
-|------|------|------|--------|------|
-| title | string | 是 | - | 原始标题 |
-| use_llm_on_low_confidence | bool | 否 | true | 低置信度时是否调用 LLM |
-
----
-
-### 1.10 llm_transform_text
-
-调用内置 OpenAI-compatible LLM 做文本提取或清洗。
-
-| 参数 | 类型 | 必填 | 默认值 | 说明 |
-|------|------|------|--------|------|
-| task | string | 是 | - | 任务描述 |
-| text | string | 是 | - | 输入文本 |
-| system_prompt | string \| null | 否 | null | 系统提示词 |
-| temperature | float | 否 | 0.0 | 温度参数 |
+- `search_threads`
+- `archive_thread`
+- `export_thread`
+- `get_thread`
+- `get_job_status`
+- `update_thread`
+- `cleanup_job`
+- `sync_forum_range`
 
 ---
 
@@ -338,12 +341,21 @@ MCP Server 暴露以下只读资源，通过 `yamibo://` URI scheme 访问。
 |-----|-------------|------|
 | `yamibo://jobs/{job_id}/events` | application/json | 任务事件时间线（append-only） |
 
-### 2.5 Agent 工作流
+### 2.5 Guide / Schema 资源
+
+| URI | Content-Type | 说明 |
+|-----|-------------|------|
+| `yamibo://guide/agent-workflows` | text/markdown | Agent 推荐调用顺序与典型工作流 |
+| `yamibo://guide/error-codes` | text/markdown | 公共错误码、修复建议、重试边界 |
+| `yamibo://guide/archive-model` | text/markdown | 远端只读 / 本地只读 / 后台任务 三层模型 |
+| `yamibo://schema/tools` | application/json | 兼容工具参数签名与描述 |
+
+### 2.6 Agent 工作流
 
 推荐的资源读取顺序：
 
 ```
-search_threads → items[].resources.summary
+search_forum_threads → items[].resources.summary
   → yamibo://threads/{tid}/summary        (紧凑摘要)
   → yamibo://threads/{tid}/diagnostics    (缺失资产、建议操作)
   → yamibo://threads/{tid}/posts          (内容块，仅需要时)
@@ -351,9 +363,59 @@ search_threads → items[].resources.summary
   → yamibo://threads/{tid}/context        (完整正文，仅需要时)
 ```
 
+如果涉及长任务，推荐补充以下顺序：
+
+```text
+create_thread_archive_job
+  → read_job
+  → read_job_events                  (仅在失败、部分成功、长时间运行时)
+  → yamibo://threads/{tid}/summary
+  → yamibo://threads/{tid}/diagnostics
+  → yamibo://threads/{tid}/context
+```
+
 ---
 
-## 3. CLI 命令
+## 3. 任务状态机说明
+
+### 3.1 状态枚举
+
+`read_job` 返回的 `status` 当前包含以下语义：
+
+| 状态 | 含义 | 后续建议 |
+|------|------|----------|
+| `queued` | 已创建，等待 daemon 抢占 | 继续轮询 |
+| `running` | 已被 worker 抢占，正在执行 | 继续轮询，必要时读取事件 |
+| `retrying` | 正在内部重试 | 继续轮询，不要重复建任务 |
+| `succeeded` | 已成功完成 | 读取本地归档或导出产物 |
+| `partial` | 主体成功，但部分资产或步骤未完成 | 读取 `diagnostics` 与任务事件评估后续补救 |
+| `failed` | 已失败结束 | 先检查 `error_code` / `error_message` / 事件流 |
+| `interrupted` | worker 中断，可被恢复 | 等待 recovery 或人工判断 |
+| `cancelled` | 已取消 | 结束跟踪，需要时新建任务 |
+
+### 3.2 典型轮询流程
+
+1. 调用创建类工具，拿到 `job_id`
+2. 使用 `read_job(job_id)` 作为主轮询接口
+3. 在以下情况补读 `read_job_events(job_id)`：
+   - 状态为 `failed`
+   - 状态为 `partial`
+   - `running` 持续过久
+   - 状态进入 `interrupted`
+4. 状态到达 `succeeded` 或 `partial` 后，再读取帖子资源或导出资源
+
+### 3.3 事件时间线用途
+
+`read_job_events` 与 `yamibo://jobs/{job_id}/events` 都读取同一类 append-only 事件流，适合以下场景：
+
+- 查看阶段切换，例如 `fetch_remote`、`parse_html`、`download_images`、`finalize`
+- 定位失败点，而不只看最终 `error_message`
+- 分辨 `partial` 是“正文已落地但缺图”，还是“导出完成但收尾失败”
+- 给具备长期记忆或计划能力的 Agent 保留更稳定的排障上下文
+
+---
+
+## 4. CLI 命令
 
 所有 CLI 命令通过 `yamibo-mcp-server` 入口执行，直接返回 JSON 结果。
 
@@ -366,9 +428,6 @@ yamibo-mcp-server browse-forum-page --page 1 --forum-id 55
 
 # 搜索帖子
 yamibo-mcp-server search-threads --query "星灵感应"
-
-# 获取帖子详情（自动归档）
-yamibo-mcp-server get-thread --tid 572313
 
 # 创建归档任务
 yamibo-mcp-server create-sync-thread-job --tid 572313
@@ -388,12 +447,6 @@ yamibo-mcp-server create-sync-forum-range-jobs --start-page 1 --end-page 5
 # 任务状态
 yamibo-mcp-server job-status <job_id>
 
-# 解析标题
-yamibo-mcp-server parse-thread-title "【提灯喵汉化组】[ポテトルス] ray 第13话"
-
-# LLM 文本处理
-yamibo-mcp-server llm-transform-text --task "提取作者名" --text "..."
-
 # 列出导出包
 yamibo-mcp-server list-exports
 
@@ -410,7 +463,7 @@ yamibo-mcp-server read-resource "yamibo://jobs/sync_thread_xxxx/events"
 
 ---
 
-## 4. Web API
+## 5. Web API
 
 Web 控制台基于 HTTP，提供 HTML 页面和表单操作。
 
@@ -448,7 +501,7 @@ Web 控制台基于 HTTP，提供 HTML 页面和表单操作。
 
 ---
 
-## 5. 错误码
+## 6. 错误码
 
 | 异常类 | HTTP 等价 | 说明 |
 |--------|----------|------|

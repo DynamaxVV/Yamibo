@@ -7,7 +7,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from yamibo_mcp.db.repositories.jobs import JobsRepository
-from yamibo_mcp.server.protocol import handle_request, list_tools_payload
+from yamibo_mcp.server.legacy_protocol import handle_request, list_tools_payload
 
 
 def _fake_settings(tmp_path: Path):
@@ -52,43 +52,53 @@ class TestLegacyJsonRpcDispatch:
         # Assert
         tool_names = {t["name"] for t in response["result"]["tools"]}
         expected = {
-            "search_threads", "get_thread", "browse_forum_page",
-            "archive_thread", "export_thread", "get_job_status",
-            "cleanup_job", "sync_forum_range", "update_thread", "create_update_thread_job",
+            "browse_forum_page",
+            "search_forum_threads",
+            "inspect_remote_thread",
+            "create_thread_archive_job",
+            "ensure_thread_archived",
+            "read_archived_thread",
+            "check_thread_updates",
+            "create_thread_update_job",
+            "create_thread_export_job",
+            "read_job",
+            "read_job_events",
+            "read_forum_profiles",
         }
         assert expected.issubset(tool_names)
 
-    def test_tools_call_update_thread_returns_job_id(self, tmp_path, db):
+    def test_tools_call_create_thread_update_job_returns_job_id(self, tmp_path, db):
         settings = _fake_settings(tmp_path)
         request = {
             "id": 4,
             "method": "tools/call",
-            "params": {"name": "update_thread", "arguments": {"tid": 42}},
+            "params": {"name": "create_thread_update_job", "arguments": {"tid": 42}},
         }
-        with patch("yamibo_mcp.application.thread_update_use_cases.load_settings", return_value=settings), \
-             patch("yamibo_mcp.application.thread_update_use_cases.connect", return_value=db):
+        with patch("yamibo_mcp.application.update_commands.load_settings", return_value=settings), \
+             patch("yamibo_mcp.application.update_commands.connect", return_value=db):
             response = handle_request(request)
         result = response["result"]
-        assert isinstance(result, str)
-        assert result.startswith("update_thread_")
+        assert result["ok"] is True
+        assert result["data"]["job_id"].startswith("update_thread_")
 
-    def test_tools_call_archive_thread_returns_job_id(self, tmp_path, db):
+    def test_tools_call_create_thread_archive_job_returns_job_id(self, tmp_path, db):
         # Arrange
         settings = _fake_settings(tmp_path)
         request = {
             "id": 4,
             "method": "tools/call",
-            "params": {"name": "archive_thread", "arguments": {"tid": 42}},
+            "params": {"name": "create_thread_archive_job", "arguments": {"tid": 42}},
         }
-        with patch("yamibo_mcp.application.thread_use_cases.load_settings", return_value=settings), \
-             patch("yamibo_mcp.application.thread_use_cases.connect", return_value=db):
+        with patch("yamibo_mcp.application.archive_commands.load_settings", return_value=settings), \
+             patch("yamibo_mcp.application.archive_commands.connect", return_value=db):
             # Act
             response = handle_request(request)
         # Assert
         result = response["result"]
-        assert "job_id" in result
+        assert result["ok"] is True
+        assert "job_id" in result["data"]
 
-    def test_tools_call_get_job_status_returns_status(self, tmp_path, db):
+    def test_tools_call_read_job_returns_status(self, tmp_path, db):
         # Arrange
         settings = _fake_settings(tmp_path)
         repo = JobsRepository(db)
@@ -96,16 +106,17 @@ class TestLegacyJsonRpcDispatch:
         request = {
             "id": 5,
             "method": "tools/call",
-            "params": {"name": "get_job_status", "arguments": {"job_id": job.job_id}},
+            "params": {"name": "read_job", "arguments": {"job_id": job.job_id}},
         }
-        with patch("yamibo_mcp.application.job_use_cases.load_settings", return_value=settings), \
-             patch("yamibo_mcp.application.job_use_cases.connect", return_value=db):
+        with patch("yamibo_mcp.application.job_queries.load_settings", return_value=settings), \
+             patch("yamibo_mcp.application.job_queries.connect", return_value=db):
             # Act
             response = handle_request(request)
         # Assert
         result = response["result"]
-        assert result["job_id"] == job.job_id
-        assert result["status"] == "queued"
+        assert result["ok"] is True
+        assert result["data"]["job_id"] == job.job_id
+        assert result["data"]["status"] == "queued"
 
     def test_tools_call_unknown_tool_returns_error(self):
         # Arrange
@@ -138,17 +149,17 @@ class TestLegacyProtocolSecurity:
         request = {
             "id": 8,
             "method": "tools/call",
-            "params": {"name": "get_job_status", "arguments": {"job_id": "nonexistent"}},
+            "params": {"name": "read_job", "arguments": {"job_id": "nonexistent"}},
         }
-        with patch("yamibo_mcp.application.job_use_cases.load_settings", return_value=settings), \
-             patch("yamibo_mcp.application.job_use_cases.connect", return_value=db):
+        with patch("yamibo_mcp.application.job_queries.load_settings", return_value=settings), \
+             patch("yamibo_mcp.application.job_queries.connect", return_value=db):
             # Act
             response = handle_request(request)
         # Assert
-        assert "error" in response
-        error = response["error"]
-        assert "type" in error
-        assert "message" in error
+        assert response["result"]["ok"] is False
+        error = response["result"]["error"]
+        assert error["code"] == "JOB_NOT_FOUND"
+        assert "agent_hint" in error
         error_text = str(error).lower()
         assert "cookie" not in error_text
         assert "password" not in error_text
@@ -161,8 +172,8 @@ class TestListToolsPayload:
         payload = list_tools_payload()
         # Assert
         names = {t["name"] for t in payload["tools"]}
-        assert "get_thread" in names
-        assert "archive_thread" in names
-        assert "get_job_status" in names
-        assert "search_threads" in names
+        assert "ensure_thread_archived" in names
+        assert "create_thread_archive_job" in names
+        assert "read_job" in names
+        assert "search_forum_threads" in names
         assert "browse_forum_page" in names

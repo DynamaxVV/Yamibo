@@ -5,30 +5,55 @@ from typing import Any
 
 
 @dataclass(frozen=True)
-class AgentResponse:
+class AgentAction:
+    tool: str
+    args: dict[str, Any]
+    reason: str
+
+
+@dataclass(frozen=True)
+class AgentError:
+    code: str
+    message: str
+    agent_hint: str
+    retryable: bool = False
+    field_errors: list[dict[str, Any]] = field(default_factory=list)
+    suggested_actions: list[AgentAction] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class AgentResult:
     ok: bool
     data: dict[str, Any] | None = None
-    error: dict[str, Any] | None = None
+    error: AgentError | None = None
     resources: dict[str, str] = field(default_factory=dict)
-    next_actions: list[str] = field(default_factory=list)
+    next_actions: list[AgentAction] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    side_effects: list[str] = field(default_factory=list)
+
+
+AgentResponse = AgentResult
 
 
 def success(
     data: dict[str, Any],
     *,
     resources: dict[str, str] | None = None,
-    next_actions: list[str] | None = None,
+    next_actions: list[str] | list[AgentAction] | None = None,
     warnings: list[str] | None = None,
+    side_effects: list[str] | None = None,
 ) -> dict[str, Any]:
-    resp = AgentResponse(
-        ok=True,
-        data=data,
-        resources=resources or {},
-        next_actions=next_actions or [],
-        warnings=warnings or [],
+    actions = _normalize_actions(next_actions)
+    return _to_dict(
+        AgentResult(
+            ok=True,
+            data=data,
+            resources=resources or {},
+            next_actions=actions,
+            warnings=warnings or [],
+            side_effects=side_effects or [],
+        )
     )
-    return _to_dict(resp)
 
 
 def failure(
@@ -37,26 +62,80 @@ def failure(
     *,
     retryable: bool = False,
     suggested_action: str | None = None,
+    agent_hint: str | None = None,
 ) -> dict[str, Any]:
-    error: dict[str, Any] = {"code": code, "message": message}
-    if retryable:
-        error["retryable"] = True
+    suggested_actions = []
     if suggested_action:
-        error["suggested_action"] = suggested_action
-    resp = AgentResponse(ok=False, error=error)
-    return _to_dict(resp)
+        suggested_actions.append(
+            AgentAction(tool="manual_follow_up", args={}, reason=suggested_action)
+        )
+    return _to_dict(
+        AgentResult(
+            ok=False,
+            error=AgentError(
+                code=code,
+                message=message,
+                agent_hint=agent_hint or message,
+                retryable=retryable,
+                suggested_actions=suggested_actions,
+            ),
+        )
+    )
 
 
-def _to_dict(resp: AgentResponse) -> dict[str, Any]:
-    d: dict[str, Any] = {"ok": resp.ok}
+def _normalize_actions(
+    actions: list[str] | list[AgentAction] | None,
+) -> list[AgentAction]:
+    if not actions:
+        return []
+    normalized: list[AgentAction] = []
+    for action in actions:
+        if isinstance(action, AgentAction):
+            normalized.append(action)
+        else:
+            normalized.append(AgentAction(tool=action, args={}, reason=action))
+    return normalized
+
+
+def _to_dict(resp: AgentResult) -> dict[str, Any]:
+    payload: dict[str, Any] = {"ok": resp.ok}
     if resp.data is not None:
-        d["data"] = resp.data
+        payload["data"] = resp.data
     if resp.error is not None:
-        d["error"] = resp.error
+        payload["error"] = _error_to_dict(resp.error)
     if resp.resources:
-        d["resources"] = resp.resources
+        payload["resources"] = resp.resources
     if resp.next_actions:
-        d["next_actions"] = resp.next_actions
+        payload["next_actions"] = [_action_to_dict(action) for action in resp.next_actions]
     if resp.warnings:
-        d["warnings"] = resp.warnings
-    return d
+        payload["warnings"] = resp.warnings
+    if resp.side_effects:
+        payload["side_effects"] = resp.side_effects
+    return payload
+
+
+def _error_to_dict(error: AgentError) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "code": error.code,
+        "message": error.message,
+        "agent_hint": error.agent_hint,
+    }
+    if error.retryable:
+        payload["retryable"] = True
+    if error.field_errors:
+        payload["field_errors"] = error.field_errors
+    if error.suggested_actions:
+        payload["suggested_actions"] = [
+            _action_to_dict(action) for action in error.suggested_actions
+        ]
+    elif not error.retryable:
+        payload["retryable"] = False
+    return payload
+
+
+def _action_to_dict(action: AgentAction) -> dict[str, Any]:
+    return {
+        "tool": action.tool,
+        "args": action.args,
+        "reason": action.reason,
+    }

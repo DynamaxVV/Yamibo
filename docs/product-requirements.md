@@ -1,6 +1,6 @@
 # 产品需求文档 (PRD) & 系统架构设计
 
-> 版本：0.2.0 | 更新日期：2026-06-21
+> 版本：0.7.0 | 更新日期：2026-06-22
 
 ## 1. 产品概述
 
@@ -258,16 +258,33 @@ yamibo/
 │   ├── errors.py               # 自定义异常层次
 │   ├── logging.py              # 日志配置
 │   ├── time_utils.py           # UTC 时间工具
-│   ├── server/                 # MCP Server
-│   │   ├── app.py              # FastMCP 构建 + CLI 子命令
-│   │   ├── tools.py            # 工具实现（归档、搜索、导出等）
-│   │   ├── resources.py        # URI 模板 + 资源读取
-│   │   ├── schemas.py          # 响应结构构建
-│   │   └── protocol.py         # JSON-RPC 兼容层
-│   ├── application/          # 应用层
-│   │   ├── contracts.py      # Agent Contract (AgentResponse)
-│   │   ├── thread_use_cases.py # 帖子用例（ensure_thread, archive_thread_job）
-│   │   └── job_use_cases.py  # 任务用例（get_job_status_payload）
+│   ├── server/                 # MCP/CLI 适配层
+│   │   ├── app.py              # 轻量入口委托
+│   │   ├── mcp_registry.py     # FastMCP tool/resource 注册
+│   │   ├── cli.py              # CLI 参数解析与分发
+│   │   ├── legacy_protocol.py  # JSON-RPC 兼容层
+│   │   ├── legacy_tools.py     # 旧工具名兼容包装
+│   │   ├── agent_adapter.py    # AgentResult -> wire dict，异常映射
+│   │   ├── agent_tools.py      # Agent-facing tool 适配
+│   │   ├── resources.py        # Resource URI + 读取注册主入口
+│   │   ├── resource_uris.py    # 内部 URI helper
+│   │   ├── resource_handlers.py # compatibility re-export
+│   │   ├── tools.py            # compatibility re-export
+│   │   ├── protocol.py         # compatibility re-export
+│   │   └── schemas.py          # 响应结构构建
+│   ├── application/            # 应用层
+│   │   ├── contracts.py        # AgentResult / AgentError / AgentAction
+│   │   ├── archive_commands.py # archive/export job 创建
+│   │   ├── archive_queries.py  # 本地归档 summary/content/assets/diagnostics
+│   │   ├── update_commands.py  # update job 创建
+│   │   ├── update_queries.py   # 远端只读 update check
+│   │   ├── remote_queries.py   # browse/search/inspect remote
+│   │   ├── job_queries.py      # read_job/read_job_events
+│   │   ├── forum_queries.py    # forum profiles/index
+│   │   ├── legacy_use_cases.py # get_thread 等旧行为聚合
+│   │   ├── thread_use_cases.py # compatibility re-export
+│   │   ├── thread_update_use_cases.py # compatibility re-export
+│   │   └── job_use_cases.py    # compatibility re-export
 │   ├── daemon/                 # 后台任务消费
 │   │   ├── main.py             # Daemon 入口
 │   │   ├── runner.py           # 轮询 + 抢占 + 执行循环

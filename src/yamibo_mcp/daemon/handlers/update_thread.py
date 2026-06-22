@@ -5,7 +5,7 @@ import time
 from dataclasses import replace
 from typing import Any
 
-from yamibo_mcp.application.thread_update_use_cases import check_thread_updates
+from yamibo_mcp.application.update_queries import check_thread_updates
 from yamibo_mcp.config import Settings
 from yamibo_mcp.db.connection import transaction
 from yamibo_mcp.db.repositories.assets import AssetsRepository

@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from pathlib import Path
 
 from yamibo_mcp.web.app import WebHandler
+import yamibo_mcp.web.app as web_app
 
 
 def test_safe_resolve_rejects_path_escape(tmp_path: Path):
@@ -51,3 +52,53 @@ def test_serve_fonts_reads_from_data_dir(tmp_path: Path):
 
     assert captured["body"] == b"font-bytes"
     assert captured["content_type"] == "font/ttf"
+
+
+def test_serve_static_reads_packaged_index():
+    handler = object.__new__(WebHandler)
+    captured = {}
+
+    def _send_bytes(body, content_type, status=None):
+        captured["body"] = body
+        captured["content_type"] = content_type
+        captured["status"] = status
+
+    handler._send_bytes = _send_bytes
+
+    assert handler._serve_static("/") is True
+
+    assert b"<html" in captured["body"].lower()
+    assert captured["content_type"] == "text/html; charset=utf-8"
+
+
+def test_serve_static_reads_generated_asset():
+    static_dir = Path(web_app.__file__).parent / "static" / "assets"
+    asset = next(static_dir.glob("*.js"))
+    handler = object.__new__(WebHandler)
+    captured = {}
+
+    def _send_bytes(body, content_type, status=None):
+        captured["body"] = body
+        captured["content_type"] = content_type
+        captured["status"] = status
+
+    handler._send_bytes = _send_bytes
+
+    assert handler._serve_static(f"/assets/{asset.name}") is True
+
+    assert captured["body"] == asset.read_bytes()
+    assert captured["content_type"] in {
+        "text/javascript; charset=utf-8",
+        "application/javascript; charset=utf-8",
+    }
+
+
+def test_serve_static_rejects_path_escape():
+    handler = object.__new__(WebHandler)
+    captured = {}
+
+    handler._send_text = lambda *args, **kwargs: captured.update({"text": args[0], "status": args[1]})
+
+    assert handler._serve_static("/../pyproject.toml") is True
+
+    assert captured["text"] == "Forbidden"

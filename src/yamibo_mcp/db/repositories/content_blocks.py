@@ -39,5 +39,14 @@ class ContentBlocksRepository:
             (tid,),
         ).fetchall()
 
+    def list_blocks_for_pids(self, tid: int, pids: list[int]) -> list[sqlite3.Row]:
+        if not pids:
+            return []
+        placeholders = ",".join("?" for _ in pids)
+        return self.conn.execute(
+            f"SELECT * FROM content_blocks WHERE tid = ? AND pid IN ({placeholders}) ORDER BY order_index ASC",
+            (tid, *pids),
+        ).fetchall()
+
     def delete_blocks(self, tid: int) -> None:
         self.conn.execute("DELETE FROM content_blocks WHERE tid = ?", (tid,))

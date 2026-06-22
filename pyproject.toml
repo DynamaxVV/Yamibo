@@ -1,6 +1,6 @@
 [project]
 name = "yamibo-mcp"
-version = "0.6.0"
+version = "0.7.0"
 description = "百合会归档助手 — 本地论坛归档 MCP server, daemon, and web console."
 requires-python = ">=3.11"
 dependencies = [
@@ -27,6 +27,9 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"yamibo_mcp.web" = ["static/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

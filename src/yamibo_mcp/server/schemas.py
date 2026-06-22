@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from yamibo_mcp.server.resources import (
+from yamibo_mcp.server.resource_uris import (
     series_chapters_uri,
     series_index_uri,
     thread_context_uri,

@@ -30,7 +30,7 @@ class TestSuccess:
         # Act
         result = success(data, next_actions=next_actions)
         # Assert
-        assert result["next_actions"] == next_actions
+        assert result["next_actions"][0]["tool"] == "archive_thread"
 
     def test_success_includes_warnings_when_provided(self):
         # Arrange
@@ -58,6 +58,7 @@ class TestFailure:
         assert result["ok"] is False
         assert result["error"]["code"] == "RemoteFetchError"
         assert result["error"]["message"] == "connection refused"
+        assert result["error"]["agent_hint"] == "connection refused"
         assert "data" not in result
 
     def test_failure_marks_retryable(self):
@@ -70,19 +71,19 @@ class TestFailure:
         # Arrange & Act
         result = failure("Timeout", "timed out", retryable=False)
         # Assert
-        assert "retryable" not in result["error"]
+        assert result["error"]["retryable"] is False
 
     def test_failure_includes_suggested_action(self):
         # Arrange & Act
         result = failure("AuthError", "login required", suggested_action="check cookie")
         # Assert
-        assert result["error"]["suggested_action"] == "check cookie"
+        assert result["error"]["suggested_actions"][0]["reason"] == "check cookie"
 
     def test_failure_omits_suggested_action_when_none(self):
         # Arrange & Act
         result = failure("Error", "msg")
         # Assert
-        assert "suggested_action" not in result["error"]
+        assert "suggested_actions" not in result["error"]
 
 
 class TestAgentResponse:
@@ -96,3 +97,4 @@ class TestAgentResponse:
         assert resp.resources == {}
         assert resp.next_actions == []
         assert resp.warnings == []
+        assert resp.side_effects == []

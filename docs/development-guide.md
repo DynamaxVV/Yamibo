@@ -1,6 +1,6 @@
 # 核心模块开发说明
 
-> 版本：0.6.0 | 更新日期：2026-06-21
+> 版本：0.7.0 | 更新日期：2026-06-22
 
 ## 1. 标题解析引擎
 
@@ -187,17 +187,17 @@ Daemon B: recover_expired_jobs()
 
 ## 3. 应用层
 
-### 3.1 用例函数
+### 3.1 应用层入口
 
-**文件**：`application/thread_use_cases.py`、`application/job_use_cases.py`
+**主文件**：`application/archive_commands.py`、`application/job_queries.py`、`application/legacy_use_cases.py`
 
 | 函数 | 说明 |
 |------|------|
-| `ensure_thread(tid, url?, base_url?)` | 获取帖子详情；本地缺失时自动远端抓取并归档 |
+| `ensure_thread(tid, url?, base_url?)` | 历史兼容入口；本地缺失时自动触发归档 |
 | `archive_thread_job(html_path?, tid?, url?, base_url?, forum_id?)` | 创建归档任务，返回 job_id |
-| `get_job_status_payload(job_id)` | 获取任务状态 |
+| `get_job_status_payload(job_id)` | 读取任务状态 |
 
-`ensure_thread` 是意图级 API：调用方只需提供 tid/url，缓存命中、缓存缺失、远端抓取、本地归档等细节都隐藏在内部。
+其中 `thread_use_cases.py`、`job_use_cases.py` 已退化为 compatibility re-export，新代码不应继续引用。
 
 ### 3.2 Agent Contract
 
@@ -205,16 +205,17 @@ Daemon B: recover_expired_jobs()
 
 ```python
 @dataclass(frozen=True)
-class AgentResponse:
+class AgentResult:
     ok: bool
     data: dict[str, Any] | None = None
-    error: dict[str, Any] | None = None
+    error: AgentError | None = None
     resources: dict[str, str] = field(default_factory=dict)
-    next_actions: list[str] = field(default_factory=list)
+    next_actions: list[AgentAction] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    side_effects: list[str] = field(default_factory=list)
 ```
 
-`success()` 和 `failure()` 工厂函数用于构建标准响应。
+统一由 `server/agent_adapter.py` 转成 MCP wire payload。
 
 ---
 

@@ -124,10 +124,10 @@ def test_check_thread_updates_reports_up_to_date_when_remote_tail_matches(tmp_pa
         )
     )
 
-    with patch("yamibo_mcp.application.thread_update_use_cases.load_settings", return_value=settings), \
-         patch("yamibo_mcp.application.thread_update_use_cases.connect", return_value=db), \
-         patch("yamibo_mcp.application.thread_update_use_cases.YamiboClient", return_value=fake_client):
-        from yamibo_mcp.application.thread_update_use_cases import check_thread_updates
+    with patch("yamibo_mcp.application.update_queries.load_settings", return_value=settings), \
+         patch("yamibo_mcp.application.update_queries.connect", return_value=db), \
+         patch("yamibo_mcp.application.update_queries.YamiboClient", return_value=fake_client):
+        from yamibo_mcp.application.update_queries import check_thread_updates
 
         result = check_thread_updates(tid=540745)
 
@@ -165,10 +165,10 @@ def test_check_thread_updates_reports_updated_when_remote_tail_changes(tmp_path,
         )
     )
 
-    with patch("yamibo_mcp.application.thread_update_use_cases.load_settings", return_value=settings), \
-         patch("yamibo_mcp.application.thread_update_use_cases.connect", return_value=db), \
-         patch("yamibo_mcp.application.thread_update_use_cases.YamiboClient", return_value=fake_client):
-        from yamibo_mcp.application.thread_update_use_cases import check_thread_updates
+    with patch("yamibo_mcp.application.update_queries.load_settings", return_value=settings), \
+         patch("yamibo_mcp.application.update_queries.connect", return_value=db), \
+         patch("yamibo_mcp.application.update_queries.YamiboClient", return_value=fake_client):
+        from yamibo_mcp.application.update_queries import check_thread_updates
 
         result = check_thread_updates(tid=540745)
 
@@ -213,9 +213,9 @@ def test_check_thread_updates_returns_not_supported_for_non_novel_forum(tmp_path
     )
     ThreadsRepository(db).upsert_snapshot(snapshot, forum_id=30)
 
-    with patch("yamibo_mcp.application.thread_update_use_cases.load_settings", return_value=settings), \
-         patch("yamibo_mcp.application.thread_update_use_cases.connect", return_value=db):
-        from yamibo_mcp.application.thread_update_use_cases import check_thread_updates
+    with patch("yamibo_mcp.application.update_queries.load_settings", return_value=settings), \
+         patch("yamibo_mcp.application.update_queries.connect", return_value=db):
+        from yamibo_mcp.application.update_queries import check_thread_updates
 
         result = check_thread_updates(tid=30)
 

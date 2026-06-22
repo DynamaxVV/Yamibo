@@ -17,7 +17,7 @@ from yamibo_mcp.db.repositories.series import SeriesRepository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
 from yamibo_mcp.domain.enums import JobStatus
 from yamibo_mcp.config import Settings
-from yamibo_mcp.application.thread_update_use_cases import check_thread_updates
+from yamibo_mcp.application.update_queries import check_thread_updates
 from yamibo_mcp.services.title_hints import update_title_hints
 from yamibo_mcp.yamibo.parsers.thread_detail import normalize_rich_body_html
 from yamibo_mcp.yamibo.urls import thread_author_url_from_tid, thread_url_from_tid

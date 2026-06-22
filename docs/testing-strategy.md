@@ -1,6 +1,6 @@
 # Yamibo MCP 测试方案
 
-> 基于 2026-06-21 真实论坛数据设计，覆盖黑盒和白盒测试策略。
+> 基于 2026-06-22 当前项目结构整理，覆盖黑盒和白盒测试策略。
 > 所有的代码备注使用简体中文
 
 ## 1. 设计原则
@@ -187,12 +187,15 @@ tests/
 │   ├── test_storage/            # 存储层测试
 │   ├── test_services/           # 服务层测试
 │   ├── test_server/             # Server 层测试
+│   │   ├── test_agent_interface.py
 │   │   ├── test_resources.py
 │   │   ├── test_protocol_legacy.py
 │   │   └── test_forum_id_tools.py
 │   ├── test_application/        # 应用层测试
+│   │   ├── test_archive_queries.py
 │   │   ├── test_contracts.py
 │   │   ├── test_thread_use_cases.py
+│   │   ├── test_thread_update_use_cases.py
 │   │   └── test_job_use_cases.py
 │   └── test_yamibo/             # Yamibo 模块测试
 ├── integration/                 # 集成测试（待实现）
