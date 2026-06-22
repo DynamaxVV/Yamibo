@@ -1,16 +1,24 @@
 # 百合会归档助手 — 版本发布说明
 
-> 版本：0.7.0 | 发布日期：2026-06-22
+> 版本：0.7.1 | 发布日期：2026-06-22
 
 ## 版本信息
 
 | 项目 | 值 |
 |------|-----|
-| 版本号 | 0.7.0 |
+| 版本号 | 0.7.1 |
 | Python 要求 | >= 3.11 |
 | MCP SDK | >= 1.27.2 |
 
 ---
+
+## v0.7.1 新增功能
+
+### 文档与分发物同步
+
+- `docs/database-design.md` 与实际 schema 对齐，修正 `jobs.tid` 类型并补充 `threads.category`
+- `dist/yamibo-mcp/SKILL.md` 与 `dist/yamibo-mcp/agents/openai.yaml` 同步到新的 Agent 接口命名和工作流资源说明
+- 主版本号推进到 `0.7.1`
 
 ## v0.7.0 新增功能
 

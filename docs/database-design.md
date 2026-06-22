@@ -1,6 +1,6 @@
 # 数据字典 / 数据库设计文档
 
-> 版本：0.7.0 | 更新日期：2026-06-22
+> 版本：0.7.1 | 更新日期：2026-06-22
 
 ## 1. 概述
 
@@ -35,7 +35,7 @@ Schema 版本跟踪表。
 | job_id | TEXT | PRIMARY KEY | 任务 ID，格式 `{type}_{uuid_hex[:16]}` |
 | parent_job_id | TEXT | | 父任务 ID（如 export 内创建的 sync 子任务） |
 | job_type | TEXT | NOT NULL | 任务类型：noop / sync_thread / export_thread / cleanup_job / title_refine |
-| tid | TEXT | | 关联的帖子 ID |
+| tid | INTEGER | | 关联的帖子 ID |
 | payload_json | TEXT | NOT NULL, DEFAULT '{}' | 任务参数 JSON |
 | status | TEXT | NOT NULL | 状态：queued / running / succeeded / partial / failed / interrupted / retrying / cancelled |
 | stage | TEXT | | 当前执行阶段 |
@@ -96,6 +96,7 @@ Schema 版本跟踪表。
 | forum_id | INTEGER | | 论坛分区 ID（30=漫画, 55=轻小说, 5=动漫, 33=水区） |
 | content_kind | TEXT | | 内容类型：comic / novel / discussion / mixed |
 | primary_media_type | TEXT | | 主要媒体类型：image / text |
+| category | TEXT | | 子分类或标签（从帖子标题/页面解析得到） |
 
 **索引**：
 
