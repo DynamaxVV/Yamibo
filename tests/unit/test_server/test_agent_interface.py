@@ -7,8 +7,10 @@ from unittest.mock import MagicMock, patch
 from yamibo_mcp.application.contracts import AgentAction, AgentError, AgentResult
 from yamibo_mcp.server.agent_adapter import to_wire
 from yamibo_mcp.server.agent_tools import (
+    create_thread_archive_job,
     inspect_remote_thread,
     read_archived_thread,
+    read_job,
     search_forum_threads,
 )
 from yamibo_mcp.server.legacy_protocol import TOOLS, handle_request, list_tools_payload
@@ -200,3 +202,36 @@ class TestLocalVsRemoteIsolation:
         assert result["ok"] is True
         assert result["data"]["tid"] == 572313
         assert result["side_effects"] == ["remote_fetch_only"]
+
+
+class TestAgentStatusHints:
+    def test_create_thread_archive_job_reuses_live_job_and_reports_no_new_write(self, tmp_path, db):
+        settings = _fake_settings(tmp_path)
+        from yamibo_mcp.db.repositories.jobs import JobsRepository
+
+        existing = JobsRepository(db).create("sync_thread", tid=572313, payload={"tid": 572313})
+
+        with patch("yamibo_mcp.application.archive_commands.load_settings", return_value=settings), \
+             patch("yamibo_mcp.application.archive_commands.connect", return_value=db):
+            result = create_thread_archive_job(tid=572313)
+
+        assert result["ok"] is True
+        assert result["data"]["job_id"] == existing.job_id
+        assert result["data"]["created"] is False
+        assert "sqlite_job_reused" in result["side_effects"]
+        assert "sqlite_job_created" not in result["side_effects"]
+
+    def test_read_job_exposes_terminality_fields(self, tmp_path, db):
+        settings = _fake_settings(tmp_path)
+        from yamibo_mcp.db.repositories.jobs import JobsRepository
+
+        job = JobsRepository(db).create("noop")
+
+        with patch("yamibo_mcp.application.job_queries.load_settings", return_value=settings), \
+             patch("yamibo_mcp.application.job_queries.connect", return_value=db):
+            result = read_job(job_id=job.job_id)
+
+        assert result["ok"] is True
+        assert result["data"]["is_terminal"] is False
+        assert result["data"]["result_ready"] is False
+        assert result["data"]["recommended_poll_after_seconds"] == 2

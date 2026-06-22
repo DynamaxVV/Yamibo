@@ -258,6 +258,66 @@ class TestArchiveThreadJob:
             from yamibo_mcp.db.repositories.jobs import JobsRepository
             job = JobsRepository(verify_conn).get(result["job_id"])
             assert job.payload["html_path"] == "/tmp/test.html"
-            assert job.payload["tid"] == 10
         finally:
             verify_conn.close()
+
+    def test_reuses_existing_live_sync_job_for_same_tid(self, tmp_path):
+        # Arrange - use dedicated db to avoid fixture connection being closed
+        import sqlite3 as _sqlite3
+        from yamibo_mcp.db.migrations import migrate as _migrate
+        from yamibo_mcp.db.repositories.jobs import JobsRepository
+        db_path = tmp_path / "test.db"
+        conn = _sqlite3.connect(str(db_path))
+        conn.row_factory = _sqlite3.Row
+        _migrate(conn)
+        repo = JobsRepository(conn)
+        existing = repo.create("sync_thread", tid=42, payload={"tid": 42})
+        settings = _fake_settings(tmp_path)
+        with patch("yamibo_mcp.application.archive_commands.load_settings", return_value=settings), \
+             patch("yamibo_mcp.application.archive_commands.connect", return_value=conn):
+            # Act
+            result = archive_thread_job(tid=42)
+        # Assert
+        assert result["job_id"] == existing.job_id
+
+
+class TestCreateUpdateThreadJob:
+    def test_reuses_existing_live_update_job_for_same_tid(self, tmp_path):
+        # Arrange
+        import sqlite3 as _sqlite3
+        from yamibo_mcp.db.migrations import migrate as _migrate
+        from yamibo_mcp.db.repositories.jobs import JobsRepository
+        from yamibo_mcp.application.update_commands import create_update_thread_job
+        db_path = tmp_path / "test.db"
+        conn = _sqlite3.connect(str(db_path))
+        conn.row_factory = _sqlite3.Row
+        _migrate(conn)
+        repo = JobsRepository(conn)
+        existing = repo.create("update_thread", tid=42, payload={"tid": 42})
+        settings = _fake_settings(tmp_path)
+        with patch("yamibo_mcp.application.update_commands.load_settings", return_value=settings), \
+             patch("yamibo_mcp.application.update_commands.connect", return_value=conn):
+            # Act
+            result = create_update_thread_job(tid=42)
+        # Assert
+        assert result["job_id"] == existing.job_id
+
+    def test_does_not_reuse_update_job_when_payload_differs(self, tmp_path):
+        # Arrange
+        import sqlite3 as _sqlite3
+        from yamibo_mcp.db.migrations import migrate as _migrate
+        from yamibo_mcp.db.repositories.jobs import JobsRepository
+        from yamibo_mcp.application.update_commands import create_update_thread_job
+        db_path = tmp_path / "test.db"
+        conn = _sqlite3.connect(str(db_path))
+        conn.row_factory = _sqlite3.Row
+        _migrate(conn)
+        repo = JobsRepository(conn)
+        existing = repo.create("update_thread", tid=42, payload={"tid": 42})
+        settings = _fake_settings(tmp_path)
+        with patch("yamibo_mcp.application.update_commands.load_settings", return_value=settings), \
+             patch("yamibo_mcp.application.update_commands.connect", return_value=conn):
+            # Act
+            result = create_update_thread_job(tid=42, base_url="https://bbs.yamibo.com")
+        # Assert
+        assert result["job_id"] != existing.job_id

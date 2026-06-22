@@ -111,6 +111,48 @@ class TestList:
         assert jobs == []
 
 
+class TestFindLiveJobForThread:
+    def test_returns_queued_job_for_same_tid_and_type(self, db):
+        # Arrange
+        repo = JobsRepository(db)
+        job = repo.create("sync_thread", tid=123)
+        # Act
+        found = repo.find_live_job_for_thread(job_type="sync_thread", tid=123)
+        # Assert
+        assert found is not None
+        assert found.job_id == job.job_id
+
+    def test_prefers_most_recent_live_job(self, db):
+        # Arrange
+        repo = JobsRepository(db)
+        older = repo.create("sync_thread", tid=123)
+        newer = repo.create("sync_thread", tid=123)
+        # Act
+        found = repo.find_live_job_for_thread(job_type="sync_thread", tid=123)
+        # Assert
+        assert found is not None
+        assert found.job_id == newer.job_id
+
+    def test_ignores_terminal_jobs(self, db):
+        # Arrange
+        repo = JobsRepository(db)
+        job = repo.create("sync_thread", tid=123)
+        repo.succeed(job.job_id)
+        # Act
+        found = repo.find_live_job_for_thread(job_type="sync_thread", tid=123)
+        # Assert
+        assert found is None
+
+    def test_scopes_by_job_type(self, db):
+        # Arrange
+        repo = JobsRepository(db)
+        repo.create("sync_thread", tid=123)
+        # Act
+        found = repo.find_live_job_for_thread(job_type="export_thread", tid=123)
+        # Assert
+        assert found is None
+
+
 class TestAcquire:
     def test_acquire_changes_status_to_running(self, db):
         # Arrange

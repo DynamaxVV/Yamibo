@@ -13,6 +13,10 @@ from yamibo_mcp.domain.enums import JobType
 from yamibo_mcp.server.resource_uris import job_events_uri, thread_summary_uri
 
 
+def _can_reuse_existing_job(existing_payload: dict[str, Any], requested_payload: dict[str, Any]) -> bool:
+    return existing_payload == requested_payload
+
+
 def archive_thread_job(
     *,
     html_path: str | None = None,
@@ -39,8 +43,12 @@ def archive_thread_job(
             }.items()
             if value is not None
         }
+        if tid is not None:
+            existing = repo.find_live_job_for_thread(job_type=JobType.SYNC_THREAD.value, tid=tid)
+            if existing is not None and _can_reuse_existing_job(existing.payload, payload):
+                return {"job_id": existing.job_id, "created": False}
         job = repo.create(JobType.SYNC_THREAD.value, tid=tid, payload=payload)
-        return {"job_id": job.job_id}
+        return {"job_id": job.job_id, "created": True}
     finally:
         conn.close()
 
@@ -61,14 +69,18 @@ def create_thread_archive_job(
         forum_id=forum_id,
     )
     job_id = str(payload["job_id"])
+    created = bool(payload.get("created", True))
     return AgentResult(
         ok=True,
-        data={"job_id": job_id, "status": "queued"},
+        data={"job_id": job_id, "status": "queued", "created": created},
         resources={"job_events": job_events_uri(job_id)},
         next_actions=[
             AgentAction(tool="read_job", args={"job_id": job_id}, reason="Poll the queued archive job."),
         ],
-        side_effects=["sqlite_job_created", "daemon_required"],
+        side_effects=[
+            "sqlite_job_created" if created else "sqlite_job_reused",
+            "daemon_required",
+        ],
     )
 
 
@@ -111,33 +123,47 @@ def create_thread_export_job(*, tid: int, strategy: str | None = None) -> AgentR
     conn = connect(settings.db_path)
     try:
         migrate(conn)
-        job = JobsRepository(conn).create(
-            JobType.EXPORT_THREAD.value,
-            tid=tid,
-            payload={key: value for key, value in {"tid": tid, "strategy": strategy}.items() if value is not None},
-        )
+        repo = JobsRepository(conn)
+        payload = {key: value for key, value in {"tid": tid, "strategy": strategy}.items() if value is not None}
+        job = repo.find_live_job_for_thread(job_type=JobType.EXPORT_THREAD.value, tid=tid)
+        created = False
+        if job is None or not _can_reuse_existing_job(job.payload, payload):
+            job = repo.create(
+                JobType.EXPORT_THREAD.value,
+                tid=tid,
+                payload=payload,
+            )
+            created = True
     finally:
         conn.close()
 
     return AgentResult(
         ok=True,
-        data={"job_id": job.job_id, "status": "queued", "tid": tid},
+        data={"job_id": job.job_id, "status": "queued", "tid": tid, "created": created},
         resources={"job_events": job_events_uri(job.job_id)},
         next_actions=[
             AgentAction(tool="read_job", args={"job_id": job.job_id}, reason="Poll the export job until it finishes."),
         ],
-        side_effects=["sqlite_job_created", "daemon_required"],
+        side_effects=[
+            "sqlite_job_created" if created else "sqlite_job_reused",
+            "daemon_required",
+        ],
     )
 
 
 def create_thread_update_job(*, tid: int, base_url: str | None = None) -> AgentResult:
-    job_id = str(create_update_thread_job(tid=tid, base_url=base_url)["job_id"])
+    payload = create_update_thread_job(tid=tid, base_url=base_url)
+    job_id = str(payload["job_id"])
+    created = bool(payload.get("created", True))
     return AgentResult(
         ok=True,
-        data={"job_id": job_id, "status": "queued", "tid": tid},
+        data={"job_id": job_id, "status": "queued", "tid": tid, "created": created},
         resources={"job_events": job_events_uri(job_id)},
         next_actions=[
             AgentAction(tool="read_job", args={"job_id": job_id}, reason="Poll the update job until it finishes."),
         ],
-        side_effects=["sqlite_job_created", "daemon_required"],
+        side_effects=[
+            "sqlite_job_created" if created else "sqlite_job_reused",
+            "daemon_required",
+        ],
     )

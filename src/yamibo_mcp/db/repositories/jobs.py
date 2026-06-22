@@ -13,6 +13,14 @@ from yamibo_mcp.time_utils import utc_after_iso, utc_now_iso
 
 LOG = logging.getLogger(__name__)
 
+_LIVE_JOB_STATUSES = (
+    JobStatus.QUEUED.value,
+    JobStatus.RUNNING.value,
+    JobStatus.RETRYING.value,
+    JobStatus.CANCEL_REQUESTED.value,
+    JobStatus.INTERRUPTED.value,
+)
+
 
 def _loads(value: str | None) -> dict[str, Any]:
     if not value:
@@ -126,6 +134,23 @@ class JobsRepository:
                 (limit,),
             ).fetchall()
         return [_job_from_row(row) for row in rows]
+
+    def find_live_job_for_thread(self, *, job_type: str, tid: int) -> Job | None:
+        row = self.conn.execute(
+            f"""
+            SELECT *
+            FROM jobs
+            WHERE job_type = ?
+              AND tid = ?
+              AND status IN ({",".join("?" for _ in _LIVE_JOB_STATUSES)})
+            ORDER BY rowid DESC
+            LIMIT 1
+            """,
+            (job_type, tid, *_LIVE_JOB_STATUSES),
+        ).fetchone()
+        if row is None:
+            return None
+        return _job_from_row(row)
 
     def acquire_next(self, worker_id: str, lease_seconds: int) -> Job | None:
         # Worker 只抢还没被占用、或者租约已经过期的任务。

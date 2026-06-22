@@ -18,7 +18,12 @@ from yamibo_mcp.server.resource_uris import (
 from yamibo_mcp.yamibo.urls import thread_url_from_tid
 
 
+_TERMINAL_JOB_STATUSES = {"succeeded", "partial", "failed", "cancelled"}
+_RESULT_READY_STATUSES = {"succeeded", "partial"}
+
+
 def job_status_payload(job) -> dict[str, Any]:
+    is_terminal = job.status in _TERMINAL_JOB_STATUSES
     return {
         "job_id": job.job_id,
         "job_type": job.job_type,
@@ -33,6 +38,9 @@ def job_status_payload(job) -> dict[str, Any]:
         "created_at": job.created_at,
         "updated_at": job.updated_at,
         "finished_at": job.finished_at,
+        "is_terminal": is_terminal,
+        "result_ready": job.status in _RESULT_READY_STATUSES,
+        "recommended_poll_after_seconds": None if is_terminal else 2,
     }
 
 

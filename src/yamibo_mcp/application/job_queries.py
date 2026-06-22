@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from yamibo_mcp.application.contracts import AgentError, AgentResult
@@ -74,6 +75,7 @@ def read_job_events(*, job_id: str) -> AgentResult:
                     "event_type": row["event_type"],
                     "status": row["status"],
                     "stage": row["stage"],
+                    "payload": json.loads(row["payload_json"] or "{}"),
                     "payload_json": row["payload_json"],
                     "created_at": row["created_at"],
                 }
