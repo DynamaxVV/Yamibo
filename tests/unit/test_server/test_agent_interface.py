@@ -166,14 +166,15 @@ class TestLocalVsRemoteIsolation:
     def test_read_archived_thread_does_not_fetch_remote_when_local_missing(self, tmp_path, db):
         settings = _fake_settings(tmp_path)
 
+        import yamibo_mcp.application.archive_queries as archive_queries
+
         with patch("yamibo_mcp.application.archive_queries.load_settings", return_value=settings), \
-             patch("yamibo_mcp.application.archive_queries.connect", return_value=db), \
-             patch("yamibo_mcp.application.archive_queries.YamiboClient") as mock_client:
+             patch("yamibo_mcp.application.archive_queries.connect", return_value=db):
             result = read_archived_thread(tid=572313, view="summary")
 
         assert result["ok"] is False
         assert result["error"]["code"] == "LOCAL_ARCHIVE_NOT_FOUND"
-        mock_client.assert_not_called()
+        assert not hasattr(archive_queries, "YamiboClient")
 
     def test_inspect_remote_thread_does_not_write_sqlite(self, tmp_path):
         settings = _fake_settings(tmp_path)

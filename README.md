@@ -198,6 +198,7 @@ uv run pytest -k "test_name"       # 按名称过滤
 | 文档 | 说明 |
 |------|------|
 | [产品需求 & 架构设计](docs/product-requirements.md) | PRD + 系统架构 |
+| [Agent 架构导航](docs/architecture-for-agents.md) | 给 AI 编码代理的目录职责、修改路径、legacy 禁区和测试矩阵 |
 | [API 接口文档](docs/api-reference.md) | MCP 工具/资源、CLI、Web 路由 |
 | [Agent 接口说明](docs/agent-interface.md) | Agent-facing 工具、错误契约、推荐工作流 |
 | [数据库设计](docs/database-design.md) | 表结构、文件存储格式 |

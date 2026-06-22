@@ -21,7 +21,6 @@ from yamibo_mcp.server.resource_uris import (
 )
 from yamibo_mcp.server.schemas import thread_summary_payload
 from yamibo_mcp.storage.paths import StoragePaths
-from yamibo_mcp.yamibo.client import YamiboClient
 
 ARCHIVED_THREAD_VIEWS = {"summary", "content", "assets", "diagnostics", "export", "metadata"}
 DEFAULT_CONTENT_CHUNK_SIZE = 20
