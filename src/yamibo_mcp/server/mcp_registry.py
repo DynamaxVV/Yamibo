@@ -16,6 +16,7 @@ from yamibo_mcp.server.agent_tools import (
 )
 from yamibo_mcp.server.resource_uris import (
     agent_workflows_guide_uri,
+    agent_evaluation_guide_uri,
     archive_model_guide_uri,
     error_codes_guide_uri,
     forum_summary_uri,
@@ -185,6 +186,11 @@ def register_resources(server) -> None:
     @server.resource(archive_model_guide_uri(), mime_type="text/markdown", name="archive-model-guide")
     def _archive_model_guide() -> str:
         content, _ = read_resource_content(archive_model_guide_uri())
+        return str(content)
+
+    @server.resource(agent_evaluation_guide_uri(), mime_type="text/markdown", name="agent-evaluation-guide")
+    def _agent_evaluation_guide() -> str:
+        content, _ = read_resource_content(agent_evaluation_guide_uri())
         return str(content)
 
     @server.resource(tools_schema_uri(), mime_type="application/json", name="tools-schema")

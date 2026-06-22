@@ -8,6 +8,7 @@ from yamibo_mcp.db.migrations import migrate
 from yamibo_mcp.db.repositories.content_blocks import ContentBlocksRepository
 from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
+from yamibo_mcp.domain.enums import JobStatus
 from yamibo_mcp.domain.models import ContentBlock, FloorSnapshot, ThreadSnapshot, TitleSnapshot
 from yamibo_mcp.server.agent_tools import (
     create_thread_archive_job,
@@ -193,3 +194,38 @@ def test_local_archive_workflow_moves_from_missing_to_summary_read(tmp_path):
     assert len(content["data"]["floors"]) == 2
     assert content["data"]["has_more"] is True
     assert content["data"]["next_cursor"] == "offset:2"
+
+
+def test_job_recovery_workflow_exposes_partial_and_interrupted_states(tmp_path):
+    settings = _fake_settings(tmp_path)
+    conn = _open_db(settings)
+    repo = JobsRepository(conn)
+    partial_job = repo.create("sync_thread", tid=7001, payload={"tid": 7001})
+    repo.partial(partial_job.job_id, artifacts={"tid": 7001, "archive_status": "partial"})
+    interrupted_job = repo.create("sync_thread", tid=7002, payload={"tid": 7002})
+    conn.execute(
+        "UPDATE jobs SET status = ?, updated_at = created_at WHERE job_id = ?",
+        (JobStatus.INTERRUPTED.value, interrupted_job.job_id),
+    )
+    conn.commit()
+    conn.close()
+
+    with patch("yamibo_mcp.application.job_queries.load_settings", return_value=settings):
+        partial_status = read_job(job_id=partial_job.job_id)
+        interrupted_status = read_job(job_id=interrupted_job.job_id)
+        interrupted_events = read_job_events(job_id=interrupted_job.job_id)
+
+    assert partial_status["ok"] is True
+    assert partial_status["data"]["status"] == "partial"
+    assert partial_status["data"]["is_terminal"] is True
+    assert partial_status["data"]["result_ready"] is True
+    assert partial_status["data"]["recommended_poll_after_seconds"] is None
+
+    assert interrupted_status["ok"] is True
+    assert interrupted_status["data"]["status"] == "interrupted"
+    assert interrupted_status["data"]["is_terminal"] is False
+    assert interrupted_status["data"]["result_ready"] is False
+    assert interrupted_status["data"]["recommended_poll_after_seconds"] == 2
+
+    assert interrupted_events["ok"] is True
+    assert interrupted_events["data"]["events"][0]["event_type"] == "job.created"

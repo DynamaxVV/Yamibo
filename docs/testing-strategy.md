@@ -198,9 +198,11 @@ tests/
 │   │   ├── test_thread_update_use_cases.py
 │   │   └── test_job_use_cases.py
 │   └── test_yamibo/             # Yamibo 模块测试
-├── integration/                 # 集成测试（待实现）
+├── integration/                 # 集成测试（含 agent workflow 闭环与恢复场景）
 └── e2e/                         # 端到端测试（待实现）
 ```
+
+当前已落地的 Agent 工作流基线位于 `tests/integration/test_agent_workflows.py`，对应的人类可读说明见 [agent-evaluation.md](agent-evaluation.md)。
 
 ---
 

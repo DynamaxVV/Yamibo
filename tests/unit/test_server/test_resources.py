@@ -6,6 +6,7 @@ import pytest
 
 from yamibo_mcp.server.resources import (
     agent_workflows_guide_uri,
+    agent_evaluation_guide_uri,
     archive_model_guide_uri,
     error_codes_guide_uri,
     forums_index_uri,
@@ -54,6 +55,7 @@ class TestNewUriHelpers:
         assert agent_workflows_guide_uri() == "yamibo://guide/agent-workflows"
         assert error_codes_guide_uri() == "yamibo://guide/error-codes"
         assert archive_model_guide_uri() == "yamibo://guide/archive-model"
+        assert agent_evaluation_guide_uri() == "yamibo://guide/agent-evaluation"
         assert tools_schema_uri() == "yamibo://schema/tools"
 
 
@@ -113,6 +115,11 @@ class TestParseNewResourceUris:
         assert root == "guide"
         assert tid is None
         assert kind == "agent-workflows"
+
+        root, tid, kind = parse_resource_uri("yamibo://guide/agent-evaluation")
+        assert root == "guide"
+        assert tid is None
+        assert kind == "agent-evaluation"
 
         root, tid, kind = parse_resource_uri("yamibo://schema/tools")
         assert root == "schema"
@@ -175,6 +182,17 @@ class TestAgentGuideResources:
         text = result["text"]
         assert "has_more" in text
         assert "read_job_events" in text
+
+    def test_agent_evaluation_guide_mentions_recovery_and_duplicate_jobs(self):
+        from yamibo_mcp.server.resources import read_resource
+
+        result = read_resource("yamibo://guide/agent-evaluation")
+
+        assert result["exists"] is True
+        text = result["text"]
+        assert "duplicate live jobs" in text
+        assert "partial" in text
+        assert "interrupted" in text
 
     def test_tools_schema_contains_current_public_tools(self):
         from yamibo_mcp.server.resources import read_resource

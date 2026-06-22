@@ -67,6 +67,10 @@ def archive_model_guide_uri() -> str:
     return "yamibo://guide/archive-model"
 
 
+def agent_evaluation_guide_uri() -> str:
+    return "yamibo://guide/agent-evaluation"
+
+
 def tools_schema_uri() -> str:
     return "yamibo://schema/tools"
 
@@ -114,7 +118,7 @@ def guess_content_type(kind: str) -> str:
         return "application/json"
     if kind.startswith("/") and kind.endswith("/events"):
         return "application/json"
-    if kind in ("agent-workflows", "error-codes", "archive-model"):
+    if kind in ("agent-workflows", "error-codes", "archive-model", "agent-evaluation"):
         return "text/markdown"
     if kind == "tools":
         return "application/json"

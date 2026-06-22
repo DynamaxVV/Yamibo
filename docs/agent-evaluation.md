@@ -1,0 +1,105 @@
+# Agent 能力验收标准
+
+> 版本：0.7.1 | 更新日期：2026-06-22
+
+本文定义 Yamibo MCP 在 OpenClaw、Hermes 一类多步 Agent 框架上的最小验收标准。目标不是验证“函数能不能跑”，而是验证“Agent 能不能稳定完成任务而不把状态搞乱”。
+
+## 1. 验收目标
+
+Agent 通过验收，应同时满足以下条件：
+
+- 能区分远端只读、本地只读、后台 job 创建三类调用。
+- 能把 `read_job` 视为主状态面，把 `read_job_events` 视为排障面。
+- 能复用兼容 payload 的 live job，而不是重复创建同类任务。
+- 能在读取正文时优先使用 `summary` 和分页 `content`，而不是默认读取全量 materialized 文件。
+- 能在 `failed`、`partial`、`interrupted`、`LOCAL_ARCHIVE_NOT_FOUND`、`JOB_NOT_FOUND` 等场景下做正确分流。
+
+## 2. 必测场景
+
+### 2.1 发现与只读
+
+1. 读取 forum profile。
+2. 浏览 forum page 或执行 remote-first search。
+3. 预览 remote thread。
+4. 验证上述调用不会写入 SQLite job，也不会误触发本地归档。
+
+### 2.2 归档闭环
+
+1. 创建 archive job。
+2. 使用 `read_job` 轮询。
+3. 仅在需要排障时读取 `read_job_events`。
+4. 任务完成后读取 `read_archived_thread(summary)`。
+5. 对大帖继续跟随 `next_cursor` 读取分页 `content`。
+
+### 2.3 本地缺失恢复
+
+1. 直接读取一个未归档 tid 的本地视图。
+2. 观察 `LOCAL_ARCHIVE_NOT_FOUND` 与建议动作。
+3. 创建归档任务。
+4. 回到本地读取路径，直到能成功读取 `summary` 与分页 `content`。
+
+### 2.4 恢复与失败
+
+必须覆盖以下状态或错误：
+
+- `JOB_NOT_FOUND`
+- `LOCAL_ARCHIVE_NOT_FOUND`
+- `REMOTE_LOGIN_REQUIRED`
+- `REMOTE_MAINTENANCE`
+- `failed`
+- `partial`
+- `interrupted`
+
+其中：
+
+- `partial` 应被视为“结果通常可读，但需结合 diagnostics/events 判断是否补救”。
+- `interrupted` 应被视为“继续观察或等待恢复”，而不是直接宣告成功或直接重建第二个 job。
+
+### 2.5 幂等与复用
+
+1. 对同一 `tid` 和同一 payload 重复创建 job。
+2. 验证系统复用已有 live job。
+3. 对同一 `tid` 但不同 payload（例如 export strategy 不同）再次创建 job。
+4. 验证系统创建新 job，而不是错误复用旧 job。
+
+## 3. 评分建议
+
+推荐四个维度，每项 0-5 分：
+
+- `discoverability`
+  - Agent 是否能通过 guide/tool description 找到正确调用顺序。
+- `state_discipline`
+  - Agent 是否始终区分远端读取、本地读取、异步 job。
+- `recovery`
+  - Agent 是否对错误码和任务状态做正确分流，而不是盲重试。
+- `token_efficiency`
+  - Agent 是否优先使用 compact view、resource hint、cursor 分页。
+
+建议通过线：
+
+- 总分至少 16/20
+- `state_discipline` 和 `recovery` 不得低于 4/5
+
+## 4. 证据要求
+
+每次验收至少保留以下证据：
+
+- 完整 tool call 顺序
+- 每个 job 的最终状态
+- `read_job_events` 时间线
+- 是否创建了重复 job
+- 是否正确跟随 `next_cursor`
+- 是否需要人工纠正
+
+## 5. 当前仓库内置支撑
+
+当前代码库已经内置了以下可用于验收的支撑：
+
+- `yamibo://guide/agent-workflows`
+- `yamibo://guide/archive-model`
+- `yamibo://guide/error-codes`
+- `yamibo://guide/agent-evaluation`
+- `yamibo://schema/tools`
+- `tests/integration/test_agent_workflows.py`
+
+建议先跑仓库内置 integration，再接真实 Agent transcript 做二次验证。

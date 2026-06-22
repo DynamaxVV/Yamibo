@@ -205,6 +205,7 @@ uv run pytest -k "test_name"       # 按名称过滤
 | [Agent 架构导航](docs/architecture-for-agents.md) | 给 AI 编码代理的目录职责、修改路径、legacy 禁区和测试矩阵 |
 | [API 接口文档](docs/api-reference.md) | MCP 工具/资源、CLI、Web 路由 |
 | [Agent 接口说明](docs/agent-interface.md) | Agent-facing 工具、错误契约、推荐工作流 |
+| [Agent 能力验收标准](docs/agent-evaluation.md) | OpenClaw/Hermes 类 Agent 的验收场景、评分维度与证据要求 |
 | [数据库设计](docs/database-design.md) | 表结构、文件存储格式 |
 | [核心模块开发说明](docs/development-guide.md) | 标题解析、Job 系统、配置 |
 | [部署指南 & 运维手册](docs/deployment-guide.md) | 安装、配置、运维操作 |
