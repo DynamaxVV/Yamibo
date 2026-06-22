@@ -2,7 +2,7 @@
 
 百合会 (yamibo.com) 论坛本地归档系统。通过 MCP 协议让 LLM 客户端浏览、搜索、归档、检查更新和导出论坛贴子；内嵌 React WebUI 控制台，支持多主题切换。
 
-> 当前版本：`0.8.0`
+> 当前版本：`0.8.1`
 
 ## 功能特性
 
@@ -215,5 +215,5 @@ scripts/run_hermes_benchmark.sh
 | [用户操作手册](docs/user-manual.md) | MCP/Web/CLI 使用方式 |
 | [测试方案](docs/testing-strategy.md) | 测试原则、规范、架构 |
 | [测试报告](docs/test-report.md) | 测试执行结果 |
-| [版本发布说明](docs/release-notes.md) | v0.8.0 功能清单 |
+| [版本发布说明](docs/release-notes.md) | v0.8.1 功能清单 |
 | [WebUI 设计文档](docs/webui-design.md) | 功能点、主题系统、组件设计、API 端点 |

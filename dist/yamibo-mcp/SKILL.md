@@ -17,7 +17,7 @@ description: 使用 YamiboMCP 检索、查看、归档、检查更新、追加�
 - 同名作品可能存在繁简、双语、空格、标点差异，判断系列时优先参考标题解析结果和系列信息。
 - 长内容优先通过 Resource 读取，不把整篇正文一次性塞进简短回复。
 - Agent 工作流优先读取紧凑资源（summary → diagnostics → posts/assets/context），降低 token 开销。
-- 长任务先读 `read_job`，排障再读 `read_job_events` 或 `yamibo://jobs/{job_id}/events`。
+- 长任务优先读 `read_job`；需要阻塞等待时直接用 `wait_for_job`，排障再读 `read_job_events` 或 `yamibo://jobs/{job_id}/events`。
 
 ## 可用接口
 
@@ -244,13 +244,15 @@ Agent 工作流优先读取紧凑资源，按需深入：
 5. **assets**（`yamibo://threads/{tid}/assets`）— 资产详情（图片/附件/共享资源状态），需要时读取
 6. **context**（`yamibo://threads/{tid}/context`）— 完整正文 Markdown，仅在需要完整内容时读取
 7. **metadata**（`yamibo://threads/{tid}/metadata`）— 完整元数据 JSON
-8. **job events**（`yamibo://jobs/{job_id}/events`）— 任务事件时间线，用于排障和恢复判断
-9. **guide**（`yamibo://guide/agent-workflows` / `yamibo://guide/archive-model` / `yamibo://guide/error-codes`）— Agent 工作流、资源边界和错误码说明
+8. **job status**（`yamibo://jobs/{job_id}/status`）— 任务主状态快照，适合低成本轮询和等待判断
+9. **job events**（`yamibo://jobs/{job_id}/events`）— 任务事件时间线，用于排障和恢复判断
+10. **guide**（`yamibo://guide/agent-workflows` / `yamibo://guide/archive-model` / `yamibo://guide/error-codes`）— Agent 工作流、资源边界和错误码说明
 
 ### 其他资源
 
 - **forums/index**（`yamibo://forums/index`）— 论坛分区列表
 - **forums/{forum_id}/summary**（`yamibo://forums/{forum_id}/summary`）— 分区摘要
+- **jobs/{job_id}/status**（`yamibo://jobs/{job_id}/status`）— 任务主状态快照
 - **jobs/{job_id}/events**（`yamibo://jobs/{job_id}/events`）— 任务事件时间线（append-only）
 - **series/index**（`yamibo://series/index`）— 系列索引
 - **series/{series_id}/chapters**（`yamibo://series/{series_id}/chapters`）— 系列章节列表
@@ -287,22 +289,36 @@ Agent 工作流优先读取紧凑资源，按需深入：
 
 1. 调用 `create_thread_archive_job`
 2. 向用户返回 `job_id`
-3. 需要追踪时调用 `read_job`
-4. 可读取 `yamibo://jobs/{job_id}/events` 查看事件时间线
+3. 需要追踪时调用 `read_job` 或 `wait_for_job`
+4. 可读取 `yamibo://jobs/{job_id}/status` 查看主状态，`yamibo://jobs/{job_id}/events` 查看事件时间线
 
 ### 5. 检查轻小说更新
 
 1. 调用 `check_thread_updates`
 2. 读取 `yamibo://threads/{tid}/update-check` 复核结果
 3. 如果结果是 `updated`，再调用 `create_thread_update_job`
-4. 需要追踪时调用 `read_job`
+4. 需要追踪时调用 `read_job` 或 `wait_for_job`
 
 ### 6. 导出帖子
 
 1. 先确认帖子对象
 2. 调用 `create_thread_export_job`
 3. 向用户返回 `job_id`
-4. 需要追踪时调用 `read_job`
+4. 需要追踪时调用 `read_job` 或 `wait_for_job`
+
+### `wait_for_job`
+
+用于阻塞等待长任务完成，避免 Agent 自己写 sleep/poll 循环。
+
+适用场景：
+- 真实 Hermes/OpenClaw 回归里需要等 job 终态再继续
+- 用户希望“创建后自动等结果”，但又不想丢掉 job 结构化状态
+- 需要在有限轮次内把长任务推进到可读状态
+
+调用建议：
+- 输入 `job_id`
+- 默认只等终态；需要排障时把 `include_events` 打开
+- 如果目标是脚本或 benchmark，优先用 `wait_for_job` 而不是手写轮询
 
 ### 7. 诊断归档问题
 

@@ -1,6 +1,6 @@
 # Agent 接口说明
 
-> 版本：0.8.0 | 更新日期：2026-06-22
+> 版本：0.8.1 | 更新日期：2026-06-23
 
 ## 概览
 
@@ -48,6 +48,7 @@
 - `create_thread_update_job`
 - `create_thread_export_job`
 - `read_job`
+- `wait_for_job`
 - `read_job_events`
 - `read_forum_profiles`
 
@@ -142,13 +143,14 @@
 推荐顺序：
 
 1. 创建任务：`create_thread_archive_job` / `create_thread_update_job` / `create_thread_export_job`
-2. 轮询主状态：`read_job(job_id)`
+2. 轮询主状态：`read_job(job_id)` 或阻塞等待：`wait_for_job(job_id)`
 3. 出现 `failed`、`partial`、`execution_state in {attention, stalled}` 或 `interrupted` 时，再读 `read_job_events(job_id)`
 4. 状态进入 `succeeded` 或 `partial` 后，切到 `read_archived_thread`
 
 约定：
 
 - `read_job` 是主入口，适合低成本轮询
+- `wait_for_job` 适合脚本、benchmark 或一次性等待结果的 Agent 流程
 - `read_job_events` 是排障入口，适合阅读事件时间线、阶段切换、错误上下文
 - 不要在 `queued` 或 `retrying` 时盲目重复创建同一帖子的新任务
 - `partial` 不等于不可读；它表示主归档通常已经落地，但部分资产或附加步骤不完整

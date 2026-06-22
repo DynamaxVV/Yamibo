@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from threading import Timer
 from unittest.mock import MagicMock, patch
 
 from yamibo_mcp.db.migrations import migrate
@@ -16,7 +17,9 @@ from yamibo_mcp.server.agent_tools import (
     read_archived_thread,
     read_job,
     read_job_events,
+    wait_for_job,
 )
+from yamibo_mcp.server.resources import read_resource
 
 
 def _fake_settings(tmp_path: Path):
@@ -231,3 +234,51 @@ def test_job_recovery_workflow_exposes_partial_and_interrupted_states(tmp_path):
 
     assert interrupted_events["ok"] is True
     assert interrupted_events["data"]["events"][0]["event_type"] == "job.created"
+
+
+def test_wait_for_job_reaches_terminal_state_without_client_sleep(tmp_path):
+    settings = _fake_settings(tmp_path)
+    conn = _open_db(settings)
+    repo = JobsRepository(conn)
+    job = repo.create("sync_thread", tid=7003, payload={"tid": 7003})
+    conn.commit()
+
+    def _finish_job() -> None:
+        followup = _open_db(settings)
+        try:
+            JobsRepository(followup).succeed(job.job_id, {"tid": 7003, "archive_status": "complete"})
+            followup.commit()
+        finally:
+            followup.close()
+
+    timer = Timer(0.1, _finish_job)
+    timer.start()
+    try:
+        with patch("yamibo_mcp.application.job_queries.load_settings", return_value=settings):
+            result = wait_for_job(job_id=job.job_id, timeout_seconds=2, poll_interval_seconds=0.05, include_events=True)
+    finally:
+        timer.join()
+        conn.close()
+
+    assert result["ok"] is True
+    assert result["data"]["status"] == "succeeded"
+    assert result["data"]["timed_out"] is False
+    assert result["resources"]["status"].endswith("/status")
+    assert result["resources"]["job_events"].endswith("/events")
+    assert any(event["event_type"] == "job.succeeded" for event in result["data"]["events"])
+
+
+def test_job_status_resource_returns_json_payload(tmp_path):
+    settings = _fake_settings(tmp_path)
+    conn = _open_db(settings)
+    job = JobsRepository(conn).create("sync_thread", tid=8123, payload={"tid": 8123})
+    conn.commit()
+    conn.close()
+
+    with patch("yamibo_mcp.server.resources.load_settings", return_value=settings):
+        payload = read_resource(f"yamibo://jobs/{job.job_id}/status")
+
+    assert payload["exists"] is True
+    assert payload["content_type"] == "application/json"
+    assert '"job_id"' in payload["text"]
+    assert job.job_id in payload["text"]

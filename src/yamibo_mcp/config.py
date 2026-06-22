@@ -11,6 +11,20 @@ def _project_root() -> Path:
 
 
 @dataclass(frozen=True)
+class AccountConfig:
+    account_id: str
+    username: str | None
+    password: str | None
+    cookie_file: Path
+    enabled: bool
+    weight: int
+    request_interval_seconds: float
+    request_interval_jitter_seconds: float
+    max_concurrent_leases: int
+    login_mode: str
+
+
+@dataclass(frozen=True)
 class Settings:
     project_root: Path
     config_path: Path
@@ -46,8 +60,10 @@ class Settings:
     backup_dir: Path
     backup_keep_count: int
     cleanup_staging_older_than_hours: int
+    request_timeout_seconds: float
     request_interval_seconds: float
     request_interval_jitter_seconds: float
+    account_pool: tuple[AccountConfig, ...]
 
 
 def _read_local_config(path: Path) -> dict[str, object]:
@@ -69,6 +85,57 @@ def _cfg_list(config: dict[str, object], section: str, key: str, default: list[s
         return list(default or [])
     items = [str(item).strip() for item in value if str(item).strip()]
     return items
+
+
+def _cfg_account_pool(config: dict[str, object], *, config_dir: Path, data_dir: Path) -> tuple[AccountConfig, ...]:
+    raw_pool = _cfg_value(config, "yamibo", "account_pool", [])
+    if not isinstance(raw_pool, list):
+        return ()
+
+    identities: list[AccountConfig] = []
+    seen_account_ids: set[str] = set()
+    seen_cookie_files: set[Path] = set()
+    cookie_root = data_dir / "cookies"
+    for index, item in enumerate(raw_pool, start=1):
+        if not isinstance(item, dict):
+            continue
+        account_id = str(item.get("account_id") or f"account_{index}").strip()
+        username = str(item.get("username")).strip() if item.get("username") not in {None, ""} else None
+        password = str(item.get("password")).strip() if item.get("password") not in {None, ""} else None
+        cookie_file_value = item.get("cookie_file")
+        if cookie_file_value in {None, ""}:
+            cookie_file = cookie_root / f"{account_id}.cookie"
+        else:
+            cookie_file = Path(str(cookie_file_value)).expanduser()
+            if not cookie_file.is_absolute():
+                cookie_file = (config_dir / cookie_file).resolve()
+        if account_id in seen_account_ids:
+            raise ValueError(f"duplicate yamibo.account_pool account_id: {account_id}")
+        if cookie_file in seen_cookie_files:
+            raise ValueError(f"duplicate yamibo.account_pool cookie_file: {cookie_file}")
+        seen_account_ids.add(account_id)
+        seen_cookie_files.add(cookie_file)
+        enabled = str(item.get("enabled", True)).lower() in {"1", "true", "yes", "on"}
+        weight = max(int(item.get("weight", 1) or 1), 1)
+        request_interval_seconds = float(item.get("request_interval_seconds", 1.0) or 0.0)
+        request_interval_jitter_seconds = float(item.get("request_interval_jitter_seconds", 0.5) or 0.0)
+        max_concurrent_leases = max(int(item.get("max_concurrent_leases", 1) or 1), 1)
+        login_mode = str(item.get("login_mode") or "refresh_on_login_required").strip() or "refresh_on_login_required"
+        identities.append(
+            AccountConfig(
+                account_id=account_id,
+                username=username,
+                password=password,
+                cookie_file=cookie_file,
+                enabled=enabled,
+                weight=weight,
+                request_interval_seconds=request_interval_seconds,
+                request_interval_jitter_seconds=request_interval_jitter_seconds,
+                max_concurrent_leases=max_concurrent_leases,
+                login_mode=login_mode,
+            )
+        )
+    return tuple(identities)
 
 
 def load_settings() -> Settings:
@@ -108,6 +175,7 @@ def load_settings() -> Settings:
             str(_cfg_value(config, "export", "novel_txt_dir", str(data_dir / "novel_exports"))),
         )
     ).expanduser()
+    account_pool = _cfg_account_pool(config, config_dir=config_path.parent, data_dir=data_dir)
     return Settings(
         project_root=root,
         config_path=config_path,
@@ -233,6 +301,12 @@ def load_settings() -> Settings:
                 str(_cfg_value(config, "maintenance", "cleanup_staging_older_than_hours", 48)),
             )
         ),
+        request_timeout_seconds=float(
+            os.environ.get(
+                "YAMIBO_REQUEST_TIMEOUT_SECONDS",
+                str(_cfg_value(config, "yamibo", "request_timeout_seconds", 30)),
+            )
+        ),
         request_interval_seconds=float(
             os.environ.get(
                 "YAMIBO_REQUEST_INTERVAL_SECONDS",
@@ -245,4 +319,5 @@ def load_settings() -> Settings:
                 str(_cfg_value(config, "yamibo", "request_interval_jitter_seconds", 0.5)),
             )
         ),
+        account_pool=account_pool,
     )

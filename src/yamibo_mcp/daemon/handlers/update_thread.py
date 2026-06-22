@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from contextlib import ExitStack
 from dataclasses import replace
 from typing import Any
 
@@ -20,6 +21,7 @@ from yamibo_mcp.domain.validation import validate_thread_snapshot
 from yamibo_mcp.storage.images import download_images_to_staging
 from yamibo_mcp.storage.paths import StoragePaths
 from yamibo_mcp.storage.thread_archive import materialize_thread
+from yamibo_mcp.yamibo.account_pool import borrow_yamibo_client, has_configured_account_pool
 from yamibo_mcp.yamibo.client import YamiboClient
 from yamibo_mcp.yamibo.parsers.thread_detail import extract_author_only_total_pages, parse_thread_snapshot
 
@@ -67,179 +69,188 @@ def handle_update_thread(repo: JobsRepository, job: Job, worker_id: str, lease_s
 
     forum_id = int(thread["forum_id"]) if "forum_id" in thread.keys() and thread["forum_id"] is not None else None
     resolved_base_url = str(base_url) if base_url else _base_url_for_thread(thread)
-    client = YamiboClient(
-        cookie_file=str(settings.cookie_file),
-        use_system_proxy=settings.use_system_proxy,
-        login_username=settings.login_username,
-        login_password=settings.login_password,
-        request_interval=settings.request_interval_seconds,
-        request_interval_jitter=settings.request_interval_jitter_seconds,
-    )
-
-    repo.update_stage(job.job_id, "fetch_tail", progress_current=1, progress_total=4)
-    _check_cancelled(repo, job.job_id)
-    tail_page = client.fetch_thread_page(
-        tid=tid,
-        page=local_total_pages,
-        author_uid=str(local_snapshot.publisher_uid),
-        base_url=resolved_base_url,
-    )
-    tail_snapshot = parse_thread_snapshot(tail_page.html, url=tail_page.final_url, tid=tid)
-    remote_tail = tail_snapshot.floors[-1] if tail_snapshot.floors else None
-    if remote_tail is None:
-        raise ValueError("remote author-only tail page has no floors")
-
-    local_tail_pid = archive_signature.get("last_pid")
-    local_tail_hash = archive_signature.get("last_floor_hash")
-    remote_tail_hash = floor_content_hash(remote_tail.content)
-    if remote_tail.pid != local_tail_pid or remote_tail_hash != local_tail_hash:
-        raise ValueError("local tail page no longer matches remote content; full resync required")
-
-    remote_total_pages = check_result.get("remote_snapshot", {}).get("total_pages")
-    if remote_total_pages is None:
-        remote_total_pages = extract_author_only_total_pages(
-            tail_page.html,
-            tid=tid,
-            author_uid=str(local_snapshot.publisher_uid),
-        )
-    if remote_total_pages is None:
-        raise ValueError("unable to determine remote author-only pagination")
-    remote_total_pages = int(remote_total_pages)
-    if remote_total_pages < local_total_pages:
-        raise ValueError("remote author-only page count regressed; full resync required")
-
-    if remote_total_pages == local_total_pages:
-        repo.update_stage(job.job_id, "finalize", progress_current=4, progress_total=4)
-        repo.succeed(
-            job.job_id,
-            {
-                "tid": tid,
-                "updated": False,
-                "status": "up_to_date",
-                "local_total_pages": local_total_pages,
-                "remote_total_pages": remote_total_pages,
-                "reason": "remote author-only snapshot already matches local archive",
-            },
-        )
-        return
-
-    remaining_pages = remote_total_pages - local_total_pages
-    max_pages = max(int(settings.novel_author_only_max_pages), 1)
-    if remaining_pages > max_pages:
-        raise ValueError(
-            f"remote author-only update has {remaining_pages} new pages, exceeds max_pages={max_pages}; full resync required"
-        )
-
-    repo.update_stage(job.job_id, "fetch_append", progress_current=2, progress_total=4)
-    _check_cancelled(repo, job.job_id)
-    page_results = [tail_page]
-    for page in range(local_total_pages + 1, remote_total_pages + 1):
-        if settings.novel_author_only_page_delay_seconds > 0:
-            time.sleep(settings.novel_author_only_page_delay_seconds)
-        page_results.append(
-            client.fetch_thread_page(
-                tid=tid,
-                page=page,
-                author_uid=str(local_snapshot.publisher_uid),
-                base_url=resolved_base_url,
+    with ExitStack() as stack:
+        cookie_path = settings.cookie_file
+        if not cookie_path.exists():
+            fallback = settings.data_dir / "cookies.txt"
+            cookie_path = fallback if fallback.exists() else cookie_path
+        if has_configured_account_pool(settings):
+            _, client = stack.enter_context(borrow_yamibo_client(settings))
+        else:
+            client = YamiboClient(
+                timeout=getattr(settings, "request_timeout_seconds", 15.0),
+                cookie_file=str(cookie_path),
+                use_system_proxy=settings.use_system_proxy,
+                login_username=settings.login_username,
+                login_password=settings.login_password,
+                request_interval=settings.request_interval_seconds,
+                request_interval_jitter=settings.request_interval_jitter_seconds,
             )
+
+        repo.update_stage(job.job_id, "fetch_tail", progress_current=1, progress_total=4)
+        _check_cancelled(repo, job.job_id)
+        tail_page = client.fetch_thread_page(
+            tid=tid,
+            page=local_total_pages,
+            author_uid=str(local_snapshot.publisher_uid),
+            base_url=resolved_base_url,
         )
+        tail_snapshot = parse_thread_snapshot(tail_page.html, url=tail_page.final_url, tid=tid)
+        remote_tail = tail_snapshot.floors[-1] if tail_snapshot.floors else None
+        if remote_tail is None:
+            raise ValueError("remote author-only tail page has no floors")
 
-    page_snapshots = [
-        parse_thread_snapshot(result.html, url=result.final_url, tid=tid)
-        for result in page_results
-    ]
-    merged_snapshot = _merge_thread_snapshots([local_snapshot, *page_snapshots[1:]])
-    validation = validate_thread_snapshot(merged_snapshot)
-    if not validation.valid:
-        raise ValueError("; ".join(validation.errors))
+        local_tail_pid = archive_signature.get("last_pid")
+        local_tail_hash = archive_signature.get("last_floor_hash")
+        remote_tail_hash = floor_content_hash(remote_tail.content)
+        if remote_tail.pid != local_tail_pid or remote_tail_hash != local_tail_hash:
+            raise ValueError("local tail page no longer matches remote content; full resync required")
 
-    existing_assets = AssetsRepository(repo.conn).list_assets(tid)
-    existing_asset_map = {
-        row["remote_url"]: {
-            "local_path": row["local_path"] if "local_path" in row.keys() else None,
-            "status": row["status"] if "status" in row.keys() else "pending",
+        remote_total_pages = check_result.get("remote_snapshot", {}).get("total_pages")
+        if remote_total_pages is None:
+            remote_total_pages = extract_author_only_total_pages(
+                tail_page.html,
+                tid=tid,
+                author_uid=str(local_snapshot.publisher_uid),
+            )
+        if remote_total_pages is None:
+            raise ValueError("unable to determine remote author-only pagination")
+        remote_total_pages = int(remote_total_pages)
+        if remote_total_pages < local_total_pages:
+            raise ValueError("remote author-only page count regressed; full resync required")
+
+        if remote_total_pages == local_total_pages:
+            repo.update_stage(job.job_id, "finalize", progress_current=4, progress_total=4)
+            repo.succeed(
+                job.job_id,
+                {
+                    "tid": tid,
+                    "updated": False,
+                    "status": "up_to_date",
+                    "local_total_pages": local_total_pages,
+                    "remote_total_pages": remote_total_pages,
+                    "reason": "remote author-only snapshot already matches local archive",
+                },
+            )
+            return
+
+        remaining_pages = remote_total_pages - local_total_pages
+        max_pages = max(int(settings.novel_author_only_max_pages), 1)
+        if remaining_pages > max_pages:
+            raise ValueError(
+                f"remote author-only update has {remaining_pages} new pages, exceeds max_pages={max_pages}; full resync required"
+            )
+
+        repo.update_stage(job.job_id, "fetch_append", progress_current=2, progress_total=4)
+        _check_cancelled(repo, job.job_id)
+        page_results = [tail_page]
+        for page in range(local_total_pages + 1, remote_total_pages + 1):
+            if settings.novel_author_only_page_delay_seconds > 0:
+                time.sleep(settings.novel_author_only_page_delay_seconds)
+            page_results.append(
+                client.fetch_thread_page(
+                    tid=tid,
+                    page=page,
+                    author_uid=str(local_snapshot.publisher_uid),
+                    base_url=resolved_base_url,
+                )
+            )
+
+        page_snapshots = [
+            parse_thread_snapshot(result.html, url=result.final_url, tid=tid)
+            for result in page_results
+        ]
+        merged_snapshot = _merge_thread_snapshots([local_snapshot, *page_snapshots[1:]])
+        validation = validate_thread_snapshot(merged_snapshot)
+        if not validation.valid:
+            raise ValueError("; ".join(validation.errors))
+
+        existing_assets = AssetsRepository(repo.conn).list_assets(tid)
+        existing_asset_map = {
+            row["remote_url"]: {
+                "local_path": row["local_path"] if "local_path" in row.keys() else None,
+                "status": row["status"] if "status" in row.keys() else "pending",
+            }
+            for row in existing_assets
         }
-        for row in existing_assets
-    }
-    existing_meta = _load_local_metadata(paths, tid)
-    existing_archive_maps = _extract_archive_maps(existing_meta)
+        existing_meta = _load_local_metadata(paths, tid)
+        existing_archive_maps = _extract_archive_maps(existing_meta)
 
-    new_snapshot = replace(merged_snapshot, floors=merged_snapshot.floors[len(local_snapshot.floors):])
-    repo.update_stage(job.job_id, "download_images", progress_current=3, progress_total=4)
-    _check_cancelled(repo, job.job_id)
-    image_result = download_images_to_staging(
-        paths,
-        job.job_id,
-        new_snapshot,
-        timeout=settings.image_download_timeout_seconds,
-        retries=settings.image_download_retries,
-        headers=None if client is None else client.headers,
-        cookie_jar=None if client is None else client.cookie_jar,
-        use_system_proxy=False if client is None else client.use_system_proxy,
-        referer=tail_page.final_url,
-    )
-
-    new_local_path_by_remote_url = _build_remote_local_path_map(new_snapshot, image_result)
-    content = build_content_snapshot(merged_snapshot, forum_id=forum_id)
-    synced_assets = [
-        replace(
-            asset,
-            local_path=_resolve_asset_local_path(asset.remote_url, existing_asset_map, new_local_path_by_remote_url),
-            status=_resolve_asset_status(asset.remote_url, asset.asset_type, existing_asset_map, new_local_path_by_remote_url, image_result),
+        new_snapshot = replace(merged_snapshot, floors=merged_snapshot.floors[len(local_snapshot.floors):])
+        repo.update_stage(job.job_id, "download_images", progress_current=3, progress_total=4)
+        _check_cancelled(repo, job.job_id)
+        image_result = download_images_to_staging(
+            paths,
+            job.job_id,
+            new_snapshot,
+            timeout=settings.image_download_timeout_seconds,
+            retries=settings.image_download_retries,
+            headers=client.headers,
+            cookie_jar=client.cookie_jar,
+            use_system_proxy=client.use_system_proxy,
+            referer=tail_page.final_url,
         )
-        for asset in content.assets
-    ]
-    all_blocks = [block for post in content.posts for block in post.blocks]
 
-    merged_archive_maps = _merge_archive_maps(
-        existing_archive_maps,
-        image_result.downloaded_relpaths,
-        image_result.non_export_relpaths,
-        image_result.shared_relpaths,
-        image_result.skipped_relpaths,
-        image_result.missing_urls,
-        image_result.missing_shared_urls,
-    )
-    archive_status = "partial" if (
-        existing_meta.get("archive_status") == "partial"
-        or image_result.missing_urls
-        or image_result.missing_shared_urls
-        or existing_meta.get("missing_image_urls")
-        or existing_meta.get("missing_shared_image_urls")
-    ) else "complete"
+        new_local_path_by_remote_url = _build_remote_local_path_map(new_snapshot, image_result)
+        content = build_content_snapshot(merged_snapshot, forum_id=forum_id)
+        synced_assets = [
+            replace(
+                asset,
+                local_path=_resolve_asset_local_path(asset.remote_url, existing_asset_map, new_local_path_by_remote_url),
+                status=_resolve_asset_status(asset.remote_url, asset.asset_type, existing_asset_map, new_local_path_by_remote_url, image_result),
+            )
+            for asset in content.assets
+        ]
+        all_blocks = [block for post in content.posts for block in post.blocks]
 
-    repo.update_stage(job.job_id, "db_commit", progress_current=4, progress_total=4)
-    with transaction(repo.conn):
-        ThreadsRepository(repo.conn).upsert_snapshot(
+        merged_archive_maps = _merge_archive_maps(
+            existing_archive_maps,
+            image_result.downloaded_relpaths,
+            image_result.non_export_relpaths,
+            image_result.shared_relpaths,
+            image_result.skipped_relpaths,
+            image_result.missing_urls,
+            image_result.missing_shared_urls,
+        )
+        archive_status = "partial" if (
+            existing_meta.get("archive_status") == "partial"
+            or image_result.missing_urls
+            or image_result.missing_shared_urls
+            or existing_meta.get("missing_image_urls")
+            or existing_meta.get("missing_shared_image_urls")
+        ) else "complete"
+
+        repo.update_stage(job.job_id, "db_commit", progress_current=4, progress_total=4)
+        with transaction(repo.conn):
+            ThreadsRepository(repo.conn).upsert_snapshot(
+                merged_snapshot,
+                forum_id=forum_id,
+                category=thread["category"] if "category" in thread.keys() else None,
+                context_path=str(paths.thread_context(tid).relative_to(settings.data_dir)),
+                archive_status=archive_status,
+                missing_image_urls=_unique_list(
+                    [*(existing_meta.get("missing_image_urls") or []), *image_result.missing_urls]
+                ),
+            )
+            ContentBlocksRepository(repo.conn).upsert_blocks(merged_snapshot.tid, all_blocks)
+            AssetsRepository(repo.conn).upsert_assets(merged_snapshot.tid, synced_assets)
+
+        repo.update_stage(job.job_id, "materialize", progress_current=4, progress_total=4)
+        context_path, metadata_path = materialize_thread(
+            paths,
             merged_snapshot,
-            forum_id=forum_id,
-            category=thread["category"] if "category" in thread.keys() else None,
-            context_path=str(paths.thread_context(tid).relative_to(settings.data_dir)),
-            archive_status=archive_status,
+            job_id=job.job_id,
+            archived_images=merged_archive_maps["archived_images"],
+            non_export_images=merged_archive_maps["non_export_images"],
+            shared_images=merged_archive_maps["shared_images"],
+            skipped_image_urls=merged_archive_maps["skipped_image_urls"],
             missing_image_urls=_unique_list(
-                [*(existing_meta.get("missing_image_urls") or []), *image_result.missing_urls]
+                [*(existing_archive_maps["missing_image_urls"] or []), *image_result.missing_urls]
+            ),
+            missing_shared_image_urls=_unique_list(
+                [*(existing_archive_maps["missing_shared_image_urls"] or []), *image_result.missing_shared_urls]
             ),
         )
-        ContentBlocksRepository(repo.conn).upsert_blocks(merged_snapshot.tid, all_blocks)
-        AssetsRepository(repo.conn).upsert_assets(merged_snapshot.tid, synced_assets)
-
-    repo.update_stage(job.job_id, "materialize", progress_current=4, progress_total=4)
-    context_path, metadata_path = materialize_thread(
-        paths,
-        merged_snapshot,
-        job_id=job.job_id,
-        archived_images=merged_archive_maps["archived_images"],
-        non_export_images=merged_archive_maps["non_export_images"],
-        shared_images=merged_archive_maps["shared_images"],
-        skipped_image_urls=merged_archive_maps["skipped_image_urls"],
-        missing_image_urls=_unique_list(
-            [*(existing_archive_maps["missing_image_urls"] or []), *image_result.missing_urls]
-        ),
-        missing_shared_image_urls=_unique_list(
-            [*(existing_archive_maps["missing_shared_image_urls"] or []), *image_result.missing_shared_urls]
-        ),
-    )
 
     artifacts = {
         "tid": tid,

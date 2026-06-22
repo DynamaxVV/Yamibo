@@ -30,6 +30,7 @@ def browse_forum_page(
 
     settings = load_settings()
     client = YamiboClient(
+        timeout=getattr(settings, "request_timeout_seconds", 15.0),
         cookie_file=cookie_file or str(settings.cookie_file),
         use_system_proxy=settings.use_system_proxy,
         login_username=settings.login_username,
@@ -196,6 +197,7 @@ def _remote_search_items(
 ) -> tuple[list[SearchResultItem | ForumThreadItem], list[str], int]:
     settings = load_settings()
     client = YamiboClient(
+        timeout=getattr(settings, "request_timeout_seconds", 15.0),
         cookie_file=cookie_file or str(settings.cookie_file),
         use_system_proxy=settings.use_system_proxy,
         login_username=settings.login_username,
@@ -203,7 +205,6 @@ def _remote_search_items(
         request_interval=settings.request_interval_seconds,
         request_interval_jitter=settings.request_interval_jitter_seconds,
     )
-
     if posted_on:
         return _dateline_search(client, query=query, limit=limit, posted_on=posted_on, base_url=base_url, forum_id=forum_id)
 

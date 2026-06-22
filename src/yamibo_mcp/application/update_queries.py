@@ -70,7 +70,11 @@ def check_thread_updates(*, tid: int, base_url: str | None = None) -> dict[str, 
                 "thread": thread_summary_payload(thread, include_export=True),
             }
 
+        resolved_base_url = base_url or (forum.base_url if forum is not None else None) or "https://bbs.yamibo.com"
+        author_only_url = thread_author_url_from_tid(tid, author_uid=str(author_uid), base_url=resolved_base_url)
+
         client = YamiboClient(
+            timeout=getattr(settings, "request_timeout_seconds", 15.0),
             cookie_file=str(settings.cookie_file),
             use_system_proxy=settings.use_system_proxy,
             login_username=settings.login_username,
@@ -78,9 +82,6 @@ def check_thread_updates(*, tid: int, base_url: str | None = None) -> dict[str, 
             request_interval=settings.request_interval_seconds,
             request_interval_jitter=settings.request_interval_jitter_seconds,
         )
-        resolved_base_url = base_url or (forum.base_url if forum is not None else None) or "https://bbs.yamibo.com"
-        author_only_url = thread_author_url_from_tid(tid, author_uid=str(author_uid), base_url=resolved_base_url)
-
         first_page = client.fetch_thread_page(tid=tid, page=1, author_uid=str(author_uid), base_url=resolved_base_url)
         first_snapshot = parse_thread_snapshot(first_page.html, url=first_page.final_url, tid=tid)
         total_pages = extract_author_only_total_pages(first_page.html, tid=tid, author_uid=str(author_uid))
@@ -102,10 +103,10 @@ def check_thread_updates(*, tid: int, base_url: str | None = None) -> dict[str, 
                 }
 
         last_page = first_page if total_pages == 1 else client.fetch_thread_page(
-            tid=tid,
-            page=total_pages,
-            author_uid=str(author_uid),
-            base_url=resolved_base_url,
+                tid=tid,
+                page=total_pages,
+                author_uid=str(author_uid),
+                base_url=resolved_base_url,
         )
         last_snapshot = parse_thread_snapshot(last_page.html, url=last_page.final_url, tid=tid)
         remote_last_floor = last_snapshot.floors[-1] if last_snapshot.floors else None

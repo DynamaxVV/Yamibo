@@ -11,6 +11,7 @@ from yamibo_mcp.server.agent_tools import (
     inspect_remote_thread,
     read_archived_thread,
     read_job,
+    wait_for_job,
     search_forum_threads,
 )
 from yamibo_mcp.server.legacy_protocol import TOOLS, handle_request, list_tools_payload
@@ -29,6 +30,7 @@ RECOMMENDED_AGENT_TOOLS = {
     "create_thread_export_job",
     "read_job",
     "read_job_events",
+    "wait_for_job",
     "read_forum_profiles",
 }
 

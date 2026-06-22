@@ -12,7 +12,13 @@ from yamibo_mcp.server.agent_tools import (
     read_forum_profiles,
     read_job,
     read_job_events,
+    wait_for_job,
     search_forum_threads,
+)
+from yamibo_mcp.server.job_notifications import (
+    JobResourceNotifier,
+    enable_resource_subscription_capability,
+    register_job_resource_subscriptions,
 )
 from yamibo_mcp.server.resource_uris import (
     agent_workflows_guide_uri,
@@ -22,6 +28,7 @@ from yamibo_mcp.server.resource_uris import (
     forum_summary_uri,
     forums_index_uri,
     job_events_uri,
+    job_status_uri,
     series_chapters_uri,
     series_index_uri,
     thread_assets_uri,
@@ -49,6 +56,7 @@ def _fastmcp_imports():
 
 def build_mcp_server():
     FastMCP = _fastmcp_imports()
+    notifier = JobResourceNotifier()
     server = FastMCP(
         name="yamibo-mcp",
         instructions=(
@@ -56,8 +64,11 @@ def build_mcp_server():
             "大文本和二进制内容请通过 resources 读取。"
         ),
     )
+    server._yamibo_job_notifier = notifier  # type: ignore[attr-defined]
     register_agent_tools(server)
     register_resources(server)
+    register_job_resource_subscriptions(server, notifier)
+    enable_resource_subscription_capability(server)
     return server
 
 
@@ -167,6 +178,20 @@ def register_agent_tools(server) -> None:
     def _read_job_events(job_id: str) -> dict[str, object]:
         return read_job_events(job_id=job_id)
 
+    @server.tool(name="wait_for_job", description="Wait for a background job to reach a terminal state without client-side sleep.")
+    def _wait_for_job(
+        job_id: str,
+        timeout_seconds: float = 120,
+        poll_interval_seconds: float = 2,
+        include_events: bool = False,
+    ) -> dict[str, object]:
+        return wait_for_job(
+            job_id=job_id,
+            timeout_seconds=timeout_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+            include_events=include_events,
+        )
+
     @server.tool(name="read_forum_profiles", description="Read configured forum profiles and content-type guidance from local metadata.")
     def _read_forum_profiles() -> dict[str, object]:
         return read_forum_profiles()
@@ -255,12 +280,17 @@ def register_resources(server) -> None:
         content, _ = read_resource_content(thread_assets_uri(int(tid)))
         return str(content)
 
-    @server.resource(thread_update_check_uri("{tid}"), mime_type="application/json", name="thread-update-check")
-    def _thread_update_check(tid: str) -> str:
-        content, _ = read_resource_content(thread_update_check_uri(int(tid)))
+    @server.resource(job_status_uri("{job_id}"), mime_type="application/json", name="job-status")
+    def _job_status(job_id: str) -> str:
+        content, _ = read_resource_content(job_status_uri(job_id))
         return str(content)
 
     @server.resource(job_events_uri("{job_id}"), mime_type="application/json", name="job-events")
     def _job_events(job_id: str) -> str:
         content, _ = read_resource_content(job_events_uri(job_id))
+        return str(content)
+
+    @server.resource(thread_update_check_uri("{tid}"), mime_type="application/json", name="thread-update-check")
+    def _thread_update_check(tid: str) -> str:
+        content, _ = read_resource_content(thread_update_check_uri(int(tid)))
         return str(content)

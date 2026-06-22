@@ -1,6 +1,6 @@
 # API 接口文档
 
-> 版本：0.8.0 | 更新日期：2026-06-22
+> 版本：0.8.1 | 更新日期：2026-06-23
 
 ## 1. MCP 工具 (Tools)
 
@@ -275,7 +275,20 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
 
 ---
 
-### 1.12 cleanup_job
+### 1.12 wait_for_job
+
+阻塞等待后台任务到达终态，适合脚本、benchmark 或一次性等待结果的 Agent 流程。
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| job_id | string | 是 | - | 任务 ID |
+| timeout_seconds | float | 否 | 120 | 最长等待时间 |
+| poll_interval_seconds | float | 否 | 2 | 轮询间隔 |
+| include_events | bool | 否 | false | 是否把事件流一并带回 |
+
+---
+
+### 1.13 cleanup_job
 
 创建后台清理任务。
 
@@ -289,7 +302,7 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
 
 ---
 
-### 1.13 已废弃 / 兼容接口
+### 1.14 已废弃 / 兼容接口
 
 以下旧名称仍通过 CLI 或 legacy JSON-RPC 兼容层保留，但不再是 Agent-facing MCP 主接口，也不建议新接入方继续依赖：
 
@@ -339,6 +352,7 @@ MCP Server 暴露以下只读资源，通过 `yamibo://` URI scheme 访问。
 
 | URI | Content-Type | 说明 |
 |-----|-------------|------|
+| `yamibo://jobs/{job_id}/status` | application/json | 任务主状态快照 |
 | `yamibo://jobs/{job_id}/events` | application/json | 任务事件时间线（append-only） |
 
 ### 2.5 Guide / Schema 资源
@@ -368,6 +382,7 @@ search_forum_threads → items[].resources.summary
 ```text
 create_thread_archive_job
   → read_job
+  → wait_for_job                 (脚本/回归/一次性等待结果时可用)
   → read_job_events                  (仅在失败、部分成功、长时间运行时)
   → yamibo://threads/{tid}/summary
   → yamibo://threads/{tid}/diagnostics

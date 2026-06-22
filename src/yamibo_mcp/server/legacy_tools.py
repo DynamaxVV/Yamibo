@@ -114,6 +114,7 @@ def sync_forum_range(
 
     settings = load_settings()
     client = YamiboClient(
+        timeout=getattr(settings, "request_timeout_seconds", 15.0),
         cookie_file=cookie_file or str(settings.cookie_file),
         use_system_proxy=settings.use_system_proxy,
         login_username=settings.login_username,

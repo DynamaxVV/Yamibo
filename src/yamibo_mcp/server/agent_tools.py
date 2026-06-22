@@ -12,6 +12,7 @@ from yamibo_mcp.application.archive_queries import (
 from yamibo_mcp.application.forum_queries import read_forum_profiles as _read_forum_profiles
 from yamibo_mcp.application.job_queries import read_job as _read_job
 from yamibo_mcp.application.job_queries import read_job_events as _read_job_events
+from yamibo_mcp.application.job_queries import wait_for_job as _wait_for_job
 from yamibo_mcp.application.remote_queries import inspect_remote_thread as _inspect_remote_thread
 from yamibo_mcp.application.search_use_cases import browse_forum_page as _browse_forum_page
 from yamibo_mcp.application.search_use_cases import search_forum_threads as _search_forum_threads
@@ -155,6 +156,22 @@ def read_job(*, job_id: str) -> AgentResult:
 @agent_tool
 def read_job_events(*, job_id: str) -> AgentResult:
     return _read_job_events(job_id=job_id)
+
+
+@agent_tool
+def wait_for_job(
+    *,
+    job_id: str,
+    timeout_seconds: float = 120,
+    poll_interval_seconds: float = 2,
+    include_events: bool = False,
+) -> AgentResult:
+    return _wait_for_job(
+        job_id=job_id,
+        timeout_seconds=timeout_seconds,
+        poll_interval_seconds=poll_interval_seconds,
+        include_events=include_events,
+    )
 
 
 @agent_tool

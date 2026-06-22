@@ -55,6 +55,10 @@ def job_events_uri(job_id: str) -> str:
     return f"yamibo://jobs/{job_id}/events"
 
 
+def job_status_uri(job_id: str) -> str:
+    return f"yamibo://jobs/{job_id}/status"
+
+
 def agent_workflows_guide_uri() -> str:
     return "yamibo://guide/agent-workflows"
 
@@ -94,6 +98,8 @@ def parse_resource_uri(uri: str) -> tuple[str, int | None, str]:
         return parts[0], int(parts[1]), parts[2]
     if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "events":
         return parts[0], None, f"{parts[1]}/events"
+    if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "status":
+        return parts[0], None, f"{parts[1]}/status"
     if len(parts) == 2 and parts[0] == "guide":
         return parts[0], None, parts[1]
     if len(parts) == 2 and parts[0] == "schema" and parts[1] == "tools":
@@ -117,6 +123,8 @@ def guess_content_type(kind: str) -> str:
     if kind == "update-check":
         return "application/json"
     if kind.startswith("/") and kind.endswith("/events"):
+        return "application/json"
+    if kind.startswith("/") and kind.endswith("/status"):
         return "application/json"
     if kind in ("agent-workflows", "error-codes", "archive-model", "agent-evaluation"):
         return "text/markdown"

@@ -6,6 +6,7 @@ from typing import Any
 
 from yamibo_mcp.time_utils import utc_now_iso
 from yamibo_mcp.server.resource_uris import (
+    job_status_uri,
     series_chapters_uri,
     series_index_uri,
     thread_context_uri,
@@ -159,6 +160,9 @@ def job_status_payload(job) -> dict[str, Any]:
         "diagnostic_summary": diagnostics["diagnostic_summary"],
         "needs_attention": diagnostics["needs_attention"],
         "recommended_poll_after_seconds": diagnostics["recommended_poll_after_seconds"],
+        "resources": {
+            "status": job_status_uri(job.job_id),
+        },
     }
 
 

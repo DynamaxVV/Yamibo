@@ -7,6 +7,7 @@ from pathlib import Path
 from yamibo_mcp.config import load_settings
 from yamibo_mcp.db.connection import connect
 from yamibo_mcp.db.migrations import migrate
+from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.db.repositories.series import SeriesRepository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
 from yamibo_mcp.server.resource_uris import (
@@ -23,6 +24,7 @@ from yamibo_mcp.server.resource_uris import (
     forum_summary_uri,
     forums_index_uri,
     thread_export_uri,
+    job_status_uri,
     thread_assets_uri,
     thread_context_uri,
     thread_diagnostics_uri,
@@ -33,6 +35,7 @@ from yamibo_mcp.server.resource_uris import (
     tools_schema_uri,
 )
 from yamibo_mcp.storage.paths import StoragePaths
+from yamibo_mcp.server.schemas import job_status_payload
 
 
 def read_resource(uri: str) -> dict[str, object]:
@@ -97,6 +100,9 @@ def read_resource(uri: str) -> dict[str, object]:
     if kind_root == "jobs" and kind.endswith("/events"):
         job_id = kind.split("/")[0]
         return _build_job_events_resource(uri, job_id, settings)
+    if kind_root == "jobs" and kind.endswith("/status"):
+        job_id = kind.split("/")[0]
+        return _build_job_status_resource(uri, job_id, settings)
     raise ValueError(f"unsupported resource root: {kind_root}")
 
 
@@ -133,6 +139,21 @@ def _build_tools_schema_resource(uri: str) -> dict[str, object]:
     return {"uri": uri, "content_type": "application/json", "exists": True, "text": text}
 
 
+def _build_job_status_resource(uri: str, job_id: str, settings) -> dict[str, object]:
+    conn = connect(settings.db_path)
+    try:
+        migrate(conn)
+        job = JobsRepository(conn).get(job_id)
+    finally:
+        conn.close()
+    return {
+        "uri": uri,
+        "content_type": "application/json",
+        "exists": True,
+        "text": json.dumps(job_status_payload(job), ensure_ascii=False, indent=2),
+    }
+
+
 def _agent_workflows_guide() -> str:
     return f"""# Yamibo Agent Workflows
 
@@ -147,7 +168,8 @@ Start here when you do not know which tool to call.
 ## Local archive workflow
 - Use `ensure_thread_archived` when you need a local copy and can tolerate queued work.
 - Use `create_thread_archive_job` for explicit job creation.
-- Poll `read_job`, then `read_job_events`.
+- Use `wait_for_job` instead of client-side `sleep` when you need to block on job completion.
+- Poll `read_job`, then `read_job_events`, only when you need finer-grained status.
 - Read local content with `read_archived_thread`.
 - For large content, call `read_archived_thread` with `view="content"` and follow `next_cursor`.
 
@@ -197,7 +219,9 @@ The MCP interface separates remote reads, local archives, and background jobs.
 
 ## Job model
 - Job status is read through `read_job`.
+- Blocking waits should prefer `wait_for_job`.
 - Job event history is read through `read_job_events` or `{job_events_uri('{job_id}')}`.
+- Status resources are exposed through `{job_status_uri('{job_id}')}`.
 """
 
 

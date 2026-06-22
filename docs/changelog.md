@@ -1,5 +1,13 @@
 # 百合会归档助手 — 版本更新日志
 
+## v0.8.1 (2026-06-23)
+
+### 调整
+- 旧的 `yamibo-forum` skill 收口为弃用别名，统一引导到 `yamibo-mcp`
+- Hermes MCP 导入切换到 `streamable-http` 的 `/mcp` 入口
+- `wait_for_job` 与 `yamibo://jobs/{job_id}/status` 同步进 Skill / Agent 文档
+- 版本号统一推进至 `0.8.1`
+
 ## v0.8.0 (2026-06-22)
 
 ### 新增

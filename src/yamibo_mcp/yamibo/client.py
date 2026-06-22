@@ -91,9 +91,21 @@ class YamiboClient:
             except LoginRequiredError as exc:
                 last_error = exc
                 if allow_login_retry and self._can_login():
-                    self._login(base_url=self._base_url_for(url), referer=url)
-                    return self._fetch_with_validation(url, validator, allow_login_retry=False)
+                    try:
+                        self._login(base_url=self._base_url_for(url), referer=url)
+                        return self._fetch_with_validation(url, validator, allow_login_retry=False)
+                    except TimeoutError as login_exc:
+                        last_error = login_exc
+                        if attempt >= self.retries:
+                            break
+                        time.sleep(min(0.25 * (attempt + 1), 1.0))
+                        continue
                 break
+            except TimeoutError as exc:
+                last_error = exc
+                if attempt >= self.retries:
+                    break
+                time.sleep(min(0.25 * (attempt + 1), 1.0))
             except urllib.error.HTTPError as exc:
                 last_error = exc
                 if attempt >= self.retries or exc.code < 500:
@@ -106,7 +118,9 @@ class YamiboClient:
                 time.sleep(min(0.25 * (attempt + 1), 1.0))
         if isinstance(last_error, LoginRequiredError):
             raise last_error
-        raise RemoteFetchError(f"failed to fetch {url}: {last_error}")
+        raise RemoteFetchError(
+            f"failed to fetch {url} after {self.retries + 1} attempt(s) with timeout={self.timeout}s: {last_error}"
+        )
 
     def _throttle(self) -> None:
         if self._request_interval <= 0:
@@ -328,7 +342,10 @@ class YamiboClient:
     def _open_html(self, url: str) -> FetchResult:
         request = urllib.request.Request(url, headers=self.headers)
         with self.opener.open(request, timeout=self.timeout) as response:
-            html = response.read().decode("utf-8", errors="ignore")
+            try:
+                html = response.read().decode("utf-8", errors="ignore")
+            except TimeoutError as exc:
+                raise RemoteFetchError(f"failed to read {url}: {exc}") from exc
             return FetchResult(
                 url=url,
                 final_url=response.geturl(),
@@ -375,7 +392,10 @@ class YamiboClient:
             method="POST",
         )
         with self.opener.open(request, timeout=self.timeout) as response:
-            response.read()
+            try:
+                response.read()
+            except TimeoutError as exc:
+                raise RemoteFetchError(f"failed to read login response from {action_url}: {exc}") from exc
         self._save_cookies()
         if not list(self.cookie_jar):
             raise LoginRequiredError(f"login failed for {base_url}")

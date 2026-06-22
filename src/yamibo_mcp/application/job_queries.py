@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
-from yamibo_mcp.application.contracts import AgentError, AgentResult
+from yamibo_mcp.application.contracts import AgentAction, AgentError, AgentResult
 from yamibo_mcp.config import load_settings
 from yamibo_mcp.db.connection import connect
 from yamibo_mcp.db.migrations import migrate
 from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.errors import JobNotFound
+from yamibo_mcp.server.resource_uris import job_events_uri, job_status_uri
 from yamibo_mcp.server.schemas import job_status_payload
 
 
@@ -35,7 +37,11 @@ def read_job(*, job_id: str) -> AgentResult:
                 agent_hint="Check the job id or create a new job and poll that id instead.",
             ),
         )
-    return AgentResult(ok=True, data=payload)
+    return AgentResult(
+        ok=True,
+        data=payload,
+        resources={"status": job_status_uri(job_id), "job_events": job_events_uri(job_id)},
+    )
 
 
 def read_job_events(*, job_id: str) -> AgentResult:
@@ -82,4 +88,68 @@ def read_job_events(*, job_id: str) -> AgentResult:
                 for row in rows
             ],
         },
+        resources={"status": job_status_uri(job_id), "job_events": job_events_uri(job_id)},
     )
+
+
+def wait_for_job(
+    *,
+    job_id: str,
+    timeout_seconds: float = 120,
+    poll_interval_seconds: float = 2,
+    include_events: bool = False,
+) -> AgentResult:
+    if timeout_seconds <= 0:
+        raise ValueError("timeout_seconds must be positive")
+    if poll_interval_seconds <= 0:
+        raise ValueError("poll_interval_seconds must be positive")
+
+    deadline = time.monotonic() + timeout_seconds
+    last_payload: dict[str, Any] | None = None
+
+    while True:
+        payload = get_job_status_payload(job_id)
+        last_payload = payload
+        if payload["is_terminal"]:
+            data: dict[str, Any] = {
+                **payload,
+                "timed_out": False,
+                "wait_timeout_seconds": timeout_seconds,
+                "poll_interval_seconds": poll_interval_seconds,
+            }
+            if include_events:
+                events_result = read_job_events(job_id=job_id)
+                data["events"] = [] if events_result.data is None else events_result.data["events"]
+            return AgentResult(
+                ok=True,
+                data=data,
+                resources={"status": job_status_uri(job_id), "job_events": job_events_uri(job_id)},
+            )
+
+        now = time.monotonic()
+        if now >= deadline:
+            data = {
+                **payload,
+                "timed_out": True,
+                "wait_timeout_seconds": timeout_seconds,
+                "poll_interval_seconds": poll_interval_seconds,
+            }
+            if include_events:
+                events_result = read_job_events(job_id=job_id)
+                data["events"] = [] if events_result.data is None else events_result.data["events"]
+            return AgentResult(
+                ok=True,
+                data=data,
+                resources={"status": job_status_uri(job_id), "job_events": job_events_uri(job_id)},
+                next_actions=[
+                    AgentAction(
+                        tool="read_job",
+                        args={"job_id": job_id},
+                        reason="Inspect the latest job status after wait_for_job timed out.",
+                    )
+                ],
+                warnings=[
+                    "wait_for_job reached the timeout before the job became terminal."
+                ],
+            )
+        time.sleep(min(poll_interval_seconds, max(deadline - now, 0.0)))

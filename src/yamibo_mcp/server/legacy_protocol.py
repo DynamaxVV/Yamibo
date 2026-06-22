@@ -20,6 +20,7 @@ from yamibo_mcp.server.agent_tools import (
     read_forum_profiles,
     read_job,
     read_job_events,
+    wait_for_job,
     search_forum_threads,
 )
 from yamibo_mcp.server.legacy_tools import (
@@ -47,6 +48,7 @@ TOOLS: dict[str, tuple[ToolHandler, str]] = {
     "create_thread_export_job": (create_thread_export_job, "Create a background export job for a local archive."),
     "read_job": (read_job, "Read compact job status from the local queue."),
     "read_job_events": (read_job_events, "Read persisted job event history from the local queue."),
+    "wait_for_job": (wait_for_job, "Wait for a background job to reach a terminal state without using client-side sleep."),
     "read_forum_profiles": (read_forum_profiles, "Read configured forum profiles from local metadata."),
 }
 

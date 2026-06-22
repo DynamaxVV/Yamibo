@@ -14,7 +14,7 @@ _JOB_STATUS_KEYS = {
     "updated_at", "finished_at", "is_terminal", "result_ready",
     "running_duration_seconds", "seconds_since_update", "execution_state",
     "diagnostic_summary", "needs_attention",
-    "recommended_poll_after_seconds",
+    "recommended_poll_after_seconds", "resources",
 }
 
 
