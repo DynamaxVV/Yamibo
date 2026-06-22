@@ -1,16 +1,36 @@
 # 百合会归档助手 — 版本发布说明
 
-> 版本：0.6.0 | 发布日期：2026-06-21
+> 版本：0.7.0 | 发布日期：2026-06-22
 
 ## 版本信息
 
 | 项目 | 值 |
 |------|-----|
-| 版本号 | 0.6.0 |
+| 版本号 | 0.7.0 |
 | Python 要求 | >= 3.11 |
 | MCP SDK | >= 1.27.2 |
 
 ---
+
+## v0.7.0 新增功能
+
+### Agent 架构与兼容层收口
+
+- 新增中文文档 `architecture-for-agents.md`，明确主数据流、目录职责、常见改动路径、legacy 禁区和测试矩阵
+- `server/tools.py`、`server/protocol.py`、`server/resource_handlers.py` 以及 `application/*_use_cases.py` 明确标记为兼容层，不再作为新代码入口
+- README 项目结构补充 `frontend/` 与 `src/yamibo_mcp/web/static/` 的源码/产物关系
+
+### 静态资源与打包
+
+- `frontend/` 作为前端源码目录继续保留
+- `src/yamibo_mcp/web/static/` 继续作为 packaged static artifact，并补充目录说明
+- wheel/sdist 明确包含 `yamibo_mcp.web.static/*`，避免安装后 Web 控制台缺失静态文件
+
+### 文档与可维护性
+
+- 全仓库主文档版本统一推进到 `0.7.0`
+- Agent 接口、API、开发说明、部署说明、数据库设计等文档同步校正
+- 文档语言继续以中文为主，移除英文架构导航的歧义
 
 ## v0.6.0 新增功能
 

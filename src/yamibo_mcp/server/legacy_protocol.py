@@ -1,3 +1,9 @@
+"""旧 JSON-RPC 协议兼容层。
+
+新的 MCP 主入口由 `mcp_registry.py` 和 `agent_tools.py` 提供；本模块只保留
+历史协议与工具名映射。
+"""
+
 from __future__ import annotations
 
 from typing import Any, Callable

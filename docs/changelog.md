@@ -1,5 +1,20 @@
 # 百合会归档助手 — 版本更新日志
 
+## v0.7.0 (2026-06-22)
+
+### 新增
+- 新增中文 `Agent 架构导航` 文档，明确 AI 编码代理的修改入口、legacy 禁区和测试矩阵
+- 在 README 项目结构中补充 `frontend/` 前端源码目录，以及 `web/static` 为构建产物的说明
+- 为 `web/static` 添加说明文件，并把构建产物作为 package data 纳入 wheel/sdist
+
+### 调整
+- 版本号推进至 `0.7.0`
+- `server/tools.py`、`server/protocol.py`、`server/resource_handlers.py` 以及 `application/*_use_cases.py` 标记为兼容层
+- 开发文档和 API 文档统一对齐当前 Agent-facing 结构
+
+### 修复
+- 修复打包产物未显式包含 `yamibo_mcp.web.static/*` 的问题，避免安装包内 Web 静态资源缺失
+
 ## v0.6.0 (2026-06-21)
 
 ### 新增

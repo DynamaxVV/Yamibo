@@ -1,30 +1,29 @@
 # 测试报告
 
-> 生成时间：2026-06-21 | 框架：pytest 9.0.3 | Python 3.13.13
+> 生成时间：2026-06-22 | 框架：pytest 9.0.3 | Python 3.13.13
 
 ## 1. 执行摘要
 
 | 指标 | 结果 |
 |------|------|
-| 总用例数 | **626** |
-| 通过 | **626** |
+| 总用例数 | **694** |
+| 通过 | **694** |
 | 失败 | 0 |
 | 错误 | 0 |
-| 执行时间 | 约 10s |
+| 执行时间 | 约 82s |
 
 ## 2. 测试矩阵
 
-| 类别 | 用例数 | 通过 |
-|------|--------|------|
-| 黑盒测试（解析器 fixture） | 212 | 212 |
-| 白盒测试（DB） | 97 | 97 |
-| 白盒测试（Domain） | 60 | 60 |
-| 白盒测试（Storage） | 40 | 40 |
-| 白盒测试（Services） | 9 | 9 |
-| 白盒测试（Server + Application） | 80 | 80 |
-| 白盒测试（Yamibo 模块） | 75 | 75 |
-| 白盒测试（规则引擎直接） | 24 | 24 |
-| **总计** | **626** | **626** |
+| 类别 | 覆盖状态 | 说明 |
+|------|---------|------|
+| 黑盒测试（解析器 fixture） | ✅ | 论坛列表页、帖子详情页、标题解析 fixture 覆盖 |
+| 白盒测试（DB） | ✅ | `jobs/threads/series/assets/content_blocks/job_events/audit_events` 全覆盖 |
+| 白盒测试（Domain） | ✅ | `models/enums/validation/forums/content/job_state` 覆盖 |
+| 白盒测试（Storage） | ✅ | `atomic/paths/staging/markdown/exports` 覆盖 |
+| 白盒测试（Services） | ✅ | `title_hints` 覆盖；外部 API 客户端以 mock/后续集成测试为主 |
+| 白盒测试（Server + Application） | ✅ | Agent 契约、resources、legacy protocol、application command/query 覆盖 |
+| 白盒测试（Yamibo 模块） | ✅ | cleaner、normalizer、page classifier、series matcher、direct title parser 覆盖 |
+| Daemon handlers | ⚠️ 部分 | `sync_thread` / `update_thread` 已覆盖，其他 handler 仍偏集成场景 |
 
 ## 3. 白盒测试详情（本次新增）
 
@@ -93,13 +92,13 @@
 | domain | ✅ 完整 | models/enums/validation/job_state/forums/content 全覆盖 |
 | storage | ✅ 完整 | atomic/paths/staging/markdown/exports 全覆盖 |
 | services | ✅ 完整 | title_hints 全覆盖（LLM client 需外部 API，跳过） |
-| server | ✅ 完整 | resources/protocol/tools 全覆盖（含新 resource URI） |
-| application | ✅ 完整 | contracts/thread_use_cases/job_use_cases 全覆盖 |
+| server | ✅ 完整 | agent_interface/resources/protocol_legacy/forum_id_tools 覆盖核心入口 |
+| application | ✅ 完整 | contracts/archive_queries/thread_update/job_queries/legacy 兼容入口均有覆盖 |
 | yamibo/page_classifier | ✅ 完整 | 所有 6 种页面类型全覆盖 |
 | yamibo/title/normalizer | ✅ 完整 | 三个公开函数全覆盖 |
 | yamibo/cleaners | ✅ 完整 | clean_content 全覆盖 |
 | yamibo/series_matcher | ✅ 完整 | build_series_match_decision 全覆盖 |
-| worker/handlers | ⚠️ 待补充 | 处理器需集成测试环境 |
+| daemon/handlers | ⚠️ 部分覆盖 | sync_thread / update_thread 已覆盖，其他 handler 仍偏集成场景 |
 
 ## 6. 待补充测试
 
@@ -108,4 +107,4 @@
 | services/llm_client.py | 需要 mock 外部 HTTP 请求 | P2 |
 | services/title_llm.py | 需要 mock LLM API | P2 |
 | daemon/handlers/* | 需要完整的 Daemon 环境 | P1 |
-| web/app.py | 需要 HTTP 测试客户端 | P2 |
+| web/app.py | 仍缺少真实 HTTP server 级测试，仅有 handler 级单测 | P2 |

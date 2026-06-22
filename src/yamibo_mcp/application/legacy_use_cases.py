@@ -1,3 +1,10 @@
+"""兼容旧入口的聚合用例。
+
+本模块仅为历史接口保留；新的 Agent-facing 读写逻辑应分别进入
+`archive_commands.py`、`archive_queries.py`、`job_queries.py` 等
+显式 command/query 模块。
+"""
+
 from __future__ import annotations
 
 from typing import Any

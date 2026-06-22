@@ -1,3 +1,8 @@
+"""旧工具名兼容层。
+
+本模块继续服务 legacy JSON-RPC 与旧 CLI 名称；不要在这里添加新的主路径逻辑。
+"""
+
 from __future__ import annotations
 
 import json

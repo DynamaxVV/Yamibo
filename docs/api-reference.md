@@ -1,6 +1,6 @@
 # API 接口文档
 
-> 版本：0.6.0 | 更新日期：2026-06-21
+> 版本：0.7.0 | 更新日期：2026-06-22
 
 ## 1. MCP 工具 (Tools)
 
@@ -92,44 +92,22 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
 ```json
 {
   "tid": 572313,
-  "url": "...",
-  "display_title": "...",
-  "raw_title": "...",
+  "title": "...",
   "publisher": "...",
   "publisher_uid": "...",
-  "pub_time": "...",
-  "image_count": 24,
-  "archive_status": "complete",
-  "title_parse": {
-    "group_name": "...",
-    "author_guess": "...",
-    "core_title_guess": "...",
-    "series_key": "...",
-    "chapter_name": "...",
-    "chapter_index": 1.0,
-    "confidence": 0.9,
-    "needs_review": false
-  },
-  "floors": [
+  "forum_id": 30,
+  "category": "漫画区",
+  "floor_count": 2,
+  "image_url_count": 24,
+  "author_only": false,
+  "preview": [
     {
-      "pid": 12345,
       "floor_no": 1,
       "publisher": "...",
-      "pub_time": "...",
-      "has_images": true,
-      "content": "...",
       "content_preview": "..."
     }
   ],
-  "floor_count": 2,
-  "series": {
-    "series_id": 1,
-    "canonical_title": "...",
-    "resources": {
-      "index": "yamibo://series/index",
-      "chapters": "yamibo://series/1/chapters"
-    }
-  }
+  "remote_url": "https://bbs.yamibo.com/forum.php?mod=viewthread&tid=572313"
 }
 ```
 
@@ -311,9 +289,9 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
 
 ---
 
-### 1.13 Deprecated / 兼容接口
+### 1.13 已废弃 / 兼容接口
 
-以下旧名称仍通过 CLI 或 legacy JSON-RPC 兼容层保留，但不再是 Agent-facing MCP 主接口：
+以下旧名称仍通过 CLI 或 legacy JSON-RPC 兼容层保留，但不再是 Agent-facing MCP 主接口，也不建议新接入方继续依赖：
 
 - `search_threads`
 - `archive_thread`

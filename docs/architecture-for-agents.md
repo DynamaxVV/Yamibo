@@ -1,113 +1,130 @@
-# Architecture For Agents
+# Agent 架构导航
 
-> Version: 0.7.0 | Updated: 2026-06-22
+> 版本：0.7.0 | 更新日期：2026-06-22
 
-This document answers the question "where should an AI coding agent change code?" It is intentionally more operational than the product docs.
+本文回答的是“AI 编码代理应该改哪里”。它不是产品说明，而是面向改代码、补测试、做集成的操作性文档。
 
-## Main Data Flows
+## 1. 主数据流
 
-### Agent reads remote forum state
+### 1.1 读取远端论坛状态
 
 ```text
-MCP client
+MCP 客户端
   -> server.mcp_registry / server.agent_tools
-  -> application.search_use_cases or application.remote_queries
+  -> application.search_use_cases 或 application.remote_queries
   -> yamibo.client + yamibo.parsers
-  -> compact AgentResult
+  -> 紧凑 AgentResult
 ```
 
-Use this path for forum discovery, search, and remote thread preview. Remote queries may open SQLite only to annotate whether a thread is already archived; they must not create jobs, write thread rows, download assets, or materialize files.
+适用场景：论坛发现、帖子搜索、远端预览、更新检查。
 
-### Agent creates long-running work
+约束：
+
+- 允许读取本地 SQLite，为远端结果补充“是否已归档”等提示
+- 不允许写入 thread/floor/content_blocks/assets
+- 不允许下载图片、物化归档文件、伪装成本地归档读取
+
+### 1.2 创建长任务
 
 ```text
-MCP client or CLI
-  -> server.agent_tools or server.cli
+MCP 客户端或 CLI
+  -> server.agent_tools 或 server.cli
   -> application.archive_commands / application.update_commands
   -> db.repositories.jobs
   -> daemon.runner
   -> daemon.handlers/*
-  -> yamibo.client, yamibo.parsers, storage, db.repositories
+  -> yamibo.client、yamibo.parsers、storage、db.repositories
 ```
 
-Archive, update, export, cleanup, and title-refine work is job-based. A command creates a queued SQLite job; the daemon owns execution and recovery.
+适用场景：归档、增量更新、导出、清理。
 
-### Agent reads local archive state
+约束：
+
+- 命令层只创建 SQLite job
+- 真正执行和恢复由 daemon 负责
+- 长任务结果通过 `read_job` / `read_job_events` 或资源读取回看
+
+### 1.3 读取本地归档状态
 
 ```text
-MCP client
-  -> server.agent_tools or server.resources
+MCP 客户端
+  -> server.agent_tools 或 server.resources
   -> application.archive_queries / application.job_queries
   -> db.repositories + storage paths
-  -> compact AgentResult or MCP resource body
+  -> 紧凑 AgentResult 或 MCP Resource
 ```
 
-Local archive reads must not fetch remote pages. Use `read_archived_thread` for compact views and MCP resources for larger materialized content.
+适用场景：读取 summary/content/assets/diagnostics/export/metadata、读取任务状态和事件。
 
-### Web console
+约束：
+
+- 本地归档读取绝不抓远端
+- 大内容优先走 resource 或 `cursor/chunk_size` 分页
+
+### 1.4 Web 控制台
 
 ```text
-browser
+浏览器
   -> web.app
   -> web.api
   -> application queries/commands
   -> db.repositories / storage
 ```
 
-The React source is in `frontend/`. The package-served static artifact is `src/yamibo_mcp/web/static/`.
+前端源码位于 `frontend/`，包内静态产物位于 `src/yamibo_mcp/web/static/`。
 
-## Directory Responsibilities
+## 2. 目录职责
 
-| Path | Responsibility | Agent edit guidance |
-|------|----------------|---------------------|
-| `src/yamibo_mcp/server/app.py` | Entrypoint only: exports `build_mcp_server` and CLI `main`. | Do not add tool logic here. |
-| `src/yamibo_mcp/server/mcp_registry.py` | FastMCP tool/resource registration and descriptions. | Add or rename public Agent-facing tools/resources here after application seams exist. |
-| `src/yamibo_mcp/server/agent_tools.py` | Thin MCP wrappers that return wire dicts through `agent_adapter`. | Keep wrappers shallow; delegate behavior to `application/*`. |
-| `src/yamibo_mcp/server/agent_adapter.py` | `AgentResult` to wire payload conversion and exception mapping. | Add stable error mapping here, not in every tool. |
-| `src/yamibo_mcp/server/resources.py` | MCP resource handlers and static guide/schema resources. | Resource output should be local or static guidance, not hidden business logic. |
-| `src/yamibo_mcp/server/legacy_protocol.py` | Legacy JSON-RPC tool list and dispatcher. | Keep compatibility only; new primary interface belongs in `mcp_registry.py`. |
-| `src/yamibo_mcp/server/legacy_tools.py` | Legacy tool-name compatibility wrappers. | Avoid expanding this module unless preserving an old CLI/tool behavior. |
-| `src/yamibo_mcp/application/contracts.py` | Agent-facing result, error, and next-action contract. | Keep this interface small and stable. |
-| `src/yamibo_mcp/application/archive_commands.py` | Job creation for archive/export and archive ensuring. | Job-creating behavior goes here, not in server wrappers. |
-| `src/yamibo_mcp/application/archive_queries.py` | Local-only archive reads: summary/content/assets/diagnostics/export/metadata. | Do not import or call `YamiboClient` here. |
-| `src/yamibo_mcp/application/remote_queries.py` | Remote forum browsing/search and remote/local annotation. | May read local SQLite for archive hints; must not persist remote data. |
-| `src/yamibo_mcp/application/remote_inspection.py` | Remote thread preview. | Fetch and parse only; no SQLite writes or storage materialization. |
-| `src/yamibo_mcp/application/update_queries.py` | Remote update check using local archive baseline. | May fetch remote pages for comparison; should not create jobs. |
-| `src/yamibo_mcp/application/update_commands.py` | Incremental update job creation. | Side effect is queued job creation only. |
-| `src/yamibo_mcp/application/job_queries.py` | Local job status and event reads. | Read SQLite queue/event state only. |
-| `src/yamibo_mcp/application/forum_queries.py` | Forum profile reads. | Local metadata only. |
-| `src/yamibo_mcp/application/legacy_use_cases.py` | Aggregated old behaviors such as `get_thread`. | Treat as transitional; prefer command/query modules for new code. |
-| `src/yamibo_mcp/daemon/runner.py` | Job polling, acquisition, execution loop. | Change when job lifecycle behavior changes. |
-| `src/yamibo_mcp/daemon/handlers/` | Concrete job implementations. | Long-running archive/update/export logic belongs here. |
-| `src/yamibo_mcp/db/repositories/` | SQL access modules. | Keep SQL here; callers should not hand-roll repeated queries. |
-| `src/yamibo_mcp/domain/` | Domain models, enums, validation, fingerprints. | Put pure domain rules here when they are reused. |
-| `src/yamibo_mcp/yamibo/` | Forum HTTP, URLs, page classification, parsers, cleaners, title parsing. | Forum HTML knowledge belongs here. |
-| `src/yamibo_mcp/storage/` | Filesystem layout, staging, archive materialization, images, exports. | File path and materialized artifact behavior belongs here. |
-| `src/yamibo_mcp/services/` | LLM client and title refinement helpers. | LLM title logic is internal archive-flow support, not public Agent tooling. |
-| `src/yamibo_mcp/web/` | Embedded HTTP API/server and packaged static UI. | Python web routes in `web/api.py`; static artifacts are generated. |
-| `frontend/` | React/Vite source for the web console. | Edit UI source here, then build into `src/yamibo_mcp/web/static/`. |
-| `src/yamibo_mcp/maintenance/` | Backup, cleanup, reset commands. | Operational scripts only. |
+| 路径 | 职责 | 代理修改建议 |
+|------|------|-------------|
+| `src/yamibo_mcp/server/app.py` | 轻量入口，导出 `build_mcp_server` 与 CLI `main` | 不要在这里写业务逻辑 |
+| `src/yamibo_mcp/server/mcp_registry.py` | FastMCP tool/resource 注册与说明 | 新增公开 MCP 工具/资源时改这里 |
+| `src/yamibo_mcp/server/agent_tools.py` | Agent-facing 薄包装 | 保持薄；逻辑下沉到 `application/*` |
+| `src/yamibo_mcp/server/agent_adapter.py` | `AgentResult` 到 wire payload 的转换和异常映射 | 统一错误契约改这里 |
+| `src/yamibo_mcp/server/resources.py` | MCP resource 主入口与静态 guide/schema | 放静态指导和本地资源，不放隐藏业务逻辑 |
+| `src/yamibo_mcp/server/legacy_protocol.py` | 旧 JSON-RPC 协议兼容层 | 只保兼容，不再扩展主路径 |
+| `src/yamibo_mcp/server/legacy_tools.py` | 旧工具名兼容包装 | 除兼容外不要继续堆新逻辑 |
+| `src/yamibo_mcp/application/contracts.py` | Agent-facing 契约 | 保持小接口、稳定字段 |
+| `src/yamibo_mcp/application/archive_commands.py` | 归档/导出/ensure 的命令侧逻辑 | 有副作用的“创建任务”放这里 |
+| `src/yamibo_mcp/application/archive_queries.py` | 本地归档读取 | 禁止导入或调用 `YamiboClient` |
+| `src/yamibo_mcp/application/remote_queries.py` | 远端 browse/search 与本地归档提示补充 | 可读本地库，不可持久化远端结果 |
+| `src/yamibo_mcp/application/remote_inspection.py` | 远端帖子只读预览 | 只 fetch + parse，不写库不落盘 |
+| `src/yamibo_mcp/application/update_queries.py` | 更新检测 | 可做远端比对，不创建 job |
+| `src/yamibo_mcp/application/update_commands.py` | 增量更新任务创建 | 副作用仅是写入 queued job |
+| `src/yamibo_mcp/application/job_queries.py` | 任务状态与事件读取 | 只读 SQLite |
+| `src/yamibo_mcp/application/forum_queries.py` | 论坛 profile 与索引读取 | 本地元数据读取 |
+| `src/yamibo_mcp/application/legacy_use_cases.py` | 历史行为聚合 | 过渡层，非新代码主入口 |
+| `src/yamibo_mcp/daemon/runner.py` | 轮询、抢占、执行调度 | 任务生命周期变更改这里 |
+| `src/yamibo_mcp/daemon/handlers/` | 具体任务实现 | 长任务实现放这里 |
+| `src/yamibo_mcp/db/repositories/` | SQL 访问 | SQL 收敛在这里 |
+| `src/yamibo_mcp/domain/` | 领域模型、枚举、校验 | 纯领域规则放这里 |
+| `src/yamibo_mcp/yamibo/` | 论坛 HTTP、URL、页面分类、HTML 解析、标题解析 | 站点知识集中在这里 |
+| `src/yamibo_mcp/storage/` | 文件路径、staging、归档物化、图片、导出 | 文件系统行为集中在这里 |
+| `src/yamibo_mcp/services/` | LLM 客户端与标题辅助逻辑 | 内部能力，不是公共 Agent 接口 |
+| `src/yamibo_mcp/web/` | 嵌入式 HTTP 服务与 packaged static | Python 侧 Web 路由改这里 |
+| `frontend/` | React/Vite 前端源码 | UI 改这里，再构建到 `web/static/` |
+| `src/yamibo_mcp/maintenance/` | 备份、清理、重置 | 运维脚本 |
 
-## Common Task Modification Paths
+## 3. 常见任务修改路径
 
-| Task | Primary files | Tests to start with |
-|------|---------------|---------------------|
-| Add a new Agent-facing MCP tool | `application/*`, `server/agent_tools.py`, `server/mcp_registry.py`, `server/legacy_protocol.py` if legacy JSON-RPC needs it, docs | `uv run pytest tests/unit/test_server/test_agent_interface.py tests/unit/test_application/` |
-| Change Agent error shape or exception mapping | `application/contracts.py`, `server/agent_adapter.py` | `uv run pytest tests/unit/test_application/test_contracts.py tests/unit/test_server/test_agent_interface.py tests/unit/test_server/test_protocol_legacy.py` |
-| Add a local archive read view | `application/archive_queries.py`, repositories if needed, `server/resources.py` if a resource is also needed | `uv run pytest tests/unit/test_application/test_archive_queries.py tests/unit/test_server/test_resources.py` |
-| Change remote search/browse behavior | `application/search_use_cases.py`, `application/remote_queries.py`, `yamibo/client.py`, `yamibo/parsers/*` | `uv run pytest tests/unit/test_server/test_forum_id_tools.py tests/unit/test_parsers/` |
-| Change remote thread preview | `application/remote_inspection.py`, `yamibo/parsers/thread_detail.py` | `uv run pytest tests/unit/test_server/test_agent_interface.py tests/unit/test_parsers/test_thread_detail.py` |
-| Change archive job behavior | `application/archive_commands.py`, `daemon/handlers/sync_thread.py`, `storage/*`, repositories | `uv run pytest tests/unit/test_application/test_thread_use_cases.py tests/unit/test_daemon/` |
-| Change update detection | `application/update_queries.py`, `application/update_commands.py`, `daemon/handlers/update_thread.py` | `uv run pytest tests/unit/test_application/test_thread_update_use_cases.py tests/unit/test_daemon/test_update_thread_handler.py` |
-| Change job status/events | `application/job_queries.py`, `db/repositories/jobs.py`, `db/repositories/job_events.py` | `uv run pytest tests/unit/test_application/test_job_use_cases.py tests/unit/test_db/` |
-| Change web API | `web/api.py`, relevant `application/*` module | `uv run pytest tests/unit/test_web/` |
-| Change web UI | `frontend/src/*`, then `npm --prefix frontend run build` | `uv run pytest tests/unit/test_web/` plus manual UI smoke test if visual behavior changes |
-| Change static asset serving | `web/app.py`, `src/yamibo_mcp/web/static/README.md` | `uv run pytest tests/unit/test_web/test_app.py` |
-| Change schema/migrations | `db/migrations.py`, repositories, fixtures | `uv run pytest tests/unit/test_db/ tests/unit/test_application/` |
+| 任务 | 首选修改点 | 起手测试 |
+|------|-----------|---------|
+| 新增 Agent-facing MCP 工具 | `application/*`、`server/agent_tools.py`、`server/mcp_registry.py` | `uv run pytest tests/unit/test_server/test_agent_interface.py tests/unit/test_application/` |
+| 修改 Agent 错误契约 | `application/contracts.py`、`server/agent_adapter.py` | `uv run pytest tests/unit/test_application/test_contracts.py tests/unit/test_server/test_agent_interface.py tests/unit/test_server/test_protocol_legacy.py` |
+| 新增本地归档 view | `application/archive_queries.py`、相关 repository、必要时 `server/resources.py` | `uv run pytest tests/unit/test_application/test_archive_queries.py tests/unit/test_server/test_resources.py` |
+| 修改远端搜索/浏览 | `application/search_use_cases.py`、`application/remote_queries.py`、`yamibo/client.py`、`yamibo/parsers/*` | `uv run pytest tests/unit/test_server/test_forum_id_tools.py tests/unit/test_parsers/` |
+| 修改远端帖子预览 | `application/remote_inspection.py`、`yamibo/parsers/thread_detail.py` | `uv run pytest tests/unit/test_server/test_agent_interface.py tests/unit/test_parsers/test_thread_detail.py` |
+| 修改归档任务行为 | `application/archive_commands.py`、`daemon/handlers/sync_thread.py`、`storage/*`、repositories | `uv run pytest tests/unit/test_application/test_thread_use_cases.py tests/unit/test_daemon/` |
+| 修改更新检测/追加更新 | `application/update_queries.py`、`application/update_commands.py`、`daemon/handlers/update_thread.py` | `uv run pytest tests/unit/test_application/test_thread_update_use_cases.py tests/unit/test_daemon/test_update_thread_handler.py` |
+| 修改任务状态/事件 | `application/job_queries.py`、`db/repositories/jobs.py`、`db/repositories/job_events.py` | `uv run pytest tests/unit/test_application/test_job_use_cases.py tests/unit/test_db/` |
+| 修改 Web API | `web/api.py`、相关 `application/*` | `uv run pytest tests/unit/test_web/` |
+| 修改 Web UI | `frontend/src/*`、`frontend/public/*` | `npm --prefix frontend run build` 后 `uv run pytest tests/unit/test_web/` |
+| 修改静态资源路由 | `web/app.py`、`src/yamibo_mcp/web/static/README.md` | `uv run pytest tests/unit/test_web/test_app.py` |
+| 修改迁移/Schema | `db/migrations.py`、repositories | `uv run pytest tests/unit/test_db/ tests/unit/test_application/` |
 
-## Legacy Zones
+## 4. Legacy 禁区
 
-These files are compatibility zones, not the place to add new primary behavior:
+以下模块保留的主要原因是兼容，不是主开发入口：
 
 - `src/yamibo_mcp/server/tools.py`
 - `src/yamibo_mcp/server/protocol.py`
@@ -119,40 +136,43 @@ These files are compatibility zones, not the place to add new primary behavior:
 - `src/yamibo_mcp/application/job_use_cases.py`
 - `src/yamibo_mcp/application/legacy_use_cases.py`
 
-Rules:
+规则：
 
-- Do not expose `llm_transform_text` or `parse_thread_title` as public Agent-facing tools.
-- Do not add public Agent-facing `limit` parameters. Use forum pagination, floor ranges, or cursor/chunk patterns.
-- Do not make remote preview functions write SQLite, download images, or materialize local archives.
-- Do not make local archive query functions fetch remote pages.
-- Do not hide business logic in MCP prompts or static resource text.
+- 不要把新逻辑继续写进 compatibility re-export
+- 不要重新暴露 `llm_transform_text` 或 `parse_thread_title` 为公共 Agent 工具
+- 不要给公共 Agent 工具重新加 `limit`
+- 不要让远端预览写 SQLite、下载图片、物化归档
+- 不要让本地归档查询抓远端页面
 
-## Static Artifact Policy
+## 5. 前端源码与静态产物
 
-`frontend/` is the editable React/Vite source. `src/yamibo_mcp/web/static/` is the generated artifact served by the embedded Python web server and included in the Python package tree.
+当前结构已经拆分清楚：
 
-When changing UI:
+- `frontend/` 是可编辑前端源码
+- `src/yamibo_mcp/web/static/` 是 Vite 构建产物，也是 Python 包内随 wheel 分发的静态资源
 
-1. Edit files under `frontend/src/` or `frontend/public/`.
-2. Run `npm --prefix frontend run build`.
-3. Review the generated diff under `src/yamibo_mcp/web/static/`.
-4. Run `uv run pytest tests/unit/test_web/`.
+修改 UI 的正确流程：
 
-Agents should not inspect minified JS/CSS under `src/yamibo_mcp/web/static/assets/` unless the task is specifically about built artifact routing, packaging, or cache busting.
+1. 改 `frontend/src/` 或 `frontend/public/`
+2. 运行 `npm --prefix frontend run build`
+3. 检查 `src/yamibo_mcp/web/static/` 的生成 diff
+4. 运行 `uv run pytest tests/unit/test_web/`
 
-## Test Command Matrix
+默认不要去读 `src/yamibo_mcp/web/static/assets/` 里的压缩 JS/CSS，除非任务就是静态路由、打包或 cache busting。
 
-| Scope | Command |
-|-------|---------|
-| Agent interface contract | `uv run pytest tests/unit/test_server/test_agent_interface.py tests/unit/test_application/test_contracts.py` |
-| MCP resources | `uv run pytest tests/unit/test_server/test_resources.py` |
-| Application layer | `uv run pytest tests/unit/test_application/` |
-| Server layer | `uv run pytest tests/unit/test_server/` |
-| Web API/static routes | `uv run pytest tests/unit/test_web/` |
-| Database/repositories | `uv run pytest tests/unit/test_db/` |
+## 6. 测试命令矩阵
+
+| 范围 | 命令 |
+|------|------|
+| Agent 接口契约 | `uv run pytest tests/unit/test_server/test_agent_interface.py tests/unit/test_application/test_contracts.py` |
+| MCP Resources | `uv run pytest tests/unit/test_server/test_resources.py` |
+| 应用层 | `uv run pytest tests/unit/test_application/` |
+| Server 层 | `uv run pytest tests/unit/test_server/` |
+| Web API / 静态路由 | `uv run pytest tests/unit/test_web/` |
+| 数据库 / Repository | `uv run pytest tests/unit/test_db/` |
 | Daemon handlers | `uv run pytest tests/unit/test_daemon/` |
-| Parsers | `uv run pytest tests/unit/test_parsers/` |
-| Frontend build | `npm --prefix frontend run build` |
-| Full Python suite | `uv run pytest` |
+| 解析器 | `uv run pytest tests/unit/test_parsers/` |
+| 前端构建 | `npm --prefix frontend run build` |
+| 全量 Python 测试 | `uv run pytest` |
 
-No lint or typecheck is configured for the Python package. The frontend build runs TypeScript before Vite.
+当前 Python 包没有单独配置 lint/typecheck；前端构建会先跑 TypeScript 编译再执行 Vite build。
