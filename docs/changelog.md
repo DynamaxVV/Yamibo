@@ -1,5 +1,17 @@
 # 百合会归档助手 — 版本更新日志
 
+## v0.8.0 (2026-06-22)
+
+### 新增
+- 新增 Hermes 基准回归 harness：`scripts/run_hermes_benchmark.sh` / `scripts/run_hermes_benchmark.py`
+- 新增 `yamibo_mcp.benchmark.hermes` transcript 解析与任务卡打分逻辑，可自动导出 session transcript、生成 Markdown/JSON 报告
+- 新增多论坛只读、多线程 fanout、幂等复用、导出策略分流等 7 张标准 Hermes 任务卡
+
+### 调整
+- `read_job` 状态面新增 `execution_state`、`diagnostic_summary`、`needs_attention`、运行时长与最近更新时间
+- 长时间 `running`、长时间 `queued`、`interrupted` 和图片下载阶段过慢的任务现在有统一的自动诊断摘要
+- 文档版本统一推进至 `0.8.0`
+
 ## v0.7.1 (2026-06-22)
 
 ### 调整

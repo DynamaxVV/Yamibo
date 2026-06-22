@@ -1,16 +1,36 @@
 # 百合会归档助手 — 版本发布说明
 
-> 版本：0.7.1 | 发布日期：2026-06-22
+> 版本：0.8.0 | 发布日期：2026-06-22
 
 ## 版本信息
 
 | 项目 | 值 |
 |------|-----|
-| 版本号 | 0.7.1 |
+| 版本号 | 0.8.0 |
 | Python 要求 | >= 3.11 |
 | MCP SDK | >= 1.27.2 |
 
 ---
+
+## v0.8.0 新增功能
+
+### Hermes Agent 回归基线
+
+- 新增 `scripts/run_hermes_benchmark.sh` 和 `scripts/run_hermes_benchmark.py`，可重复执行真实 Hermes 黑盒回归
+- 自动执行 7 张标准任务卡，覆盖只读发现、本地缺失恢复、异步启动、重复 job 复用、导出策略分流、多线程 fanout 和多 forum 读取
+- 自动导出 Hermes session transcript，并解析为可打分的 Markdown / JSON 报告
+
+### Job 运行态诊断增强
+
+- `read_job` 返回新增 `execution_state`、`diagnostic_summary`、`needs_attention`
+- 对长时间 `queued`、长时间 `running`、`interrupted`、`download_images` 阶段过慢等情况提供统一诊断摘要
+- Agent 可直接据此区分正常推进、需关注和疑似卡住任务，再决定是否读取 `read_job_events`
+
+### 测试与文档
+
+- 新增 `tests/unit/test_benchmark/test_hermes.py`，覆盖 transcript 解析和评分逻辑
+- Agent 验收、接口和测试策略文档同步补充 Hermes 自动化回归说明
+- 主版本号推进到 `0.8.0`
 
 ## v0.7.1 新增功能
 
@@ -202,8 +222,8 @@ Web 控制台随 Daemon 自动启动（`http://127.0.0.1:8765`），无需单独
 |------|--------|------|
 | 黑盒测试（解析器 fixture） | 212 | 全部通过 |
 | 白盒测试（DB + Domain + Storage + Services） | 177 | 全部通过 |
-| 白盒测试（Server + Application + Yamibo 模块） | 237 | 全部通过 |
-| **总计** | **626** | **全部通过** |
+| 白盒测试（Server + Application + Yamibo 模块） | 326 | 全部通过 |
+| **总计** | **715** | **全部通过** |
 
 执行时间：约 10s
 
