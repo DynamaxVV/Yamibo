@@ -7,6 +7,8 @@ from unittest.mock import MagicMock, patch
 from yamibo_mcp.application.contracts import AgentAction, AgentError, AgentResult
 from yamibo_mcp.server.agent_adapter import to_wire
 from yamibo_mcp.server.agent_tools import (
+    create_rag_index_batch_jobs,
+    create_thread_archive_batch_jobs,
     create_thread_archive_job,
     inspect_remote_thread,
     read_archived_thread,
@@ -23,11 +25,15 @@ RECOMMENDED_AGENT_TOOLS = {
     "search_forum_threads",
     "inspect_remote_thread",
     "create_thread_archive_job",
+    "create_thread_archive_batch_jobs",
     "ensure_thread_archived",
     "read_archived_thread",
     "check_thread_updates",
     "create_thread_update_job",
     "create_thread_export_job",
+    "create_rag_index_job",
+    "create_rag_index_batch_jobs",
+    "search_archived_content",
     "read_job",
     "read_job_events",
     "wait_for_job",
@@ -222,6 +228,39 @@ class TestAgentStatusHints:
         assert result["data"]["created"] is False
         assert "sqlite_job_reused" in result["side_effects"]
         assert "sqlite_job_created" not in result["side_effects"]
+
+    def test_create_thread_archive_batch_jobs_returns_created_and_reused_counts(self, tmp_path, db):
+        settings = _fake_settings(tmp_path)
+        from yamibo_mcp.db.repositories.jobs import JobsRepository
+
+        existing = JobsRepository(db).create("sync_thread", tid=572313, payload={"tid": 572313})
+
+        with patch("yamibo_mcp.application.archive_commands.load_settings", return_value=settings), \
+             patch("yamibo_mcp.application.archive_commands.connect", return_value=db):
+            result = create_thread_archive_batch_jobs(tids=[572313, 572314])
+
+        assert result["ok"] is True
+        assert result["data"]["target_count"] == 2
+        assert result["data"]["created_count"] == 1
+        assert result["data"]["reused_count"] == 1
+        assert existing.job_id in result["data"]["reused_job_ids"]
+
+    def test_create_rag_index_batch_jobs_returns_created_and_reused_counts(self, tmp_path, db):
+        settings = _fake_settings(tmp_path)
+        from yamibo_mcp.db.repositories.jobs import JobsRepository
+
+        existing = JobsRepository(db).create("rag_index", tid=7001, payload={"force": False, "embedding_dimensions": 512})
+        settings.rag_embedding_dimensions = 512
+
+        with patch("yamibo_mcp.application.rag_commands.load_settings", return_value=settings), \
+             patch("yamibo_mcp.application.rag_commands.connect", return_value=db):
+            result = create_rag_index_batch_jobs(tids=[7001, 7002])
+
+        assert result["ok"] is True
+        assert result["data"]["target_count"] == 2
+        assert result["data"]["created_count"] == 1
+        assert result["data"]["reused_count"] == 1
+        assert existing.job_id in result["data"]["reused_job_ids"]
 
     def test_read_job_exposes_terminality_fields(self, tmp_path, db):
         settings = _fake_settings(tmp_path)

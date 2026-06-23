@@ -2,7 +2,7 @@
 
 百合会 (yamibo.com) 论坛本地归档系统。通过 MCP 协议让 LLM 客户端浏览、搜索、归档、检查更新和导出论坛贴子；内嵌 React WebUI 控制台，支持多主题切换。
 
-> 当前版本：`0.8.1`
+> 当前版本：`0.9.0`
 
 ## 功能特性
 
@@ -14,7 +14,9 @@
 - **内容模型** — 支持 comic/novel/discussion/mixed 四种内容形态，有序内容块 + 资产管理
 - **系列管理** — 按 series_key 自动聚合同一系列的多个章节帖子
 - **标准化导出** — 漫画/通用贴子 ZIP 打包（context.md + metadata.json + 图片），轻小说导出为可追加的 TXT 文件
+- **批量任务** — 支持批量归档和批量 RAG 索引，便于一次性处理多个 tid
 - **Job Event Outbox** — 任务状态变更追加耐久化事件，支持诊断和未来通知
+- **本地 RAG 检索** — 基于 SQLite FTS5 + `sqlite-vec` 的归档内容混合检索，返回可追溯证据片段
 - **Agent-Friendly Interface** — 区分远端预览/任务创建与本地归档读取，统一结构化错误和紧凑输出
 - **Web 控制台** — React+Vite SPA，中英文双语，4 套可切换主题 + 暗黑模式
 - **CLI** — 所有工具均可通过命令行直接调用
@@ -33,7 +35,7 @@ uv sync --extra dev
 
 在浏览器中登录 bbs.yamibo.com，复制 Cookie 到 `.cookie` 文件。
 
-如需 LLM 辅助标题解析，创建 `yamibo.local.json`：
+如需 LLM 辅助标题解析和本地 RAG embedding，创建 `yamibo.local.json`：
 
 ```json
 {
@@ -52,9 +54,22 @@ uv sync --extra dev
     "base_url": "https://api.openai.com/v1",
     "api_key": "sk-your-key",
     "model": "gpt-4.1-mini"
+  },
+  "rag": {
+    "enabled": true,
+    "base_url": "https://api.openai.com/v1",
+    "api_key": "sk-your-rag-key",
+    "embedding_model": "text-embedding-3-small",
+    "embedding_dimensions": 512
   }
 }
 ```
+
+其中：
+
+- `llm.*` 负责标题解析等 chat/completions 场景
+- `rag.*` 负责 `/embeddings` 场景
+- 若未单独配置 `rag.base_url` / `rag.api_key`，会自动回退到 `llm.base_url` / `llm.api_key`
 
 所有配置项均可通过 `YAMIBO_*` 环境变量覆盖。详见 [`.env.example`](.env.example)。
 
@@ -147,11 +162,23 @@ uv run yamibo-mcp-server check-thread-updates --tid 544422
 # 创建轻小说追加更新任务
 uv run yamibo-mcp-server update-thread --tid 544422
 
+# 批量创建归档任务
+uv run yamibo-mcp-server create-sync-thread-batch-jobs --tid 572313 --tid 572314
+
 # 批量同步
 uv run yamibo-mcp-server create-sync-forum-range-jobs --start-page 1 --end-page 5
 
 # 创建导出任务
 uv run yamibo-mcp-server create-export-thread-job --tid 572313
+
+# 为本地归档构建 RAG 索引
+uv run yamibo-mcp-server create-rag-index-job --tid 572313
+
+# 批量创建 RAG 索引任务
+uv run yamibo-mcp-server create-rag-index-batch-jobs --tid 572313 --tid 572314
+
+# 搜索本地归档内容（只读，不抓远端）
+uv run yamibo-mcp-server search-archived-content --query "星空 告白" --mode hybrid --top-k 5
 
 # 查看任务状态
 uv run yamibo-mcp-server job-status <job_id>
@@ -210,10 +237,11 @@ scripts/run_hermes_benchmark.sh
 | [Agent 接口说明](docs/agent-interface.md) | Agent-facing 工具、错误契约、推荐工作流 |
 | [Agent 能力验收标准](docs/agent-evaluation.md) | OpenClaw/Hermes 类 Agent 的验收场景、评分维度与证据要求 |
 | [数据库设计](docs/database-design.md) | 表结构、文件存储格式 |
+| [SQLite-Vec RAG 设计](docs/rag-sqlite-vec-design.md) | 本地归档检索、chunk、embedding 与 `sqlite-vec` 方案 |
 | [核心模块开发说明](docs/development-guide.md) | 标题解析、Job 系统、配置 |
 | [部署指南 & 运维手册](docs/deployment-guide.md) | 安装、配置、运维操作 |
 | [用户操作手册](docs/user-manual.md) | MCP/Web/CLI 使用方式 |
 | [测试方案](docs/testing-strategy.md) | 测试原则、规范、架构 |
 | [测试报告](docs/test-report.md) | 测试执行结果 |
-| [版本发布说明](docs/release-notes.md) | v0.8.1 功能清单 |
+| [版本发布说明](docs/release-notes.md) | v0.9.0 功能清单 |
 | [WebUI 设计文档](docs/webui-design.md) | 功能点、主题系统、组件设计、API 端点 |

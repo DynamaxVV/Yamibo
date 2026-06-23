@@ -6,7 +6,7 @@ import { PaginationControls } from '../components/PaginationControls'
 import { useI18n } from '../context/I18nContext'
 import { formatDateTime } from '../utils/time'
 
-const STATUSES = [null, 'queued', 'running', 'succeeded', 'partial', 'failed', 'interrupted'] as const
+const STATUSES = [null, 'queued', 'running', 'paused', 'succeeded', 'partial', 'failed', 'interrupted'] as const
 const PAGE_SIZE = 50
 const STORAGE_KEY = 'yamibo_jobs_status'
 
@@ -23,8 +23,8 @@ export function Jobs() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [confirmSelectedDelete, setConfirmSelectedDelete] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [jobActionError, setJobActionError] = useState<string | null>(null)
   const [pendingCancelId, setPendingCancelId] = useState<string | null>(null)
-  const [refreshNotice, setRefreshNotice] = useState<string | null>(null)
   const jobsRef = useRef<JobSummary[]>([])
   const countsRef = useRef<Record<string, number>>({})
 
@@ -50,16 +50,19 @@ export function Jobs() {
     setSelectedIds(new Set())
   }, [status])
 
-  const refreshJobs = useCallback(() => {
-    api.jobs(status || undefined).then(next => {
-      setJobs(next)
-      jobsRef.current = next
-    }).catch(() => {})
-    api.jobCounts().then(next => {
-      setStatusCounts(next)
-      countsRef.current = next
-    }).catch(() => {})
-    setRefreshNotice(null)
+  const refreshJobs = useCallback(async () => {
+    try {
+      const [nextJobs, nextCounts] = await Promise.all([
+        api.jobs(status || undefined),
+        api.jobCounts(),
+      ])
+      setJobs(nextJobs)
+      setStatusCounts(nextCounts)
+      jobsRef.current = nextJobs
+      countsRef.current = nextCounts
+    } catch {
+      // ignore
+    }
   }, [status])
 
   useEffect(() => {
@@ -76,9 +79,14 @@ export function Jobs() {
         const prevCountsKey = JSON.stringify(countsRef.current)
         const nextCountsKey = JSON.stringify(nextCounts)
         if (prevJobsKey !== nextJobsKey || prevCountsKey !== nextCountsKey) {
-          setRefreshNotice(t('jobs_status_updated'))
+          setJobs(nextJobs)
+          setStatusCounts(nextCounts)
           jobsRef.current = nextJobs
           countsRef.current = nextCounts
+          setPage(currentPage => {
+            const totalPages = Math.max(1, Math.ceil(nextJobs.length / PAGE_SIZE))
+            return Math.min(currentPage, totalPages)
+          })
         }
       } catch { /* ignore */ }
     }, 5000)
@@ -110,7 +118,6 @@ export function Jobs() {
   const setStatusAndRemember = (s: string | null) => {
     setStatus(s)
     try { s ? localStorage.setItem(STORAGE_KEY, s) : localStorage.removeItem(STORAGE_KEY) } catch {}
-    setRefreshNotice(null)
   }
 
   const totalPages = Math.max(1, Math.ceil(jobs.length / PAGE_SIZE))
@@ -143,6 +150,20 @@ export function Jobs() {
     setConfirmDelete(j)
   }
 
+  const handlePauseResume = async (j: JobSummary) => {
+    setJobActionError(null)
+    try {
+      if (j.status === 'paused') {
+        await api.resumeJob(j.job_id)
+      } else {
+        await api.pauseJob(j.job_id)
+      }
+      await refreshJobs()
+    } catch (e: any) {
+      setJobActionError(e.message || String(e))
+    }
+  }
+
   const confirmDoDelete = async () => {
     if (!confirmDelete) return
     try {
@@ -152,9 +173,11 @@ export function Jobs() {
         setConfirmDelete(null)
         setDeleteError(null)
       } else {
+        setJobs(prev => prev.filter(job => job.job_id !== confirmDelete.job_id))
+        jobsRef.current = jobsRef.current.filter(job => job.job_id !== confirmDelete.job_id)
         setConfirmDelete(null)
         setDeleteError(null)
-        refreshJobs()
+        refreshCounts()
       }
     } catch (e: any) {
       setDeleteError(e.message || String(e))
@@ -164,10 +187,14 @@ export function Jobs() {
   const handleBatchDelete = async () => {
     if (!confirmBatchDelete) return
     try {
-      await api.batchDeleteJobs(confirmBatchDelete)
+      const result = await api.batchDeleteJobs(confirmBatchDelete)
+      if (result.deleted > 0) {
+        setJobs(prev => prev.filter(job => job.status !== confirmBatchDelete))
+        jobsRef.current = jobsRef.current.filter(job => job.status !== confirmBatchDelete)
+      }
       setConfirmBatchDelete(null)
       setDeleteError(null)
-      refreshJobs()
+      refreshCounts()
     } catch (e: any) {
       setDeleteError(e.message || String(e))
     }
@@ -177,11 +204,16 @@ export function Jobs() {
     const ids = Array.from(selectedIds)
     if (ids.length === 0) return
     try {
-      await api.batchDeleteJobIds(ids)
+      const deletedIds = new Set(ids)
+      const result = await api.batchDeleteJobIds(ids)
+      if (result.deleted > 0) {
+        setJobs(prev => prev.filter(job => !deletedIds.has(job.job_id)))
+        jobsRef.current = jobsRef.current.filter(job => !deletedIds.has(job.job_id))
+      }
       setSelectedIds(new Set())
       setConfirmSelectedDelete(false)
       setDeleteError(null)
-      refreshJobs()
+      refreshCounts()
     } catch (e: any) {
       setDeleteError(e.message || String(e))
     }
@@ -217,17 +249,7 @@ export function Jobs() {
           </button>
         )}
       </div>
-      {refreshNotice && (
-        <div className="panel notice-panel" style={{ marginTop: 12 }}>
-          <div className="notice-panel-body">
-            <span>{refreshNotice}</span>
-            <div className="notice-actions">
-              <button className="btn-subtle" onClick={() => setRefreshNotice(null)}>{t('dismiss')}</button>
-              <button className="btn-primary" onClick={refreshJobs}>{t('refresh_content')}</button>
-            </div>
-          </div>
-        </div>
-      )}
+      {jobActionError && <div className="panel" style={{ marginTop: 12, color: 'var(--status-error)' }}>{jobActionError}</div>}
       <div id="jobs-pagination-top" />
       <div className="table-wrap"><table style={{ tableLayout: 'fixed', width: '100%' }}>
         <thead><tr>
@@ -238,7 +260,7 @@ export function Jobs() {
           <th style={{ width: 80 }} className="hide-mobile">{t('stage')}</th>
           <th style={{ width: 80 }} className="hide-mobile">{t('progress')}</th>
           <th style={{ width: 110 }}>{t('created_at')}</th>
-          <th style={{ width: 60 }}>{t('action')}</th>
+          <th style={{ width: 110 }}>{t('action')}</th>
         </tr></thead>
         <tbody>
           {paged.map(j => (
@@ -250,7 +272,16 @@ export function Jobs() {
               <td className="nowrap hide-mobile">{j.stage || '-'}</td>
               <td className="nowrap hide-mobile">{j.progress_current}/{j.progress_total ?? '?'}</td>
               <td className="nowrap col-time">{formatDateTime(j.created_at)}</td>
-              <td><button className="btn-subtle" onClick={() => handleDelete(j)} style={{ fontSize: 11, padding: '2px 6px' }}>{t('delete')}</button></td>
+              <td>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {(j.status === 'queued' || j.status === 'running' || j.status === 'retrying' || j.status === 'paused') && (
+                    <button className="btn-subtle" onClick={() => handlePauseResume(j)} style={{ fontSize: 11, padding: '2px 6px' }}>
+                      {j.status === 'paused' ? t('resume') : t('pause')}
+                    </button>
+                  )}
+                  <button className="btn-subtle" onClick={() => handleDelete(j)} style={{ fontSize: 11, padding: '2px 6px' }}>{t('delete')}</button>
+                </div>
+              </td>
             </tr>
           ))}
         </tbody>

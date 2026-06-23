@@ -6,6 +6,7 @@ import pytest
 
 from yamibo_mcp.errors import RemoteFetchError
 from yamibo_mcp.yamibo.client import YamiboClient
+from yamibo_mcp.yamibo import runtime_limits
 
 
 class _TimeoutResponse:
@@ -63,3 +64,17 @@ def test_login_read_timeout_wraps_as_remote_fetch_error():
 
     with pytest.raises(RemoteFetchError, match="failed to read login response"):
         client._login(base_url="https://bbs.yamibo.com", referer="https://bbs.yamibo.com/")
+
+
+def test_cookie_request_throttle_is_shared_across_clients(monkeypatch):
+    runtime_limits._STATE_REGISTRY.clear()
+    values = iter([100.0, 100.0, 100.1, 100.1])
+    sleeps: list[float] = []
+
+    monkeypatch.setattr(runtime_limits.time, "monotonic", lambda: next(values))
+    monkeypatch.setattr(runtime_limits.time, "sleep", lambda value: sleeps.append(value))
+
+    runtime_limits.throttle_cookie_request("/tmp/shared.cookie", request_interval=1.0, request_interval_jitter=0.0)
+    runtime_limits.throttle_cookie_request("/tmp/shared.cookie", request_interval=1.0, request_interval_jitter=0.0)
+
+    assert sleeps == [pytest.approx(0.9)]

@@ -35,6 +35,7 @@ class Settings:
     web_port: int
     worker_id: str | None
     worker_poll_seconds: float
+    worker_parallelism: int
     worker_lease_seconds: int
     worker_heartbeat_seconds: int
     cookie_file: Path
@@ -43,6 +44,7 @@ class Settings:
     use_system_proxy: bool
     image_download_timeout_seconds: float
     image_download_retries: int
+    archive_thread_max_pages: int
     novel_author_only_max_pages: int
     novel_author_only_page_delay_seconds: float
     export_dir: Path
@@ -54,6 +56,17 @@ class Settings:
     llm_base_url: str
     llm_api_key: str | None
     llm_model: str
+    rag_enabled: bool
+    rag_base_url: str
+    rag_api_key: str | None
+    rag_embedding_provider: str
+    rag_embedding_model: str
+    rag_embedding_dimensions: int
+    rag_chunker_version: str
+    rag_min_chunk_chars: int
+    rag_max_chunk_chars: int
+    rag_hybrid_fts_candidates: int
+    rag_hybrid_vector_candidates: int
     title_parse_use_llm: bool
     common_scanlation_groups: list[str]
     common_authors: list[str]
@@ -119,7 +132,7 @@ def _cfg_account_pool(config: dict[str, object], *, config_dir: Path, data_dir: 
         weight = max(int(item.get("weight", 1) or 1), 1)
         request_interval_seconds = float(item.get("request_interval_seconds", 1.0) or 0.0)
         request_interval_jitter_seconds = float(item.get("request_interval_jitter_seconds", 0.5) or 0.0)
-        max_concurrent_leases = max(int(item.get("max_concurrent_leases", 1) or 1), 1)
+        max_concurrent_leases = max(int(item.get("max_concurrent_leases", 5) or 5), 1)
         login_mode = str(item.get("login_mode") or "refresh_on_login_required").strip() or "refresh_on_login_required"
         identities.append(
             AccountConfig(
@@ -176,6 +189,17 @@ def load_settings() -> Settings:
         )
     ).expanduser()
     account_pool = _cfg_account_pool(config, config_dir=config_path.parent, data_dir=data_dir)
+    llm_base_url = str(
+        os.environ.get(
+            "YAMIBO_LLM_BASE_URL",
+            str(_cfg_value(config, "llm", "base_url", "https://api.openai.com/v1")),
+        )
+    )
+    llm_api_key = os.environ.get("YAMIBO_LLM_API_KEY") or (
+        None
+        if _cfg_value(config, "llm", "api_key", None) in {None, ""}
+        else str(_cfg_value(config, "llm", "api_key", None))
+    )
     return Settings(
         project_root=root,
         config_path=config_path,
@@ -187,6 +211,10 @@ def load_settings() -> Settings:
         worker_id=os.environ.get("YAMIBO_WORKER_ID") or None,
         worker_poll_seconds=float(
             os.environ.get("YAMIBO_WORKER_POLL_SECONDS", str(_cfg_value(config, "worker", "poll_seconds", 2)))
+        ),
+        worker_parallelism=max(
+            int(os.environ.get("YAMIBO_WORKER_PARALLELISM", str(_cfg_value(config, "worker", "parallelism", 2)))),
+            1,
         ),
         worker_lease_seconds=int(
             os.environ.get("YAMIBO_WORKER_LEASE_SECONDS", str(_cfg_value(config, "worker", "lease_seconds", 60)))
@@ -219,6 +247,12 @@ def load_settings() -> Settings:
             os.environ.get(
                 "YAMIBO_IMAGE_DOWNLOAD_RETRIES",
                 str(_cfg_value(config, "yamibo", "image_download_retries", 2)),
+            )
+        ),
+        archive_thread_max_pages=int(
+            os.environ.get(
+                "YAMIBO_ARCHIVE_THREAD_MAX_PAGES",
+                str(_cfg_value(config, "yamibo", "archive_thread_max_pages", 50)),
             )
         ),
         novel_author_only_max_pages=int(
@@ -261,22 +295,79 @@ def load_settings() -> Settings:
             )
         ).lower()
         in {"1", "true", "yes", "on"},
-        llm_base_url=str(
-            os.environ.get(
-                "YAMIBO_LLM_BASE_URL",
-                str(_cfg_value(config, "llm", "base_url", "https://api.openai.com/v1")),
-            )
-        ),
-        llm_api_key=os.environ.get("YAMIBO_LLM_API_KEY")
-        or (
-            None
-            if _cfg_value(config, "llm", "api_key", None) in {None, ""}
-            else str(_cfg_value(config, "llm", "api_key", None))
-        ),
+        llm_base_url=llm_base_url,
+        llm_api_key=llm_api_key,
         llm_model=str(
             os.environ.get(
                 "YAMIBO_LLM_MODEL",
                 str(_cfg_value(config, "llm", "model", "gpt-4.1-mini")),
+            )
+        ),
+        rag_enabled=str(
+            os.environ.get(
+                "YAMIBO_RAG_ENABLED",
+                str(_cfg_value(config, "rag", "enabled", True)),
+            )
+        ).lower()
+        in {"1", "true", "yes", "on"},
+        rag_base_url=str(
+            os.environ.get(
+                "YAMIBO_RAG_BASE_URL",
+                str(_cfg_value(config, "rag", "base_url", llm_base_url)),
+            )
+        ),
+        rag_api_key=os.environ.get("YAMIBO_RAG_API_KEY")
+        or (
+            None
+            if _cfg_value(config, "rag", "api_key", llm_api_key) in {None, ""}
+            else str(_cfg_value(config, "rag", "api_key", llm_api_key))
+        ),
+        rag_embedding_provider=str(
+            os.environ.get(
+                "YAMIBO_RAG_EMBEDDING_PROVIDER",
+                str(_cfg_value(config, "rag", "embedding_provider", "openai")),
+            )
+        ),
+        rag_embedding_model=str(
+            os.environ.get(
+                "YAMIBO_RAG_EMBEDDING_MODEL",
+                str(_cfg_value(config, "rag", "embedding_model", "text-embedding-3-small")),
+            )
+        ),
+        rag_embedding_dimensions=int(
+            os.environ.get(
+                "YAMIBO_RAG_EMBEDDING_DIMENSIONS",
+                str(_cfg_value(config, "rag", "embedding_dimensions", 512)),
+            )
+        ),
+        rag_chunker_version=str(
+            os.environ.get(
+                "YAMIBO_RAG_CHUNKER_VERSION",
+                str(_cfg_value(config, "rag", "chunker_version", "rag-chunker-v1")),
+            )
+        ),
+        rag_min_chunk_chars=int(
+            os.environ.get(
+                "YAMIBO_RAG_MIN_CHUNK_CHARS",
+                str(_cfg_value(config, "rag", "min_chunk_chars", 20)),
+            )
+        ),
+        rag_max_chunk_chars=int(
+            os.environ.get(
+                "YAMIBO_RAG_MAX_CHUNK_CHARS",
+                str(_cfg_value(config, "rag", "max_chunk_chars", 900)),
+            )
+        ),
+        rag_hybrid_fts_candidates=int(
+            os.environ.get(
+                "YAMIBO_RAG_HYBRID_FTS_CANDIDATES",
+                str(_cfg_value(config, "rag", "hybrid_fts_candidates", 50)),
+            )
+        ),
+        rag_hybrid_vector_candidates=int(
+            os.environ.get(
+                "YAMIBO_RAG_HYBRID_VECTOR_CANDIDATES",
+                str(_cfg_value(config, "rag", "hybrid_vector_candidates", 50)),
             )
         ),
         title_parse_use_llm=str(

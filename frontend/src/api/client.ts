@@ -37,6 +37,7 @@ export interface JobSummary {
   worker_id: string | null
   error_code: string | null
   error_message: string | null
+  paused_at: string | null
   created_at: string
   updated_at: string
   finished_at: string | null
@@ -90,6 +91,21 @@ export interface ThreadDetail extends ThreadSummary {
   chapter_index: number | null
   group_name: string | null
   author_guess: string | null
+  rag_summary?: {
+    enabled: boolean
+    chunk_count: number
+    indexed_chunk_count: number
+    pending_chunk_count: number
+    failed_chunk_count: number
+    last_indexed_at: string | null
+    latest_job: {
+      job_id: string
+      status: string
+      stage: string | null
+      updated_at: string
+      created_at: string
+    } | null
+  }
 }
 
 export interface ArchiveSummary {
@@ -208,6 +224,147 @@ export interface FontAsset {
   url: string
 }
 
+export interface RagOverview {
+  enabled: boolean
+  config: {
+    embedding_provider: string
+    embedding_model: string
+    embedding_dimensions: number
+    chunker_version: string
+    min_chunk_chars: number
+    max_chunk_chars: number
+    hybrid_fts_candidates: number
+    hybrid_vector_candidates: number
+  }
+  index_meta: Record<string, string>
+  counts: {
+    thread_total: number
+    indexed_threads: number
+    unindexed_threads: number
+    total_chunks: number
+    indexed_chunks: number
+    pending_chunks: number
+    failed_chunks: number
+  }
+  forum_breakdown: Array<{
+    forum_id: number
+    name: string
+    name_en: string | null
+    content_kind: string
+    thread_count: number
+    indexed_thread_count: number
+    chunk_count: number
+  }>
+  recent_jobs: JobSummary[]
+}
+
+export interface RagThreadRow {
+  tid: number
+  raw_title: string
+  display_title: string
+  publisher: string | null
+  sync_time: string | null
+  archive_status: string | null
+  forum_id: number | null
+  content_kind: string | null
+  category: string | null
+  rag_chunk_count: number
+  rag_indexed_chunk_count: number
+  rag_pending_chunk_count: number
+  rag_failed_chunk_count: number
+  rag_last_indexed_at: string | null
+  rag_index_state: string
+}
+
+export interface RagThreadListResponse {
+  index_state: string
+  rag_status: string
+  page: number
+  page_size: number
+  total_count: number
+  total_pages: number
+  items: RagThreadRow[]
+}
+
+export interface RagSearchItem {
+  chunk_id: string
+  tid: number
+  pid: number | null
+  floor_no: number | null
+  display_title: string
+  publisher: string | null
+  pub_time: string | null
+  content_kind: string | null
+  snippet: string
+  score: number
+  score_parts: {
+    keyword: number
+    vector: number
+    metadata: number
+  }
+  source_uri: string
+}
+
+export interface RagSearchResponse {
+  query: string
+  mode: string
+  top_k: number
+  count: number
+  items: RagSearchItem[]
+}
+
+export interface AgentWireResult<T> {
+  ok: boolean
+  data?: T
+  error?: {
+    code: string
+    message: string
+    agent_hint: string
+    retryable?: boolean
+  }
+  warnings?: string[]
+}
+
+export interface RagBatchIndexResult {
+  ok: boolean
+  job_type?: string
+  target_count: number
+  created_count: number
+  reused_count: number
+  created_job_ids: string[]
+  reused_job_ids: string[]
+  tids: number[]
+}
+
+export interface ThreadBatchArchiveResult {
+  ok: boolean
+  job_type: string
+  target_count: number
+  created_count: number
+  reused_count: number
+  created_job_ids: string[]
+  reused_job_ids: string[]
+  tids: number[]
+}
+
+export interface ThreadBatchDeleteResult {
+  ok: boolean
+  deleted: number
+  tids: number[]
+  deleted_series_ids?: number[]
+}
+
+export interface ThreadBatchResyncResult {
+  ok: boolean
+  job_type: string
+  target_count: number
+  created_count: number
+  reused_count: number
+  created_job_ids: string[]
+  reused_job_ids: string[]
+  tids: number[]
+}
+
 // API methods
 export const api = {
   dashboard: (limit?: number) => fetchJson<DashboardData>(`/dashboard${limit ? `?limit=${limit}` : ''}`),
@@ -255,12 +412,45 @@ export const api = {
     const s = qs.toString()
     return fetchJson<{ entries: LogEntry[]; count: number }>(`/logs${s ? `?${s}` : ''}`)
   },
+  ragOverview: () => fetchJson<RagOverview>('/rag/overview'),
+  ragThreads: (params?: { q?: string; forum_id?: number | 'all'; index_state?: string; rag_status?: string; page?: number; page_size?: number }) => {
+    const qs = new URLSearchParams()
+    if (params?.q) qs.set('q', params.q)
+    if (params?.forum_id != null && params.forum_id !== 'all') qs.set('forum_id', String(params.forum_id))
+    if (params?.index_state) qs.set('index_state', params.index_state)
+    if (params?.rag_status && params.rag_status !== 'all') qs.set('rag_status', params.rag_status)
+    if (params?.page) qs.set('page', String(params.page))
+    if (params?.page_size) qs.set('page_size', String(params.page_size))
+    const s = qs.toString()
+    return fetchJson<RagThreadListResponse>(`/rag/threads${s ? `?${s}` : ''}`)
+  },
+  createRagIndex: (data: { tid?: number; force?: boolean; embedding_dimensions?: number }) =>
+    postJson<AgentWireResult<{ job_id: string; tid: number | null; created: boolean; job_type: string }>>('/rag/index', data),
+  createRagIndexBatch: (data: { tids?: number[]; q?: string; forum_id?: number | null; index_state?: string; rag_status?: string; force?: boolean }) =>
+    postJson<RagBatchIndexResult>('/rag/index-batch', data),
+  createThreadArchiveBatch: (data: { tids: number[]; forum_id?: number | null; base_url?: string | null }) =>
+    postJson<ThreadBatchArchiveResult>('/threads/archive-batch', data),
+  ragSearch: (data: {
+    query: string
+    mode: string
+    top_k: number
+    forum_id?: number | null
+    content_kind?: string | null
+    tid?: number | null
+    series_id?: number | null
+    floor_start?: number | null
+    floor_end?: number | null
+  }) => postJson<AgentWireResult<RagSearchResponse>>('/rag/search', data),
   resyncThread: (tid: number, forum_id?: number) => postJson<{ ok: boolean; job_id: string }>('/threads/resync', { tid, ...(forum_id ? { forum_id } : {}) }),
   exportThread: (tid: number, strategy?: string, forum_id?: number) => postJson<{ ok: boolean; job_id: string }>('/threads/export', { tid, strategy, ...(forum_id ? { forum_id } : {}) }),
   deleteThread: (tid: number) => postJson<{ ok: boolean; deleted_series_id?: number }>('/threads/delete', { tid }),
+  deleteThreads: (tids: number[]) => postJson<ThreadBatchDeleteResult>('/threads/batch-delete', { tids }),
+  resyncThreads: (tids: number[], base_url?: string | null) => postJson<ThreadBatchResyncResult>('/threads/resync-batch', { tids, ...(base_url ? { base_url } : {}) }),
   deleteJob: (job_id: string) => postJson<{ ok: boolean }>('/jobs/delete', { job_id }),
   batchDeleteJobs: (status: string) => postJson<{ ok: boolean; deleted: number }>('/jobs/batch-delete', { status }),
   batchDeleteJobIds: (jobIds: string[]) => postJson<{ ok: boolean; deleted: number }>('/jobs/batch-delete-ids', { job_ids: jobIds }),
   safeDeleteJob: (jobId: string) => postJson<{ ok: boolean; action: string; job_id: string }>('/jobs/safe-delete', { job_id: jobId }),
+  pauseJob: (jobId: string) => postJson<{ ok: boolean; job_id: string; status: string }>('/jobs/pause', { job_id: jobId }),
+  resumeJob: (jobId: string) => postJson<{ ok: boolean; job_id: string; status: string }>('/jobs/resume', { job_id: jobId }),
   updateChapter: (tid: number, chapter_name: string | null, chapter_index: number | null, author_guess?: string | null, group_name?: string | null) => postJson<{ ok: boolean }>('/threads/update-chapter', { tid, chapter_name, chapter_index, author_guess, group_name }),
 }

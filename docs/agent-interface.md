@@ -1,6 +1,6 @@
 # Agent 接口说明
 
-> 版本：0.8.1 | 更新日期：2026-06-23
+> 版本：0.9.0 | 更新日期：2026-06-24
 
 ## 概览
 
@@ -42,11 +42,15 @@
 - `search_forum_threads`
 - `inspect_remote_thread`
 - `create_thread_archive_job`
+- `create_thread_archive_batch_jobs`
 - `ensure_thread_archived`
 - `read_archived_thread`
 - `check_thread_updates`
 - `create_thread_update_job`
 - `create_thread_export_job`
+- `create_rag_index_job`
+- `create_rag_index_batch_jobs`
+- `search_archived_content`
 - `read_job`
 - `wait_for_job`
 - `read_job_events`
@@ -113,6 +117,7 @@
 | `queued` | 任务已创建，等待 daemon 抢占 | 继续 `read_job` 轮询，不要重复创建同类任务 |
 | `running` | daemon 已抢占，正在执行 | 继续 `read_job`；需要排障时加读 `read_job_events` |
 | `retrying` | 任务进入内部重试流程 | 保持轮询，避免并行创建第二个同类任务 |
+| `paused` | 任务已暂停，等待恢复 | 先由用户恢复，再继续轮询；不要重复创建 |
 | `succeeded` | 任务成功完成 | 立即切换到 `read_archived_thread` 或导出读取 |
 | `partial` | 主体成功，但有缺图或部分资产失败 | 允许读取本地归档，同时结合 `diagnostics` 和 `read_job_events` 判断是否需要补救 |
 | `failed` | 任务失败 | 先读 `read_job_events` 和错误码，再决定是否重建任务 |

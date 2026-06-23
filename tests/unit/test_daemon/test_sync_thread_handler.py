@@ -34,6 +34,7 @@ def _make_settings(tmp_path: Path) -> SimpleNamespace:
         image_download_timeout_seconds=5,
         image_download_retries=0,
         worker_lease_seconds=300,
+        archive_thread_max_pages=50,
         novel_author_only_max_pages=5,
         novel_author_only_page_delay_seconds=0.0,
         novel_txt_include_filtered_notes=False,
@@ -193,3 +194,228 @@ def test_sync_thread_author_only_mode_merges_multiple_pages(db, tmp_path, monkey
     assert [floor.pid for floor in merged.floors] == [1001, 1002]
     assert [floor.floor_no for floor in merged.floors] == [1, 2]
     assert "authorid=100" in str(merged.url)
+
+
+def test_sync_thread_fetches_multiple_pages_for_non_novel_threads(db, tmp_path, monkeypatch):
+    settings = _make_settings(tmp_path)
+    settings.archive_thread_max_pages = 50
+    repo = JobsRepository(db)
+    job = repo.create("sync_thread", tid=42, payload={"tid": 42, "forum_id": 30})
+    job = repo.acquire(job.job_id, "worker-1", 300)
+
+    page1 = _make_snapshot()
+    page2 = ThreadSnapshot(
+        tid=42,
+        url="https://bbs.yamibo.com/forum.php?mod=viewthread&tid=42&page=2",
+        page_type="thread_detail",
+        raw_title=page1.raw_title,
+        display_title=page1.display_title,
+        title=page1.title,
+        publisher=page1.publisher,
+        publisher_uid=page1.publisher_uid,
+        pub_time=page1.pub_time,
+        permission=0,
+        floors=[
+            FloorSnapshot(
+                pid=1002,
+                tid=42,
+                floor_no=1,
+                publisher="u2",
+                content="第二页正文",
+                pub_time="2025-01-02 00:00",
+                has_images=False,
+                image_urls=[],
+            )
+        ],
+        image_count=0,
+    )
+    page3 = ThreadSnapshot(
+        tid=42,
+        url="https://bbs.yamibo.com/forum.php?mod=viewthread&tid=42&page=3",
+        page_type="thread_detail",
+        raw_title=page1.raw_title,
+        display_title=page1.display_title,
+        title=page1.title,
+        publisher=page1.publisher,
+        publisher_uid=page1.publisher_uid,
+        pub_time=page1.pub_time,
+        permission=0,
+        floors=[
+            FloorSnapshot(
+                pid=1003,
+                tid=42,
+                floor_no=1,
+                publisher="u3",
+                content="第三页正文",
+                pub_time="2025-01-03 00:00",
+                has_images=False,
+                image_urls=[],
+            )
+        ],
+        image_count=0,
+    )
+    snapshots_by_url = {snap.url: snap for snap in (page1, page2, page3)}
+
+    class _FakeClient:
+        headers = {}
+        cookie_jar = None
+        use_system_proxy = False
+
+        def fetch_thread(self, **kwargs):
+            return SimpleNamespace(html="page-1", final_url=page1.url)
+
+        def fetch_thread_pages(self, **kwargs):
+            assert kwargs["tid"] == 42
+            assert kwargs["max_pages"] == 50
+            return (
+                [
+                    SimpleNamespace(html="page-1", final_url=page1.url),
+                    SimpleNamespace(html="page-2", final_url=page2.url),
+                    SimpleNamespace(html="page-3", final_url=page3.url),
+                ],
+                3,
+                "last_page",
+            )
+
+    monkeypatch.setattr("yamibo_mcp.daemon.handlers.sync_thread.YamiboClient", lambda **kwargs: _FakeClient())
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.sync_thread.parse_thread_snapshot",
+        lambda html, url=None, tid=None: snapshots_by_url[url],
+    )
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.sync_thread.refine_title_parse_with_llm",
+        lambda settings, raw_title, parsed: (parsed, None),
+    )
+    monkeypatch.setattr("yamibo_mcp.daemon.handlers.sync_thread.write_staging_title_parse_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr("yamibo_mcp.daemon.handlers.sync_thread.write_staging_snapshot", lambda *args, **kwargs: None)
+    monkeypatch.setattr("yamibo_mcp.daemon.handlers.sync_thread.update_title_hints", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.sync_thread.materialize_thread",
+        lambda *args, **kwargs: (
+            settings.data_dir / "threads/42/context.md",
+            settings.data_dir / "threads/42/metadata.json",
+        ),
+    )
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.sync_thread.download_images_to_staging",
+        lambda *args, **kwargs: ImageDownloadResult(
+            downloaded_relpaths={},
+            non_export_relpaths={},
+            shared_relpaths={},
+            skipped_relpaths={},
+            downloaded_count=0,
+            non_export_count=0,
+            shared_downloaded_count=0,
+            missing_urls=[],
+            missing_shared_urls=[],
+        ),
+    )
+
+    handle_sync_thread(repo, job, "worker-1", 300, settings)
+
+    thread_row = ThreadsRepository(db).get_thread(42)
+    finished_job = repo.get(job.job_id)
+
+    assert thread_row is not None
+    assert thread_row["forum_id"] == 30
+    assert [row["pid"] for row in ThreadsRepository(db).list_floors(42)] == [1001, 1002, 1003]
+    assert finished_job.artifacts["pages_fetched"] == 3
+    assert finished_job.artifacts["stopped_reason"] == "last_page"
+    assert finished_job.artifacts["archive_signature"]["floor_count"] == 3
+
+
+def test_sync_thread_respects_archive_thread_max_pages_for_non_novel_threads(db, tmp_path, monkeypatch):
+    settings = _make_settings(tmp_path)
+    settings.archive_thread_max_pages = 2
+    repo = JobsRepository(db)
+    job = repo.create("sync_thread", tid=42, payload={"tid": 42, "forum_id": 30})
+    job = repo.acquire(job.job_id, "worker-1", 300)
+
+    page1 = _make_snapshot()
+    page2 = ThreadSnapshot(
+        tid=42,
+        url="https://bbs.yamibo.com/forum.php?mod=viewthread&tid=42&page=2",
+        page_type="thread_detail",
+        raw_title=page1.raw_title,
+        display_title=page1.display_title,
+        title=page1.title,
+        publisher=page1.publisher,
+        publisher_uid=page1.publisher_uid,
+        pub_time=page1.pub_time,
+        permission=0,
+        floors=[
+            FloorSnapshot(
+                pid=1002,
+                tid=42,
+                floor_no=1,
+                publisher="u2",
+                content="第二页正文",
+                pub_time="2025-01-02 00:00",
+                has_images=False,
+                image_urls=[],
+            )
+        ],
+        image_count=0,
+    )
+    snapshots_by_url = {snap.url: snap for snap in (page1, page2)}
+
+    class _FakeClient:
+        headers = {}
+        cookie_jar = None
+        use_system_proxy = False
+
+        def fetch_thread(self, **kwargs):
+            return SimpleNamespace(html="page-1", final_url=page1.url)
+
+        def fetch_thread_pages(self, **kwargs):
+            assert kwargs["max_pages"] == 2
+            return (
+                [
+                    SimpleNamespace(html="page-1", final_url=page1.url),
+                    SimpleNamespace(html="page-2", final_url=page2.url),
+                ],
+                8,
+                "max_pages",
+            )
+
+    monkeypatch.setattr("yamibo_mcp.daemon.handlers.sync_thread.YamiboClient", lambda **kwargs: _FakeClient())
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.sync_thread.parse_thread_snapshot",
+        lambda html, url=None, tid=None: snapshots_by_url[url],
+    )
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.sync_thread.refine_title_parse_with_llm",
+        lambda settings, raw_title, parsed: (parsed, None),
+    )
+    monkeypatch.setattr("yamibo_mcp.daemon.handlers.sync_thread.write_staging_title_parse_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr("yamibo_mcp.daemon.handlers.sync_thread.write_staging_snapshot", lambda *args, **kwargs: None)
+    monkeypatch.setattr("yamibo_mcp.daemon.handlers.sync_thread.update_title_hints", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.sync_thread.materialize_thread",
+        lambda *args, **kwargs: (
+            settings.data_dir / "threads/42/context.md",
+            settings.data_dir / "threads/42/metadata.json",
+        ),
+    )
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.sync_thread.download_images_to_staging",
+        lambda *args, **kwargs: ImageDownloadResult(
+            downloaded_relpaths={},
+            non_export_relpaths={},
+            shared_relpaths={},
+            skipped_relpaths={},
+            downloaded_count=0,
+            non_export_count=0,
+            shared_downloaded_count=0,
+            missing_urls=[],
+            missing_shared_urls=[],
+        ),
+    )
+
+    handle_sync_thread(repo, job, "worker-1", 300, settings)
+
+    finished_job = repo.get(job.job_id)
+
+    assert finished_job.artifacts["pages_fetched"] == 2
+    assert finished_job.artifacts["stopped_reason"] == "max_pages"
+    assert finished_job.artifacts["archive_signature"]["floor_count"] == 2

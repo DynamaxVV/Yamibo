@@ -14,6 +14,7 @@ export function JobDetail() {
   const [events, setEvents] = useState<JobEvent[]>([])
   const [error, setError] = useState<string | null>(null)
   const [refreshNotice, setRefreshNotice] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
   const jobRef = useRef<JobSummary | null>(null)
 
   useEffect(() => {
@@ -52,6 +53,7 @@ export function JobDetail() {
     ['ID', <span className="mono" style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{job.job_id}</span>],
     [t('status'), <Badge status={job.status} />],
     [t('stage'), job.stage || '-'],
+    [t('paused_at'), formatDateTime(job.paused_at)],
     [t('tid'), job.tid ? <Link to={`/threads/${job.tid}`}>{job.tid}</Link> : '-'],
     [t('progress'), `${job.progress_current}/${job.progress_total ?? '?'}`],
     [t('worker'), job.worker_id || '-'],
@@ -75,7 +77,31 @@ export function JobDetail() {
 
   return (
     <>
-      <h2>{t('job_detail')}</h2>
+      <div className="threads-filter-row" style={{ marginBottom: 12 }}>
+        <h2 style={{ margin: 0 }}>{t('job_detail')}</h2>
+        {(job.status === 'queued' || job.status === 'running' || job.status === 'retrying' || job.status === 'paused') && (
+          <div className="threads-filter-actions">
+            <button className="btn-subtle" onClick={async () => {
+              setActionError(null)
+              try {
+                if (job.status === 'paused') {
+                  await api.resumeJob(job.job_id)
+                } else {
+                  await api.pauseJob(job.job_id)
+                }
+                const next = await api.job(id)
+                setJob(next)
+                jobRef.current = next
+              } catch (e: any) {
+                setActionError(e.message || String(e))
+              }
+            }}>
+              {job.status === 'paused' ? t('resume') : t('pause')}
+            </button>
+          </div>
+        )}
+      </div>
+      {actionError && <div className="panel" style={{ marginBottom: 12, color: 'var(--status-error)' }}>{actionError}</div>}
       <div className="table-wrap"><table>
         <tbody>{rows.map(([k, v], i) => <tr key={i}><th style={{ width: 120 }}>{k}</th><td style={{ textAlign: 'left' }}>{v}</td></tr>)}</tbody>
       </table></div>

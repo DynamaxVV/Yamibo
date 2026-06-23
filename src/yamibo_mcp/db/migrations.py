@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   max_retries INTEGER NOT NULL DEFAULT 3,
   resumable INTEGER NOT NULL DEFAULT 1,
   cancel_requested_at TEXT,
+  paused_at TEXT,
   error_code TEXT,
   error_message TEXT,
   artifacts_json TEXT NOT NULL DEFAULT '{}',
@@ -212,6 +213,43 @@ CREATE TABLE IF NOT EXISTS sync_runs (
   errors_json TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS rag_index_meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS rag_chunks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  chunk_id TEXT NOT NULL UNIQUE,
+  tid INTEGER NOT NULL REFERENCES threads(tid),
+  pid INTEGER,
+  floor_no INTEGER,
+  chunk_type TEXT NOT NULL,
+  forum_id INTEGER,
+  content_kind TEXT,
+  series_id INTEGER,
+  series_key TEXT,
+  chapter_index REAL,
+  publisher TEXT,
+  pub_time TEXT,
+  title TEXT,
+  metadata_text TEXT,
+  text TEXT NOT NULL,
+  text_hash TEXT NOT NULL,
+  source_uri TEXT NOT NULL,
+  embedding_model TEXT,
+  embedding_dimensions INTEGER,
+  embedding_status TEXT NOT NULL DEFAULT 'pending',
+  indexed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_rag_chunks_tid ON rag_chunks(tid);
+CREATE INDEX IF NOT EXISTS idx_rag_chunks_pid ON rag_chunks(pid);
+CREATE INDEX IF NOT EXISTS idx_rag_chunks_series ON rag_chunks(series_id);
+CREATE INDEX IF NOT EXISTS idx_rag_chunks_forum_kind ON rag_chunks(forum_id, content_kind);
+CREATE INDEX IF NOT EXISTS idx_rag_chunks_embedding_status ON rag_chunks(embedding_status);
 """
 
 FTS_SQL = """
@@ -223,6 +261,13 @@ CREATE VIRTUAL TABLE IF NOT EXISTS thread_fts USING fts5(
   group_name,
   content_preview,
   catalog_text
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS rag_chunks_fts USING fts5(
+  chunk_id UNINDEXED,
+  title,
+  metadata_text,
+  body
 );
 """
 
@@ -236,6 +281,7 @@ def migrate(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "threads", "content_kind", "TEXT")
     _ensure_column(conn, "threads", "primary_media_type", "TEXT")
     _ensure_column(conn, "threads", "category", "TEXT")
+    _ensure_column(conn, "jobs", "paused_at", "TEXT")
     _backfill_thread_forum_fields(conn)
     _ensure_column(conn, "forums", "name_en", "TEXT")
     _ensure_column(conn, "floors", "quote_text", "TEXT")

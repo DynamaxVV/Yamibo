@@ -1,6 +1,6 @@
 # 百合会归档助手 WebUI 功能与设计文档
 
-> 版本：0.8.1 | 更新日期：2026-06-23
+> 版本：0.9.0 | 更新日期：2026-06-24
 
 ## 1. 技术架构
 
@@ -27,7 +27,7 @@ frontend/
 │   ├── themes/                # 4 套主题定义
 │   ├── context/ThemeContext.tsx # 主题 provider + localStorage
 │   ├── components/            # 共享组件
-│   └── pages/                 # 10 个页面
+│   └── pages/                 # 11 个页面
 ├── public/fonts/              # Space Grotesk woff2
 └── vite.config.ts
 ```
@@ -149,6 +149,19 @@ frontend/
 | 格式 | 精确到毫秒的时间戳 + 级别（颜色区分）+ 日志内容 |
 | 等宽字体 | monospace 显示 |
 
+### 2.12 RAG 管理 (`/rag`)
+
+| 功能 | 说明 |
+|------|------|
+| 索引统计 | 展示已索引贴子数、chunk 总数、已写向量数、失败数 |
+| 配置卡片 | 展示 embedding 模型、向量维度、chunker 版本、chunk 字符范围 |
+| 索引元数据 | 折叠查看 `rag_index_meta` 中的当前索引信息 |
+| 手动建索引 | 输入 TID，创建单贴 `rag_index` job，可选忽略现有 live job |
+| 版块分布 | 展示各版块的 thread_count / indexed_thread_count / chunk_count |
+| 贴子索引表 | 支持按标题/发布者搜索、按版块筛选、按 RAG 状态筛选，并支持单贴“立即索引” |
+| 本地检索调试 | 直接发起 `keyword / vector / hybrid` 检索，展示 snippet、引用 URI 和 score_parts |
+| 最近 RAG 任务 | 展示最近 `rag_index` 任务的状态、阶段和更新时间 |
+
 ---
 
 ## 3. 主题系统
@@ -258,8 +271,12 @@ frontend/
 | GET | `/api/forums` | 版块列表（含贴子计数） |
 | GET | `/api/exports` | 导出列表 |
 | GET | `/api/review` | 待复核标题 + 系列 |
+| GET | `/api/rag/overview` | RAG 配置、索引元数据、统计、版块分布、最近 `rag_index` 任务 |
+| GET | `/api/rag/threads` | 带 RAG chunk/embedding 状态的贴子列表（`?q=&forum_id=&rag_status=`） |
 | GET | `/api/debug/info` | 系统信息 + 统计 |
 | GET | `/api/logs` | 实时日志（`?limit=&since=`） |
+| POST | `/api/rag/index` | 创建 `rag_index` 任务 |
+| POST | `/api/rag/search` | 调用本地 `search_archived_content`，返回 evidence 结果 |
 | POST | `/api/review/confirm-title` | 确认标题 |
 | POST | `/api/review/confirm-series` | 确认系列 |
 | POST | `/api/review/merge-series` | 合并系列 |

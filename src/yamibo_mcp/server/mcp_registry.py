@@ -4,7 +4,10 @@ from yamibo_mcp.server.agent_tools import (
     browse_forum_page,
     check_thread_updates,
     create_thread_archive_job,
+    create_thread_archive_batch_jobs,
     create_thread_export_job,
+    create_rag_index_job,
+    create_rag_index_batch_jobs,
     create_thread_update_job,
     ensure_thread_archived,
     inspect_remote_thread,
@@ -12,6 +15,7 @@ from yamibo_mcp.server.agent_tools import (
     read_forum_profiles,
     read_job,
     read_job_events,
+    search_archived_content,
     wait_for_job,
     search_forum_threads,
 )
@@ -136,6 +140,14 @@ def register_agent_tools(server) -> None:
     ) -> dict[str, object]:
         return create_thread_archive_job(html_path=html_path, tid=tid, url=url, base_url=base_url, forum_id=forum_id)
 
+    @server.tool(name="create_thread_archive_batch_jobs", description="Create background archive jobs for multiple thread ids. Side effect: writes queued jobs to SQLite; daemon execution is required.")
+    def _create_thread_archive_batch_jobs(
+        tids: list[int],
+        base_url: str | None = None,
+        forum_id: int | None = None,
+    ) -> dict[str, object]:
+        return create_thread_archive_batch_jobs(tids=tids, base_url=base_url, forum_id=forum_id)
+
     @server.tool(name="ensure_thread_archived", description="Local archive check plus job creation fallback. Returns local archive state if present, otherwise creates an archive job.")
     def _ensure_thread_archived(tid: int, base_url: str | None = None, forum_id: int | None = None) -> dict[str, object]:
         return ensure_thread_archived(tid=tid, base_url=base_url, forum_id=forum_id)
@@ -169,6 +181,46 @@ def register_agent_tools(server) -> None:
     @server.tool(name="create_thread_export_job", description="Create a background export job for a local archive. Side effect: writes a queued job to SQLite.")
     def _create_thread_export_job(tid: int, strategy: str | None = None) -> dict[str, object]:
         return create_thread_export_job(tid=tid, strategy=strategy)
+
+    @server.tool(name="create_rag_index_job", description="Create a background RAG indexing job for one archived thread. Side effect: writes a queued job to SQLite.")
+    def _create_rag_index_job(
+        tid: int | None = None,
+        force: bool = False,
+        embedding_dimensions: int | None = None,
+    ) -> dict[str, object]:
+        return create_rag_index_job(tid=tid, force=force, embedding_dimensions=embedding_dimensions)
+
+    @server.tool(name="create_rag_index_batch_jobs", description="Create background RAG indexing jobs for multiple archived threads. Side effect: writes queued jobs to SQLite.")
+    def _create_rag_index_batch_jobs(
+        tids: list[int],
+        force: bool = False,
+        embedding_dimensions: int | None = None,
+    ) -> dict[str, object]:
+        return create_rag_index_batch_jobs(tids=tids, force=force, embedding_dimensions=embedding_dimensions)
+
+    @server.tool(name="search_archived_content", description="Search local archived text content with keyword, vector, or hybrid ranking. Never fetches remote forum data.")
+    def _search_archived_content(
+        query: str,
+        mode: str = "hybrid",
+        top_k: int = 10,
+        forum_id: int | None = None,
+        content_kind: str | None = None,
+        tid: int | None = None,
+        series_id: int | None = None,
+        floor_start: int | None = None,
+        floor_end: int | None = None,
+    ) -> dict[str, object]:
+        return search_archived_content(
+            query=query,
+            mode=mode,
+            top_k=top_k,
+            forum_id=forum_id,
+            content_kind=content_kind,
+            tid=tid,
+            series_id=series_id,
+            floor_start=floor_start,
+            floor_end=floor_end,
+        )
 
     @server.tool(name="read_job", description="Read compact job status from the local SQLite queue.")
     def _read_job(job_id: str) -> dict[str, object]:

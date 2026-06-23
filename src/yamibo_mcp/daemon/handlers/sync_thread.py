@@ -22,6 +22,7 @@ from yamibo_mcp.storage.staging import write_staging_failure, write_staging_snap
 from yamibo_mcp.storage.thread_archive import materialize_thread
 from yamibo_mcp.services.title_hints import update_title_hints
 from yamibo_mcp.services.title_llm import refine_title_parse_with_llm, title_parse_to_dict
+from yamibo_mcp.daemon.heartbeat import HeartbeatPacer
 from yamibo_mcp.yamibo.account_pool import borrow_yamibo_client, has_configured_account_pool
 from yamibo_mcp.yamibo.client import YamiboClient
 from yamibo_mcp.yamibo.parsers.thread_detail import parse_thread_snapshot
@@ -35,9 +36,18 @@ class JobCancelled(Exception):
     pass
 
 
+class JobPaused(Exception):
+    pass
+
+
 def _check_cancelled(repo: JobsRepository, job_id: str) -> None:
     if repo.is_cancelled(job_id):
         raise JobCancelled(f"Job {job_id} was cancelled")
+
+
+def _check_paused(repo: JobsRepository, job_id: str) -> None:
+    if repo.is_paused(job_id):
+        raise JobPaused(f"Job {job_id} was paused")
 
 
 def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_seconds: int, settings: Settings) -> None:
@@ -110,6 +120,7 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
                 source_url = fetched.final_url
 
             repo.update_stage(job.job_id, "parse", progress_current=1, progress_total=6)
+            _check_paused(repo, job.job_id)
             snapshot = parse_thread_snapshot(html, url=source_url, tid=tid)
             if forum_id is None:
                 from yamibo_mcp.yamibo.parsers.thread_detail import extract_forum_id_from_html
@@ -117,6 +128,7 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
             from yamibo_mcp.yamibo.parsers.thread_detail import extract_category_from_html
             category = extract_category_from_html(html)
             _check_cancelled(repo, job.job_id)
+            _check_paused(repo, job.job_id)
             if client is not None and forum_id == 55:
                 if tid is None:
                     raise ValueError("novel author-only sync requires tid")
@@ -152,6 +164,38 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
                         "floor_count": len(snapshot.floors),
                         "last_floor_hash": floor_content_hash(snapshot.floors[-1].content),
                         "author_only_total_pages": total_pages,
+                    }
+            elif client is not None:
+                if tid is None:
+                    raise ValueError("thread sync requires tid")
+                page_results, total_pages, stopped_reason = client.fetch_thread_pages(
+                    tid=tid,
+                    base_url=str(base_url) if base_url else None,
+                    max_pages=max(int(settings.archive_thread_max_pages), 1),
+                    first_page=fetched,
+                    page_delay_seconds=0.0,
+                )
+                page_snapshots = [
+                    parse_thread_snapshot(result.html, url=result.final_url, tid=tid)
+                    for result in page_results
+                ]
+                snapshot = _merge_thread_snapshots(page_snapshots)
+                source_url = page_results[0].final_url
+                fetch_artifacts = {
+                    "archive_mode": "thread_pages",
+                    "pages_fetched": len(page_results),
+                    "total_pages_detected": total_pages,
+                    "page_urls": [result.final_url for result in page_results],
+                    "stopped_reason": stopped_reason,
+                    "unique_floors": len(snapshot.floors),
+                }
+                if snapshot.floors:
+                    fetch_artifacts["archive_signature"] = {
+                        "author_uid": None if snapshot.publisher_uid is None else str(snapshot.publisher_uid),
+                        "last_pid": snapshot.floors[-1].pid,
+                        "floor_count": len(snapshot.floors),
+                        "last_floor_hash": floor_content_hash(snapshot.floors[-1].content),
+                        "total_pages_detected": total_pages,
                     }
 
             COMIC_NOVEL_FORUMS = {30, 55}
@@ -247,20 +291,40 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
                 snapshot.title.chapter_name,
                 snapshot.title.chapter_title,
             )
+            _check_paused(repo, job.job_id)
             repo.heartbeat(job.job_id, worker_id, lease_seconds)
 
             repo.update_stage(job.job_id, "staging", progress_current=2, progress_total=6)
+            _check_paused(repo, job.job_id)
             # 先把解析出的快照写入 staging，后面即使校验或落库失败，也能留下排查材料。
             write_staging_snapshot(paths, job.job_id, snapshot)
 
             repo.update_stage(job.job_id, "validate", progress_current=3, progress_total=6)
+            _check_paused(repo, job.job_id)
             validation = validate_thread_snapshot(snapshot)
             if not validation.valid:
                 raise ValueError("; ".join(validation.errors))
 
             # 图片下载先走 staging，失败 URL 先记录下来，后续再演进成 partial 状态。
             _check_cancelled(repo, job.job_id)
+            _check_paused(repo, job.job_id)
             repo.update_stage(job.job_id, "download_images", progress_current=4, progress_total=6)
+            heartbeat_pacer = HeartbeatPacer(
+                repo=repo,
+                job_id=job.job_id,
+                worker_id=worker_id,
+                lease_seconds=lease_seconds,
+                min_interval_seconds=max(float(getattr(settings, "worker_heartbeat_seconds", 15)), 1.0),
+            )
+            heartbeat_pacer.beat(force=True)
+            def _cancel_check() -> None:
+                _check_cancelled(repo, job.job_id)
+
+            def _progress() -> None:
+                heartbeat_pacer.beat()
+                _check_paused(repo, job.job_id)
+                _cancel_check()
+
             image_result = download_images_to_staging(
                 paths,
                 job.job_id,
@@ -269,9 +333,13 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
                 retries=settings.image_download_retries,
                 headers=None if client is None else client.headers,
                 cookie_jar=None if client is None else client.cookie_jar,
+                cookie_file=None if client is None else getattr(client, "cookie_file", None),
                 use_system_proxy=False if client is None else client.use_system_proxy,
                 referer=source_url,
+                on_progress=_progress,
+                cancel_check=_cancel_check,
             )
+            _check_paused(repo, job.job_id)
 
             repo.update_stage(job.job_id, "db_commit", progress_current=5, progress_total=6)
             context_path = paths.thread_context(snapshot.tid)
@@ -347,6 +415,8 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
                 "missing_image_count": len(image_result.missing_urls),
                 "missing_shared_image_count": len(image_result.missing_shared_urls),
                 "archive_status": archive_status,
+                "pages_fetched": fetch_artifacts.get("pages_fetched", 1),
+                "stopped_reason": fetch_artifacts.get("stopped_reason"),
                 "archive_breakdown": {
                     "downloaded_relpaths": image_result.downloaded_relpaths,
                     "non_export_relpaths": image_result.non_export_relpaths,
@@ -415,175 +485,6 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
                     author_guess=snapshot.title.author_guess,
                 )
                 repo.succeed(job.job_id, artifacts)
-        repo.heartbeat(job.job_id, worker_id, lease_seconds)
-
-        repo.update_stage(job.job_id, "staging", progress_current=2, progress_total=6)
-        # 先把解析出的快照写入 staging，后面即使校验或落库失败，也能留下排查材料。
-        write_staging_snapshot(paths, job.job_id, snapshot)
-
-        repo.update_stage(job.job_id, "validate", progress_current=3, progress_total=6)
-        validation = validate_thread_snapshot(snapshot)
-        if not validation.valid:
-            raise ValueError("; ".join(validation.errors))
-
-        # 图片下载先走 staging，失败 URL 先记录下来，后续再演进成 partial 状态。
-        _check_cancelled(repo, job.job_id)
-        repo.update_stage(job.job_id, "download_images", progress_current=4, progress_total=6)
-        image_result = download_images_to_staging(
-            paths,
-            job.job_id,
-            snapshot,
-            timeout=settings.image_download_timeout_seconds if client is not None else settings.image_download_timeout_seconds,
-            retries=settings.image_download_retries,
-            headers=None if client is None else client.headers,
-            cookie_jar=None if client is None else client.cookie_jar,
-            use_system_proxy=False if client is None else client.use_system_proxy,
-            referer=source_url,
-        )
-
-        repo.update_stage(job.job_id, "db_commit", progress_current=5, progress_total=6)
-        context_path = paths.thread_context(snapshot.tid)
-        relative_context = str(context_path.relative_to(settings.data_dir))
-        archive_status = "partial" if image_result.missing_urls else "complete"
-        content = build_content_snapshot(snapshot, forum_id=forum_id)
-        status_by_remote_url = {asset.remote_url: "pending" for asset in content.assets}
-        local_path_by_remote_url = {asset.remote_url: None for asset in content.assets}
-        for floor in snapshot.floors:
-            for index, remote_url in enumerate(floor.image_urls):
-                content_relpaths = image_result.downloaded_relpaths.get(floor.pid, [])
-                non_export_relpaths = image_result.non_export_relpaths.get(floor.pid, [])
-                all_relpaths = list(content_relpaths) + list(non_export_relpaths)
-                if index < len(all_relpaths):
-                    local_path_by_remote_url[remote_url] = all_relpaths[index]
-                    status_by_remote_url[remote_url] = "downloaded"
-                elif remote_url in image_result.missing_urls:
-                    status_by_remote_url[remote_url] = "missing"
-        synced_assets = [
-            replace(
-                asset,
-                local_path=local_path_by_remote_url.get(asset.remote_url),
-                status=status_by_remote_url.get(asset.remote_url, asset.status),
-            )
-            for asset in content.assets
-        ]
-        all_blocks = [block for post in content.posts for block in post.blocks]
-        with transaction(repo.conn):
-            ThreadsRepository(repo.conn).upsert_snapshot(
-                snapshot,
-                forum_id=forum_id,
-                category=category,
-                context_path=relative_context,
-                archive_status=archive_status,
-                missing_image_urls=image_result.missing_urls,
-                title_warnings=None if title_parse_log is None else {
-                    "title_parse_log": {
-                        "llm_attempted": False if llm_title_meta is None else bool(llm_title_meta.get("attempted")),
-                        "llm_used": False if llm_title_meta is None else bool(llm_title_meta.get("used")),
-                        "strategy": None if llm_title_meta is None else llm_title_meta.get("strategy"),
-                        "model": None if llm_title_meta is None else llm_title_meta.get("model"),
-                        "error": None if llm_title_meta is None else llm_title_meta.get("error"),
-                        "baseline": title_parse_log["baseline"],
-                        "final": title_parse_log["final"],
-                    }
-                },
-            )
-            ContentBlocksRepository(repo.conn).upsert_blocks(snapshot.tid, all_blocks)
-            AssetsRepository(repo.conn).upsert_assets(snapshot.tid, synced_assets)
-
-        repo.update_stage(job.job_id, "materialize", progress_current=6, progress_total=6)
-        context_path, metadata_path = materialize_thread(
-            paths,
-            snapshot,
-            job_id=job.job_id,
-            archived_images=image_result.downloaded_relpaths,
-            non_export_images=image_result.non_export_relpaths,
-            shared_images=image_result.shared_relpaths,
-            skipped_image_urls=image_result.skipped_relpaths,
-            missing_image_urls=image_result.missing_urls,
-            missing_shared_image_urls=image_result.missing_shared_urls,
-        )
-        artifacts = {
-            "tid": snapshot.tid,
-            "context_path": str(context_path),
-            "metadata_path": str(metadata_path),
-            "floors": len(snapshot.floors),
-            "floor_count": len(snapshot.floors),
-            "downloaded_image_count": image_result.downloaded_count,
-            "non_export_image_count": image_result.non_export_count,
-            "shared_image_count": image_result.shared_downloaded_count,
-            "skipped_image_count": sum(len(paths) for paths in image_result.skipped_relpaths.values()),
-            "missing_image_count": len(image_result.missing_urls),
-            "missing_shared_image_count": len(image_result.missing_shared_urls),
-            "archive_status": archive_status,
-            "archive_breakdown": {
-                "downloaded_relpaths": image_result.downloaded_relpaths,
-                "non_export_relpaths": image_result.non_export_relpaths,
-                "shared_relpaths": image_result.shared_relpaths,
-                "skipped_relpaths": image_result.skipped_relpaths,
-                "missing_image_urls": image_result.missing_urls,
-                "missing_shared_image_urls": image_result.missing_shared_urls,
-            },
-            "archive_signature": {
-                "author_uid": None if snapshot.publisher_uid is None else str(snapshot.publisher_uid),
-                "last_pid": None if not snapshot.floors else snapshot.floors[-1].pid,
-                "floor_count": len(snapshot.floors),
-                "last_floor_hash": None if not snapshot.floors else floor_content_hash(snapshot.floors[-1].content),
-            },
-        }
-        artifacts.update(fetch_artifacts)
-        if llm_title_meta is not None:
-            artifacts["title_llm"] = {
-                "attempted": bool(llm_title_meta.get("attempted")),
-                "used": bool(llm_title_meta.get("used")),
-                "model": llm_title_meta.get("model"),
-                "strategy": llm_title_meta.get("strategy"),
-                "error": llm_title_meta.get("error"),
-            }
-        if image_result.missing_urls:
-            LOG.info(
-                "Thread %s archived as partial: downloaded=%s non_export=%s shared=%s skipped=%s missing=%s missing_shared=%s",
-                snapshot.tid,
-                image_result.downloaded_count,
-                image_result.non_export_count,
-                image_result.shared_downloaded_count,
-                sum(len(paths) for paths in image_result.skipped_relpaths.values()),
-                len(image_result.missing_urls),
-                len(image_result.missing_shared_urls),
-            )
-            if image_result.missing_urls:
-                LOG.warning(
-                    "Thread %s missing image urls: %s",
-                    snapshot.tid,
-                    ", ".join(image_result.missing_urls[:20]),
-                )
-            if image_result.missing_shared_urls:
-                LOG.warning(
-                    "Thread %s missing shared image urls: %s",
-                    snapshot.tid,
-                    ", ".join(image_result.missing_shared_urls[:20]),
-                )
-            update_title_hints(
-                settings,
-                group_name=snapshot.title.group_name,
-                author_guess=snapshot.title.author_guess,
-            )
-            # 图片不完整时保留正式归档，但线程状态必须明确标成 partial，不能伪装成 complete。
-            repo.partial(job.job_id, artifacts)
-        else:
-            LOG.info(
-                "Thread %s archived successfully: downloaded=%s non_export=%s shared=%s skipped=%s",
-                snapshot.tid,
-                image_result.downloaded_count,
-                image_result.non_export_count,
-                image_result.shared_downloaded_count,
-                sum(len(paths) for paths in image_result.skipped_relpaths.values()),
-            )
-            update_title_hints(
-                settings,
-                group_name=snapshot.title.group_name,
-                author_guess=snapshot.title.author_guess,
-            )
-            repo.succeed(job.job_id, artifacts)
     except Exception as exc:
         write_staging_failure(
             paths,
@@ -629,11 +530,20 @@ def _merge_thread_snapshots(snapshots: list[ThreadSnapshot]) -> ThreadSnapshot:
         replace(floor, floor_no=index)
         for index, floor in enumerate(merged_floors, start=1)
     ]
+    author_uid = next(
+        (_extract_author_uid_from_url(str(snapshot.url or "")) for snapshot in snapshots if _extract_author_uid_from_url(str(snapshot.url or ""))),
+        None,
+    )
     return replace(
         primary,
         floors=reindexed_floors,
         image_count=sum(len(floor.image_urls) if floor.image_urls else int(floor.has_images) for floor in reindexed_floors),
-        url=thread_page_url_from_tid(primary.tid, page=1, author_uid=primary.publisher_uid, base_url=_base_url_for_snapshot(primary)),
+        url=thread_page_url_from_tid(
+            primary.tid,
+            page=1,
+            author_uid=author_uid,
+            base_url=_base_url_for_snapshot(primary),
+        ),
     )
 
 

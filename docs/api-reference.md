@@ -1,6 +1,6 @@
 # API 接口文档
 
-> 版本：0.8.1 | 更新日期：2026-06-23
+> 版本：0.9.0 | 更新日期：2026-06-24
 
 ## 1. MCP 工具 (Tools)
 
@@ -144,6 +144,26 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
 
 ---
 
+### 1.4.1 create_thread_archive_batch_jobs
+
+为多个帖子批量创建本地归档任务。只写 SQLite job，不同步执行归档。
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| tids | int[] | 是 | - | 要归档的帖子 ID 列表 |
+| base_url | string \| null | 否 | null | 站点根 URL |
+| forum_id | int \| null | 否 | null | 指定分区 ID |
+
+返回结果包含 `target_count / created_count / reused_count / created_job_ids / reused_job_ids / tids`。
+
+---
+
+### 1.4.2 create_thread_archive_job（兼容摘要）
+
+该接口用于创建单贴归档任务。批量场景优先使用 `create_thread_archive_batch_jobs`，避免重复写入同类任务。
+
+---
+
 ### 1.5 ensure_thread_archived
 
 检查本地是否已有归档；若缺失则创建归档任务。
@@ -188,6 +208,65 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
 | `force_resync` | 强制重新从远端同步后再导出 |
 
 轻小说贴子导出为 TXT 文件，默认输出到独立的轻小说导出目录；漫画和其他帖子继续导出为 ZIP。
+
+---
+
+### 1.7.1 create_rag_index_job
+
+为本地已归档帖子创建 RAG 索引任务。只写 SQLite job，不同步执行索引。
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| tid | int \| null | 否 | null | 要重建的帖子 ID；当前版本建议显式传入 |
+| force | bool | 否 | false | 是否忽略现有 live job 直接新建 |
+| embedding_dimensions | int \| null | 否 | null | 覆盖默认 embedding 维度（通常 512） |
+
+返回 `{"job_id": "rag_index_xxxx"}`。
+
+---
+
+### 1.7.1.1 create_rag_index_batch_jobs
+
+为多个已归档帖子批量创建 RAG 索引任务。只写 SQLite job，不同步执行索引。
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| tids | int[] | 是 | - | 要建立索引的帖子 ID 列表 |
+| force | bool | 否 | false | 是否忽略现有 live job 直接新建 |
+| embedding_dimensions | int \| null | 否 | null | 覆盖默认 embedding 维度（通常 512） |
+
+返回结果包含 `target_count / created_count / reused_count / created_job_ids / reused_job_ids / tids`。
+
+---
+
+### 1.7.2 search_archived_content
+
+搜索本地归档文本内容。只读 SQLite 和本地向量索引，不抓远端论坛。
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| query | string | 是 | - | 查询文本 |
+| mode | string | 否 | "hybrid" | `hybrid / keyword / vector` |
+| top_k | int | 否 | 10 | 返回条数 |
+| forum_id | int \| null | 否 | null | 按分区过滤 |
+| content_kind | string \| null | 否 | null | 按内容类型过滤 |
+| tid | int \| null | 否 | null | 限定单帖 |
+| series_id | int \| null | 否 | null | 限定系列 |
+| floor_start | int \| null | 否 | null | 楼层起点 |
+| floor_end | int \| null | 否 | null | 楼层终点 |
+
+返回结果包含 `chunk_id / tid / pid / floor_no / display_title / publisher / pub_time / content_kind / snippet / score / score_parts / source_uri`。
+
+---
+
+### 1.7.3 任务暂停与恢复
+
+Web 控制台和 API 提供任务暂停 / 恢复能力，便于在图片下载或外部资源异常时临时让出并发额度。
+
+| 接口 | 方法 | 说明 |
+|------|------|------|
+| `/jobs/pause` | POST | 将 `queued` / `running` / `retrying` 任务转为 `paused` |
+| `/jobs/resume` | POST | 恢复 `paused` 任务并重新进入队列 |
 
 ---
 
@@ -267,11 +346,13 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
     "downloaded_image_count": 24,
     "archive_status": "complete"
   },
-  "created_at": "...",
+ "created_at": "...",
   "updated_at": "...",
   "finished_at": "..."
 }
 ```
+
+`status` 还可能取值 `paused`，表示任务已暂停等待恢复。
 
 ---
 
@@ -507,6 +588,8 @@ Web 控制台基于 HTTP，提供 HTML 页面和表单操作。
 | `/jobs/resync-thread` | POST | 重新同步 |
 | `/jobs/export-thread` | POST | 创建导出任务 |
 | `/jobs/rebuild-series` | POST | 批量重算系列 |
+| `/jobs/pause` | POST | 暂停任务 |
+| `/jobs/resume` | POST | 恢复任务 |
 | `/threads/delete` | POST | 删除归档 |
 | `/series/delete` | POST | 删除系列 |
 | `/title-review/confirm-title` | POST | 确认标题 |

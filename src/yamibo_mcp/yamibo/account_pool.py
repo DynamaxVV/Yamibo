@@ -48,7 +48,7 @@ def _default_identity_from_settings(settings: Settings) -> AccountIdentity:
         weight=1,
         request_interval_seconds=settings.request_interval_seconds,
         request_interval_jitter_seconds=settings.request_interval_jitter_seconds,
-        max_concurrent_leases=1,
+        max_concurrent_leases=5,
         login_mode="refresh_on_login_required",
     )
 
@@ -126,7 +126,7 @@ def borrow_yamibo_client(
             weight=1,
             request_interval_seconds=settings.request_interval_seconds,
             request_interval_jitter_seconds=settings.request_interval_jitter_seconds,
-            max_concurrent_leases=1,
+            max_concurrent_leases=5,
             login_mode="refresh_on_login_required",
         )
         yield identity, YamiboClient(

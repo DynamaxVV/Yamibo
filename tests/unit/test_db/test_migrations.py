@@ -23,6 +23,12 @@ class TestMigrationCreatesNewTables:
         tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
         assert "assets" in tables
 
+    def test_empty_db_migration_creates_rag_tables(self, db):
+        tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        assert "rag_index_meta" in tables
+        assert "rag_chunks" in tables
+        assert "rag_chunks_fts" in tables
+
     def test_forums_seeded_with_defaults(self, db):
         rows = db.execute("SELECT * FROM forums ORDER BY forum_id").fetchall()
         assert len(rows) >= 4

@@ -23,7 +23,7 @@ from yamibo_mcp.yamibo.urls import thread_url_from_tid
 
 _TERMINAL_JOB_STATUSES = {"succeeded", "partial", "failed", "cancelled"}
 _RESULT_READY_STATUSES = {"succeeded", "partial"}
-_ACTIVE_JOB_STATUSES = {"queued", "running", "retrying", "interrupted", "cancel_requested"}
+_ACTIVE_JOB_STATUSES = {"queued", "running", "retrying", "interrupted", "cancel_requested", "paused"}
 
 
 def _parse_iso8601(value: str | None) -> datetime | None:
@@ -93,6 +93,16 @@ def _job_execution_diagnostics(job) -> dict[str, Any]:
             "diagnostic_summary": "Job is queued and waiting for a daemon worker to acquire it.",
             "needs_attention": False,
             "recommended_poll_after_seconds": 2,
+        }
+
+    if job.status == "paused":
+        return {
+            "running_duration_seconds": running_duration_seconds,
+            "seconds_since_update": seconds_since_update,
+            "execution_state": "paused",
+            "diagnostic_summary": "Job is paused and will not be acquired by a daemon worker until resumed.",
+            "needs_attention": False,
+            "recommended_poll_after_seconds": 10,
         }
 
     if (seconds_since_update or 0) >= 120:

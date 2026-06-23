@@ -13,7 +13,8 @@ from yamibo_mcp.db.repositories.assets import AssetsRepository
 from yamibo_mcp.db.repositories.content_blocks import ContentBlocksRepository
 from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
-from yamibo_mcp.daemon.handlers.sync_thread import _check_cancelled, _merge_thread_snapshots
+from yamibo_mcp.daemon.handlers.sync_thread import _check_cancelled, _check_paused, _merge_thread_snapshots
+from yamibo_mcp.daemon.heartbeat import HeartbeatPacer
 from yamibo_mcp.domain.content import build_content_snapshot
 from yamibo_mcp.domain.models import FloorSnapshot, Job, ThreadSnapshot, TitleSnapshot
 from yamibo_mcp.domain.thread_fingerprint import floor_content_hash
@@ -89,6 +90,7 @@ def handle_update_thread(repo: JobsRepository, job: Job, worker_id: str, lease_s
 
         repo.update_stage(job.job_id, "fetch_tail", progress_current=1, progress_total=4)
         _check_cancelled(repo, job.job_id)
+        _check_paused(repo, job.job_id)
         tail_page = client.fetch_thread_page(
             tid=tid,
             page=local_total_pages,
@@ -143,10 +145,12 @@ def handle_update_thread(repo: JobsRepository, job: Job, worker_id: str, lease_s
 
         repo.update_stage(job.job_id, "fetch_append", progress_current=2, progress_total=4)
         _check_cancelled(repo, job.job_id)
+        _check_paused(repo, job.job_id)
         page_results = [tail_page]
         for page in range(local_total_pages + 1, remote_total_pages + 1):
             if settings.novel_author_only_page_delay_seconds > 0:
                 time.sleep(settings.novel_author_only_page_delay_seconds)
+            _check_paused(repo, job.job_id)
             page_results.append(
                 client.fetch_thread_page(
                     tid=tid,
@@ -179,6 +183,23 @@ def handle_update_thread(repo: JobsRepository, job: Job, worker_id: str, lease_s
         new_snapshot = replace(merged_snapshot, floors=merged_snapshot.floors[len(local_snapshot.floors):])
         repo.update_stage(job.job_id, "download_images", progress_current=3, progress_total=4)
         _check_cancelled(repo, job.job_id)
+        _check_paused(repo, job.job_id)
+        heartbeat_pacer = HeartbeatPacer(
+            repo=repo,
+            job_id=job.job_id,
+            worker_id=worker_id,
+            lease_seconds=lease_seconds,
+            min_interval_seconds=max(float(getattr(settings, "worker_heartbeat_seconds", 15)), 1.0),
+        )
+        heartbeat_pacer.beat(force=True)
+        def _cancel_check() -> None:
+            _check_cancelled(repo, job.job_id)
+
+        def _progress() -> None:
+            heartbeat_pacer.beat()
+            _cancel_check()
+            _check_paused(repo, job.job_id)
+
         image_result = download_images_to_staging(
             paths,
             job.job_id,
@@ -187,9 +208,13 @@ def handle_update_thread(repo: JobsRepository, job: Job, worker_id: str, lease_s
             retries=settings.image_download_retries,
             headers=client.headers,
             cookie_jar=client.cookie_jar,
+            cookie_file=getattr(client, "cookie_file", None),
             use_system_proxy=client.use_system_proxy,
             referer=tail_page.final_url,
+            on_progress=_progress,
+            cancel_check=_cancel_check,
         )
+        _check_paused(repo, job.job_id)
 
         new_local_path_by_remote_url = _build_remote_local_path_map(new_snapshot, image_result)
         content = build_content_snapshot(merged_snapshot, forum_id=forum_id)

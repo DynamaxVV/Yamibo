@@ -1,6 +1,6 @@
 # 用户操作手册
 
-> 版本：0.8.1 | 更新日期：2026-06-23
+> 版本：0.9.0 | 更新日期：2026-06-24
 
 ## 1. 快速开始
 
@@ -192,6 +192,21 @@ MCP Server 会调用 `browse_forum_page(page=1, forum_id=55)`。
 
 页面右上角可切换中文/英文界面。
 
+### 3.8 知识库
+
+点击导航栏「知识库」，可以进入本地检索管理页。
+
+主要能力：
+
+- 查看当前 RAG 配置、向量维度、chunker 版本和索引元数据
+- 先看未索引队列，再看已索引内容
+- 按板块筛选贴子、分页浏览已索引列表
+- 按贴子查看 chunk 状态、失败数、最近索引时间
+- 输入 TID 手动创建 `rag_index` 任务
+- 对当前筛选结果或勾选贴子批量重建索引
+- 用 keyword / vector / hybrid 模式直接调试本地检索结果
+- 任务列表支持暂停 / 恢复，适合在高峰期临时让出并发
+
 ---
 
 ## 4. 通过 CLI 使用
@@ -214,8 +229,20 @@ uv run yamibo-mcp-server search-threads --query "关键词"
 # 创建归档任务
 uv run yamibo-mcp-server create-sync-thread-job --tid 572313
 
+# 批量创建归档任务
+uv run yamibo-mcp-server create-sync-thread-batch-jobs --tid 572313 --tid 572314
+
 # 创建导出任务
 uv run yamibo-mcp-server create-export-thread-job --tid 572313
+
+# 创建单贴 RAG 索引任务
+uv run yamibo-mcp-server create-rag-index-job --tid 572313
+
+# 批量创建 RAG 索引任务
+uv run yamibo-mcp-server create-rag-index-batch-jobs --tid 572313 --tid 572314
+
+# 调试本地归档检索
+uv run yamibo-mcp-server search-archived-content --query "星空 告白" --mode hybrid --top-k 5
 
 # 批量同步
 uv run yamibo-mcp-server create-sync-forum-range-jobs --start-page 1 --end-page 5

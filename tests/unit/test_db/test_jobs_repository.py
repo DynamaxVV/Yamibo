@@ -102,6 +102,37 @@ class TestList:
         assert len(succeeded) == 1
         assert succeeded[0].job_id == j1.job_id
 
+    def test_list_orders_active_then_queued_then_terminal_by_start_time(self, db):
+        # Arrange
+        repo = JobsRepository(db)
+        active_late = repo.create("noop")
+        active_early = repo.create("noop")
+        queued = repo.create("noop")
+        terminal = repo.create("noop")
+        db.execute(
+            "UPDATE jobs SET status = ?, created_at = ? WHERE job_id = ?",
+            ("running", "2026-01-01T10:00:00+00:00", active_late.job_id),
+        )
+        db.execute(
+            "UPDATE jobs SET status = ?, created_at = ? WHERE job_id = ?",
+            ("retrying", "2026-01-01T09:00:00+00:00", active_early.job_id),
+        )
+        db.execute(
+            "UPDATE jobs SET status = ?, created_at = ? WHERE job_id = ?",
+            ("queued", "2026-01-01T08:00:00+00:00", queued.job_id),
+        )
+        db.execute(
+            "UPDATE jobs SET status = ?, created_at = ? WHERE job_id = ?",
+            ("succeeded", "2026-01-01T07:00:00+00:00", terminal.job_id),
+        )
+        db.commit()
+
+        # Act
+        jobs = repo.list()
+
+        # Assert
+        assert [j.job_id for j in jobs] == [active_early.job_id, active_late.job_id, queued.job_id, terminal.job_id]
+
     def test_list_empty(self, db):
         # Arrange
         repo = JobsRepository(db)

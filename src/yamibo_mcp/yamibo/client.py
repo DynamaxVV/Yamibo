@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import html as html_lib
-import random
 import re
 import time
 import urllib.parse
@@ -17,6 +16,7 @@ from yamibo_mcp.yamibo.parsers.forum_list import ForumThreadItem, extract_total_
 from yamibo_mcp.yamibo.parsers.thread_detail import extract_author_only_total_pages
 from yamibo_mcp.yamibo.parsers.search_results import SearchResultItem, parse_search_results
 from yamibo_mcp.yamibo.page_classifier import PageType, classify_html
+from yamibo_mcp.yamibo.runtime_limits import throttle_cookie_request
 from yamibo_mcp.yamibo.urls import (
     DEFAULT_FORUM_ID,
     dateline_forum_page_url,
@@ -69,7 +69,6 @@ class YamiboClient:
         self.login_password = login_password
         self._request_interval = request_interval
         self._request_interval_jitter = request_interval_jitter
-        self._last_request_time: float = 0.0
         handlers = [urllib.request.HTTPCookieProcessor(self.cookie_jar)]
         if not use_system_proxy:
             handlers.insert(0, urllib.request.ProxyHandler({}))
@@ -123,14 +122,11 @@ class YamiboClient:
         )
 
     def _throttle(self) -> None:
-        if self._request_interval <= 0:
-            return
-        elapsed = time.monotonic() - self._last_request_time
-        jitter = random.uniform(0, self._request_interval_jitter) if self._request_interval_jitter > 0 else 0
-        wait = self._request_interval + jitter - elapsed
-        if wait > 0:
-            time.sleep(wait)
-        self._last_request_time = time.monotonic()
+        throttle_cookie_request(
+            self.cookie_file,
+            request_interval=self._request_interval,
+            request_interval_jitter=self._request_interval_jitter,
+        )
 
     def fetch_thread_by_tid(self, tid: int, *, base_url: str | None = None) -> FetchResult:
         return self.fetch_url(thread_url_from_tid(tid, base_url=base_url or "https://bbs.yamibo.com"))
@@ -190,6 +186,33 @@ class YamiboClient:
             stopped_reason = "max_pages"
         else:
             stopped_reason = "last_page"
+        return results, total_pages, stopped_reason
+
+    def fetch_thread_pages(
+        self,
+        *,
+        tid: int,
+        base_url: str | None = None,
+        max_pages: int,
+        first_page: FetchResult | None = None,
+        page_delay_seconds: float = 0.0,
+    ) -> tuple[list[FetchResult], int, str]:
+        if max_pages <= 0:
+            raise ValueError("max_pages must be positive")
+        if page_delay_seconds < 0:
+            raise ValueError("page_delay_seconds must be non-negative")
+
+        first_result = first_page or self.fetch_thread_page(tid=tid, page=1, base_url=base_url)
+        total_pages = max(extract_total_pages(first_result.html), 1)
+        results = [first_result]
+        max_target_page = min(total_pages, max_pages)
+
+        for page in range(2, max_target_page + 1):
+            if page_delay_seconds > 0:
+                time.sleep(page_delay_seconds)
+            results.append(self.fetch_thread_page(tid=tid, page=page, base_url=base_url))
+
+        stopped_reason = "max_pages" if total_pages > max_pages else "last_page"
         return results, total_pages, stopped_reason
 
     def fetch_forum_page(self, *, page: int | None = None, url: str | None = None, base_url: str | None = None, forum_id: int = DEFAULT_FORUM_ID) -> FetchResult:

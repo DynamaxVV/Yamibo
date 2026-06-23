@@ -23,6 +23,7 @@ class Job:
     error_code: str | None
     error_message: str | None
     artifacts: dict[str, Any]
+    paused_at: str | None
     created_at: str
     updated_at: str
     finished_at: str | None

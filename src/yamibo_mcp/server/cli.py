@@ -5,6 +5,12 @@ import json
 import sys
 
 from yamibo_mcp.logging import configure_logging
+from yamibo_mcp.server.agent_tools import (
+    create_rag_index_batch_jobs,
+    create_rag_index_job,
+    create_thread_archive_batch_jobs,
+    search_archived_content,
+)
 from yamibo_mcp.server.legacy_protocol import handle_request
 from yamibo_mcp.server.mcp_registry import build_mcp_server
 from yamibo_mcp.server.legacy_tools import (
@@ -80,6 +86,28 @@ def build_parser() -> argparse.ArgumentParser:
     export_parser = sub.add_parser("create-export-thread-job")
     export_parser.add_argument("--tid", type=int, required=True)
     export_parser.add_argument("--strategy")
+    rag_index_parser = sub.add_parser("create-rag-index-job")
+    rag_index_parser.add_argument("--tid", type=int)
+    rag_index_parser.add_argument("--force", action="store_true")
+    rag_index_parser.add_argument("--embedding-dimensions", type=int)
+    archive_batch_parser = sub.add_parser("create-sync-thread-batch-jobs")
+    archive_batch_parser.add_argument("--tid", type=int, action="append", dest="tids", required=True)
+    archive_batch_parser.add_argument("--base-url")
+    archive_batch_parser.add_argument("--forum-id", type=int)
+    rag_index_batch_parser = sub.add_parser("create-rag-index-batch-jobs")
+    rag_index_batch_parser.add_argument("--tid", type=int, action="append", dest="tids", required=True)
+    rag_index_batch_parser.add_argument("--force", action="store_true")
+    rag_index_batch_parser.add_argument("--embedding-dimensions", type=int)
+    rag_search_parser = sub.add_parser("search-archived-content")
+    rag_search_parser.add_argument("--query", required=True)
+    rag_search_parser.add_argument("--mode", default="hybrid", choices=["hybrid", "keyword", "vector"])
+    rag_search_parser.add_argument("--top-k", type=int, default=10)
+    rag_search_parser.add_argument("--forum-id", type=int)
+    rag_search_parser.add_argument("--content-kind")
+    rag_search_parser.add_argument("--tid", type=int)
+    rag_search_parser.add_argument("--series-id", type=int)
+    rag_search_parser.add_argument("--floor-start", type=int)
+    rag_search_parser.add_argument("--floor-end", type=int)
     update_parser = sub.add_parser("update-thread")
     update_parser.add_argument("--tid", type=int, required=True)
     update_parser.add_argument("--base-url")
@@ -154,6 +182,52 @@ def main() -> None:
         )
     elif command == "create-export-thread-job":
         print(dump_json(export_thread(tid=args.tid, strategy=args.strategy)))
+    elif command == "create-rag-index-job":
+        print(
+            dump_json(
+                create_rag_index_job(
+                    tid=args.tid,
+                    force=args.force,
+                    embedding_dimensions=args.embedding_dimensions,
+                )
+            )
+        )
+    elif command == "create-sync-thread-batch-jobs":
+        print(
+            dump_json(
+                create_thread_archive_batch_jobs(
+                    tids=args.tids,
+                    base_url=args.base_url,
+                    forum_id=args.forum_id,
+                )
+            )
+        )
+    elif command == "create-rag-index-batch-jobs":
+        print(
+            dump_json(
+                create_rag_index_batch_jobs(
+                    tids=args.tids,
+                    force=args.force,
+                    embedding_dimensions=args.embedding_dimensions,
+                )
+            )
+        )
+    elif command == "search-archived-content":
+        print(
+            dump_json(
+                search_archived_content(
+                    query=args.query,
+                    mode=args.mode,
+                    top_k=args.top_k,
+                    forum_id=args.forum_id,
+                    content_kind=args.content_kind,
+                    tid=args.tid,
+                    series_id=args.series_id,
+                    floor_start=args.floor_start,
+                    floor_end=args.floor_end,
+                )
+            )
+        )
     elif command == "update-thread":
         print(dump_json(update_thread(tid=args.tid, base_url=args.base_url)))
     elif command == "check-thread-updates":

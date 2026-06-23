@@ -1,6 +1,6 @@
 ---
 name: yamibo-mcp
-description: 使用 YamiboMCP 检索、查看、归档、检查更新、追加更新和导出百合会论坛帖子。支持多分区（漫画区/轻小说区/动漫区/水区）。适用于按标题找帖子、浏览论坛某一页、按 tid 查看帖子、读取归档摘要与正文块、检查任务状态与事件时间线、人工复核标题信息、判断轻小说是否有新内容等场景。用户提到百合会、Yamibo、漫画帖子、轻小说、章节归档、导出 ZIP/TXT、标题解析、系列归并时使用。
+description: 使用 YamiboMCP 检索、查看、归档、批量归档、检查更新、追加更新、创建 RAG 索引和导出百合会论坛帖子。支持多分区（漫画区/轻小说区/动漫区/水区）。适用于按标题找帖子、浏览论坛某一页、按 tid 查看帖子、读取归档摘要与正文块、检查任务状态与事件时间线、人工复核标题信息、判断轻小说是否有新内容、调试本地 RAG 检索等场景。用户提到百合会、Yamibo、漫画帖子、轻小说、章节归档、导出 ZIP/TXT、标题解析、系列归并、RAG 索引时使用。
 ---
 
 # YamiboMCP 中文 Skill
@@ -18,6 +18,7 @@ description: 使用 YamiboMCP 检索、查看、归档、检查更新、追加�
 - 长内容优先通过 Resource 读取，不把整篇正文一次性塞进简短回复。
 - Agent 工作流优先读取紧凑资源（summary → diagnostics → posts/assets/context），降低 token 开销。
 - 长任务优先读 `read_job`；需要阻塞等待时直接用 `wait_for_job`，排障再读 `read_job_events` 或 `yamibo://jobs/{job_id}/events`。
+- 批量任务优先使用批量接口，不要循环创建单贴任务模拟批量提交。
 
 ## 可用接口
 
@@ -108,6 +109,18 @@ description: 使用 YamiboMCP 检索、查看、归档、检查更新、追加�
 - 不要等待长任务直接完成再回复
 - 回复中说明任务已创建，并建议继续查询 `read_job`
 
+### `create_thread_archive_batch_jobs`
+
+用于一次性为多个帖子发起归档任务。
+
+适用场景：
+- 用户明确说“批量归档”
+- 已经拿到一组 tid，需要统一入队
+
+调用建议：
+- 传入 `tids` 列表
+- 批量任务优先于逐个循环创建单贴任务
+
 ### `ensure_thread_archived`
 
 用于确保本地存在归档；缺失时创建归档任务。
@@ -142,6 +155,44 @@ description: 使用 YamiboMCP 检索、查看、归档、检查更新、追加�
 - 这是长操作，优先返回 `job_id`
 - 如果用户指定了某个帖子，按该帖子发起导出
 - 如果用户需要批量导出，逐个创建任务并分别汇报状态
+
+### `create_rag_index_job`
+
+用于为单个已归档帖子创建 RAG 索引任务。
+
+适用场景：
+- 用户要求“给这个帖子建索引”
+- 用户要求“重建这个帖子的 RAG”
+
+调用建议：
+- 传入 `tid`
+- 如果存在同类 live job，优先复用，除非用户明确要求强制重建
+
+### `create_rag_index_batch_jobs`
+
+用于一次性为多个已归档帖子创建 RAG 索引任务。
+
+适用场景：
+- 用户明确说“批量重建索引”
+- 已经拿到一组 tid，需要统一入队
+
+调用建议：
+- 传入 `tids` 列表
+- 批量索引优先于逐个循环创建单贴任务
+
+### `search_archived_content`
+
+用于检索本地已归档内容。
+
+适用场景：
+- 用户要求“在本地知识库里搜”
+- 用户要 keyword / vector / hybrid 检索结果
+- 用户明确不要远端抓取，只看本地索引
+
+调用建议：
+- 默认使用 `hybrid`
+- `top_k` 是返回条数，不要把它当成分页编号
+- 如需限定帖子或分区，使用 `tid` / `forum_id`
 
 ### `check_thread_updates`
 
@@ -178,11 +229,13 @@ description: 使用 YamiboMCP 检索、查看、归档、检查更新、追加�
 适用场景：
 - 用户问"任务好了没"
 - 你刚刚创建了 `create_thread_archive_job` 或 `create_thread_export_job`
+- 你刚刚创建了 `create_thread_archive_batch_jobs`、`create_rag_index_job` 或 `create_rag_index_batch_jobs`
 - 需要查看失败原因
 
 调用建议：
 - 输入 `job_id`
 - 重点关注状态、阶段、错误信息、产物位置
+- 如果任务状态是 `paused`，先等待恢复，不要重复创建同类任务
 
 ### `read_job_events`
 

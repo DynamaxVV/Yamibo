@@ -321,3 +321,99 @@ class TestCreateUpdateThreadJob:
             result = create_update_thread_job(tid=42, base_url="https://bbs.yamibo.com")
         # Assert
         assert result["job_id"] != existing.job_id
+
+
+class TestCreateUpdateThreadBatchJobs:
+    def test_skips_non_novel_threads(self, tmp_path):
+        import sqlite3 as _sqlite3
+        from yamibo_mcp.application.update_commands import create_update_thread_batch_jobs
+        from yamibo_mcp.db.migrations import migrate as _migrate
+        from yamibo_mcp.domain.models import FloorSnapshot, ThreadSnapshot, TitleSnapshot
+
+        db_path = tmp_path / "test.db"
+        conn = _sqlite3.connect(str(db_path))
+        conn.row_factory = _sqlite3.Row
+        _migrate(conn)
+        novel_title = TitleSnapshot(
+            raw_title="[授权转载] 测试小说",
+            display_title="测试小说",
+            group_name=None,
+            author_guess="作者",
+            core_title_guess="测试小说",
+            normalized_core_title="测试小说",
+            series_key="测试小说",
+            title_aliases=[],
+            chapter_name=None,
+            chapter_index=None,
+            chapter_index_end=None,
+            chapter_title=None,
+            subtitle=None,
+            tags=[],
+            confidence=0.9,
+            needs_review=False,
+            parser_version="title-v1",
+        )
+        novel_snapshot = ThreadSnapshot(
+            tid=42,
+            url="https://bbs.yamibo.com/forum.php?mod=viewthread&tid=42&authorid=229047",
+            page_type="thread_detail",
+            raw_title=novel_title.raw_title,
+            display_title=novel_title.display_title,
+            title=novel_title,
+            publisher="作者",
+            publisher_uid="229047",
+            pub_time="2026-06-14 12:00",
+            permission=0,
+            floors=[
+                FloorSnapshot(pid=4201, tid=42, floor_no=1, publisher="作者", content="开头", pub_time="2026-06-14 12:00", has_images=False),
+                FloorSnapshot(pid=4202, tid=42, floor_no=2, publisher="作者", content="尾章", pub_time="2026-06-14 13:00", has_images=False),
+            ],
+            image_count=0,
+        )
+        ThreadsRepository(conn).upsert_snapshot(novel_snapshot, forum_id=55)
+        comic_title = TitleSnapshot(
+            raw_title="[漫画] 测试漫画",
+            display_title="测试漫画",
+            group_name=None,
+            author_guess="作者",
+            core_title_guess="测试漫画",
+            normalized_core_title="测试漫画",
+            series_key="测试漫画",
+            title_aliases=[],
+            chapter_name=None,
+            chapter_index=None,
+            chapter_index_end=None,
+            chapter_title=None,
+            subtitle=None,
+            tags=[],
+            confidence=0.9,
+            needs_review=False,
+            parser_version="title-v1",
+        )
+        comic_snapshot = ThreadSnapshot(
+            tid=30,
+            url="https://bbs.yamibo.com/forum.php?mod=viewthread&tid=30",
+            page_type="thread_detail",
+            raw_title=comic_title.raw_title,
+            display_title=comic_title.display_title,
+            title=comic_title,
+            publisher="作者",
+            publisher_uid="1",
+            pub_time="2026-06-14 12:00",
+            permission=0,
+            floors=[FloorSnapshot(pid=301, tid=30, floor_no=1, publisher="作者", content="正文", pub_time="2026-06-14 12:00", has_images=False)],
+            image_count=0,
+        )
+        ThreadsRepository(conn).upsert_snapshot(comic_snapshot, forum_id=30)
+        settings = _fake_settings(tmp_path)
+        with patch("yamibo_mcp.application.update_commands.load_settings", return_value=settings), \
+             patch("yamibo_mcp.application.update_commands.connect", return_value=conn):
+            result = create_update_thread_batch_jobs(tids=[42, 30])
+
+        assert result.ok is True
+        assert result.data["target_count"] == 2
+        assert result.data["created_count"] == 1
+        assert result.data["skipped_count"] == 1
+        assert result.data["skipped_tids"] == [30]
+        assert any("skipped tid 30" in warning for warning in result.warnings)
+        assert result.data["created_job_ids"]

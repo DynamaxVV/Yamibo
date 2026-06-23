@@ -84,6 +84,56 @@ def create_thread_archive_job(
     )
 
 
+def create_thread_archive_batch_jobs(
+    *,
+    tids: list[int],
+    base_url: str | None = None,
+    forum_id: int | None = None,
+) -> AgentResult:
+    normalized_tids = list(dict.fromkeys(int(tid) for tid in tids if tid))
+    if not normalized_tids:
+        raise ValueError("tids required")
+    settings = load_settings()
+    conn = connect(settings.db_path)
+    try:
+        migrate(conn)
+        repo = JobsRepository(conn)
+        created_job_ids: list[str] = []
+        reused_job_ids: list[str] = []
+        for tid in normalized_tids:
+            payload = {
+                key: value
+                for key, value in {
+                    "tid": tid,
+                    "base_url": base_url,
+                    "forum_id": forum_id,
+                }.items()
+                if value is not None
+            }
+            existing = repo.find_live_job_for_thread(job_type=JobType.SYNC_THREAD.value, tid=tid)
+            if existing is not None and _can_reuse_existing_job(existing.payload, payload):
+                reused_job_ids.append(existing.job_id)
+                continue
+            job = repo.create(JobType.SYNC_THREAD.value, tid=tid, payload=payload)
+            created_job_ids.append(job.job_id)
+    finally:
+        conn.close()
+
+    return AgentResult(
+        ok=True,
+        data={
+            "job_type": JobType.SYNC_THREAD.value,
+            "target_count": len(normalized_tids),
+            "created_count": len(created_job_ids),
+            "reused_count": len(reused_job_ids),
+            "created_job_ids": created_job_ids,
+            "reused_job_ids": reused_job_ids,
+            "tids": normalized_tids,
+        },
+        side_effects=["sqlite_job_created" if created_job_ids else "sqlite_job_reused", "daemon_required"],
+    )
+
+
 def ensure_thread_archived(
     *,
     tid: int,

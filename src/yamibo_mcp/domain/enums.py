@@ -6,6 +6,7 @@ from enum import StrEnum
 class JobStatus(StrEnum):
     QUEUED = "queued"
     RUNNING = "running"
+    PAUSED = "paused"
     SUCCEEDED = "succeeded"
     PARTIAL = "partial"
     FAILED = "failed"
@@ -22,3 +23,4 @@ class JobType(StrEnum):
     EXPORT_THREAD = "export_thread"
     CLEANUP_JOB = "cleanup_job"
     TITLE_REFINE = "title_refine"
+    RAG_INDEX = "rag_index"

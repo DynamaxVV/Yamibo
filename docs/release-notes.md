@@ -1,22 +1,33 @@
 # 百合会归档助手 — 版本发布说明
 
-> 版本：0.8.1 | 发布日期：2026-06-23
+> 版本：0.9.0 | 发布日期：2026-06-24
 
 ## 版本信息
 
 | 项目 | 值 |
 |------|-----|
-| 版本号 | 0.8.1 |
+| 版本号 | 0.9.0 |
 | Python 要求 | >= 3.11 |
 | MCP SDK | >= 1.27.2 |
 
 ---
+
+## v0.9.0 调整
+
+- WebUI 新增专门的 RAG 管理页，支持批量重建索引、单贴重建、分区筛选和本地检索调试
+- 新增批量归档与批量 RAG 索引的 MCP / CLI 入口，便于一次性处理多个 `tid`
+- 任务列表支持暂停 / 恢复，运行中、排队中与完成态的展示更清晰
+- 版本、README、使用手册、API 文档和 Agent 文档同步更新
+- 主版本号推进到 `0.9.0`
 
 ## v0.8.1 调整
 
 - 旧的 `yamibo-forum` skill 收口为弃用别名，避免和 `yamibo-mcp` 双入口并存
 - Hermes MCP 导入从旧的 SSE 语义切换为 `streamable-http` 的 `/mcp`
 - `wait_for_job`、`yamibo://jobs/{job_id}/status`、`job_events` 的 Agent 文档同步更新
+- 新增本地 RAG 检索管理页（`/rag`），可查看索引覆盖、创建 `rag_index` 任务并调试 keyword/vector/hybrid 检索
+- Web API 新增 `/api/rag/overview`、`/api/rag/threads`、`/api/rag/index`、`/api/rag/search`
+- 用户手册、部署说明、开发说明和 WebUI 设计文档同步补充 RAG 管理链路
 - 主版本号推进到 `0.8.1`
 
 ## v0.8.0 新增功能

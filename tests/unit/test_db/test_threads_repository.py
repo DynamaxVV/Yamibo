@@ -1,6 +1,8 @@
 import pytest
 
+from yamibo_mcp.db.repositories.rag_chunks import RagChunksRepository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
+from yamibo_mcp.rag.chunker import RagChunk
 from yamibo_mcp.domain.models import FloorSnapshot, ThreadSnapshot, TitleSnapshot
 
 
@@ -171,6 +173,41 @@ class TestDeleteThread:
         repo = ThreadsRepository(db)
         snapshot = _make_snapshot(tid=4001, floors=[_make_floor(pid=4002, tid=4001)])
         repo.upsert_snapshot(snapshot)
+        RagChunksRepository(db).replace_thread_chunks(
+            tid=4001,
+            chunks=[
+                RagChunk(
+                    chunk_id="thread:4001:floor:1:part:1",
+                    tid=4001,
+                    pid=4002,
+                    floor_no=1,
+                    chunk_type="floor",
+                    forum_id=55,
+                    content_kind="comic",
+                    series_id=1,
+                    series_key="测试漫画",
+                    chapter_index=1.0,
+                    publisher="user1",
+                    pub_time="2025-01-01T00:00:00",
+                    title="测试漫画 第1话",
+                    metadata_text="测试漫画",
+                    text="测试内容",
+                    text_hash="hash-1",
+                    source_uri="yamibo://threads/4001/posts#floor=1",
+                ),
+            ],
+            embedding_model="text-embedding-3-small",
+            embedding_dimensions=512,
+        )
+        db.execute(
+            "INSERT INTO assets (asset_id, tid, pid, asset_type, remote_url, local_path, exportable, required, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("asset-4001", 4001, 4002, "image", "https://example.com/a.jpg", None, 0, 0, "ready"),
+        )
+        db.execute(
+            "INSERT INTO content_blocks (tid, pid, order_index, block_type, text, asset_id, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (4001, 4002, 1, "text", "测试内容", None, "{}"),
+        )
+        db.commit()
         assert repo.get_thread(4001) is not None
         # Act
         before, after = repo.delete_thread(4001)
@@ -178,6 +215,9 @@ class TestDeleteThread:
         assert repo.get_thread(4001) is None
         assert repo.get_title_parse(4001) is None
         assert repo.list_floors(4001) == []
+        assert db.execute("SELECT COUNT(*) FROM rag_chunks WHERE tid = 4001").fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM assets WHERE tid = 4001").fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM content_blocks WHERE tid = 4001").fetchone()[0] == 0
         assert after == {"tid": 4001, "deleted": True}
         assert before["thread"]["tid"] == 4001
 

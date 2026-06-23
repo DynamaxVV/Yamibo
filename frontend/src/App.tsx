@@ -12,6 +12,7 @@ import { Series } from './pages/Series'
 import { Review } from './pages/Review'
 import { Forums } from './pages/Forums'
 import { Logs } from './pages/Logs'
+import { Rag } from './pages/Rag'
 
 export default function App() {
   return (
@@ -30,6 +31,7 @@ export default function App() {
             <Route path="/review" element={<Review />} />
             <Route path="/exports" element={<Exports />} />
             <Route path="/forums" element={<Forums />} />
+            <Route path="/rag" element={<Rag />} />
             <Route path="/logs" element={<Logs />} />
           </Route>
         </Routes>

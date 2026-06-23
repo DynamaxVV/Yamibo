@@ -224,6 +224,10 @@ class ThreadsRepository:
             "title_parse": None if title_row is None else dict(title_row),
             "floors": [dict(row) for row in floor_rows],
         }
+        self.conn.execute("DELETE FROM rag_chunks_fts WHERE chunk_id IN (SELECT chunk_id FROM rag_chunks WHERE tid = ?)", (tid,))
+        self.conn.execute("DELETE FROM rag_chunks WHERE tid = ?", (tid,))
+        self.conn.execute("DELETE FROM assets WHERE tid = ?", (tid,))
+        self.conn.execute("DELETE FROM content_blocks WHERE tid = ?", (tid,))
         self.conn.execute("DELETE FROM catalog WHERE tid = ?", (tid,))
         self.conn.execute("DELETE FROM sync_runs WHERE tid = ?", (tid,))
         self.conn.execute("DELETE FROM floors WHERE tid = ?", (tid,))

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from yamibo_mcp.application.archive_commands import (
+    create_thread_archive_batch_jobs as _create_thread_archive_batch_jobs,
     create_thread_archive_job as _create_thread_archive_job,
     create_thread_export_job as _create_thread_export_job,
     create_thread_update_job as _create_thread_update_job,
@@ -13,6 +14,11 @@ from yamibo_mcp.application.forum_queries import read_forum_profiles as _read_fo
 from yamibo_mcp.application.job_queries import read_job as _read_job
 from yamibo_mcp.application.job_queries import read_job_events as _read_job_events
 from yamibo_mcp.application.job_queries import wait_for_job as _wait_for_job
+from yamibo_mcp.application.rag_commands import (
+    create_rag_index_batch_jobs as _create_rag_index_batch_jobs,
+    create_rag_index_job as _create_rag_index_job,
+)
+from yamibo_mcp.application.rag_queries import search_archived_content as _search_archived_content
 from yamibo_mcp.application.remote_queries import inspect_remote_thread as _inspect_remote_thread
 from yamibo_mcp.application.search_use_cases import browse_forum_page as _browse_forum_page
 from yamibo_mcp.application.search_use_cases import search_forum_threads as _search_forum_threads
@@ -104,6 +110,16 @@ def create_thread_archive_job(
 
 
 @agent_tool
+def create_thread_archive_batch_jobs(
+    *,
+    tids: list[int],
+    base_url: str | None = None,
+    forum_id: int | None = None,
+) -> AgentResult:
+    return _create_thread_archive_batch_jobs(tids=tids, base_url=base_url, forum_id=forum_id)
+
+
+@agent_tool
 def ensure_thread_archived(
     *,
     tid: int,
@@ -146,6 +162,52 @@ def create_thread_update_job(*, tid: int, base_url: str | None = None) -> AgentR
 @agent_tool
 def create_thread_export_job(*, tid: int, strategy: str | None = None) -> AgentResult:
     return _create_thread_export_job(tid=tid, strategy=strategy)
+
+
+@agent_tool
+def create_rag_index_job(
+    *,
+    tid: int | None = None,
+    force: bool = False,
+    embedding_dimensions: int | None = None,
+) -> AgentResult:
+    return _create_rag_index_job(tid=tid, force=force, embedding_dimensions=embedding_dimensions)
+
+
+@agent_tool
+def create_rag_index_batch_jobs(
+    *,
+    tids: list[int],
+    force: bool = False,
+    embedding_dimensions: int | None = None,
+) -> AgentResult:
+    return _create_rag_index_batch_jobs(tids=tids, force=force, embedding_dimensions=embedding_dimensions)
+
+
+@agent_tool
+def search_archived_content(
+    *,
+    query: str,
+    mode: str = "hybrid",
+    top_k: int = 10,
+    forum_id: int | None = None,
+    content_kind: str | None = None,
+    tid: int | None = None,
+    series_id: int | None = None,
+    floor_start: int | None = None,
+    floor_end: int | None = None,
+) -> AgentResult:
+    return _search_archived_content(
+        query=query,
+        mode=mode,
+        top_k=top_k,
+        forum_id=forum_id,
+        content_kind=content_kind,
+        tid=tid,
+        series_id=series_id,
+        floor_start=floor_start,
+        floor_end=floor_end,
+    )
 
 
 @agent_tool

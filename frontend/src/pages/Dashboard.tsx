@@ -9,7 +9,7 @@ function RecentTable({ threads, forumNames, t, liveStatuses }: { threads: Thread
   if (threads.length === 0) return <div className="panel" style={{ color: 'var(--text-tertiary)', padding: '8px 12px', fontSize: 12 }}>{t('no_data')}</div>
   return (
       <div className="table-wrap"><table>
-        <thead><tr><th style={{ width: 75 }}>{t('tid')}</th><th>{t('title')}</th><th>{t('forum')}</th><th>{t('archive_status')}</th><th>{t('sync_time')}</th></tr></thead>
+        <thead><tr><th style={{ width: 75 }}>{t('tid')}</th><th>{t('title')}</th><th>{t('forum')}</th><th>{t('archive_status')}</th><th>{t('pub_time')}</th><th>{t('sync_time')}</th></tr></thead>
         <tbody>
           {threads.map(t_ => (
             (() => {
@@ -21,7 +21,8 @@ function RecentTable({ threads, forumNames, t, liveStatuses }: { threads: Thread
               <td className="truncate" title={t_.display_title || t_.raw_title}><Link to={`/threads/${t_.tid}`}>{t_.display_title || t_.raw_title}</Link></td>
               <td>{forumNames[t_.forum_id ?? 0] || '-'}</td>
               <td><Badge status={status} /></td>
-              <td className="nowrap col-time">{liveStatus ? formatDateTime(t_.sync_time) : formatDateTime(t_.sync_time)}</td>
+              <td className="nowrap col-time">{formatDateTime(t_.pub_time)}</td>
+              <td className="nowrap col-time">{formatDateTime(t_.sync_time)}</td>
             </tr>
               )
             })()

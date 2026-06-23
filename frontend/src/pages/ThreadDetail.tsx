@@ -15,7 +15,7 @@ const JOB_STAGE_TRACKS: Record<string, string[]> = {
   export_thread: ['acquired', 'precheck', 'export_write', 'db_commit', 'finalize'],
 }
 
-const ACTIVE_JOB_STATUSES = new Set(['queued', 'running', 'retrying', 'cancel_requested', 'interrupted'])
+const ACTIVE_JOB_STATUSES = new Set(['queued', 'running', 'retrying', 'paused', 'cancel_requested', 'interrupted'])
 
 type ReadingPresetKey = 'paper' | 'sepia' | 'night' | 'ink'
 
@@ -341,6 +341,16 @@ function looksLikeNovelHeading(line: string): boolean {
 
 function normalizePreviewPage(page: number): number {
   return Number.isFinite(page) && page > 0 ? Math.floor(page) : 1
+}
+
+function parseAnchorTarget(hash: string): { kind: 'floor' | 'pid'; value: number } | null {
+  const value = hash.replace(/^#/, '').trim()
+  if (!value) return null
+  const floorMatch = value.match(/^floor[-=:]?(\d+)$/i)
+  if (floorMatch) return { kind: 'floor', value: Number(floorMatch[1]) }
+  const pidMatch = value.match(/^pid[-=:]?(\d+)$/i)
+  if (pidMatch) return { kind: 'pid', value: Number(pidMatch[1]) }
+  return null
 }
 
 function getJobStageTrack(jobType: string | null | undefined, stage: string | null | undefined): string[] {
@@ -770,6 +780,19 @@ export function ThreadDetail() {
     setActionLoading(null)
   }
 
+  const handleRagIndex = async () => {
+    setActionLoading('rag-index')
+    try {
+      const result = await api.createRagIndex({ tid, force: true })
+      if (result.ok && result.data) {
+        setActiveJob({ jobId: result.data.job_id, title: t('rag_create_index') })
+        const refreshed = await api.thread(tid, previewThreadParams)
+        setThread(refreshed)
+      }
+    } catch { /* ignore */ }
+    setActionLoading(null)
+  }
+
   const [seriesDeleted, setSeriesDeleted] = useState<number | null>(null)
 
   const handleDelete = async () => {
@@ -824,6 +847,20 @@ export function ThreadDetail() {
       richBodyHtml: f.rich_body_html || null,
     }
   })
+  const floorAnchorKey = floorGroups.map(group => `${group.pid}:${group.floor_no}`).join('|')
+
+  useEffect(() => {
+    const anchorTarget = parseAnchorTarget(location.hash)
+    if (!anchorTarget) return
+    if (anchorTarget.kind === 'floor') {
+      setPendingFloorNo(anchorTarget.value)
+      return
+    }
+    const matchedFloor = floorGroups.find(group => group.pid === anchorTarget.value)
+    if (matchedFloor) {
+      setPendingFloorNo(matchedFloor.floor_no)
+    }
+  }, [location.hash, floorAnchorKey])
 
   const effectiveFloorGroups = floorGroups
   const effectiveTotalPages = totalPages
@@ -1003,6 +1040,7 @@ export function ThreadDetail() {
         <div className="row-actions">
           <Link to={fromSeries && seriesId ? `/series/${seriesId}` : '/threads'} className="btn-subtle">← {fromSeries ? t('series_detail') : t('thread_list')}</Link>
           <button className="btn-subtle" disabled={actionLoading === 'resync'} onClick={handleResync}>{t('resync')}</button>
+          <button className="btn-subtle" disabled={actionLoading === 'rag-index'} onClick={handleRagIndex}>{t('rag_index_now')}</button>
           {isExportable && <button className="btn-subtle" disabled={actionLoading === 'export'} onClick={handleExport}>{t('export_action')}</button>}
           <button className="btn-danger-outline" onClick={() => setConfirmDelete(true)}>{t('delete')}</button>
         </div>
@@ -1236,6 +1274,7 @@ export function ThreadDetail() {
               <div
                 key={fg.pid}
                 className="floor-row"
+                id={`floor-${fg.floor_no}`}
                 ref={node => {
                   floorRefs.current.set(fg.floor_no, node)
                 }}
@@ -1244,7 +1283,7 @@ export function ThreadDetail() {
                   <div className="floor-no">{fg.floor_no}F</div>
                   <div className="floor-publisher">{fg.publisher || '-'}</div>
                   {fg.pub_time && <div className="floor-time">{formatDateTime(fg.pub_time)}</div>}
-                  <div className="floor-pid">#{fg.pid}</div>
+                  <div className="floor-pid" id={`pid-${fg.pid}`}>#{fg.pid}</div>
                 </div>
                 <div className={`floor-content${isNovel ? ' floor-content-novel' : ''}`}>
                   {fg.richBodyHtml ? (

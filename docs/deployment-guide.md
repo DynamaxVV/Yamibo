@@ -1,6 +1,6 @@
 # 部署指南 & 运维手册
 
-> 版本：0.8.1 | 更新日期：2026-06-23
+> 版本：0.9.0 | 更新日期：2026-06-24
 
 ## 1. 环境要求
 
@@ -11,6 +11,11 @@
 | SQLite | >= 3.35 | 需支持 FTS5 和 `RETURNING` |
 | 操作系统 | macOS / Linux | Windows 未测试 |
 | 网络 | 可访问 bbs.yamibo.com | 远程归档需要 |
+
+RAG 相关补充：
+
+- 若要启用向量检索，运行环境需要能安装并加载 `sqlite-vec`
+- 若要生成 embedding，需要配置可用的 RAG API 凭据；未单独配置时会回退到 `YAMIBO_LLM_API_KEY`
 
 ---
 
@@ -53,6 +58,22 @@ export YAMIBO_LLM_MODEL="gpt-4.1-mini"
 ```
 
 或复制 `.env.example` 为 `.env` 并编辑。
+
+如需启用或调整 RAG，可追加：
+
+```bash
+export YAMIBO_RAG_ENABLED=true
+export YAMIBO_RAG_BASE_URL="https://api.openai.com/v1"
+export YAMIBO_RAG_API_KEY="sk-your-rag-key"
+export YAMIBO_RAG_EMBEDDING_MODEL="text-embedding-3-small"
+export YAMIBO_RAG_EMBEDDING_DIMENSIONS=512
+```
+
+说明：
+
+- `YAMIBO_LLM_*` 主要用于标题解析等聊天模型调用
+- `YAMIBO_RAG_*` 主要用于 embedding
+- 如果不设置 `YAMIBO_RAG_BASE_URL` / `YAMIBO_RAG_API_KEY`，RAG 会自动回退到 `YAMIBO_LLM_BASE_URL` / `YAMIBO_LLM_API_KEY`
 
 ### 2.3 论坛 Cookie
 
@@ -221,6 +242,7 @@ Web 控制台（默认 `http://127.0.0.1:8765`）提供以下运维操作：
 - **标题复核**：修正解析结果
 - **系列管理**：合并、确认系列
 - **删除归档**：删除帖子或系列
+- **RAG 管理**：查看索引覆盖、创建单贴 `rag_index` 任务、调试本地检索
 
 ---
 
@@ -287,3 +309,4 @@ Daemon 和 Server 使用 Python stdlib logging：
 | 任务 partial | 部分图片下载失败 | 检查 `missing_images_json`，可重新同步 |
 | LLM 解析失败 | API Key 未配置或无效 | 检查 `llm.api_key` 配置 |
 | Web 控制台无法访问 | 端口被占用 | 修改 `web.port` 配置 |
+| RAG 向量索引失败 | `sqlite-vec` 无法加载或 embedding 配置缺失 | 检查 `sqlite-vec` 安装、`YAMIBO_LLM_API_KEY` 和 RAG 页面中的失败提示 |

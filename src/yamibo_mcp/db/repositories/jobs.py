@@ -18,8 +18,22 @@ _LIVE_JOB_STATUSES = (
     JobStatus.RUNNING.value,
     JobStatus.RETRYING.value,
     JobStatus.CANCEL_REQUESTED.value,
+    JobStatus.PAUSED.value,
     JobStatus.INTERRUPTED.value,
 )
+
+
+def _job_list_order_clause() -> str:
+    # 任务列表按“进行中 -> 排队中 -> 其他完成态”分组，同组内按创建时间升序，保证启动较早的任务靠前。
+        return """
+        CASE
+            WHEN status IN ('running', 'retrying', 'cancel_requested', 'paused') THEN 0
+            WHEN status = 'queued' THEN 1
+            ELSE 2
+        END ASC,
+        created_at ASC,
+        job_id ASC
+    """
 
 
 def _loads(value: str | None) -> dict[str, Any]:
@@ -47,6 +61,7 @@ def _job_from_row(row: sqlite3.Row) -> Job:
         error_code=row["error_code"],
         error_message=row["error_message"],
         artifacts=_loads(row["artifacts_json"]),
+        paused_at=row["paused_at"] if "paused_at" in row.keys() else None,
         created_at=row["created_at"],
         updated_at=row["updated_at"],
         finished_at=row["finished_at"],
@@ -125,12 +140,12 @@ class JobsRepository:
     def list(self, *, limit: int = 100, status: str | None = None) -> list[Job]:
         if status:
             rows = self.conn.execute(
-                "SELECT * FROM jobs WHERE status = ? ORDER BY created_at DESC LIMIT ?",
+                f"SELECT * FROM jobs WHERE status = ? ORDER BY {_job_list_order_clause()} LIMIT ?",
                 (status, limit),
             ).fetchall()
         else:
             rows = self.conn.execute(
-                "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?",
+                f"SELECT * FROM jobs ORDER BY {_job_list_order_clause()} LIMIT ?",
                 (limit,),
             ).fetchall()
         return [_job_from_row(row) for row in rows]
@@ -218,9 +233,9 @@ class JobsRepository:
             """
             UPDATE jobs
             SET heartbeat_at = ?, lease_until = ?, updated_at = ?
-            WHERE job_id = ? AND worker_id = ? AND status = ?
+            WHERE job_id = ? AND worker_id = ? AND status IN (?, ?)
             """,
-            (now, lease_until, now, job_id, worker_id, JobStatus.RUNNING.value),
+            (now, lease_until, now, job_id, worker_id, JobStatus.RUNNING.value, JobStatus.PAUSED.value),
         )
         self.conn.commit()
 
@@ -343,19 +358,71 @@ class JobsRepository:
         self.conn.commit()
         return cur.rowcount > 0
 
+    def pause(self, job_id: str) -> bool:
+        now = utc_now_iso()
+        cur = self.conn.execute(
+            """
+            UPDATE jobs
+            SET status = ?, paused_at = COALESCE(paused_at, ?), updated_at = ?
+            WHERE job_id = ? AND status IN (?, ?, ?, ?)
+            """,
+            (
+                JobStatus.PAUSED.value,
+                now,
+                now,
+                job_id,
+                JobStatus.QUEUED.value,
+                JobStatus.RUNNING.value,
+                JobStatus.RETRYING.value,
+                JobStatus.INTERRUPTED.value,
+            ),
+        )
+        self.conn.commit()
+        if cur.rowcount > 0:
+            self._append_event(job_id, "job.paused", status=JobStatus.PAUSED.value)
+        return cur.rowcount > 0
+
+    def finalize_pause(self, job_id: str) -> bool:
+        now = utc_now_iso()
+        cur = self.conn.execute(
+            """
+            UPDATE jobs
+            SET status = ?, worker_id = NULL, heartbeat_at = NULL, lease_until = NULL, updated_at = ?
+            WHERE job_id = ? AND status = ?
+            """,
+            (JobStatus.PAUSED.value, now, job_id, JobStatus.PAUSED.value),
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def resume(self, job_id: str) -> bool:
+        now = utc_now_iso()
+        cur = self.conn.execute(
+            """
+            UPDATE jobs
+            SET status = ?, paused_at = NULL, updated_at = ?
+            WHERE job_id = ? AND status = ? AND worker_id IS NULL
+            """,
+            (JobStatus.QUEUED.value, now, job_id, JobStatus.PAUSED.value),
+        )
+        self.conn.commit()
+        if cur.rowcount > 0:
+            self._append_event(job_id, "job.resumed", status=JobStatus.QUEUED.value)
+        return cur.rowcount > 0
+
     def is_cancelled(self, job_id: str) -> bool:
         row = self.conn.execute(
             "SELECT status FROM jobs WHERE job_id = ?",
             (job_id,),
         ).fetchone()
         return row is not None and row["status"] == JobStatus.CANCEL_REQUESTED.value
-        self.conn.commit()
-        self._append_event(
-            job_id,
-            "job.partial",
-            status=JobStatus.PARTIAL.value,
-            payload={"artifacts": artifacts or {}},
-        )
+
+    def is_paused(self, job_id: str) -> bool:
+        row = self.conn.execute(
+            "SELECT status FROM jobs WHERE job_id = ?",
+            (job_id,),
+        ).fetchone()
+        return row is not None and row["status"] == JobStatus.PAUSED.value
 
     def mark_expired_running_interrupted(self) -> int:
         now = utc_now_iso()

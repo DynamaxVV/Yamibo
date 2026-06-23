@@ -14,6 +14,7 @@ export function Layout() {
     { to: '/review', key: 'review' },
     { to: '/exports', key: 'exports' },
     { to: '/forums', key: 'forums' },
+    { to: '/rag', key: 'rag' },
     { to: '/logs', key: 'logs' },
   ]
 

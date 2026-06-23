@@ -1,6 +1,6 @@
 # 核心模块开发说明
 
-> 版本：0.8.1 | 更新日期：2026-06-23
+> 版本：0.9.0 | 更新日期：2026-06-24
 
 ## 1. 标题解析引擎
 
@@ -354,10 +354,57 @@ class AgentResult:
 | cookie_file | YAMIBO_COOKIE_FILE | .cookie | Cookie 文件 |
 | export_dir | YAMIBO_EXPORT_DIR | data/exports | 导出目录 |
 | novel_txt_export_dir | YAMIBO_NOVEL_TXT_EXPORT_DIR | data/novel_exports | 轻小说 TXT 导出目录 |
+| archive_thread_max_pages | YAMIBO_ARCHIVE_THREAD_MAX_PAGES | 50 | 非轻小说区普通归档允许抓取的最大页数 |
 | novel_author_only_max_pages | YAMIBO_NOVEL_AUTHOR_ONLY_MAX_PAGES | 50 | 轻小说追加更新时允许新增的最大页数 |
 | novel_author_only_page_delay_seconds | YAMIBO_NOVEL_AUTHOR_ONLY_PAGE_DELAY_SECONDS | 0.5 | 轻小说追加更新时逐页请求间隔 |
 | novel_txt_include_filtered_notes | YAMIBO_NOVEL_TXT_INCLUDE_FILTERED_NOTES | false | 导出 TXT 时是否保留被过滤段落的说明 |
 | novel_txt_debug_markers | YAMIBO_NOVEL_TXT_DEBUG_MARKERS | false | 导出 TXT 时是否写入调试标记 |
+
+### 6.3 RAG 配置项
+
+| 配置项 | 环境变量 | 默认值 | 说明 |
+|--------|---------|--------|------|
+| rag.enabled | YAMIBO_RAG_ENABLED | true | 是否启用 RAG 功能 |
+| rag.base_url | YAMIBO_RAG_BASE_URL | 回退到 llm.base_url | embedding API 地址 |
+| rag.api_key | YAMIBO_RAG_API_KEY | 回退到 llm.api_key | embedding API Key |
+| rag.embedding_model | YAMIBO_RAG_EMBEDDING_MODEL | text-embedding-3-small | embedding 模型 |
+| rag.embedding_dimensions | YAMIBO_RAG_EMBEDDING_DIMENSIONS | 512 | 向量维度；变更后应重建索引 |
+| rag.min_chunk_chars | YAMIBO_RAG_MIN_CHUNK_CHARS | 20 | 最小 chunk 字数 |
+| rag.max_chunk_chars | YAMIBO_RAG_MAX_CHUNK_CHARS | 900 | 最大 chunk 字数 |
+
+---
+
+## 7. RAG 检索链路
+
+### 7.1 模块边界
+
+| 路径 | 职责 |
+|------|------|
+| `application/rag_commands.py` | 创建 `rag_index` job |
+| `application/rag_queries.py` | 本地只读检索，不抓远端 |
+| `daemon/handlers/rag_index.py` | 执行 collect/chunk/fts/embed/vec/verify |
+| `db/repositories/rag_chunks.py` | chunk 主表 + FTS 写入/查询 |
+| `db/repositories/rag_vectors.py` | `sqlite-vec` 扩展加载、向量表建表、向量查询 |
+| `rag/chunker.py` | 结构化数据 -> 稳定 chunk |
+| `rag/embeddings.py` | OpenAI-compatible embedding 调用 |
+
+### 7.2 WebUI 管理入口
+
+Web 控制台的 `/rag` 页面对应以下后端接口：
+
+- `GET /api/rag/overview`
+- `GET /api/rag/threads`
+- `POST /api/rag/index`
+- `POST /api/rag/search`
+
+它的定位是“本地索引管理 + 检索调试”，不是最终问答页面。
+
+标题解析和 RAG embedding 现在允许分离配置：
+
+- `llm_base_url` / `llm_api_key` / `llm_model` 继续用于标题解析等 chat/completions 调用
+- `rag_base_url` / `rag_api_key` / `rag_embedding_model` 用于 `/embeddings`
+- 若未单独设置 `rag_base_url` / `rag_api_key`，运行时会回退到 `llm_base_url` / `llm_api_key`
+
 | web_host | YAMIBO_WEB_HOST | 127.0.0.1 | Web 监听地址 |
 | web_port | YAMIBO_WEB_PORT | 8765 | Web 端口 |
 | worker_poll_seconds | YAMIBO_WORKER_POLL_SECONDS | 2 | Daemon 轮询间隔 |
