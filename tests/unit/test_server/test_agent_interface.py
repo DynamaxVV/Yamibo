@@ -11,6 +11,7 @@ from yamibo_mcp.server.agent_tools import (
     create_thread_archive_batch_jobs,
     create_thread_archive_job,
     inspect_remote_thread,
+    probe_archived_threads,
     read_archived_thread,
     read_job,
     wait_for_job,
@@ -28,6 +29,7 @@ RECOMMENDED_AGENT_TOOLS = {
     "create_thread_archive_batch_jobs",
     "ensure_thread_archived",
     "read_archived_thread",
+    "probe_archived_threads",
     "check_thread_updates",
     "create_thread_update_job",
     "create_thread_export_job",
@@ -95,6 +97,11 @@ class TestPublicAgentTools:
         assert "floor_end" in signature.parameters
         assert "cursor" in signature.parameters
         assert "chunk_size" in signature.parameters
+
+    def test_probe_archived_threads_signature_exposes_tids(self):
+        signature = inspect.signature(probe_archived_threads)
+
+        assert list(signature.parameters) == ["tids"]
 
     def test_public_tools_list_does_not_expose_limit_parameter(self):
         for name, (handler, _) in TOOLS.items():

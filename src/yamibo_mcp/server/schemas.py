@@ -21,7 +21,7 @@ from yamibo_mcp.server.resource_uris import (
 from yamibo_mcp.yamibo.urls import thread_url_from_tid
 
 
-_TERMINAL_JOB_STATUSES = {"succeeded", "partial", "failed", "cancelled"}
+_TERMINAL_JOB_STATUSES = {"succeeded", "partial", "failed", "cancelled", "superseded"}
 _RESULT_READY_STATUSES = {"succeeded", "partial"}
 _ACTIVE_JOB_STATUSES = {"queued", "running", "retrying", "interrupted", "cancel_requested", "paused"}
 
@@ -53,6 +53,8 @@ def _job_execution_diagnostics(job) -> dict[str, Any]:
             summary = "Job completed partially; archived content is usually readable, but diagnostics and events should be checked."
         elif job.status == "failed":
             summary = "Job failed; inspect job events before retrying."
+        elif job.status == "superseded":
+            summary = "Job was superseded by a rerun and is kept for history only."
         elif job.status == "cancelled":
             summary = "Job was cancelled before completion."
         else:

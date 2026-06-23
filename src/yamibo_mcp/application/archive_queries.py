@@ -195,6 +195,36 @@ def read_archived_thread(
         conn.close()
 
 
+def probe_archived_threads(*, tids: list[int]) -> AgentResult:
+    normalized_tids: list[int] = []
+    seen: set[int] = set()
+    for raw_tid in tids:
+        tid = int(raw_tid)
+        if tid <= 0:
+            raise ValueError("tids must contain positive integers")
+        if tid in seen:
+            continue
+        seen.add(tid)
+        normalized_tids.append(tid)
+    if not normalized_tids:
+        raise ValueError("tids required")
+
+    settings = load_settings()
+    conn = connect(settings.db_path)
+    try:
+        migrate(conn)
+        items = ThreadsRepository(conn).probe_archive_states(normalized_tids)
+        return AgentResult(
+            ok=True,
+            data={
+                "count": len(items),
+                "items": items,
+            },
+        )
+    finally:
+        conn.close()
+
+
 def read_forum_profiles() -> AgentResult:
     settings = load_settings()
     conn = connect(settings.db_path)

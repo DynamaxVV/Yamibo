@@ -8,6 +8,7 @@
 
 - 批量任务优先使用 `create_thread_archive_batch_jobs` 和 `create_rag_index_batch_jobs`
 - RAG 检索优先使用 `search_archived_content`，这是本地只读路径，不会触发远端抓取
+- 大批量归档前，优先用 `probe_archived_threads` 做本地探测，再结合远端列表页的 `last_reply_at` 决定是否补跑
 - 任务暂停 / 恢复属于后台调度能力，不应在 Agent 里被模拟成“重新创建同类任务”
 
 ## 1. 主数据流
@@ -67,6 +68,24 @@ MCP 客户端
 - 本地归档读取绝不抓远端
 - 大内容优先走 resource 或 `cursor/chunk_size` 分页
 
+### 1.3.1 批量归档探测
+
+```text
+MCP 客户端
+  -> server.agent_tools / server.mcp_registry
+  -> application.archive_queries.probe_archived_threads
+  -> db.repositories.threads
+  -> 本地只读结果
+```
+
+适用场景：批量归档前判断某个 `tid` 是否已有本地归档，以及本地最后楼层时间是否落后于远端列表页的 `last_reply_at`。
+
+约束：
+
+- 不创建 job
+- 不抓远端
+- 只返回本地归档事实，不替 agent 做更新决策
+
 ### 1.4 Web 控制台
 
 ```text
@@ -118,6 +137,7 @@ MCP 客户端
 | 新增 Agent-facing MCP 工具 | `application/*`、`server/agent_tools.py`、`server/mcp_registry.py` | `uv run pytest tests/unit/test_server/test_agent_interface.py tests/unit/test_application/` |
 | 修改 Agent 错误契约 | `application/contracts.py`、`server/agent_adapter.py` | `uv run pytest tests/unit/test_application/test_contracts.py tests/unit/test_server/test_agent_interface.py tests/unit/test_server/test_protocol_legacy.py` |
 | 新增本地归档 view | `application/archive_queries.py`、相关 repository、必要时 `server/resources.py` | `uv run pytest tests/unit/test_application/test_archive_queries.py tests/unit/test_server/test_resources.py` |
+| 新增批量归档探测 | `application/archive_queries.py`、`db/repositories/threads.py`、`server/agent_tools.py`、`server/mcp_registry.py` | `uv run pytest tests/unit/test_application/test_archive_queries.py tests/unit/test_server/test_agent_interface.py` |
 | 修改远端搜索/浏览 | `application/search_use_cases.py`、`application/remote_queries.py`、`yamibo/client.py`、`yamibo/parsers/*` | `uv run pytest tests/unit/test_server/test_forum_id_tools.py tests/unit/test_parsers/` |
 | 修改远端帖子预览 | `application/remote_inspection.py`、`yamibo/parsers/thread_detail.py` | `uv run pytest tests/unit/test_server/test_agent_interface.py tests/unit/test_parsers/test_thread_detail.py` |
 | 修改归档任务行为 | `application/archive_commands.py`、`daemon/handlers/sync_thread.py`、`storage/*`、repositories | `uv run pytest tests/unit/test_application/test_thread_use_cases.py tests/unit/test_daemon/` |

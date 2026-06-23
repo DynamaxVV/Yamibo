@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from yamibo_mcp.application.archive_queries import read_archived_thread
+from yamibo_mcp.application.archive_queries import probe_archived_threads, read_archived_thread
 from yamibo_mcp.db.repositories.content_blocks import ContentBlocksRepository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
 from yamibo_mcp.domain.models import ContentBlock, FloorSnapshot, ThreadSnapshot, TitleSnapshot
@@ -117,3 +117,30 @@ def test_read_archived_thread_content_cursor_reads_last_chunk(tmp_path, db):
     assert last.data["floors"][-1]["floor_no"] == 105
     assert last.data["has_more"] is False
     assert last.data["next_cursor"] is None
+
+
+def test_probe_archived_threads_reports_local_archive_state(tmp_path, db):
+    settings = _fake_settings(tmp_path)
+    _seed_large_thread(db, tid=9002, floor_count=3)
+
+    with patch("yamibo_mcp.application.archive_queries.load_settings", return_value=settings), \
+         patch("yamibo_mcp.application.archive_queries.connect", return_value=db):
+        result = probe_archived_threads(tids=[9002, 12345, 9002])
+
+    assert result.ok is True
+    assert result.data["count"] == 2
+    items = {item["tid"]: item for item in result.data["items"]}
+    archived = items[9002]
+    missing = items[12345]
+    assert archived["archived"] is True
+    assert archived["archive_status"] == "complete"
+    assert archived["local_floor_count"] == 3
+    assert archived["local_reply_count"] == 2
+    assert archived["local_last_pid"] == 10003
+    assert archived["local_last_floor_no"] == 3
+    assert archived["local_last_floor_pub_time"] == "2026-01-01"
+    assert archived["local_last_reply_at"] == "2026-01-01"
+    assert missing["archived"] is False
+    assert missing["local_floor_count"] == 0
+    assert missing["local_last_floor_pub_time"] is None
+    assert missing["local_last_reply_at"] is None

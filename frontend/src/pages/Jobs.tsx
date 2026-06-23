@@ -288,7 +288,7 @@ export function Jobs() {
               <td className="nowrap col-time">{formatDateTime(j.created_at)}</td>
               <td>
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                  {j.status === 'partial' && (
+                  {(j.status === 'partial' || j.status === 'failed') && (
                     <button className="btn-subtle" onClick={() => void handleRetry(j)} disabled={pendingRetryId === j.job_id} style={{ fontSize: 11, padding: '2px 6px' }}>
                       {pendingRetryId === j.job_id ? t('running') : t('rerun')}
                     </button>

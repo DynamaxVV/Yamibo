@@ -21,6 +21,7 @@ from yamibo_mcp.config import Settings
 from yamibo_mcp.application.archive_commands import create_thread_archive_batch_jobs
 from yamibo_mcp.application.rag_commands import create_rag_index_batch_jobs, create_rag_index_job
 from yamibo_mcp.application.rag_queries import search_archived_content
+from yamibo_mcp.maintenance.forum_sizes import read_forum_size_cache, refresh_forum_size_cache
 from yamibo_mcp.application.update_queries import check_thread_updates
 from yamibo_mcp.server.agent_adapter import to_wire
 from yamibo_mcp.services.title_hints import update_title_hints
@@ -125,7 +126,9 @@ def _route(handler, route: str, params, conn, settings):
         series_id = int(route[8:])
         _series_detail(handler, series_id, conn)
     elif route == "/forums" and handler.command == "GET":
-        _forums_list(handler, conn)
+        _forums_list(handler, conn, settings)
+    elif route == "/forums/refresh-size-cache" and handler.command == "POST":
+        _refresh_forum_size_cache(handler, conn, settings)
     elif route == "/exports" and handler.command == "GET":
         _exports_list(handler, conn)
     elif route == "/fonts" and handler.command == "GET":
@@ -292,17 +295,14 @@ def _retry_job(handler, conn):
         return
     repo = JobsRepository(conn)
     job = repo.get(job_id)
-    if job.status != JobStatus.PARTIAL.value:
-        _error_response(handler, "Only partial jobs can be retried")
+    if job.status not in (JobStatus.PARTIAL.value, JobStatus.FAILED.value):
+        _error_response(handler, "Only partial or failed jobs can be retried")
         return
-    next_job = repo.create(
-        job.job_type,
-        tid=job.tid,
-        payload=dict(job.payload or {}),
-        parent_job_id=job.job_id,
-        max_retries=job.max_retries,
-        resumable=job.resumable,
-    )
+    try:
+        next_job = repo.rerun(job.job_id)
+    except ValueError as exc:
+        _error_response(handler, str(exc))
+        return
     _json_response(handler, {
         "ok": True,
         "job_id": next_job.job_id,
@@ -663,7 +663,10 @@ def _similar_series(handler, series_id, conn):
     _json_response(handler, similar[:10])
 
 
-def _forums_list(handler, conn):
+def _forums_list(handler, conn, settings):
+    cache = read_forum_size_cache(settings) or {}
+    cache_forums = cache.get("forums") if isinstance(cache, dict) else {}
+    size_map = cache_forums if isinstance(cache_forums, dict) else {}
     rows = conn.execute(
         "SELECT f.*, COUNT(t.tid) AS thread_count FROM forums f "
         "LEFT JOIN threads t ON t.forum_id = f.forum_id "
@@ -672,9 +675,20 @@ def _forums_list(handler, conn):
     _json_response(handler, [
         {"forum_id": r["forum_id"], "name": r["name"], "name_en": r["name_en"] if "name_en" in r.keys() else None,
          "content_kind": r["content_kind"],
-         "thread_count": r["thread_count"], "enabled": bool(r["enabled"])}
+         "thread_count": r["thread_count"], "enabled": bool(r["enabled"]),
+         "archive_size_bytes": size_map.get(str(r["forum_id"]), {}).get("archive_bytes") if isinstance(size_map.get(str(r["forum_id"])), dict) else None,
+         "archive_size_updated_at": size_map.get(str(r["forum_id"]), {}).get("updated_at") if isinstance(size_map.get(str(r["forum_id"])), dict) else None}
         for r in rows
     ])
+
+
+def _refresh_forum_size_cache(handler, conn, settings):
+    payload = refresh_forum_size_cache(settings, conn)
+    _json_response(handler, {
+        "ok": True,
+        "updated_at": payload.get("updated_at"),
+        "forum_count": len(payload.get("forums", {})) if isinstance(payload.get("forums"), dict) else 0,
+    })
 
 
 def _exports_list(handler, conn):

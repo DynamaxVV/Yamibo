@@ -561,6 +561,76 @@ class ThreadsRepository:
             like_params,
         ).fetchall()
 
+    def probe_archive_states(self, tids: list[int]) -> list[dict[str, object]]:
+        if not tids:
+            return []
+        normalized_tids = list(dict.fromkeys(int(tid) for tid in tids))
+        placeholders = ",".join("?" for _ in normalized_tids)
+        rows = self.conn.execute(
+            f"""
+            SELECT
+              t.tid,
+              t.archive_status,
+              t.sync_time,
+              t.forum_id,
+              t.content_kind,
+              t.publisher,
+              t.pub_time,
+              COALESCE((SELECT COUNT(*) FROM floors f WHERE f.tid = t.tid), 0) AS floor_count,
+              (SELECT f.pid FROM floors f WHERE f.tid = t.tid ORDER BY f.floor_no DESC, f.pid DESC LIMIT 1) AS last_pid,
+              (SELECT f.floor_no FROM floors f WHERE f.tid = t.tid ORDER BY f.floor_no DESC, f.pid DESC LIMIT 1) AS last_floor_no,
+              (SELECT f.pub_time FROM floors f WHERE f.tid = t.tid ORDER BY f.floor_no DESC, f.pid DESC LIMIT 1) AS last_floor_pub_time
+            FROM threads t
+            WHERE t.tid IN ({placeholders})
+            """,
+            normalized_tids,
+        ).fetchall()
+        by_tid = {int(row["tid"]): row for row in rows}
+        result: list[dict[str, object]] = []
+        for tid in normalized_tids:
+            row = by_tid.get(tid)
+            if row is None:
+                result.append(
+                    {
+                        "tid": tid,
+                        "archived": False,
+                        "archive_status": None,
+                        "sync_time": None,
+                        "forum_id": None,
+                        "content_kind": None,
+                        "publisher": None,
+                        "pub_time": None,
+                        "local_floor_count": 0,
+                        "local_reply_count": 0,
+                        "local_last_pid": None,
+                        "local_last_floor_no": None,
+                        "local_last_floor_pub_time": None,
+                        "local_last_reply_at": None,
+                    }
+                )
+                continue
+            floor_count = int(row["floor_count"] or 0)
+            last_floor_pub_time = row["last_floor_pub_time"]
+            result.append(
+                {
+                    "tid": int(row["tid"]),
+                    "archived": True,
+                    "archive_status": row["archive_status"],
+                    "sync_time": row["sync_time"],
+                    "forum_id": row["forum_id"],
+                    "content_kind": row["content_kind"],
+                    "publisher": row["publisher"],
+                    "pub_time": row["pub_time"],
+                    "local_floor_count": floor_count,
+                    "local_reply_count": max(0, floor_count - 1),
+                    "local_last_pid": row["last_pid"],
+                    "local_last_floor_no": row["last_floor_no"],
+                    "local_last_floor_pub_time": last_floor_pub_time,
+                    "local_last_reply_at": last_floor_pub_time,
+                }
+            )
+        return result
+
     def list_floors(self, tid: int) -> list[sqlite3.Row]:
         return self.conn.execute(
             "SELECT * FROM floors WHERE tid = ? ORDER BY floor_no ASC",

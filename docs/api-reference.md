@@ -190,6 +190,42 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
 
 `content` 视图返回 `has_more`、`next_cursor`、`resource_hints`，大帖应按 cursor 分页读取。
 
+### 1.6.1 probe_archived_threads
+
+批量读取本地归档事实，不创建任务，不抓远端。适合在大批量归档前先判断哪些 `tid` 已经有本地归档，以及本地最后楼层时间是否已经落后于远端列表页。
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| tids | int[] | 是 | - | 要探测的帖子 ID 列表 |
+
+**返回**：
+
+```json
+{
+  "count": 2,
+  "items": [
+    {
+      "tid": 572313,
+      "archived": true,
+      "archive_status": "complete",
+      "sync_time": "2026-06-24T10:11:12+00:00",
+      "forum_id": 30,
+      "content_kind": "comic",
+      "publisher": "author",
+      "pub_time": "2026-06-14 12:00",
+      "local_floor_count": 7,
+      "local_reply_count": 6,
+      "local_last_pid": 40852500,
+      "local_last_floor_no": 7,
+      "local_last_floor_pub_time": "2026-06-16 11:50",
+      "local_last_reply_at": "2026-06-16 11:50"
+    }
+  ]
+}
+```
+
+`local_last_floor_pub_time` 是本地最后楼层的发布时间；`local_last_reply_at` 是它的语义别名，方便直接和远端列表页的 `last_reply_at` 做更新判断。
+
 ### 1.7 create_thread_export_job
 
 创建帖子导出任务。

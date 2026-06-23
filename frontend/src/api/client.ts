@@ -170,6 +170,8 @@ export interface Forum {
   content_kind: string
   thread_count: number
   enabled: boolean
+  archive_size_bytes?: number | null
+  archive_size_updated_at?: string | null
 }
 
 export interface WorkerHeartbeat {
@@ -395,6 +397,7 @@ export const api = {
   deleteSeries: (seriesId: number) => postJson<{ ok: boolean }>('/series/delete', { series_id: seriesId }),
   similarSeries: (seriesId: number) => fetchJson<SeriesSummary[]>(`/series/${seriesId}/similar`),
   forums: () => fetchJson<Forum[]>('/forums'),
+  refreshForumSizeCache: () => postJson<{ ok: boolean; updated_at: string | null; forum_count: number }>('/forums/refresh-size-cache', {}),
   fonts: () => fetchJson<FontAsset[]>('/fonts'),
   exports: () => fetchJson<ThreadSummary[]>('/exports'),
   reviewItems: () => fetchJson<{ titles: ThreadSummary[]; series: SeriesSummary[] }>('/review'),

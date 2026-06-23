@@ -169,6 +169,7 @@ Start here when you do not know which tool to call.
 - Use `ensure_thread_archived` when you need a local copy and can tolerate queued work.
 - Use `create_thread_archive_job` for explicit job creation.
 - Use `wait_for_job` instead of client-side `sleep` when you need to block on job completion.
+- Use `probe_archived_threads` before large batch archives to check whether a tid already has local archive state and what the last local floor timestamp is.
 - Poll `read_job`, then `read_job_events`, only when you need finer-grained status.
 - Read local content with `read_archived_thread`.
 - For large content, call `read_archived_thread` with `view="content"` and follow `next_cursor`.
@@ -207,6 +208,7 @@ The MCP interface separates remote reads, local archives, and background jobs.
 
 ## State model
 - `browse_forum_page`, `search_forum_threads`, `inspect_remote_thread`, and `check_thread_updates` are remote read-only tools.
+- `probe_archived_threads` is a local read-only probe for archive presence and last local floor timestamp; it does not fetch remote data.
 - `create_thread_archive_job`, `create_thread_update_job`, and `create_thread_export_job` create SQLite jobs.
 - The daemon consumes queued jobs and materializes local files/resources.
 

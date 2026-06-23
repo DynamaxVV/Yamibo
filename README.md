@@ -15,6 +15,7 @@
 - **系列管理** — 按 series_key 自动聚合同一系列的多个章节帖子
 - **标准化导出** — 漫画/通用贴子 ZIP 打包（context.md + metadata.json + 图片），轻小说导出为可追加的 TXT 文件
 - **批量任务** — 支持批量归档和批量 RAG 索引，便于一次性处理多个 tid
+- **批量归档探测** — `probe_archived_threads` 可先读取本地归档尾部状态，再配合远端 `last_reply_at` 决定是否补跑
 - **Job Event Outbox** — 任务状态变更追加耐久化事件，支持诊断和未来通知
 - **本地 RAG 检索** — 基于 SQLite FTS5 + `sqlite-vec` 的归档内容混合检索，返回可追溯证据片段
 - **Agent-Friendly Interface** — 区分远端预览/任务创建与本地归档读取，统一结构化错误和紧凑输出

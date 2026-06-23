@@ -9,6 +9,7 @@ from yamibo_mcp.application.archive_commands import (
 )
 from yamibo_mcp.application.archive_queries import (
     read_archived_thread as _read_archived_thread,
+    probe_archived_threads as _probe_archived_threads,
 )
 from yamibo_mcp.application.forum_queries import read_forum_profiles as _read_forum_profiles
 from yamibo_mcp.application.job_queries import read_job as _read_job
@@ -147,6 +148,11 @@ def read_archived_thread(
         cursor=cursor,
         chunk_size=chunk_size,
     )
+
+
+@agent_tool
+def probe_archived_threads(*, tids: list[int]) -> AgentResult:
+    return _probe_archived_threads(tids=tids)
 
 
 @agent_tool

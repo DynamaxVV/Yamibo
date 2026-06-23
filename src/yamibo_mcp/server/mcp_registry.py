@@ -11,6 +11,7 @@ from yamibo_mcp.server.agent_tools import (
     create_thread_update_job,
     ensure_thread_archived,
     inspect_remote_thread,
+    probe_archived_threads,
     read_archived_thread,
     read_forum_profiles,
     read_job,
@@ -169,6 +170,10 @@ def register_agent_tools(server) -> None:
             cursor=cursor,
             chunk_size=chunk_size,
         )
+
+    @server.tool(name="probe_archived_threads", description="Batch read-only archive probe for multiple tids. Returns local archive state and the last local floor timestamp without creating jobs or fetching remote data.")
+    def _probe_archived_threads(tids: list[int]) -> dict[str, object]:
+        return probe_archived_threads(tids=tids)
 
     @server.tool(name="check_thread_updates", description="Remote read-only update inspection for archived novel threads. Does not create jobs.")
     def _check_thread_updates(tid: int, base_url: str | None = None) -> dict[str, object]:

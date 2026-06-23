@@ -131,6 +131,65 @@ class JobsRepository:
         self._append_event(job_id, "job.created", status=JobStatus.QUEUED.value)
         return self.get(job_id)
 
+    def rerun(self, job_id: str) -> Job:
+        source = self.get(job_id)
+        if source.status not in (JobStatus.PARTIAL.value, JobStatus.FAILED.value):
+            raise ValueError("Only partial or failed jobs can be retried")
+
+        next_job_id = new_job_id(source.job_type)
+        now = utc_now_iso()
+        try:
+            self.conn.execute(
+                """
+                INSERT INTO jobs (
+                  job_id, parent_job_id, job_type, tid, payload_json, status,
+                  max_retries, resumable, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    next_job_id,
+                    source.job_id,
+                    source.job_type,
+                    source.tid,
+                    json.dumps(source.payload or {}, ensure_ascii=False),
+                    JobStatus.QUEUED.value,
+                    source.max_retries,
+                    1 if source.resumable else 0,
+                    now,
+                    now,
+                ),
+            )
+            cur = self.conn.execute(
+                """
+                UPDATE jobs
+                SET status = ?, updated_at = ?, finished_at = ?, lease_until = NULL
+                WHERE job_id = ? AND status IN (?, ?)
+                """,
+                (
+                    JobStatus.SUPERSEDED.value,
+                    now,
+                    now,
+                    source.job_id,
+                    JobStatus.PARTIAL.value,
+                    JobStatus.FAILED.value,
+                ),
+            )
+            if cur.rowcount != 1:
+                raise ValueError("Failed to supersede source job")
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        self._append_event(next_job_id, "job.created", status=JobStatus.QUEUED.value)
+        self._append_event(
+            source.job_id,
+            "job.superseded",
+            status=JobStatus.SUPERSEDED.value,
+            payload={"superseded_by_job_id": next_job_id},
+        )
+        return self.get(next_job_id)
+
     def get(self, job_id: str) -> Job:
         row = self.conn.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
         if row is None:

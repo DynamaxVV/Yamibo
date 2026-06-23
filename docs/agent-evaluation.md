@@ -13,6 +13,7 @@ Agent 通过验收，应同时满足以下条件：
 - 能复用兼容 payload 的 live job，而不是重复创建同类任务。
 - 能在读取正文时优先使用 `summary` 和分页 `content`，而不是默认读取全量 materialized 文件。
 - 能在 `failed`、`partial`、`interrupted`、`LOCAL_ARCHIVE_NOT_FOUND`、`JOB_NOT_FOUND` 等场景下做正确分流。
+- 能在批量归档前先做本地探测，再结合远端 `last_reply_at` / `reply_count` 决定是否补跑任务。
 
 ## 2. 必测场景
 
@@ -61,6 +62,12 @@ Agent 通过验收，应同时满足以下条件：
 2. 验证系统复用已有 live job。
 3. 对同一 `tid` 但不同 payload（例如 export strategy 不同）再次创建 job。
 4. 验证系统创建新 job，而不是错误复用旧 job。
+
+### 2.6 批量归档前探测
+
+1. 调用 `probe_archived_threads` 批量读取本地归档事实。
+2. 对比远端 `browse_forum_page` 或 `search_forum_threads` 返回的 `last_reply_at`。
+3. 仅对本地最后楼层时间落后、或者本地尚未归档的 tid 创建归档任务。
 
 ## 3. 评分建议
 

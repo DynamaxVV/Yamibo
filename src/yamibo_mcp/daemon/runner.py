@@ -14,6 +14,7 @@ from yamibo_mcp.errors import LeaseNotAcquired
 from yamibo_mcp.daemon.handlers import get_handler
 from yamibo_mcp.daemon.handlers.sync_thread import JobCancelled, JobPaused
 from yamibo_mcp.daemon.recovery import recover_expired_jobs
+from yamibo_mcp.maintenance.forum_sizes import FORUM_SIZE_CACHE_REFRESH_SECONDS, refresh_forum_size_cache
 
 LOG = logging.getLogger(__name__)
 
@@ -61,15 +62,22 @@ class DaemonRunner:
 
     def run_forever(self) -> None:
         worker_parallelism = max(getattr(self.settings, "worker_parallelism", 1), 1)
+        stop_event = Event()
+        cache_thread = Thread(target=self._run_forum_size_cache_loop, args=(stop_event,), daemon=True)
+        cache_thread.start()
         if worker_parallelism == 1:
             LOG.info("Starting daemon %s", self.worker_id)
-            while True:
-                result = self.run_once()
-                if result.processed == 0:
-                    time.sleep(self.settings.worker_poll_seconds)
+            try:
+                while not stop_event.is_set():
+                    result = self.run_once()
+                    if result.processed == 0:
+                        stop_event.wait(self.settings.worker_poll_seconds)
+            except KeyboardInterrupt:
+                stop_event.set()
+            finally:
+                cache_thread.join(timeout=5)
             return
 
-        stop_event = Event()
         threads: list[Thread] = []
         LOG.info("Starting daemon %s with %s workers", self.worker_id, worker_parallelism)
         for index in range(worker_parallelism):
@@ -85,6 +93,7 @@ class DaemonRunner:
             stop_event.set()
             for thread in threads:
                 thread.join(timeout=5)
+            cache_thread.join(timeout=5)
 
     def _run_worker_loop(self, stop_event: Event) -> None:
         LOG.info("Worker %s started", self.worker_id)
@@ -92,3 +101,13 @@ class DaemonRunner:
             result = self.run_once()
             if result.processed == 0:
                 stop_event.wait(self.settings.worker_poll_seconds)
+
+    def _run_forum_size_cache_loop(self, stop_event: Event) -> None:
+        LOG.info("Forum size cache refresher started")
+        while not stop_event.is_set():
+            try:
+                refresh_forum_size_cache(self.settings)
+            except Exception:  # noqa: BLE001 - background maintenance should not stop the daemon
+                LOG.exception("Failed to refresh forum size cache")
+            if stop_event.wait(FORUM_SIZE_CACHE_REFRESH_SECONDS):
+                break

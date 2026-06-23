@@ -15,6 +15,8 @@ from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.web.api import (
     _archive_threads_batch,
     _batch_delete_threads,
+    _forums_list,
+    _refresh_forum_size_cache,
     _rag_index_batch,
     _rag_index,
     _rag_overview,
@@ -441,6 +443,37 @@ def test_rag_index_batch_endpoint_creates_jobs(db):
     assert payload["created_count"] == 1
 
 
+def test_forums_list_includes_cached_archive_size(db, tmp_path: Path):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    settings = SimpleNamespace(data_dir=data_dir)
+    snapshot = _make_snapshot(tid=42)
+    ThreadsRepository(db).upsert_snapshot(snapshot, forum_id=30, archive_status="complete", missing_image_urls=[])
+    thread_dir = data_dir / "threads" / "42"
+    thread_dir.mkdir(parents=True, exist_ok=True)
+    (thread_dir / "context.md").write_bytes(b"1234567890")
+    (thread_dir / "metadata.json").write_bytes(b"12345")
+    images_dir = thread_dir / "images"
+    images_dir.mkdir(parents=True, exist_ok=True)
+    (images_dir / "image.jpg").write_bytes(b"abc")
+
+    refresh_handler = _CaptureHandler()
+    refresh_handler.command = "POST"
+    _refresh_forum_size_cache(refresh_handler, db, settings)
+
+    refresh_payload = json.loads(refresh_handler.wfile.getvalue().decode("utf-8"))
+    assert refresh_payload["ok"] is True
+    assert refresh_payload["forum_count"] >= 1
+
+    handler = _CaptureHandler()
+    _forums_list(handler, db, settings)
+
+    payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
+    forum_30 = next(row for row in payload if row["forum_id"] == 30)
+    assert forum_30["archive_size_bytes"] == 18
+    assert forum_30["archive_size_updated_at"] is not None
+
+
 def test_retry_job_endpoint_requeues_partial_job(db):
     repo = JobsRepository(db)
     job = repo.create("rag_index", tid=42, payload={"tid": 42, "force": False})
@@ -465,6 +498,32 @@ def test_retry_job_endpoint_requeues_partial_job(db):
     assert next_job.payload["force"] is False
     parent_row = db.execute("SELECT parent_job_id FROM jobs WHERE job_id = ?", (payload["job_id"],)).fetchone()
     assert parent_row["parent_job_id"] == job.job_id
+    source_row = db.execute("SELECT status FROM jobs WHERE job_id = ?", (job.job_id,)).fetchone()
+    assert source_row["status"] == "superseded"
+
+
+def test_retry_job_endpoint_requeues_failed_job(db):
+    repo = JobsRepository(db)
+    job = repo.create("rag_index", tid=43, payload={"tid": 43})
+    repo.fail(job.job_id, "HTTP_500", "boom")
+
+    handler = _CaptureHandler()
+    handler.command = "POST"
+    body = {"job_id": job.job_id}
+    handler.headers["Content-Length"] = str(len(json.dumps(body)))
+    handler.rfile = io.BytesIO(json.dumps(body).encode("utf-8"))
+
+    _retry_job(handler, db)
+
+    payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
+    assert payload["ok"] is True
+    assert payload["source_job_id"] == job.job_id
+    assert payload["status"] == "queued"
+    next_job = repo.get(payload["job_id"])
+    assert next_job.job_type == "rag_index"
+    assert next_job.tid == 43
+    source_row = db.execute("SELECT status FROM jobs WHERE job_id = ?", (job.job_id,)).fetchone()
+    assert source_row["status"] == "superseded"
 
 
 def test_archive_threads_batch_endpoint_creates_jobs(db):

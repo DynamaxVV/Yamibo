@@ -76,7 +76,7 @@ export function JobDetail() {
   const skippedCount = Number(job.artifacts?.skipped_image_count || 0)
   const missingCount = Number(job.artifacts?.missing_image_count || 0)
   const missingSharedCount = Number(job.artifacts?.missing_shared_image_count || 0)
-  const canRerun = job.status === 'partial'
+  const canRerun = job.status === 'partial' || job.status === 'failed'
 
   const handleRerun = async () => {
     setActionError(null)

@@ -59,6 +59,7 @@ class TestLegacyJsonRpcDispatch:
             "create_thread_archive_batch_jobs",
             "ensure_thread_archived",
             "read_archived_thread",
+            "probe_archived_threads",
             "check_thread_updates",
             "create_thread_update_job",
             "create_thread_export_job",

@@ -45,6 +45,7 @@
 - `create_thread_archive_batch_jobs`
 - `ensure_thread_archived`
 - `read_archived_thread`
+- `probe_archived_threads`
 - `check_thread_updates`
 - `create_thread_update_job`
 - `create_thread_export_job`
@@ -87,6 +88,20 @@
 
 `content` 视图默认按 chunk 返回，响应包含 `has_more`、`next_cursor` 和 `resource_hints`。读取大帖时应在 `has_more=true` 时用同一参数加 `cursor=next_cursor` 继续分页，不要假设一次调用返回全量楼层。
 
+`probe_archived_threads(tids)` 是批量本地探测接口。它只返回本地归档事实，不创建任务，不抓远端。返回项包含：
+
+- `archived`
+- `archive_status`
+- `sync_time`
+- `local_floor_count`
+- `local_reply_count`
+- `local_last_pid`
+- `local_last_floor_no`
+- `local_last_floor_pub_time`
+- `local_last_reply_at`，与 `local_last_floor_pub_time` 同义，便于和远端 `last_reply_at` 对照
+
+大批量归档前，优先用这个接口判断某个 `tid` 是否已经有本地归档，以及本地最后楼层时间是否已经落后于远端列表页的 `last_reply_at`。
+
 ## 推荐工作流
 
 ### 搜索并归档
@@ -101,6 +116,12 @@
 
 1. `ensure_thread_archived`
 2. `read_archived_thread`
+
+### 大批量归档前探测
+
+1. `probe_archived_threads`
+2. 结合远端 `browse_forum_page` / `search_forum_threads` 返回的 `last_reply_at` 和 `reply_count`
+3. 仅对明显需要更新的 tid 创建归档任务
 
 ### 轻小说更新
 

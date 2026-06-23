@@ -5,7 +5,7 @@ const KIND_MAP: Record<string, string> = {
   succeeded: 'ok', complete: 'ok', valid: 'ok', downloaded: 'ok',
   running: 'accent', queued: 'warn', retrying: 'accent', pending: 'accent', paused: 'warn', indexing: 'accent',
   partial: 'warn',
-  failed: 'error', error: 'error', interrupted: 'error', missing: 'error',
+  failed: 'error', superseded: 'muted', error: 'error', interrupted: 'error', missing: 'error',
 }
 
 const CONTENT_KIND_CLASSES: Record<string, string> = {
