@@ -450,6 +450,7 @@ export const api = {
   batchDeleteJobs: (status: string) => postJson<{ ok: boolean; deleted: number }>('/jobs/batch-delete', { status }),
   batchDeleteJobIds: (jobIds: string[]) => postJson<{ ok: boolean; deleted: number }>('/jobs/batch-delete-ids', { job_ids: jobIds }),
   safeDeleteJob: (jobId: string) => postJson<{ ok: boolean; action: string; job_id: string }>('/jobs/safe-delete', { job_id: jobId }),
+  retryJob: (jobId: string) => postJson<{ ok: boolean; job_id: string; source_job_id: string; status: string }>('/jobs/retry', { job_id: jobId }),
   pauseJob: (jobId: string) => postJson<{ ok: boolean; job_id: string; status: string }>('/jobs/pause', { job_id: jobId }),
   resumeJob: (jobId: string) => postJson<{ ok: boolean; job_id: string; status: string }>('/jobs/resume', { job_id: jobId }),
   updateChapter: (tid: number, chapter_name: string | null, chapter_index: number | null, author_guess?: string | null, group_name?: string | null) => postJson<{ ok: boolean }>('/threads/update-chapter', { tid, chapter_name, chapter_index, author_guess, group_name }),

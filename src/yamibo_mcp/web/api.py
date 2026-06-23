@@ -85,6 +85,8 @@ def _route(handler, route: str, params, conn, settings):
         _job_detail(handler, job_id, conn)
     elif route == "/jobs/delete" and handler.command == "POST":
         _delete_job(handler, conn)
+    elif route == "/jobs/retry" and handler.command == "POST":
+        _retry_job(handler, conn)
     elif route == "/jobs/pause" and handler.command == "POST":
         _pause_job(handler, conn)
     elif route == "/jobs/resume" and handler.command == "POST":
@@ -280,6 +282,33 @@ def _delete_job(handler, conn):
     conn.execute("DELETE FROM jobs WHERE job_id = ?", (job_id,))
     conn.commit()
     _json_response(handler, {"ok": True, "job_id": job_id})
+
+
+def _retry_job(handler, conn):
+    body = _read_json_body(handler)
+    job_id = body.get("job_id")
+    if not job_id:
+        _error_response(handler, "job_id required")
+        return
+    repo = JobsRepository(conn)
+    job = repo.get(job_id)
+    if job.status != JobStatus.PARTIAL.value:
+        _error_response(handler, "Only partial jobs can be retried")
+        return
+    next_job = repo.create(
+        job.job_type,
+        tid=job.tid,
+        payload=dict(job.payload or {}),
+        parent_job_id=job.job_id,
+        max_retries=job.max_retries,
+        resumable=job.resumable,
+    )
+    _json_response(handler, {
+        "ok": True,
+        "job_id": next_job.job_id,
+        "source_job_id": job.job_id,
+        "status": next_job.status,
+    })
 
 
 def _pause_job(handler, conn):

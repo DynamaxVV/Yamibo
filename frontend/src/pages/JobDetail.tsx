@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { api, type JobSummary, type JobEvent } from '../api/client'
 import { Badge } from '../components/Badge'
 import { useI18n } from '../context/I18nContext'
@@ -8,6 +8,7 @@ import { getArchiveBreakdown, getPartialArchiveReason, hasPartialArchiveBreakdow
 
 export function JobDetail() {
   const { t, lang } = useI18n()
+  const navigate = useNavigate()
   const desc = (j: { description: string; description_en: string }) => lang === 'en' ? j.description_en : j.description
   const id = window.location.pathname.split('/').pop() || ''
   const [job, setJob] = useState<JobSummary | null>(null)
@@ -15,6 +16,7 @@ export function JobDetail() {
   const [error, setError] = useState<string | null>(null)
   const [refreshNotice, setRefreshNotice] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
+  const [rerunSubmitting, setRerunSubmitting] = useState(false)
   const jobRef = useRef<JobSummary | null>(null)
 
   useEffect(() => {
@@ -74,13 +76,35 @@ export function JobDetail() {
   const skippedCount = Number(job.artifacts?.skipped_image_count || 0)
   const missingCount = Number(job.artifacts?.missing_image_count || 0)
   const missingSharedCount = Number(job.artifacts?.missing_shared_image_count || 0)
+  const canRerun = job.status === 'partial'
+
+  const handleRerun = async () => {
+    setActionError(null)
+    setRerunSubmitting(true)
+    try {
+      const result = await api.retryJob(job.job_id)
+      const next = await api.job(result.job_id)
+      setJob(next)
+      jobRef.current = next
+      navigate(`/jobs/${result.job_id}`)
+    } catch (e: any) {
+      setActionError(e.message || String(e))
+    } finally {
+      setRerunSubmitting(false)
+    }
+  }
 
   return (
     <>
       <div className="threads-filter-row" style={{ marginBottom: 12 }}>
         <h2 style={{ margin: 0 }}>{t('job_detail')}</h2>
-        {(job.status === 'queued' || job.status === 'running' || job.status === 'retrying' || job.status === 'paused') && (
+        {(canRerun || job.status === 'queued' || job.status === 'running' || job.status === 'retrying' || job.status === 'paused') && (
           <div className="threads-filter-actions">
+            {canRerun && (
+              <button className="btn-subtle" onClick={() => void handleRerun()} disabled={rerunSubmitting}>
+                {rerunSubmitting ? t('running') : t('rerun')}
+              </button>
+            )}
             <button className="btn-subtle" onClick={async () => {
               setActionError(null)
               try {

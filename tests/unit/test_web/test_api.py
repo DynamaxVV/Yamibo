@@ -20,6 +20,7 @@ from yamibo_mcp.web.api import (
     _rag_overview,
     _rag_search,
     _rag_threads,
+    _retry_job,
     _resync_threads_batch,
     _thread_detail,
     _thread_update_check,
@@ -438,6 +439,32 @@ def test_rag_index_batch_endpoint_creates_jobs(db):
     assert payload["ok"] is True
     assert payload["target_count"] == 1
     assert payload["created_count"] == 1
+
+
+def test_retry_job_endpoint_requeues_partial_job(db):
+    repo = JobsRepository(db)
+    job = repo.create("rag_index", tid=42, payload={"tid": 42, "force": False})
+    repo.partial(job.job_id, artifacts={"tid": 42, "warning": "embedding failed: 'data'"})
+
+    handler = _CaptureHandler()
+    handler.command = "POST"
+    body = {"job_id": job.job_id}
+    handler.headers["Content-Length"] = str(len(json.dumps(body)))
+    handler.rfile = io.BytesIO(json.dumps(body).encode("utf-8"))
+
+    _retry_job(handler, db)
+
+    payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
+    assert payload["ok"] is True
+    assert payload["source_job_id"] == job.job_id
+    assert payload["status"] == "queued"
+    next_job = repo.get(payload["job_id"])
+    assert next_job.job_type == "rag_index"
+    assert next_job.tid == 42
+    assert next_job.payload["tid"] == 42
+    assert next_job.payload["force"] is False
+    parent_row = db.execute("SELECT parent_job_id FROM jobs WHERE job_id = ?", (payload["job_id"],)).fetchone()
+    assert parent_row["parent_job_id"] == job.job_id
 
 
 def test_archive_threads_batch_endpoint_creates_jobs(db):

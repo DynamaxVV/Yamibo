@@ -25,6 +25,7 @@ export function Jobs() {
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [jobActionError, setJobActionError] = useState<string | null>(null)
   const [pendingCancelId, setPendingCancelId] = useState<string | null>(null)
+  const [pendingRetryId, setPendingRetryId] = useState<string | null>(null)
   const jobsRef = useRef<JobSummary[]>([])
   const countsRef = useRef<Record<string, number>>({})
 
@@ -164,6 +165,19 @@ export function Jobs() {
     }
   }
 
+  const handleRetry = async (j: JobSummary) => {
+    setJobActionError(null)
+    setPendingRetryId(j.job_id)
+    try {
+      await api.retryJob(j.job_id)
+      await refreshJobs()
+    } catch (e: any) {
+      setJobActionError(e.message || String(e))
+    } finally {
+      setPendingRetryId(null)
+    }
+  }
+
   const confirmDoDelete = async () => {
     if (!confirmDelete) return
     try {
@@ -274,6 +288,11 @@ export function Jobs() {
               <td className="nowrap col-time">{formatDateTime(j.created_at)}</td>
               <td>
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {j.status === 'partial' && (
+                    <button className="btn-subtle" onClick={() => void handleRetry(j)} disabled={pendingRetryId === j.job_id} style={{ fontSize: 11, padding: '2px 6px' }}>
+                      {pendingRetryId === j.job_id ? t('running') : t('rerun')}
+                    </button>
+                  )}
                   {(j.status === 'queued' || j.status === 'running' || j.status === 'retrying' || j.status === 'paused') && (
                     <button className="btn-subtle" onClick={() => handlePauseResume(j)} style={{ fontSize: 11, padding: '2px 6px' }}>
                       {j.status === 'paused' ? t('resume') : t('pause')}
