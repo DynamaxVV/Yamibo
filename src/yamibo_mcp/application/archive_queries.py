@@ -225,6 +225,17 @@ def probe_archived_threads(*, tids: list[int]) -> AgentResult:
         conn.close()
 
 
+def list_exports(*, limit: int = 100) -> dict[str, object]:
+    settings = load_settings()
+    conn = connect(settings.db_path)
+    try:
+        migrate(conn)
+        rows = ThreadsRepository(conn).list_exports(limit=limit)
+        return {"count": len(rows), "items": [thread_summary_payload(row, include_export=True) for row in rows]}
+    finally:
+        conn.close()
+
+
 def read_forum_profiles() -> AgentResult:
     settings = load_settings()
     conn = connect(settings.db_path)

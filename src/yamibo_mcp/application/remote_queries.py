@@ -10,9 +10,13 @@ from yamibo_mcp.server.schemas import build_series_summary, thread_summary_paylo
 from yamibo_mcp.yamibo.client import YamiboClient
 from yamibo_mcp.yamibo.parsers.forum_list import ForumThreadItem
 from yamibo_mcp.yamibo.parsers.search_results import SearchResultItem
+from yamibo_mcp.yamibo.parsers.thread_detail import (
+    extract_category_from_html,
+    extract_forum_id_from_html,
+    parse_thread_snapshot,
+)
 from yamibo_mcp.yamibo.title.normalizer import normalize_series_key
 from yamibo_mcp.yamibo.urls import thread_url_from_tid
-from yamibo_mcp.application.remote_inspection import inspect_remote_thread
 
 
 def browse_forum_page(
@@ -162,6 +166,50 @@ def search_threads(
         }
     finally:
         conn.close()
+
+
+def inspect_remote_thread(
+    *,
+    tid: int,
+    forum_id: int | None = None,
+    base_url: str | None = None,
+) -> dict[str, object]:
+    settings = load_settings()
+    client = YamiboClient(
+        timeout=getattr(settings, "request_timeout_seconds", 15.0),
+        cookie_file=str(settings.cookie_file),
+        use_system_proxy=settings.use_system_proxy,
+        login_username=settings.login_username,
+        login_password=settings.login_password,
+        request_interval=settings.request_interval_seconds,
+        request_interval_jitter=settings.request_interval_jitter_seconds,
+    )
+    fetched = client.fetch_thread(tid=tid, base_url=base_url)
+    snapshot = parse_thread_snapshot(fetched.html, url=fetched.final_url, tid=tid)
+    resolved_forum_id = forum_id if forum_id is not None else extract_forum_id_from_html(fetched.html)
+    category = extract_category_from_html(fetched.html)
+    floor_preview = []
+    for floor in snapshot.floors[:3]:
+        content = (floor.content or "").strip()
+        floor_preview.append(
+            {
+                "floor_no": floor.floor_no,
+                "publisher": floor.publisher,
+                "content_preview": content[:200],
+            }
+        )
+    return {
+        "tid": snapshot.tid,
+        "title": snapshot.display_title,
+        "publisher": snapshot.publisher,
+        "publisher_uid": snapshot.publisher_uid,
+        "forum_id": resolved_forum_id,
+        "category": category,
+        "floor_count": len(snapshot.floors),
+        "image_url_count": snapshot.image_count,
+        "preview": floor_preview,
+        "remote_url": fetched.final_url,
+    }
 
 
 def _normalize_date_only(value: str | None) -> str | None:

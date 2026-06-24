@@ -2,7 +2,7 @@
 
 百合会 (yamibo.com) 论坛本地归档系统。通过 MCP 协议让 LLM 客户端浏览、搜索、归档、检查更新和导出论坛贴子；内嵌 React WebUI 控制台，支持多主题切换。
 
-> 当前版本：`0.9.0`
+> 当前版本：`0.9.2`
 
 ## 功能特性
 
@@ -71,6 +71,7 @@ uv sync --extra dev
 - `llm.*` 负责标题解析等 chat/completions 场景
 - `rag.*` 负责 `/embeddings` 场景
 - 若未单独配置 `rag.base_url` / `rag.api_key`，会自动回退到 `llm.base_url` / `llm.api_key`
+- `rag.debug_indexing` 或 `YAMIBO_RAG_DEBUG_INDEXING=1` 可开启 RAG 索引调试日志，daemon 会在终端输出请求与失败上下文
 
 所有配置项均可通过 `YAMIBO_*` 环境变量覆盖。详见 [`.env.example`](.env.example)。
 
@@ -100,8 +101,7 @@ LLM Client (Claude Desktop / Cursor)
 yamibo-mcp-server ──创建任务──▶ SQLite (jobs + job_events)
     │                               ▲
     │ application layer             │ 轮询 + 抢占
-    │ (ensure_thread, archive,      │
-    │  update_thread)               │
+    │ (archive, update_thread)      │
 yamibo-daemon ──────────────────────┘
     ├── 论坛 HTTP 客户端（多分区支持）
     ├── HTML 解析器
@@ -201,8 +201,8 @@ uv run yamibo-backup-db
 
 ```
 src/yamibo_mcp/
-├── server/          # MCP 注册、CLI、legacy JSON-RPC、资源处理适配
-├── application/     # Agent-facing commands/queries 与兼容用例
+├── server/          # MCP 注册、CLI、资源处理适配
+├── application/     # Agent-facing commands/queries
 ├── daemon/          # 后台任务消费 + 处理器
 ├── web/             # 嵌入式 Web 控制台
 ├── yamibo/          # 论坛 HTTP 客户端、HTML 解析器、标题解析
@@ -233,7 +233,7 @@ scripts/run_hermes_benchmark.sh
 | 文档 | 说明 |
 |------|------|
 | [产品需求 & 架构设计](docs/product-requirements.md) | PRD + 系统架构 |
-| [Agent 架构导航](docs/architecture-for-agents.md) | 给 AI 编码代理的目录职责、修改路径、legacy 禁区和测试矩阵 |
+| [Agent 架构导航](docs/architecture-for-agents.md) | 给 AI 编码代理的目录职责、修改路径、简化约束和测试矩阵 |
 | [API 接口文档](docs/api-reference.md) | MCP 工具/资源、CLI、Web 路由 |
 | [Agent 接口说明](docs/agent-interface.md) | Agent-facing 工具、错误契约、推荐工作流 |
 | [Agent 能力验收标准](docs/agent-evaluation.md) | OpenClaw/Hermes 类 Agent 的验收场景、评分维度与证据要求 |
@@ -242,7 +242,6 @@ scripts/run_hermes_benchmark.sh
 | [核心模块开发说明](docs/development-guide.md) | 标题解析、Job 系统、配置 |
 | [部署指南 & 运维手册](docs/deployment-guide.md) | 安装、配置、运维操作 |
 | [用户操作手册](docs/user-manual.md) | MCP/Web/CLI 使用方式 |
-| [测试方案](docs/testing-strategy.md) | 测试原则、规范、架构 |
-| [测试报告](docs/test-report.md) | 测试执行结果 |
-| [版本发布说明](docs/release-notes.md) | v0.9.0 功能清单 |
+| [测试方案](docs/testing-strategy.md) | 测试原则、规范、数据与回归策略 |
+| [版本更新日志](docs/changelog.md) | 版本演进与本轮变更摘要 |
 | [WebUI 设计文档](docs/webui-design.md) | 功能点、主题系统、组件设计、API 端点 |

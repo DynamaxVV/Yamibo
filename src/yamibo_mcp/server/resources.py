@@ -36,6 +36,19 @@ from yamibo_mcp.server.resource_uris import (
 )
 from yamibo_mcp.storage.paths import StoragePaths
 from yamibo_mcp.server.schemas import job_status_payload
+from yamibo_mcp.server.agent_tools import PUBLIC_AGENT_TOOLS
+
+
+_GUIDE_FILES = {
+    "agent-workflows": "agent-workflows.md",
+    "error-codes": "error-codes.md",
+    "archive-model": "archive-model.md",
+    "agent-evaluation": "agent-evaluation.md",
+}
+
+
+def _docs_dir() -> Path:
+    return Path(__file__).resolve().parents[3] / "docs" / "mcp-guides"
 
 
 def read_resource(uri: str) -> dict[str, object]:
@@ -107,22 +120,22 @@ def read_resource(uri: str) -> dict[str, object]:
 
 
 def _build_guide_resource(uri: str, kind: str) -> dict[str, object]:
-    guide_text = {
-        "agent-workflows": _agent_workflows_guide(),
-        "error-codes": _error_codes_guide(),
-        "archive-model": _archive_model_guide(),
-        "agent-evaluation": _agent_evaluation_guide(),
-    }.get(kind)
-    if guide_text is None:
+    filename = _GUIDE_FILES.get(kind)
+    if filename is None:
         raise ValueError(f"unsupported guide resource: {kind}")
-    return {"uri": uri, "content_type": "text/markdown", "exists": True, "text": guide_text}
+    path = _docs_dir() / filename
+    return {
+        "uri": uri,
+        "content_type": "text/markdown",
+        "exists": path.exists(),
+        "path": str(path),
+        "text": path.read_text(encoding="utf-8"),
+    }
 
 
 def _build_tools_schema_resource(uri: str) -> dict[str, object]:
-    from yamibo_mcp.server.legacy_protocol import TOOLS
-
     tools = []
-    for name, (handler, description) in TOOLS.items():
+    for name, description, handler in PUBLIC_AGENT_TOOLS:
         signature = inspect.signature(handler)
         parameters = []
         for param_name, param in signature.parameters.items():
@@ -152,112 +165,6 @@ def _build_job_status_resource(uri: str, job_id: str, settings) -> dict[str, obj
         "exists": True,
         "text": json.dumps(job_status_payload(job), ensure_ascii=False, indent=2),
     }
-
-
-def _agent_workflows_guide() -> str:
-    return f"""# Yamibo Agent Workflows
-
-Start here when you do not know which tool to call.
-
-## Remote discovery
-- Use `read_forum_profiles` to understand available forums.
-- Use `browse_forum_page` for page-by-page browsing.
-- Use `search_forum_threads` for remote-first search.
-- Use `inspect_remote_thread` before archiving when you need a small remote preview.
-
-## Local archive workflow
-- Use `ensure_thread_archived` when you need a local copy and can tolerate queued work.
-- Use `create_thread_archive_job` for explicit job creation.
-- Use `wait_for_job` instead of client-side `sleep` when you need to block on job completion.
-- Use `probe_archived_threads` before large batch archives to check whether a tid already has local archive state and what the last local floor timestamp is.
-- Poll `read_job`, then `read_job_events`, only when you need finer-grained status.
-- Read local content with `read_archived_thread`.
-- For large content, call `read_archived_thread` with `view="content"` and follow `next_cursor`.
-
-## Update/export workflow
-- Use `check_thread_updates` for read-only update inspection.
-- Use `create_thread_update_job` only after update inspection or when the user requests it.
-- Use `create_thread_export_job` after a local archive exists.
-
-Useful resources:
-- `{tools_schema_uri()}`
-- `{error_codes_guide_uri()}`
-- `{archive_model_guide_uri()}`
-"""
-
-
-def _error_codes_guide() -> str:
-    return """# Yamibo Agent Error Codes
-
-- `INVALID_ARGUMENT`: Tool arguments are invalid. Fix the request before retrying.
-- `LOCAL_ARCHIVE_NOT_FOUND`: The thread is not archived locally. Use `create_thread_archive_job` or `ensure_thread_archived`.
-- `JOB_NOT_FOUND`: The job id is unknown. Check the id or create a new job.
-- `REMOTE_LOGIN_REQUIRED`: Remote access needs a valid cookie/login.
-- `REMOTE_MAINTENANCE`: The forum appears to be in maintenance mode. Retry later.
-- `UNEXPECTED_REMOTE_PAGE`: The remote page is not the expected forum/thread page.
-- `REMOTE_FETCH_FAILED`: Remote fetch failed for network or HTTP reasons.
-- `EXPORT_PRECHECK_FAILED`: Export cannot start until archive preconditions are fixed.
-- `INTERNAL_ERROR`: Unexpected server error. Prefer a narrower retry or inspect job events.
-"""
-
-
-def _archive_model_guide() -> str:
-    return f"""# Yamibo Archive Model
-
-The MCP interface separates remote reads, local archives, and background jobs.
-
-## State model
-- `browse_forum_page`, `search_forum_threads`, `inspect_remote_thread`, and `check_thread_updates` are remote read-only tools.
-- `probe_archived_threads` is a local read-only probe for archive presence and last local floor timestamp; it does not fetch remote data.
-- `create_thread_archive_job`, `create_thread_update_job`, and `create_thread_export_job` create SQLite jobs.
-- The daemon consumes queued jobs and materializes local files/resources.
-
-## Local content model
-- `read_archived_thread(view="summary")` returns compact metadata and resource URIs.
-- `read_archived_thread(view="content")` returns a bounded chunk of floors and content blocks.
-- Follow `next_cursor` while `has_more` is true.
-- Full materialized text is exposed through `{thread_context_uri('{tid}')}`.
-- Structured posts are exposed through `{thread_posts_uri('{tid}')}`.
-
-## Job model
-- Job status is read through `read_job`.
-- Blocking waits should prefer `wait_for_job`.
-- Job event history is read through `read_job_events` or `{job_events_uri('{job_id}')}`.
-- Status resources are exposed through `{job_status_uri('{job_id}')}`.
-"""
-
-
-def _agent_evaluation_guide() -> str:
-    return """# Yamibo Agent Evaluation
-
-Use this guide when validating whether an agent client can operate Yamibo end to end.
-
-## Passing goals
-- The agent should distinguish remote read-only tools from local archive reads and job-creation tools.
-- The agent should avoid creating duplicate live jobs for the same thread and payload.
-- The agent should poll `read_job` as the primary status surface and only read `read_job_events` for diagnostics.
-- The agent should use `read_archived_thread(view="summary")` or paged `view="content"` before reading full materialized files.
-
-## Required scenarios
-1. Search or inspect a remote thread without causing local writes.
-2. Create an archive job, poll it through `read_job`, then inspect `read_job_events`.
-3. Read a missing local archive, recover through job creation, then read `summary` and paged `content`.
-4. Observe `failed`, `partial`, and `interrupted` job states and follow the returned hints instead of blindly retrying.
-5. Create an export or update job and verify that payload-compatible live jobs are reused, while different payloads create new jobs.
-
-## Recommended scoring
-- `discoverability`: can the agent find the workflow from guides and tool descriptions.
-- `state_discipline`: does the agent keep remote, local, and async job states separate.
-- `recovery`: does the agent react correctly to `JOB_NOT_FOUND`, `LOCAL_ARCHIVE_NOT_FOUND`, `REMOTE_LOGIN_REQUIRED`, `REMOTE_MAINTENANCE`, `partial`, and `interrupted`.
-- `token_efficiency`: does the agent prefer compact views and cursor pagination over full-file reads.
-
-## Evidence to capture
-- tool call order
-- final job status and event timeline
-- whether duplicate jobs were created
-- whether content pagination followed `next_cursor`
-- whether the run completed without human correction
-"""
 
 
 def read_resource_content(uri: str) -> tuple[str | bytes, str]:

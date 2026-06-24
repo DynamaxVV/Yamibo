@@ -1,6 +1,6 @@
 [project]
 name = "yamibo-mcp"
-version = "0.9.0"
+version = "0.9.2"
 description = "百合会归档助手 — 本地论坛归档 MCP server, daemon, and web console."
 requires-python = ">=3.11"
 dependencies = [
@@ -17,7 +17,7 @@ dev = [
 yamibo-init-db = "yamibo_mcp.db.migrations:main"
 yamibo-daemon = "yamibo_mcp.daemon.main:main"
 yamibo-web = "yamibo_mcp.web.app:main"
-yamibo-mcp-server = "yamibo_mcp.server.app:main"
+yamibo-mcp-server = "yamibo_mcp.server.cli:main"
 yamibo-backup-db = "yamibo_mcp.maintenance.backup_db:main"
 yamibo-maintenance-cleanup = "yamibo_mcp.maintenance.cleanup_data:main"
 yamibo-reset-data = "yamibo_mcp.maintenance.reset_data:main"

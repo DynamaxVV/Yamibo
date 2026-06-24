@@ -4,6 +4,12 @@ import argparse
 import json
 import sys
 
+from yamibo_mcp.application.archive_commands import (
+    archive_thread_job,
+    sync_forum_range,
+)
+from yamibo_mcp.application.archive_queries import list_exports
+from yamibo_mcp.application.job_queries import get_job_status_payload
 from yamibo_mcp.logging import configure_logging
 from yamibo_mcp.server.agent_tools import (
     create_rag_index_batch_jobs,
@@ -11,45 +17,68 @@ from yamibo_mcp.server.agent_tools import (
     create_thread_archive_batch_jobs,
     search_archived_content,
 )
-from yamibo_mcp.server.legacy_protocol import handle_request
 from yamibo_mcp.server.mcp_registry import build_mcp_server
-from yamibo_mcp.server.legacy_tools import (
-    archive_thread,
+from yamibo_mcp.server.resources import read_resource
+from yamibo_mcp.application.remote_queries import (
     browse_forum_page,
-    check_thread_updates,
-    cleanup_job,
-    create_noop_job,
-    dump_json,
-    export_thread,
-    get_job_status,
-    get_thread,
-    list_exports,
-    read_resource,
     search_threads,
-    sync_forum_range,
-    update_thread,
 )
+from yamibo_mcp.application.update_commands import create_update_thread_job
+from yamibo_mcp.application.update_queries import check_thread_updates
+from yamibo_mcp.config import load_settings
+from yamibo_mcp.db.connection import connect
+from yamibo_mcp.db.migrations import migrate
+from yamibo_mcp.db.repositories.jobs import JobsRepository
+from yamibo_mcp.domain.enums import JobType
 
 
-def serve_legacy_stdio() -> None:
-    for line in sys.stdin:
-        raw = line.strip()
-        if not raw:
-            continue
-        try:
-            request = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            response = {
-                "id": None,
-                "error": {
-                    "type": "JSONDecodeError",
-                    "message": str(exc),
-                },
-            }
-        else:
-            response = handle_request(request)
-        sys.stdout.write(json.dumps(response, ensure_ascii=False) + "\n")
-        sys.stdout.flush()
+def dump_json(data: dict[str, object]) -> str:
+    return json.dumps(data, ensure_ascii=False, indent=2)
+
+
+def create_noop_job() -> str:
+    settings = load_settings()
+    conn = connect(settings.db_path)
+    try:
+        migrate(conn)
+        job = JobsRepository(conn).create(JobType.NOOP.value)
+        return job.job_id
+    finally:
+        conn.close()
+
+
+def cleanup_job(*, job_id: str | None = None, mode: str = "job_staging", older_than_hours: int | None = None) -> dict[str, object]:
+    settings = load_settings()
+    conn = connect(settings.db_path)
+    try:
+        migrate(conn)
+        payload = {"mode": mode}
+        if job_id is not None:
+            payload["job_id"] = job_id
+        if older_than_hours is not None:
+            payload["older_than_hours"] = older_than_hours
+        job = JobsRepository(conn).create(JobType.CLEANUP_JOB.value, payload=payload)
+        return {"job_id": job.job_id}
+    finally:
+        conn.close()
+
+
+def export_thread(*, tid: int, strategy: str | None = None) -> dict[str, object]:
+    settings = load_settings()
+    conn = connect(settings.db_path)
+    try:
+        migrate(conn)
+        payload = {"tid": tid}
+        if strategy:
+            payload["strategy"] = strategy
+        job = JobsRepository(conn).create(JobType.EXPORT_THREAD.value, tid=tid, payload=payload)
+        return {"job_id": job.job_id}
+    finally:
+        conn.close()
+
+
+def update_thread(*, tid: int, base_url: str | None = None) -> dict[str, object]:
+    return create_update_thread_job(tid=tid, base_url=base_url)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -57,7 +86,6 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command")
     stdio_parser = sub.add_parser("stdio")
     stdio_parser.add_argument("--transport", choices=["stdio", "sse", "streamable-http"], default="stdio")
-    sub.add_parser("serve-legacy-stdio")
     sub.add_parser("create-noop-job")
     sync_parser = sub.add_parser("create-sync-thread-job")
     sync_parser.add_argument("--html-path")
@@ -122,10 +150,6 @@ def build_parser() -> argparse.ArgumentParser:
     search_parser.add_argument("--cookie-file")
     search_parser.add_argument("--include-sticky", action="store_true")
     search_parser.add_argument("--include-announcements", action="store_true")
-    get_thread_parser = sub.add_parser("get-thread")
-    get_thread_parser.add_argument("--tid", type=int, required=True)
-    get_thread_parser.add_argument("--url")
-    get_thread_parser.add_argument("--base-url")
     sub.add_parser("list-exports")
     read_resource_parser = sub.add_parser("read-resource")
     read_resource_parser.add_argument("uri")
@@ -146,12 +170,10 @@ def main() -> None:
     command = args.command or "stdio"
     if command == "stdio":
         build_mcp_server().run(transport=args.transport)
-    elif command == "serve-legacy-stdio":
-        serve_legacy_stdio()
     elif command == "create-noop-job":
         print(create_noop_job())
     elif command == "create-sync-thread-job":
-        print(dump_json(archive_thread(html_path=args.html_path, tid=args.tid, url=args.url, base_url=args.base_url)))
+        print(dump_json(archive_thread_job(html_path=args.html_path, tid=args.tid, url=args.url, base_url=args.base_url)))
     elif command == "browse-forum-page":
         print(
             dump_json(
@@ -249,8 +271,6 @@ def main() -> None:
                 )
             )
         )
-    elif command == "get-thread":
-        print(dump_json(get_thread(tid=args.tid, url=args.url, base_url=args.base_url)))
     elif command == "list-exports":
         print(dump_json(list_exports()))
     elif command == "read-resource":
@@ -258,6 +278,6 @@ def main() -> None:
     elif command == "cleanup-job":
         print(dump_json(cleanup_job(job_id=args.job_id, mode=args.mode, older_than_hours=args.older_than_hours)))
     elif command == "job-status":
-        print(dump_json(get_job_status(args.job_id)))
+        print(dump_json(get_job_status_payload(args.job_id)))
     else:
         parser.print_help()

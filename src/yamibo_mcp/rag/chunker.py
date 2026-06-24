@@ -78,13 +78,10 @@ def build_rag_chunks(
         pid = int(floor_row["pid"])
         source_uri = f"{thread_posts_uri(tid)}#floor={floor_no}"
 
-        if content_kind == "novel":
-            parts = split_novel_text(
-                floor_text,
-                max_chunk_chars=settings.rag_max_chunk_chars,
-            )
-        else:
-            parts = [floor_text]
+        parts = split_text_for_embedding(
+            floor_text,
+            max_chunk_chars=settings.rag_max_chunk_chars,
+        )
 
         for part_index, part in enumerate(parts, start=1):
             if len(part.strip()) < settings.rag_min_chunk_chars:
@@ -109,7 +106,7 @@ def build_rag_chunks(
     return chunks
 
 
-def split_novel_text(text: str, *, max_chunk_chars: int) -> list[str]:
+def split_text_for_embedding(text: str, *, max_chunk_chars: int) -> list[str]:
     normalized = text.strip()
     if not normalized:
         return []
@@ -134,6 +131,10 @@ def split_novel_text(text: str, *, max_chunk_chars: int) -> list[str]:
     if current:
         chunks.append(current)
     return chunks
+
+
+def split_novel_text(text: str, *, max_chunk_chars: int) -> list[str]:
+    return split_text_for_embedding(text, max_chunk_chars=max_chunk_chars)
 
 
 def _hard_split(text: str, *, max_chunk_chars: int) -> list[str]:

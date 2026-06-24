@@ -1,6 +1,6 @@
 # API 接口文档
 
-> 版本：0.9.0 | 更新日期：2026-06-24
+> 版本：0.9.2 | 更新日期：2026-06-25
 
 ## 1. MCP 工具 (Tools)
 
@@ -84,7 +84,6 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
 |------|------|------|------|
 | tid | int | 是 | 帖子 ID |
 | forum_id | int \| null | 否 | 论坛分区 ID |
-| author_only | bool | 否 | 是否按只看楼主语义预览 |
 | base_url | string \| null | 否 | 站点根 URL |
 
 **返回**：紧凑快照，包含标题、分区、发布者、楼层数、图片数和少量 preview。
@@ -99,7 +98,6 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
   "category": "漫画区",
   "floor_count": 2,
   "image_url_count": 24,
-  "author_only": false,
   "preview": [
     {
       "floor_no": 1,
@@ -208,7 +206,7 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
       "tid": 572313,
       "archived": true,
       "archive_status": "complete",
-      "sync_time": "2026-06-24T10:11:12+00:00",
+      "sync_time": "2026-06-25T10:11:12+00:00",
       "forum_id": 30,
       "content_kind": "comic",
       "publisher": "author",
@@ -337,7 +335,7 @@ Web 控制台和 API 提供任务暂停 / 恢复能力，便于在图片下载�
 
 ---
 
-### 1.10 sync_forum_range
+### 1.10 create-sync-forum-range-jobs
 
 按论坛页码范围抓取真实帖子列表并批量创建同步任务。
 
@@ -419,18 +417,17 @@ Web 控制台和 API 提供任务暂停 / 恢复能力，便于在图片下载�
 
 ---
 
-### 1.14 已废弃 / 兼容接口
+### 1.14 CLI 子命令
 
-以下旧名称仍通过 CLI 或 legacy JSON-RPC 兼容层保留，但不再是 Agent-facing MCP 主接口，也不建议新接入方继续依赖：
+以下命令保留给本地人工操作，但不属于 Agent-facing MCP 主接口：
 
-- `search_threads`
-- `archive_thread`
-- `export_thread`
-- `get_thread`
-- `get_job_status`
-- `update_thread`
-- `cleanup_job`
-- `sync_forum_range`
+- `search-threads`
+- `create-sync-thread-job`
+- `create-export-thread-job`
+- `update-thread`
+- `job-status`
+- `cleanup-job`
+- `create-sync-forum-range-jobs`
 
 ---
 

@@ -11,6 +11,8 @@ from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
 from yamibo_mcp.domain.enums import JobType
 from yamibo_mcp.server.resource_uris import job_events_uri, thread_summary_uri
+from yamibo_mcp.yamibo.client import YamiboClient
+from yamibo_mcp.yamibo.urls import thread_url_from_tid
 
 
 def _can_reuse_existing_job(existing_payload: dict[str, Any], requested_payload: dict[str, Any]) -> bool:
@@ -217,3 +219,77 @@ def create_thread_update_job(*, tid: int, base_url: str | None = None) -> AgentR
             "daemon_required",
         ],
     )
+
+
+def sync_forum_range(
+    *,
+    start_page: int,
+    end_page: int,
+    forum_id: int = 30,
+    base_url: str = "https://bbs.yamibo.com",
+    cookie_file: str | None = None,
+    include_sticky: bool = False,
+    include_announcements: bool = False,
+) -> dict[str, object]:
+    if start_page <= 0 or end_page <= 0 or end_page < start_page:
+        raise ValueError("invalid forum page range")
+
+    settings = load_settings()
+    client = YamiboClient(
+        timeout=getattr(settings, "request_timeout_seconds", 15.0),
+        cookie_file=cookie_file or str(settings.cookie_file),
+        use_system_proxy=settings.use_system_proxy,
+        login_username=settings.login_username,
+        login_password=settings.login_password,
+        request_interval=settings.request_interval_seconds,
+        request_interval_jitter=settings.request_interval_jitter_seconds,
+    )
+    collected = []
+    scanned_pages: list[str] = []
+    seen_tids: set[int] = set()
+
+    for page in range(start_page, end_page + 1):
+        result, items = client.fetch_forum_threads(page=page, base_url=base_url, forum_id=forum_id)
+        scanned_pages.append(result.final_url)
+        for item in items:
+            if not include_sticky and item.is_sticky:
+                continue
+            if not include_announcements and (item.category or "").strip() == "公告":
+                continue
+            if item.tid in seen_tids:
+                continue
+            seen_tids.add(item.tid)
+            collected.append(item)
+
+    conn = connect(settings.db_path)
+    try:
+        migrate(conn)
+        repo = JobsRepository(conn)
+        job_items: list[dict[str, object]] = []
+        for item in collected:
+            thread_url = thread_url_from_tid(item.tid, base_url=base_url)
+            job = repo.create(
+                JobType.SYNC_THREAD.value,
+                tid=item.tid,
+                payload={"tid": item.tid, "url": thread_url, "base_url": base_url, "forum_id": forum_id},
+            )
+            job_items.append(
+                {
+                    "job_id": job.job_id,
+                    "tid": item.tid,
+                    "title": item.title,
+                    "url": thread_url,
+                    "category": item.category,
+                }
+            )
+        return {
+            "start_page": start_page,
+            "end_page": end_page,
+            "include_sticky": include_sticky,
+            "include_announcements": include_announcements,
+            "scanned_pages": scanned_pages,
+            "count": len(job_items),
+            "items": job_items,
+        }
+    finally:
+        conn.close()

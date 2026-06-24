@@ -1,5 +1,20 @@
 # 百合会归档助手 — 版本更新日志
 
+## v0.9.2 (2026-06-25)
+
+### 调整
+- 删掉 `server/app.py`、`server/legacy_protocol.py`、`server/legacy_tools.py`、`application/*_use_cases.py` 等兼容壳层，主路径收敛到 `cli.py + mcp_registry.py + agent_tools.py`
+- `mcp_registry.py` 的 resource 注册改成表驱动循环，减少重复闭包
+- README、API、部署、开发和 Agent 文档同步更新到 `0.9.2`
+
+### 调试与稳定性
+- 新增 `rag.debug_indexing` / `YAMIBO_RAG_DEBUG_INDEXING`，RAG 索引失败时可在 daemon 终端输出 embedding 请求与响应摘要
+- `sync_forum_range`、`list_exports` 等仍保留的 CLI 能力已并回主模块，不再依赖单独兼容层
+
+### 测试
+- 删掉给兼容层续命的旧测试
+- 解析器测试不再依赖外部 `html_sample/` 或本地 `data/threads/*` 运行态数据，改为仓库内 fixture 与内联样例
+
 ## v0.9.0 (2026-06-24)
 
 ### 新增
@@ -47,7 +62,7 @@
 
 ### 调整
 - 版本号推进至 `0.7.0`
-- `server/tools.py`、`server/protocol.py`、`server/resource_handlers.py` 以及 `application/*_use_cases.py` 标记为兼容层
+- 收敛入口与壳层，后续主路径只保留 `cli.py + mcp_registry.py + agent_tools.py`
 - 开发文档和 API 文档统一对齐当前 Agent-facing 结构
 
 ### 修复

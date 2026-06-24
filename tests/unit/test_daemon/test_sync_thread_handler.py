@@ -161,6 +161,72 @@ def test_sync_thread_partial_updates_forum_blocks_assets_and_events(db, tmp_path
     assert any(event.event_type == "job.partial" for event in events)
 
 
+def test_sync_thread_partial_on_download_timeout(db, tmp_path, monkeypatch):
+    settings = _make_settings(tmp_path)
+    html_path = tmp_path / "thread.html"
+    html_path.write_text("<html></html>", encoding="utf-8")
+    repo = JobsRepository(db)
+    job = repo.create(
+        "sync_thread",
+        tid=42,
+        payload={"html_path": str(html_path), "forum_id": 55},
+    )
+    job = repo.acquire(job.job_id, "worker-1", 300)
+    snapshot = _make_snapshot()
+
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.sync_thread.parse_thread_snapshot",
+        lambda html, url=None, tid=None: snapshot,
+    )
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.sync_thread.refine_title_parse_with_llm",
+        lambda settings, raw_title, parsed: (parsed, None),
+    )
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.sync_thread.write_staging_title_parse_log",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.sync_thread.write_staging_snapshot",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.sync_thread.update_title_hints",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.sync_thread.materialize_thread",
+        lambda *args, **kwargs: (
+            settings.data_dir / "threads/42/context.md",
+            settings.data_dir / "threads/42/metadata.json",
+        ),
+    )
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.sync_thread.download_images_to_staging",
+        lambda *args, **kwargs: ImageDownloadResult(
+            downloaded_relpaths={1: ["images/a.jpg"]},
+            non_export_relpaths={},
+            shared_relpaths={},
+            skipped_relpaths={},
+            downloaded_count=1,
+            non_export_count=0,
+            shared_downloaded_count=0,
+            missing_urls=[],
+            missing_shared_urls=[],
+            stopped_reason="stage_timeout",
+        ),
+    )
+
+    handle_sync_thread(repo, job, "worker-1", 300, settings)
+
+    updated_job = repo.get(job.job_id)
+    events = JobEventsRepository(db).list(job_id=job.job_id)
+
+    assert updated_job.status == "partial"
+    assert updated_job.artifacts["download_stopped_reason"] == "stage_timeout"
+    assert any(event.event_type == "job.partial" for event in events)
+
+
 def test_sync_thread_author_only_mode_merges_multiple_pages(db, tmp_path, monkeypatch):
     from yamibo_mcp.daemon.handlers.sync_thread import _merge_thread_snapshots
 

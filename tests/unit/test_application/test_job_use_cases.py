@@ -147,3 +147,25 @@ class TestGetJobStatusPayload:
         assert result["needs_attention"] is True
         assert "no progress update" in result["diagnostic_summary"]
         assert result["recommended_poll_after_seconds"] == 10
+
+    def test_marks_partial_timeout_job_as_attention_with_timeout_summary(self, tmp_path, db):
+        settings = _fake_settings(tmp_path)
+        repo = JobsRepository(db)
+        job = repo.create("sync_thread", tid=100, payload={"tid": 100})
+        repo.partial(
+            job.job_id,
+            artifacts={
+                "tid": 100,
+                "archive_status": "partial",
+                "download_stopped_reason": "stage_timeout",
+            },
+        )
+        with patch("yamibo_mcp.application.job_queries.load_settings", return_value=settings), \
+             patch("yamibo_mcp.application.job_queries.connect", return_value=db):
+            result = get_job_status_payload(job.job_id)
+
+        assert result["is_terminal"] is True
+        assert result["result_ready"] is True
+        assert result["execution_state"] == "terminal"
+        assert result["needs_attention"] is True
+        assert "download_images timed out" in result["diagnostic_summary"]

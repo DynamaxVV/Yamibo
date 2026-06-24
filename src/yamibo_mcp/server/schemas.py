@@ -41,6 +41,22 @@ def _seconds_between(later: datetime | None, earlier: datetime | None) -> int | 
     return max(0, int((later - earlier).total_seconds()))
 
 
+def _job_stopped_reason(job) -> str | None:
+    artifacts = job.artifacts or {}
+    if not isinstance(artifacts, dict):
+        return None
+    reason = artifacts.get("stopped_reason")
+    if reason:
+        return str(reason)
+    reason = artifacts.get("download_stopped_reason")
+    if reason:
+        return str(reason)
+    reason = artifacts.get("fetch_stopped_reason")
+    if reason:
+        return str(reason)
+    return None
+
+
 def _job_execution_diagnostics(job) -> dict[str, Any]:
     now = _parse_iso8601(utc_now_iso())
     created_at = _parse_iso8601(job.created_at)
@@ -49,8 +65,14 @@ def _job_execution_diagnostics(job) -> dict[str, Any]:
     seconds_since_update = _seconds_between(now, updated_at)
 
     if job.status in _TERMINAL_JOB_STATUSES:
+        stopped_reason = _job_stopped_reason(job)
         if job.status == "partial":
-            summary = "Job completed partially; archived content is usually readable, but diagnostics and events should be checked."
+            if stopped_reason == "stage_timeout":
+                summary = "Job completed partially because download_images timed out; archived content may be incomplete and should be checked."
+            elif stopped_reason:
+                summary = f"Job completed partially; stopped_reason={stopped_reason}. Archived content is usually readable, but diagnostics and events should be checked."
+            else:
+                summary = "Job completed partially; archived content is usually readable, but diagnostics and events should be checked."
         elif job.status == "failed":
             summary = "Job failed; inspect job events before retrying."
         elif job.status == "superseded":
@@ -64,7 +86,7 @@ def _job_execution_diagnostics(job) -> dict[str, Any]:
             "seconds_since_update": seconds_since_update,
             "execution_state": "terminal",
             "diagnostic_summary": summary,
-            "needs_attention": job.status in {"partial", "failed", "cancelled"},
+            "needs_attention": job.status in {"partial", "failed", "cancelled"} or stopped_reason == "stage_timeout",
             "recommended_poll_after_seconds": None,
         }
 

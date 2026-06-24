@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from contextlib import ExitStack
 from dataclasses import replace
 from pathlib import Path
@@ -309,21 +310,50 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
             _check_cancelled(repo, job.job_id)
             _check_paused(repo, job.job_id)
             repo.update_stage(job.job_id, "download_images", progress_current=4, progress_total=6)
+            download_lease_seconds = max(
+                lease_seconds,
+                int(max(float(getattr(settings, "image_download_timeout_seconds", 0.0)) * 3.0, 120.0)),
+            )
+            started_at = time.monotonic()
+            total_floors = len(snapshot.floors)
+            total_images = sum(len(floor.image_urls) for floor in snapshot.floors)
+            LOG.info(
+                "Sync thread %s entering download_images worker=%s floors=%s images=%s lease=%s",
+                job.job_id,
+                worker_id,
+                total_floors,
+                total_images,
+                download_lease_seconds,
+            )
+            download_stage_timeout_seconds = float(getattr(settings, "image_download_stage_timeout_seconds", 600.0))
             heartbeat_pacer = HeartbeatPacer(
                 repo=repo,
                 job_id=job.job_id,
                 worker_id=worker_id,
-                lease_seconds=lease_seconds,
+                lease_seconds=download_lease_seconds,
                 min_interval_seconds=max(float(getattr(settings, "worker_heartbeat_seconds", 15)), 1.0),
             )
             heartbeat_pacer.beat(force=True)
+            progress_state = {"count": 0, "last_log": 0}
+
             def _cancel_check() -> None:
                 _check_cancelled(repo, job.job_id)
 
             def _progress() -> None:
+                progress_state["count"] += 1
                 heartbeat_pacer.beat()
                 _check_paused(repo, job.job_id)
                 _cancel_check()
+                if progress_state["count"] - progress_state["last_log"] >= 25:
+                    progress_state["last_log"] = progress_state["count"]
+                    LOG.info(
+                        "Sync thread %s download_images progress=%s/%s worker=%s lease_until_refresh=%s",
+                        job.job_id,
+                        progress_state["count"],
+                        total_images,
+                        worker_id,
+                        download_lease_seconds,
+                    )
 
             image_result = download_images_to_staging(
                 paths,
@@ -338,13 +368,31 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
                 referer=source_url,
                 on_progress=_progress,
                 cancel_check=_cancel_check,
+                stage_deadline_seconds=download_stage_timeout_seconds,
             )
             _check_paused(repo, job.job_id)
+            LOG.info(
+                "Sync thread %s finished download_images worker=%s progress_calls=%s elapsed=%.1fs missing=%s downloaded=%s",
+                job.job_id,
+                worker_id,
+                progress_state["count"],
+                time.monotonic() - started_at,
+                len(image_result.missing_urls),
+                image_result.downloaded_count + image_result.shared_downloaded_count,
+            )
+            if image_result.stopped_reason:
+                LOG.warning(
+                    "Sync thread %s download_images stopped_reason=%s worker=%s elapsed=%.1fs",
+                    job.job_id,
+                    image_result.stopped_reason,
+                    worker_id,
+                    time.monotonic() - started_at,
+                )
 
             repo.update_stage(job.job_id, "db_commit", progress_current=5, progress_total=6)
             context_path = paths.thread_context(snapshot.tid)
             relative_context = str(context_path.relative_to(settings.data_dir))
-            archive_status = "partial" if image_result.missing_urls else "complete"
+            archive_status = "partial" if (image_result.missing_urls or image_result.stopped_reason) else "complete"
             content = build_content_snapshot(snapshot, forum_id=forum_id)
             status_by_remote_url = {asset.remote_url: "pending" for asset in content.assets}
             local_path_by_remote_url = {asset.remote_url: None for asset in content.assets}
@@ -416,7 +464,9 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
                 "missing_shared_image_count": len(image_result.missing_shared_urls),
                 "archive_status": archive_status,
                 "pages_fetched": fetch_artifacts.get("pages_fetched", 1),
-                "stopped_reason": fetch_artifacts.get("stopped_reason"),
+                "fetch_stopped_reason": fetch_artifacts.get("stopped_reason"),
+                "download_stopped_reason": image_result.stopped_reason,
+                "stopped_reason": image_result.stopped_reason or fetch_artifacts.get("stopped_reason"),
                 "archive_breakdown": {
                     "downloaded_relpaths": image_result.downloaded_relpaths,
                     "non_export_relpaths": image_result.non_export_relpaths,
@@ -441,9 +491,9 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
                     "strategy": llm_title_meta.get("strategy"),
                     "error": llm_title_meta.get("error"),
                 }
-            if image_result.missing_urls:
+            if image_result.missing_urls or image_result.stopped_reason:
                 LOG.info(
-                    "Thread %s archived as partial: downloaded=%s non_export=%s shared=%s skipped=%s missing=%s missing_shared=%s",
+                    "Thread %s archived as partial: downloaded=%s non_export=%s shared=%s skipped=%s missing=%s missing_shared=%s stopped_reason=%s",
                     snapshot.tid,
                     image_result.downloaded_count,
                     image_result.non_export_count,
@@ -451,6 +501,7 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
                     sum(len(paths) for paths in image_result.skipped_relpaths.values()),
                     len(image_result.missing_urls),
                     len(image_result.missing_shared_urls),
+                    image_result.stopped_reason,
                 )
                 if image_result.missing_urls:
                     LOG.warning(

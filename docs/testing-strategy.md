@@ -189,12 +189,10 @@ tests/
 │   ├── test_server/             # Server 层测试
 │   │   ├── test_agent_interface.py
 │   │   ├── test_resources.py
-│   │   ├── test_protocol_legacy.py
 │   │   └── test_forum_id_tools.py
 │   ├── test_application/        # 应用层测试
 │   │   ├── test_archive_queries.py
 │   │   ├── test_contracts.py
-│   │   ├── test_thread_use_cases.py
 │   │   ├── test_thread_update_use_cases.py
 │   │   └── test_job_use_cases.py
 │   └── test_yamibo/             # Yamibo 模块测试
@@ -297,7 +295,7 @@ def load_edge_case(name: str) -> dict[str, Any]:
 | 第 10 页 | 59 条 | 包含特殊标题前缀（【!】） |
 | 第 20 页 | 56 条 | 包含旧帖子（2026-04） |
 
-**帖子详情数据**（来源：`get-thread`）
+**帖子详情数据**（来源：远端详情抓取）
 
 | TID | 特征 | 测试点 |
 |-----|------|--------|
@@ -314,7 +312,7 @@ def load_edge_case(name: str) -> dict[str, Any]:
 ```bash
 # 使用 CLI 命令获取数据（需要论坛 cookie）
 uv run yamibo-mcp-server browse-forum-page --page 1 > tests/fixtures/forum_pages/page_1.json
-uv run yamibo-mcp-server get-thread --tid 572627 > tests/fixtures/threads/thread_572627.json
+uv run yamibo-mcp-server read-resource "yamibo://threads/572627/metadata" > /tmp/thread_572627.json
 uv run yamibo-mcp-server parse-thread-title "【超时空辉夜姬】[ポテトルス] ray" > tests/fixtures/title_parses/simple.json
 
 # 或使用批量脚本

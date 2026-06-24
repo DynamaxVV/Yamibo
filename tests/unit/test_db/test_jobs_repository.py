@@ -27,6 +27,20 @@ class TestCreateAndGet:
         assert fetched.job_id == created.job_id
         assert fetched.payload == {"key": "value"}
 
+    def test_create_reuses_exact_queued_duplicate(self, db):
+        # Arrange
+        repo = JobsRepository(db)
+        first = repo.create("sync_thread", tid=123, payload={"force": False})
+
+        # Act
+        second = repo.create("sync_thread", tid=123, payload={"force": False})
+
+        # Assert
+        assert second.job_id == first.job_id
+        queued = repo.list(status=JobStatus.QUEUED)
+        assert len(queued) == 1
+        assert queued[0].job_id == first.job_id
+
     def test_create_default_max_retries(self, db):
         # Arrange
         repo = JobsRepository(db)
@@ -219,6 +233,15 @@ class TestAcquireNext:
         repo = JobsRepository(db)
         first = repo.create("noop")
         second = repo.create("noop")
+        db.execute(
+            "UPDATE jobs SET created_at = ? WHERE job_id = ?",
+            ("2026-01-01T09:00:00+00:00", first.job_id),
+        )
+        db.execute(
+            "UPDATE jobs SET created_at = ? WHERE job_id = ?",
+            ("2026-01-01T09:00:01+00:00", second.job_id),
+        )
+        db.commit()
         # Act
         acquired = repo.acquire_next("worker-1", 300)
         # Assert
@@ -248,6 +271,19 @@ class TestAcquireNext:
         # Assert
         assert acquired is not None
         assert acquired.job_id == job.job_id
+
+    def test_acquire_next_prefers_queued_over_interrupted(self, db):
+        # Arrange
+        repo = JobsRepository(db)
+        interrupted = repo.create("noop")
+        queued = repo.create("noop")
+        db.execute("UPDATE jobs SET status = ?, lease_until = NULL WHERE job_id = ?", (JobStatus.INTERRUPTED.value, interrupted.job_id))
+        db.commit()
+        # Act
+        acquired = repo.acquire_next("worker-1", 300)
+        # Assert
+        assert acquired is not None
+        assert acquired.job_id == queued.job_id
 
 
 class TestHeartbeat:
@@ -404,3 +440,63 @@ class TestMarkExpiredRunningInterrupted:
         count = repo.mark_expired_running_interrupted()
         # Assert
         assert count == 0
+
+
+class TestPausedRecovery:
+    def test_release_expired_paused_jobs_clears_worker_ownership(self, db):
+        # Arrange
+        repo = JobsRepository(db)
+        job = repo.create("noop")
+        repo.acquire(job.job_id, "worker-1", 300)
+        repo.pause(job.job_id)
+        db.execute(
+            "UPDATE jobs SET lease_until = ? WHERE job_id = ?",
+            ("2000-01-01T00:00:00+00:00", job.job_id),
+        )
+        db.commit()
+
+        # Act
+        count = repo.release_expired_paused_jobs()
+
+        # Assert
+        assert count == 1
+        updated = repo.get(job.job_id)
+        assert updated.status == JobStatus.PAUSED
+        assert updated.worker_id is None
+        assert updated.lease_until is None
+
+    def test_resume_releases_expired_paused_job(self, db):
+        # Arrange
+        repo = JobsRepository(db)
+        job = repo.create("noop")
+        repo.acquire(job.job_id, "worker-1", 300)
+        repo.pause(job.job_id)
+        db.execute(
+            "UPDATE jobs SET lease_until = ? WHERE job_id = ?",
+            ("2000-01-01T00:00:00+00:00", job.job_id),
+        )
+        db.commit()
+
+        # Act
+        ok = repo.resume(job.job_id)
+
+        # Assert
+        assert ok is True
+        updated = repo.get(job.job_id)
+        assert updated.status == JobStatus.QUEUED
+        assert updated.worker_id is None
+        assert updated.lease_until is None
+
+    def test_resume_rejects_live_paused_job(self, db):
+        # Arrange
+        repo = JobsRepository(db)
+        job = repo.create("noop")
+        repo.acquire(job.job_id, "worker-1", 300)
+        repo.pause(job.job_id)
+        # Act
+        ok = repo.resume(job.job_id)
+
+        # Assert
+        assert ok is False
+        updated = repo.get(job.job_id)
+        assert updated.status == JobStatus.PAUSED

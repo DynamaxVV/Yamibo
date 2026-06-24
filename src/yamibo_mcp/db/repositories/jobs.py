@@ -25,14 +25,14 @@ _LIVE_JOB_STATUSES = (
 
 def _job_list_order_clause() -> str:
     # 任务列表按“进行中 -> 排队中 -> 其他完成态”分组，同组内按创建时间升序，保证启动较早的任务靠前。
-        return """
-        CASE
-            WHEN status IN ('running', 'retrying', 'cancel_requested', 'paused') THEN 0
-            WHEN status = 'queued' THEN 1
-            ELSE 2
-        END ASC,
-        created_at ASC,
-        job_id ASC
+    return """
+    CASE
+        WHEN status IN ('running', 'retrying', 'cancel_requested', 'paused') THEN 0
+        WHEN status = 'queued' THEN 1
+        ELSE 2
+    END ASC,
+    created_at ASC,
+    job_id ASC
     """
 
 
@@ -103,8 +103,35 @@ class JobsRepository:
         max_retries: int = 3,
         resumable: bool = True,
     ) -> Job:
-        job_id = new_job_id(job_type)
+        normalized_payload = payload or {}
         now = utc_now_iso()
+        payload_json = json.dumps(normalized_payload, ensure_ascii=False)
+        superseded_job_ids: list[str] = []
+        if tid is not None:
+            queued_matches = self._list_queued_matches(job_type=job_type, tid=tid)
+            exact_matches = [row for row in queued_matches if _loads(row["payload_json"]) == normalized_payload]
+            if exact_matches:
+                keeper = exact_matches[-1]
+                superseded_job_ids = [row["job_id"] for row in exact_matches[:-1]]
+                self._mark_superseded_rows(superseded_job_ids, superseded_by_job_id=keeper["job_id"], now=now)
+                self.conn.commit()
+                for job_id in superseded_job_ids:
+                    self._append_event(
+                        job_id,
+                        "job.superseded",
+                        status=JobStatus.SUPERSEDED.value,
+                        payload={"superseded_by_job_id": keeper["job_id"]},
+                    )
+                LOG.info(
+                    "Reused queued job %s for job_type=%s tid=%s payload_deduped=%s",
+                    keeper["job_id"],
+                    job_type,
+                    tid,
+                    len(exact_matches),
+                )
+                return self.get(keeper["job_id"])
+
+        job_id = new_job_id(job_type)
         # create 是所有控制面的统一入队入口，Server/Web 只负责把任务写成 queued。
         self.conn.execute(
             """
@@ -119,7 +146,7 @@ class JobsRepository:
                 parent_job_id,
                 job_type,
                 tid,
-                json.dumps(payload or {}, ensure_ascii=False),
+                payload_json,
                 JobStatus.QUEUED.value,
                 max_retries,
                 1 if resumable else 0,
@@ -127,8 +154,21 @@ class JobsRepository:
                 now,
             ),
         )
+        if tid is not None:
+            queued_matches = self._list_queued_matches(job_type=job_type, tid=tid)
+            exact_matches = [row for row in queued_matches if _loads(row["payload_json"]) == normalized_payload]
+            superseded_job_ids = [row["job_id"] for row in exact_matches if row["job_id"] != job_id]
+            if superseded_job_ids:
+                self._mark_superseded_rows(superseded_job_ids, superseded_by_job_id=job_id, now=now)
         self.conn.commit()
         self._append_event(job_id, "job.created", status=JobStatus.QUEUED.value)
+        for superseded_job_id in superseded_job_ids:
+            self._append_event(
+                superseded_job_id,
+                "job.superseded",
+                status=JobStatus.SUPERSEDED.value,
+                payload={"superseded_by_job_id": job_id},
+            )
         return self.get(job_id)
 
     def rerun(self, job_id: str) -> Job:
@@ -233,7 +273,15 @@ class JobsRepository:
             SELECT job_id FROM jobs
             WHERE status IN (?, ?, ?)
               AND (lease_until IS NULL OR lease_until < ?)
-            ORDER BY created_at ASC
+            ORDER BY
+              CASE
+                WHEN status = ? THEN 0
+                WHEN status = ? THEN 1
+                WHEN status = ? THEN 2
+                ELSE 3
+              END ASC,
+              created_at ASC,
+              job_id ASC
             LIMIT 1
             """,
             (
@@ -241,11 +289,54 @@ class JobsRepository:
                 JobStatus.RETRYING.value,
                 JobStatus.INTERRUPTED.value,
                 utc_now_iso(),
+                JobStatus.QUEUED.value,
+                JobStatus.RETRYING.value,
+                JobStatus.INTERRUPTED.value,
             ),
         ).fetchone()
         if row is None:
             return None
+        LOG.info("acquire_next selected job_id=%s worker_id=%s", row["job_id"], worker_id)
         return self.acquire(row["job_id"], worker_id, lease_seconds)
+
+    def _list_queued_matches(self, *, job_type: str, tid: int) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            """
+            SELECT *
+            FROM jobs
+            WHERE job_type = ?
+              AND tid = ?
+              AND status = ?
+            ORDER BY created_at ASC, job_id ASC
+            """,
+            (job_type, tid, JobStatus.QUEUED.value),
+        ).fetchall()
+
+    def _mark_superseded_rows(self, job_ids: list[str], *, superseded_by_job_id: str, now: str) -> None:
+        if not job_ids:
+            return
+        self.conn.executemany(
+            """
+            UPDATE jobs
+            SET status = ?, updated_at = ?, finished_at = ?, lease_until = NULL
+            WHERE job_id = ? AND status = ?
+            """,
+            [
+                (
+                    JobStatus.SUPERSEDED.value,
+                    now,
+                    now,
+                    job_id,
+                    JobStatus.QUEUED.value,
+                )
+                for job_id in job_ids
+            ],
+        )
+        LOG.info(
+            "Superseded duplicate queued job(s) %s in favor of %s",
+            job_ids,
+            superseded_by_job_id,
+        )
 
     def acquire(self, job_id: str, worker_id: str, lease_seconds: int) -> Job:
         now = utc_now_iso()
@@ -459,15 +550,50 @@ class JobsRepository:
         cur = self.conn.execute(
             """
             UPDATE jobs
-            SET status = ?, paused_at = NULL, updated_at = ?
-            WHERE job_id = ? AND status = ? AND worker_id IS NULL
+            SET status = ?, paused_at = NULL, worker_id = NULL, heartbeat_at = NULL, lease_until = NULL, updated_at = ?
+            WHERE job_id = ?
+              AND status = ?
+              AND (worker_id IS NULL OR lease_until IS NULL OR lease_until < ?)
             """,
-            (JobStatus.QUEUED.value, now, job_id, JobStatus.PAUSED.value),
+            (JobStatus.QUEUED.value, now, job_id, JobStatus.PAUSED.value, now),
         )
         self.conn.commit()
         if cur.rowcount > 0:
             self._append_event(job_id, "job.resumed", status=JobStatus.QUEUED.value)
         return cur.rowcount > 0
+
+    def release_expired_paused_jobs(self) -> int:
+        now = utc_now_iso()
+        expired_job_ids = [
+            row["job_id"]
+            for row in self.conn.execute(
+                """
+                SELECT job_id FROM jobs
+                WHERE status = ?
+                  AND worker_id IS NOT NULL
+                  AND lease_until IS NOT NULL
+                  AND lease_until < ?
+                """,
+                (JobStatus.PAUSED.value, now),
+            ).fetchall()
+        ]
+        if not expired_job_ids:
+            return 0
+        self.conn.execute(
+            """
+            UPDATE jobs
+            SET worker_id = NULL, heartbeat_at = NULL, lease_until = NULL, updated_at = ?
+            WHERE status = ?
+              AND worker_id IS NOT NULL
+              AND lease_until IS NOT NULL
+              AND lease_until < ?
+            """,
+            (now, JobStatus.PAUSED.value, now),
+        )
+        self.conn.commit()
+        for job_id in expired_job_ids:
+            LOG.info("release_expired_paused_jobs job_id=%s", job_id)
+        return len(expired_job_ids)
 
     def is_cancelled(self, job_id: str) -> bool:
         row = self.conn.execute(
@@ -511,6 +637,7 @@ class JobsRepository:
         )
         self.conn.commit()
         for job_id in expired_job_ids:
+            LOG.info("mark_expired_running_interrupted job_id=%s", job_id)
             self._append_event(
                 job_id,
                 "job.interrupted",

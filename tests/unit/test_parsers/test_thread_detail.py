@@ -3,9 +3,7 @@
 基于原始标题逐项分析正确的 chapter_name / chapter_index / group_name / author / core_title。
 """
 
-from pathlib import Path
 import re
-import json
 
 import pytest
 from tests.fixtures.loader import load_thread, load_edge_case
@@ -100,28 +98,33 @@ EXPECTED = {
 }
 
 
+RICH_TEXT_SAMPLE_HTML = """
+<html><body>
+  <span id="thread_subject">测试帖</span>
+  <div id="post_1">
+    <div class="authi"><a href="space-uid-1.html">楼主</a></div>
+    <em id="authorposton1">发表于 2026-06-14 12:00</em>
+    <i class="pstatus">本帖最后由 某人 于 2026-06-24 12:00 编辑</i>
+    <td id="postmessage_1">
+      <div align="left"><font size="5" color="#000000"><strong>『起始』</strong></font></div>
+      <font size="3" color="#000000"><em>第一段</em></font><br>
+      <font size="4" color="#a0522d">第二段</font>
+      <a href="https://example.com/thread">无效链接包装</a>
+    </td>
+  </div>
+</body></html>
+"""
+
+
+LEGACY_RICH_BODY_HTML = """
+<font size="3" color="#000000">第6话 扭曲的喜悦</font><br>
+<font size="3" color="#000000">第7话 扭曲关系的开始</font><br>
+<font size="3" color="#000000">第8话 如同诅咒的爱之形态</font>
+"""
+
+
 class TestThreadDetailParser:
     """帖子详情解析器测试 - 预期值由人工判断"""
-
-    @staticmethod
-    def _load_rich_text_sample() -> str:
-        sample_roots = [
-            Path("/Users/vv/Code/html_sample"),
-            Path(__file__).resolve().parents[3],
-        ]
-        matches: list[Path] = []
-        for root in sample_roots:
-            if not root.exists():
-                continue
-            matches = sorted(root.glob("【授权转载】【个人翻译】*Powered by Discuz!.html"))
-            if matches:
-                break
-        if not matches:
-            meta = json.loads(Path("data/threads/544422/metadata.json").read_text(encoding="utf-8"))
-            rich = meta["floors"][0]["rich_body_html"]
-            return f"<html><body><span id=\"thread_subject\">sample</span><td id=\"postmessage_1\">{rich}</td></body></html>"
-        assert matches, "sample html not found"
-        return matches[0].read_text(encoding="utf-8", errors="ignore")
 
     # ── 核心字段逐项断言 ──────────────────────────────────────
 
@@ -317,8 +320,7 @@ class TestThreadDetailParser:
 
     def test_rich_text_sample_floor_preserves_html_style(self):
         """样本贴应保留可展示的富文本样式"""
-        html = self._load_rich_text_sample()
-        summary = parse_thread_detail(html)
+        summary = parse_thread_detail(RICH_TEXT_SAMPLE_HTML)
         first_floor = summary.floors[0]
 
         assert first_floor.rich_body_html is not None
@@ -367,9 +369,7 @@ class TestThreadDetailParser:
 
     def test_archived_rich_body_html_is_paragraphized(self):
         """旧归档的富文本也应在读取时被归一化"""
-        meta = json.loads(Path("data/threads/540745/metadata.json").read_text(encoding="utf-8"))
-        rich = meta["floors"][0]["rich_body_html"]
-        cleaned = _clean_rich_body_html(rich) or ""
+        cleaned = _clean_rich_body_html(LEGACY_RICH_BODY_HTML) or ""
 
         assert cleaned
         assert "font-size:1em" not in cleaned

@@ -59,6 +59,7 @@ class Settings:
     rag_enabled: bool
     rag_base_url: str
     rag_api_key: str | None
+    rag_debug_indexing: bool
     rag_embedding_provider: str
     rag_embedding_model: str
     rag_embedding_dimensions: int
@@ -322,6 +323,13 @@ def load_settings() -> Settings:
             if _cfg_value(config, "rag", "api_key", llm_api_key) in {None, ""}
             else str(_cfg_value(config, "rag", "api_key", llm_api_key))
         ),
+        rag_debug_indexing=str(
+            os.environ.get(
+                "YAMIBO_RAG_DEBUG_INDEXING",
+                str(_cfg_value(config, "rag", "debug_indexing", False)),
+            )
+        ).lower()
+        in {"1", "true", "yes", "on"},
         rag_embedding_provider=str(
             os.environ.get(
                 "YAMIBO_RAG_EMBEDDING_PROVIDER",

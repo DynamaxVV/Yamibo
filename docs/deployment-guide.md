@@ -1,6 +1,6 @@
 # 部署指南 & 运维手册
 
-> 版本：0.9.0 | 更新日期：2026-06-24
+> 版本：0.9.2 | 更新日期：2026-06-25
 
 ## 1. 环境要求
 
@@ -143,7 +143,7 @@ uv run yamibo-mcp-server stdio --transport streamable-http  # HTTP
 ```bash
 uv run yamibo-mcp-server browse-forum-page --page 1
 uv run yamibo-mcp-server search-threads --query "关键词"
-uv run yamibo-mcp-server get-thread --tid 572313
+uv run yamibo-mcp-server create-sync-thread-job --tid 572313
 uv run yamibo-mcp-server job-status <job_id>
 uv run yamibo-mcp-server read-resource "yamibo://threads/572313/summary"
 ```

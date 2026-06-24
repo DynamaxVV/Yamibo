@@ -1,6 +1,6 @@
 # 用户操作手册
 
-> 版本：0.9.0 | 更新日期：2026-06-24
+> 版本：0.9.2 | 更新日期：2026-06-25
 
 ## 1. 快速开始
 
@@ -266,10 +266,13 @@ uv run yamibo-mcp-server read-resource "yamibo://forums/index"
 ### 5.1 单帖子归档并导出
 
 ```
-1. get-thread --tid 572313          → 获取帖子详情（自动归档）
-2. export-thread --tid 572313       → 创建导出任务
-3. job-status <job_id>              → 等待导出完成
-4. 在 data/exports/ 中找到 ZIP 包
+1. create-sync-thread-job --tid 572313
+                                     → 创建归档任务
+2. 启动 Daemon 或等待现有 Daemon 消费
+3. create-export-thread-job --tid 572313
+                                     → 创建导出任务
+4. job-status <job_id>              → 等待导出完成
+5. 在 data/exports/ 中找到 ZIP 包
 ```
 
 ### 5.2 批量归档漫画区

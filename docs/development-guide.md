@@ -1,6 +1,6 @@
 # 核心模块开发说明
 
-> 版本：0.9.0 | 更新日期：2026-06-24
+> 版本：0.9.2 | 更新日期：2026-06-25
 
 ## 1. 标题解析引擎
 
@@ -189,15 +189,14 @@ Daemon B: recover_expired_jobs()
 
 ### 3.1 应用层入口
 
-**主文件**：`application/archive_commands.py`、`application/job_queries.py`、`application/legacy_use_cases.py`
+**主文件**：`application/archive_commands.py`、`application/archive_queries.py`、`application/job_queries.py`
 
 | 函数 | 说明 |
 |------|------|
-| `ensure_thread(tid, url?, base_url?)` | 历史兼容入口；本地缺失时自动触发归档 |
 | `archive_thread_job(html_path?, tid?, url?, base_url?, forum_id?)` | 创建归档任务，返回 job_id |
+| `sync_forum_range(start_page, end_page, forum_id?, ...)` | 按论坛页批量创建归档任务 |
+| `list_exports(limit?)` | 列出已有导出 |
 | `get_job_status_payload(job_id)` | 读取任务状态 |
-
-其中 `thread_use_cases.py`、`job_use_cases.py` 已退化为 compatibility re-export，新代码不应继续引用。
 
 ### 3.2 Agent Contract
 
@@ -404,6 +403,7 @@ Web 控制台的 `/rag` 页面对应以下后端接口：
 - `llm_base_url` / `llm_api_key` / `llm_model` 继续用于标题解析等 chat/completions 调用
 - `rag_base_url` / `rag_api_key` / `rag_embedding_model` 用于 `/embeddings`
 - 若未单独设置 `rag_base_url` / `rag_api_key`，运行时会回退到 `llm_base_url` / `llm_api_key`
+- `rag.debug_indexing` 或 `YAMIBO_RAG_DEBUG_INDEXING=1` 用于开启 RAG 索引调试日志，daemon 会把请求与失败上下文打印到终端
 
 | web_host | YAMIBO_WEB_HOST | 127.0.0.1 | Web 监听地址 |
 | web_port | YAMIBO_WEB_PORT | 8765 | Web 端口 |

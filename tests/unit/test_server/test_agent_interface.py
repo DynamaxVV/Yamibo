@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 from yamibo_mcp.application.contracts import AgentAction, AgentError, AgentResult
 from yamibo_mcp.server.agent_adapter import to_wire
 from yamibo_mcp.server.agent_tools import (
+    PUBLIC_AGENT_TOOLS,
     create_rag_index_batch_jobs,
     create_thread_archive_batch_jobs,
     create_thread_archive_job,
@@ -17,7 +18,6 @@ from yamibo_mcp.server.agent_tools import (
     wait_for_job,
     search_forum_threads,
 )
-from yamibo_mcp.server.legacy_protocol import TOOLS, handle_request, list_tools_payload
 from yamibo_mcp.server.mcp_registry import register_agent_tools
 
 
@@ -63,22 +63,20 @@ def _fake_settings(tmp_path: Path):
 
 class TestPublicAgentTools:
     def test_public_tools_exclude_internal_llm_helpers(self):
-        payload = list_tools_payload()
-        names = {tool["name"] for tool in payload["tools"]}
+        names = {name for name, _, _ in PUBLIC_AGENT_TOOLS}
 
         assert "llm_transform_text" not in names
         assert "parse_thread_title" not in names
 
     def test_public_tools_only_include_recommended_agent_facing_names(self):
-        payload = list_tools_payload()
-        names = {tool["name"] for tool in payload["tools"]}
+        names = {name for name, _, _ in PUBLIC_AGENT_TOOLS}
 
         assert names == RECOMMENDED_AGENT_TOOLS
 
     def test_public_tool_handlers_are_agent_enveloped(self):
         missing = [
             name
-            for name, (handler, _) in TOOLS.items()
+            for name, _, handler in PUBLIC_AGENT_TOOLS
             if not getattr(handler, "__agent_tool__", False)
         ]
 
@@ -104,19 +102,8 @@ class TestPublicAgentTools:
         assert list(signature.parameters) == ["tids"]
 
     def test_public_tools_list_does_not_expose_limit_parameter(self):
-        for name, (handler, _) in TOOLS.items():
+        for name, _, handler in PUBLIC_AGENT_TOOLS:
             assert "limit" not in inspect.signature(handler).parameters, name
-
-    def test_unknown_tool_errors_stay_outside_agent_envelope(self):
-        response = handle_request(
-            {
-                "id": 1,
-                "method": "tools/call",
-                "params": {"name": "unknown", "arguments": {}},
-            }
-        )
-
-        assert response["error"]["type"] == "ValueError"
 
     def test_mcp_registry_only_registers_recommended_agent_tools(self):
         class FakeServer:
@@ -206,11 +193,11 @@ class TestLocalVsRemoteIsolation:
         fake_snapshot.floors = [MagicMock(content="floor 1", floor_no=1), MagicMock(content="floor 2", floor_no=2)]
         fake_snapshot.image_count = 3
 
-        with patch("yamibo_mcp.application.remote_inspection.load_settings", return_value=settings), \
-             patch("yamibo_mcp.application.remote_inspection.YamiboClient") as mock_client_cls, \
-             patch("yamibo_mcp.application.remote_inspection.parse_thread_snapshot", return_value=fake_snapshot), \
-             patch("yamibo_mcp.application.remote_inspection.extract_forum_id_from_html", return_value=30), \
-             patch("yamibo_mcp.application.remote_inspection.extract_category_from_html", return_value="漫画区"):
+        with patch("yamibo_mcp.application.remote_queries.load_settings", return_value=settings), \
+             patch("yamibo_mcp.application.remote_queries.YamiboClient") as mock_client_cls, \
+             patch("yamibo_mcp.application.remote_queries.parse_thread_snapshot", return_value=fake_snapshot), \
+             patch("yamibo_mcp.application.remote_queries.extract_forum_id_from_html", return_value=30), \
+             patch("yamibo_mcp.application.remote_queries.extract_category_from_html", return_value="漫画区"):
             mock_client_cls.return_value.fetch_thread.return_value = fake_fetch
             result = inspect_remote_thread(tid=572313)
 

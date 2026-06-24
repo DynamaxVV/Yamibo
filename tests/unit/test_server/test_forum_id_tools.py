@@ -156,10 +156,10 @@ class TestSyncForumRangeForumId:
         mock_client = MagicMock()
         mock_client.fetch_forum_threads.return_value = (fake_result, [fake_item])
 
-        from yamibo_mcp.server.legacy_tools import sync_forum_range
-        with patch("yamibo_mcp.server.legacy_tools.load_settings", return_value=settings), \
-             patch("yamibo_mcp.server.legacy_tools.YamiboClient", return_value=mock_client), \
-             patch("yamibo_mcp.server.legacy_tools.connect", return_value=db):
+        from yamibo_mcp.application.archive_commands import sync_forum_range
+        with patch("yamibo_mcp.application.archive_commands.load_settings", return_value=settings), \
+             patch("yamibo_mcp.application.archive_commands.YamiboClient", return_value=mock_client), \
+             patch("yamibo_mcp.application.archive_commands.connect", return_value=db):
             # Act
             result = sync_forum_range(start_page=1, end_page=1)
         # Assert
@@ -175,10 +175,10 @@ class TestSyncForumRangeForumId:
         mock_client = MagicMock()
         mock_client.fetch_forum_threads.return_value = (fake_result, [fake_item])
 
-        from yamibo_mcp.server.legacy_tools import sync_forum_range
-        with patch("yamibo_mcp.server.legacy_tools.load_settings", return_value=settings), \
-             patch("yamibo_mcp.server.legacy_tools.YamiboClient", return_value=mock_client), \
-             patch("yamibo_mcp.server.legacy_tools.connect", return_value=db):
+        from yamibo_mcp.application.archive_commands import sync_forum_range
+        with patch("yamibo_mcp.application.archive_commands.load_settings", return_value=settings), \
+             patch("yamibo_mcp.application.archive_commands.YamiboClient", return_value=mock_client), \
+             patch("yamibo_mcp.application.archive_commands.connect", return_value=db):
             # Act
             result = sync_forum_range(start_page=1, end_page=1, forum_id=55)
         # Assert

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import shutil
 import time
 import urllib.parse
@@ -16,6 +17,9 @@ from yamibo_mcp.storage.paths import StoragePaths
 from yamibo_mcp.yamibo.runtime_limits import acquire_cookie_download_slot
 
 
+LOG = logging.getLogger(__name__)
+
+
 @dataclass(frozen=True)
 class ImageDownloadResult:
     downloaded_relpaths: dict[int, list[str]] = field(default_factory=dict)
@@ -27,6 +31,7 @@ class ImageDownloadResult:
     shared_downloaded_count: int = 0
     missing_urls: list[str] = field(default_factory=list)
     missing_shared_urls: list[str] = field(default_factory=list)
+    stopped_reason: str | None = None
 
 
 def download_images_to_staging(
@@ -43,8 +48,10 @@ def download_images_to_staging(
     referer: str | None = None,
     on_progress: Callable[[], None] | None = None,
     cancel_check: Callable[[], None] | None = None,
+    stage_deadline_seconds: float | None = None,
 ) -> ImageDownloadResult:
     with acquire_cookie_download_slot(cookie_file):
+        started_at = time.monotonic()
         staging_dir = paths.staging_job_images_dir(job_id)
         staging_dir.mkdir(parents=True, exist_ok=True)
         downloaded_relpaths: dict[int, list[str]] = {}
@@ -53,14 +60,35 @@ def download_images_to_staging(
         skipped_relpaths: dict[int, list[str]] = {}
         missing_urls: list[str] = []
         missing_shared_urls: list[str] = []
+        stopped_reason: str | None = None
         handlers = [urllib.request.HTTPCookieProcessor(cookie_jar or CookieJar())]
         if not use_system_proxy:
             handlers.insert(0, urllib.request.ProxyHandler({}))
         opener = urllib.request.build_opener(*handlers)
 
+        def _stage_timed_out() -> bool:
+            return stage_deadline_seconds is not None and stage_deadline_seconds > 0 and (time.monotonic() - started_at) >= stage_deadline_seconds
+
+        def _stop_if_timed_out() -> bool:
+            nonlocal stopped_reason
+            if stopped_reason is not None:
+                return True
+            if _stage_timed_out():
+                stopped_reason = "stage_timeout"
+                LOG.info(
+                    "Image download stage timed out job_id=%s elapsed=%.1fs deadline=%.1fs",
+                    job_id,
+                    time.monotonic() - started_at,
+                    stage_deadline_seconds,
+                )
+                return True
+            return False
+
         for floor in snapshot.floors:
             if cancel_check is not None:
                 cancel_check()
+            if _stop_if_timed_out():
+                break
             floor_relpaths: list[str] = []
             floor_non_export_relpaths: list[str] = []
             floor_shared_relpaths: list[str] = []
@@ -68,6 +96,8 @@ def download_images_to_staging(
             for index, image_url in enumerate(floor.image_urls, start=1):
                 if cancel_check is not None:
                     cancel_check()
+                if _stop_if_timed_out():
+                    break
                 if _is_embedded_image_url(image_url):
                     floor_skipped.append(image_url)
                     if on_progress is not None:
@@ -138,6 +168,8 @@ def download_images_to_staging(
                 skipped_relpaths[floor.pid] = floor_skipped
             if on_progress is not None and not floor.image_urls:
                 on_progress()
+            if stopped_reason is not None:
+                break
 
         return ImageDownloadResult(
             downloaded_relpaths=downloaded_relpaths,
@@ -149,6 +181,7 @@ def download_images_to_staging(
             shared_downloaded_count=sum(len(paths) for paths in shared_relpaths.values()),
             missing_urls=missing_urls,
             missing_shared_urls=missing_shared_urls,
+            stopped_reason=stopped_reason,
         )
 
 

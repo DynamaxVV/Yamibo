@@ -1,6 +1,6 @@
 # 产品需求文档 (PRD) & 系统架构设计
 
-> 版本：0.9.0 | 更新日期：2026-06-24
+> 版本：0.9.2 | 更新日期：2026-06-25
 
 ## 1. 产品概述
 
@@ -259,32 +259,21 @@ yamibo/
 │   ├── logging.py              # 日志配置
 │   ├── time_utils.py           # UTC 时间工具
 │   ├── server/                 # MCP/CLI 适配层
-│   │   ├── app.py              # 轻量入口委托
 │   │   ├── mcp_registry.py     # FastMCP tool/resource 注册
 │   │   ├── cli.py              # CLI 参数解析与分发
-│   │   ├── legacy_protocol.py  # JSON-RPC 兼容层
-│   │   ├── legacy_tools.py     # 旧工具名兼容包装
 │   │   ├── agent_adapter.py    # AgentResult -> wire dict，异常映射
 │   │   ├── agent_tools.py      # Agent-facing tool 适配
 │   │   ├── resources.py        # Resource URI + 读取注册主入口
 │   │   ├── resource_uris.py    # 内部 URI helper
-│   │   ├── resource_handlers.py # compatibility re-export
-│   │   ├── tools.py            # compatibility re-export
-│   │   ├── protocol.py         # compatibility re-export
 │   │   └── schemas.py          # 响应结构构建
 │   ├── application/            # 应用层
 │   │   ├── contracts.py        # AgentResult / AgentError / AgentAction
-│   │   ├── archive_commands.py # archive/export job 创建
-│   │   ├── archive_queries.py  # 本地归档 summary/content/assets/diagnostics
+│   │   ├── archive_commands.py # archive/export job 创建 + forum range 批量建任务
+│   │   ├── archive_queries.py  # 本地归档 summary/content/assets/diagnostics + exports
 │   │   ├── update_commands.py  # update job 创建
 │   │   ├── update_queries.py   # 远端只读 update check
 │   │   ├── remote_queries.py   # browse/search/inspect remote
-│   │   ├── job_queries.py      # read_job/read_job_events
-│   │   ├── forum_queries.py    # forum profiles/index
-│   │   ├── legacy_use_cases.py # get_thread 等旧行为聚合
-│   │   ├── thread_use_cases.py # compatibility re-export
-│   │   ├── thread_update_use_cases.py # compatibility re-export
-│   │   └── job_use_cases.py    # compatibility re-export
+│   │   └── job_queries.py      # read_job/read_job_events
 │   ├── daemon/                 # 后台任务消费
 │   │   ├── main.py             # Daemon 入口
 │   │   ├── runner.py           # 轮询 + 抢占 + 执行循环

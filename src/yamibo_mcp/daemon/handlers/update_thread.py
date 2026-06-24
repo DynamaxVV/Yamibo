@@ -184,6 +184,7 @@ def handle_update_thread(repo: JobsRepository, job: Job, worker_id: str, lease_s
         repo.update_stage(job.job_id, "download_images", progress_current=3, progress_total=4)
         _check_cancelled(repo, job.job_id)
         _check_paused(repo, job.job_id)
+        download_stage_timeout_seconds = float(getattr(settings, "image_download_stage_timeout_seconds", 600.0))
         heartbeat_pacer = HeartbeatPacer(
             repo=repo,
             job_id=job.job_id,
@@ -213,6 +214,7 @@ def handle_update_thread(repo: JobsRepository, job: Job, worker_id: str, lease_s
             referer=tail_page.final_url,
             on_progress=_progress,
             cancel_check=_cancel_check,
+            stage_deadline_seconds=download_stage_timeout_seconds,
         )
         _check_paused(repo, job.job_id)
 
@@ -241,6 +243,7 @@ def handle_update_thread(repo: JobsRepository, job: Job, worker_id: str, lease_s
             existing_meta.get("archive_status") == "partial"
             or image_result.missing_urls
             or image_result.missing_shared_urls
+            or image_result.stopped_reason
             or existing_meta.get("missing_image_urls")
             or existing_meta.get("missing_shared_image_urls")
         ) else "complete"
@@ -302,8 +305,10 @@ def handle_update_thread(repo: JobsRepository, job: Job, worker_id: str, lease_s
         "shared_image_count": image_result.shared_downloaded_count,
         "missing_image_count": len(image_result.missing_urls),
         "missing_shared_image_count": len(image_result.missing_shared_urls),
+        "download_stopped_reason": image_result.stopped_reason,
+        "stopped_reason": image_result.stopped_reason,
     }
-    if image_result.missing_urls or image_result.missing_shared_urls or archive_status == "partial":
+    if image_result.missing_urls or image_result.missing_shared_urls or image_result.stopped_reason or archive_status == "partial":
         repo.partial(job.job_id, artifacts)
     else:
         repo.succeed(job.job_id, artifacts)
