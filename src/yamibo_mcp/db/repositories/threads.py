@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import datetime, timedelta, timezone
 
 from yamibo_mcp.domain.models import ThreadSnapshot
 from yamibo_mcp.domain.content import build_content_snapshot
@@ -13,6 +14,63 @@ from yamibo_mcp.yamibo.title.normalizer import normalize_display_title, normaliz
 class ThreadsRepository:
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
+
+    def _thread_list_filters(
+        self,
+        *,
+        q: str | None = None,
+        forum_id: int | None = None,
+        days: int | None = None,
+        archive_status: str | None = None,
+    ) -> tuple[str, list[object]]:
+        filters: list[str] = []
+        args: list[object] = []
+        if q:
+            keywords = [kw for kw in q.strip().split() if kw]
+            if keywords:
+                filters.append("thread_fts MATCH ?")
+                args.append(" AND ".join(keywords))
+        if forum_id is not None:
+            filters.append("t.forum_id = ?")
+            args.append(forum_id)
+        if days is not None:
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=max(days, 0))).strftime("%Y-%m-%d")
+            filters.append("substr(COALESCE(t.pub_time, ''), 1, 10) >= ?")
+            args.append(cutoff)
+        if archive_status:
+            if archive_status == "none":
+                filters.append("COALESCE(t.archive_status, '') = ''")
+            else:
+                filters.append("t.archive_status = ?")
+                args.append(archive_status)
+        where = f"WHERE {' AND '.join(filters)}" if filters else ""
+        return where, args
+
+    def _thread_list_select(self) -> str:
+        return """
+            SELECT
+              t.tid, t.raw_title, t.display_title, t.publisher, t.pub_time, t.sync_time,
+              t.archive_status, t.validation_status, t.context_path, t.series_id, t.export_path,
+              t.forum_id, t.content_kind, t.category,
+              tp.core_title_guess, tp.series_key, tp.chapter_name, tp.chapter_index, tp.chapter_index_end, tp.group_name, tp.author_guess, tp.needs_review,
+              (SELECT COUNT(*) FROM floors f WHERE f.tid = t.tid) AS reply_count
+        """
+
+    def _thread_list_from_clause(self, *, q: str | None = None) -> str:
+        from_clause = "FROM threads t LEFT JOIN title_parse tp ON tp.tid = t.tid"
+        if q and q.strip():
+            from_clause = "FROM threads t JOIN thread_fts ON thread_fts.tid = t.tid LEFT JOIN title_parse tp ON tp.tid = t.tid"
+        return from_clause
+
+    def _thread_list_order_clause(self, sort_key: str, sort_dir: str) -> str:
+        sort_key = sort_key if sort_key in {"sync_time", "pub_time", "reply_count"} else "sync_time"
+        sort_dir = "asc" if sort_dir == "asc" else "desc"
+        order_expr = {
+            "sync_time": "COALESCE(t.sync_time, '')",
+            "pub_time": "COALESCE(t.pub_time, '')",
+            "reply_count": "reply_count",
+        }[sort_key]
+        return f"{order_expr} {sort_dir.upper()}, t.tid {sort_dir.upper()}"
 
     def upsert_snapshot(
         self,
@@ -451,16 +509,7 @@ class ThreadsRepository:
         }
 
     def list_threads(self, *, limit: int = 100, forum_id: int | None = None) -> list[sqlite3.Row]:
-        base_select = """
-            SELECT
-              t.tid, t.raw_title, t.display_title, t.publisher, t.pub_time, t.sync_time,
-              t.archive_status, t.validation_status, t.context_path, t.series_id, t.export_path,
-              t.forum_id, t.content_kind, t.category,
-              tp.core_title_guess, tp.series_key, tp.chapter_name, tp.chapter_index, tp.chapter_index_end, tp.group_name, tp.author_guess, tp.needs_review,
-              (SELECT COUNT(*) FROM floors f WHERE f.tid = t.tid) AS reply_count
-            FROM threads t
-            LEFT JOIN title_parse tp ON tp.tid = t.tid
-        """
+        base_select = f"""{self._thread_list_select()} {self._thread_list_from_clause()}"""
         if forum_id is not None:
             return self.conn.execute(
                 f"{base_select} WHERE t.forum_id = ? ORDER BY COALESCE(t.sync_time, '') DESC, t.tid DESC LIMIT ?",
@@ -470,6 +519,48 @@ class ThreadsRepository:
             f"{base_select} ORDER BY COALESCE(t.sync_time, '') DESC, t.tid DESC LIMIT ?",
             (limit,),
         ).fetchall()
+
+    def list_threads_page(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = 50,
+        q: str | None = None,
+        forum_id: int | None = None,
+        days: int | None = None,
+        archive_status: str | None = None,
+        sort_key: str = "sync_time",
+        sort_dir: str = "desc",
+    ) -> dict[str, object]:
+        page_size = min(max(page_size, 1), 200)
+        where_clause, args = self._thread_list_filters(q=q, forum_id=forum_id, days=days, archive_status=archive_status)
+        from_clause = self._thread_list_from_clause(q=q)
+        total_count_row = self.conn.execute(
+            f"SELECT COUNT(*) AS total_count {from_clause} {where_clause}",
+            args,
+        ).fetchone()
+        total_count = int(total_count_row["total_count"] or 0)
+        total_pages = max(1, (total_count + page_size - 1) // page_size)
+        page = min(max(page, 1), total_pages)
+        offset = (page - 1) * page_size
+        order_clause = self._thread_list_order_clause(sort_key, sort_dir)
+        rows = self.conn.execute(
+            f"""
+            {self._thread_list_select()}
+            {from_clause}
+            {where_clause}
+            ORDER BY {order_clause}
+            LIMIT ? OFFSET ?
+            """,
+            [*args, page_size, offset],
+        ).fetchall()
+        return {
+            "page": page,
+            "page_size": page_size,
+            "total_count": total_count,
+            "total_pages": total_pages,
+            "items": rows,
+        }
 
     def mark_exported(self, tid: int, export_path: str) -> None:
         cur = self.conn.execute(

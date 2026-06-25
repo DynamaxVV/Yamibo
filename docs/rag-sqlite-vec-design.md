@@ -4,7 +4,7 @@
 
 ## 1. 背景
 
-Yamibo MCP 当前是面向 yamibo.com 论坛的本地归档系统，已经具备结构化归档、楼层解析、标题解析、系列聚合、内容块模型、SQLite FTS5 搜索和 MCP 只读资源。现有搜索主要面向“帖子发现”，不适合直接回答 LLM 的内容查询问题。
+Yamibo Archive 当前是面向 yamibo.com 论坛的本地归档系统，已经具备结构化归档、楼层解析、标题解析、系列聚合、内容块模型、SQLite FTS5 搜索和 MCP 只读资源。现有搜索主要面向“帖子发现”，不适合直接回答 LLM 的内容查询问题。
 
 本设计目标是在不查询图片内容的前提下，为本地归档数据增加面向 LLM 查询的 RAG 能力。底层向量检索选型固定为 `sqlite-vec`，embedding 模型倾向使用 OpenAI `text-embedding-3-small`，维度在 512 与 256 中选择。
 

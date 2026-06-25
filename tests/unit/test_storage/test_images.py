@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+from dataclasses import replace
+import time
+
+import yamibo_mcp.storage.images as images
 from yamibo_mcp.domain.models import FloorSnapshot, ThreadSnapshot, TitleSnapshot
-from yamibo_mcp.storage.images import download_images_to_staging
+from yamibo_mcp.storage.images import _download_with_retries, download_images_to_staging
 from yamibo_mcp.storage.paths import StoragePaths
 
 
@@ -69,3 +74,151 @@ def test_download_images_to_staging_returns_partial_on_stage_timeout(tmp_path):
     assert result.stopped_reason == "stage_timeout"
     assert result.downloaded_count == 0
     assert result.missing_urls == []
+
+
+def test_download_images_to_staging_times_out_waiting_for_download_slot(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    paths = StoragePaths(data_dir, export_dir=tmp_path / "exports", novel_txt_export_dir=tmp_path / "novel_exports")
+
+    @contextmanager
+    def _timeout_slot(*args, **kwargs):
+        raise images.CookieDownloadSlotTimeoutError("timed out waiting for cookie download slot")
+        yield  # pragma: no cover - unreachable
+
+    monkeypatch.setattr("yamibo_mcp.storage.images.acquire_cookie_download_slot", _timeout_slot)
+
+    result = download_images_to_staging(
+        paths,
+        "job-2",
+        _make_snapshot(),
+        timeout=1,
+        retries=0,
+        cookie_file=tmp_path / "cookie.txt",
+    )
+
+    assert result.stopped_reason == "download_slot_timeout"
+    assert result.downloaded_count == 0
+    assert result.missing_urls == []
+
+
+def test_download_with_retries_stops_at_retry_limit(tmp_path, monkeypatch):
+    staging_dir = tmp_path / "staging"
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    attempts: list[int] = []
+
+    def _raise_timeout(*args, **kwargs):
+        attempts.append(1)
+        raise TimeoutError("request timed out")
+
+    monkeypatch.setattr("yamibo_mcp.storage.images._fetch_to_path", _raise_timeout)
+    monkeypatch.setattr("yamibo_mcp.storage.images.time.sleep", lambda *args, **kwargs: None)
+
+    try:
+        _download_with_retries(
+            "https://img.example.com/a.jpg",
+            staging_dir=staging_dir,
+            stem="floor_001_01",
+            timeout=1,
+            retries=1,
+            opener=object(),
+        )
+    except TimeoutError:
+        pass
+
+    assert len(attempts) == 2
+
+
+def test_download_images_to_staging_keeps_input_order_with_parallel_completion(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    paths = StoragePaths(data_dir, export_dir=tmp_path / "exports", novel_txt_export_dir=tmp_path / "novel_exports")
+
+    floor = FloorSnapshot(
+        pid=1001,
+        tid=42,
+        floor_no=1,
+        publisher="作者",
+        content="正文",
+        pub_time="2026-01-01 00:00",
+        has_images=True,
+        image_urls=[
+            "https://img.example.com/a.jpg",
+            "https://img.example.com/b.jpg",
+            "https://img.example.com/c.jpg",
+        ],
+    )
+    snapshot = replace(_make_snapshot(), floors=[floor], image_count=3)
+
+    def _fake_download(image_url, *, staging_dir, stem, timeout, retries, opener, headers=None, referer=None, cancel_check=None):
+        delay = {"floor_001_01": 0.03, "floor_001_02": 0.01, "floor_001_03": 0.02}[stem]
+        time.sleep(delay)
+        target = staging_dir / f"{stem}.jpg"
+        target.write_bytes(stem.encode("utf-8"))
+        return target
+
+    monkeypatch.setattr("yamibo_mcp.storage.images._download_with_retries", _fake_download)
+    monkeypatch.setattr("yamibo_mcp.storage.images._should_exclude_from_export", lambda *args, **kwargs: False)
+
+    result = download_images_to_staging(
+        paths,
+        "job-order",
+        snapshot,
+        timeout=1,
+        retries=0,
+        cookie_file=tmp_path / "cookie.txt",
+        use_system_proxy=False,
+    )
+
+    assert result.downloaded_relpaths[1001] == [
+        "images/floor_001_01.jpg",
+        "images/floor_001_02.jpg",
+        "images/floor_001_03.jpg",
+    ]
+    assert result.stopped_reason is None
+
+
+def test_download_images_to_staging_returns_partial_on_stage_timeout_with_completed_results(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    paths = StoragePaths(data_dir, export_dir=tmp_path / "exports", novel_txt_export_dir=tmp_path / "novel_exports")
+
+    floor = FloorSnapshot(
+        pid=1001,
+        tid=42,
+        floor_no=1,
+        publisher="作者",
+        content="正文",
+        pub_time="2026-01-01 00:00",
+        has_images=True,
+        image_urls=[
+            "https://img.example.com/a.jpg",
+            "https://img.example.com/b.jpg",
+        ],
+    )
+    snapshot = replace(_make_snapshot(), floors=[floor], image_count=2)
+
+    def _fake_download(image_url, *, staging_dir, stem, timeout, retries, opener, headers=None, referer=None, cancel_check=None):
+        if stem.endswith("_01"):
+            time.sleep(0.01)
+        else:
+            time.sleep(0.3)
+        target = staging_dir / f"{stem}.jpg"
+        target.write_bytes(stem.encode("utf-8"))
+        return target
+
+    monkeypatch.setattr("yamibo_mcp.storage.images._download_with_retries", _fake_download)
+    monkeypatch.setattr("yamibo_mcp.storage.images._should_exclude_from_export", lambda *args, **kwargs: False)
+
+    result = download_images_to_staging(
+        paths,
+        "job-timeout",
+        snapshot,
+        timeout=1,
+        retries=0,
+        cookie_file=tmp_path / "cookie.txt",
+        stage_deadline_seconds=0.05,
+    )
+
+    assert result.stopped_reason == "stage_timeout"
+    assert result.downloaded_relpaths[1001] == ["images/floor_001_01.jpg"]

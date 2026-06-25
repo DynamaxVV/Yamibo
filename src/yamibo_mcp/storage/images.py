@@ -9,12 +9,13 @@ from dataclasses import dataclass, field
 from http.cookiejar import CookieJar
 from mimetypes import guess_extension
 from pathlib import Path
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from typing import Callable, Mapping
 from urllib.parse import urlparse
 
 from yamibo_mcp.domain.models import ThreadSnapshot
 from yamibo_mcp.storage.paths import StoragePaths
-from yamibo_mcp.yamibo.runtime_limits import acquire_cookie_download_slot
+from yamibo_mcp.yamibo.runtime_limits import CookieDownloadSlotTimeoutError, acquire_cookie_download_slot
 
 
 LOG = logging.getLogger(__name__)
@@ -34,6 +35,98 @@ class ImageDownloadResult:
     stopped_reason: str | None = None
 
 
+@dataclass(frozen=True)
+class _DownloadTask:
+    task_index: int
+    floor_pid: int
+    image_url: str
+    kind: str
+    stem: str | None = None
+    target: Path | None = None
+
+
+@dataclass(frozen=True)
+class _DownloadTaskResult:
+    task_index: int
+    floor_pid: int
+    kind: str
+    image_url: str
+    relative_path: str | None = None
+    non_export: bool = False
+    missing: bool = False
+
+
+def _download_task(
+    task: _DownloadTask,
+    *,
+    paths: StoragePaths,
+    staging_dir: Path,
+    timeout: float,
+    retries: int,
+    cookie_jar: CookieJar | None,
+    use_system_proxy: bool,
+    headers: Mapping[str, str] | None,
+    referer: str | None,
+    cancel_check: Callable[[], None] | None,
+) -> _DownloadTaskResult:
+    local_cookie_jar = CookieJar()
+    if cookie_jar is not None:
+        for cookie in cookie_jar:
+            local_cookie_jar.set_cookie(cookie)
+    handlers = [urllib.request.HTTPCookieProcessor(local_cookie_jar)]
+    if not use_system_proxy:
+        handlers.insert(0, urllib.request.ProxyHandler({}))
+    opener = urllib.request.build_opener(*handlers)
+    if task.kind == "shared":
+        assert task.target is not None
+        try:
+            if not task.target.exists():
+                _download_to_explicit_target_with_retries(
+                    task.image_url,
+                    target=task.target,
+                    timeout=timeout,
+                    retries=retries,
+                    opener=opener,
+                    headers=headers,
+                    referer=referer,
+                    cancel_check=cancel_check,
+                )
+        except Exception:  # noqa: BLE001 - shared resource failure should not block archive
+            return _DownloadTaskResult(task_index=task.task_index, floor_pid=task.floor_pid, kind=task.kind, image_url=task.image_url, missing=True)
+        return _DownloadTaskResult(
+            task_index=task.task_index,
+            floor_pid=task.floor_pid,
+            kind=task.kind,
+            image_url=task.image_url,
+            relative_path=str(task.target.relative_to(paths.data_dir)),
+        )
+
+    assert task.stem is not None
+    try:
+        target = _download_with_retries(
+            task.image_url,
+            staging_dir=staging_dir,
+            stem=task.stem,
+            timeout=timeout,
+            retries=retries,
+            opener=opener,
+            headers=headers,
+            referer=referer,
+            cancel_check=cancel_check,
+        )
+    except Exception:  # noqa: BLE001 - image failure should be tracked as missing
+        return _DownloadTaskResult(task_index=task.task_index, floor_pid=task.floor_pid, kind=task.kind, image_url=task.image_url, missing=True)
+    relative = f"images/{target.name}"
+    return _DownloadTaskResult(
+        task_index=task.task_index,
+        floor_pid=task.floor_pid,
+        kind=task.kind,
+        image_url=task.image_url,
+        relative_path=relative,
+        non_export=_should_exclude_from_export(target, image_url=task.image_url),
+    )
+
+
 def download_images_to_staging(
     paths: StoragePaths,
     job_id: str,
@@ -49,140 +142,171 @@ def download_images_to_staging(
     on_progress: Callable[[], None] | None = None,
     cancel_check: Callable[[], None] | None = None,
     stage_deadline_seconds: float | None = None,
+    download_slot_wait_seconds: float | None = None,
 ) -> ImageDownloadResult:
-    with acquire_cookie_download_slot(cookie_file):
-        started_at = time.monotonic()
-        staging_dir = paths.staging_job_images_dir(job_id)
-        staging_dir.mkdir(parents=True, exist_ok=True)
-        downloaded_relpaths: dict[int, list[str]] = {}
-        non_export_relpaths: dict[int, list[str]] = {}
-        shared_relpaths: dict[int, list[str]] = {}
-        skipped_relpaths: dict[int, list[str]] = {}
-        missing_urls: list[str] = []
-        missing_shared_urls: list[str] = []
-        stopped_reason: str | None = None
-        handlers = [urllib.request.HTTPCookieProcessor(cookie_jar or CookieJar())]
-        if not use_system_proxy:
-            handlers.insert(0, urllib.request.ProxyHandler({}))
-        opener = urllib.request.build_opener(*handlers)
+    started_at = time.monotonic()
+    slot_wait_seconds = timeout if download_slot_wait_seconds is None else download_slot_wait_seconds
+    try:
+        with acquire_cookie_download_slot(cookie_file, timeout=slot_wait_seconds):
+            staging_dir = paths.staging_job_images_dir(job_id)
+            staging_dir.mkdir(parents=True, exist_ok=True)
+            downloaded_relpaths: dict[int, list[str]] = {}
+            non_export_relpaths: dict[int, list[str]] = {}
+            shared_relpaths: dict[int, list[str]] = {}
+            skipped_relpaths: dict[int, list[str]] = {}
+            missing_urls: list[str] = []
+            missing_shared_urls: list[str] = []
+            stopped_reason: str | None = None
+            tasks: list[_DownloadTask] = []
+            shared_targets: dict[Path, str] = {}
 
-        def _stage_timed_out() -> bool:
-            return stage_deadline_seconds is not None and stage_deadline_seconds > 0 and (time.monotonic() - started_at) >= stage_deadline_seconds
+            def _stage_timed_out() -> bool:
+                return stage_deadline_seconds is not None and stage_deadline_seconds > 0 and (time.monotonic() - started_at) >= stage_deadline_seconds
 
-        def _stop_if_timed_out() -> bool:
-            nonlocal stopped_reason
-            if stopped_reason is not None:
-                return True
-            if _stage_timed_out():
-                stopped_reason = "stage_timeout"
-                LOG.info(
-                    "Image download stage timed out job_id=%s elapsed=%.1fs deadline=%.1fs",
-                    job_id,
-                    time.monotonic() - started_at,
-                    stage_deadline_seconds,
-                )
-                return True
-            return False
+            def _stop_if_timed_out() -> bool:
+                nonlocal stopped_reason
+                if stopped_reason is not None:
+                    return True
+                if _stage_timed_out():
+                    stopped_reason = "stage_timeout"
+                    LOG.info(
+                        "Image download stage timed out job_id=%s elapsed=%.1fs deadline=%.1fs",
+                        job_id,
+                        time.monotonic() - started_at,
+                        stage_deadline_seconds,
+                    )
+                    return True
+                return False
 
-        for floor in snapshot.floors:
-            if cancel_check is not None:
-                cancel_check()
-            if _stop_if_timed_out():
-                break
-            floor_relpaths: list[str] = []
-            floor_non_export_relpaths: list[str] = []
-            floor_shared_relpaths: list[str] = []
-            floor_skipped: list[str] = []
-            for index, image_url in enumerate(floor.image_urls, start=1):
+            for floor in snapshot.floors:
                 if cancel_check is not None:
                     cancel_check()
                 if _stop_if_timed_out():
                     break
-                if _is_embedded_image_url(image_url):
-                    floor_skipped.append(image_url)
-                    if on_progress is not None:
-                        on_progress()
-                    continue
-                if _is_shared_forum_asset(image_url):
-                    shared_target = _shared_target_path(paths, image_url)
-                    try:
-                        if not shared_target.exists():
-                            _download_to_explicit_target_with_retries(
-                                image_url,
-                                target=shared_target,
-                                timeout=timeout,
-                                retries=retries,
-                                opener=opener,
-                                headers=headers,
-                                referer=referer,
-                                cancel_check=cancel_check,
-                            )
-                    except Exception:  # noqa: BLE001 - 共享表情失败不影响帖子完整性
-                        missing_shared_urls.append(image_url)
+                for index, image_url in enumerate(floor.image_urls, start=1):
+                    if _is_embedded_image_url(image_url):
+                        skipped_relpaths.setdefault(floor.pid, []).append(image_url)
                         if on_progress is not None:
                             on_progress()
                         continue
-                    floor_shared_relpaths.append(str(shared_target.relative_to(paths.data_dir)))
-                    if on_progress is not None:
-                        on_progress()
-                    continue
-
-                if not _is_exportable_content_image(snapshot, floor):
-                    floor_skipped.append(image_url)
-                    if on_progress is not None:
-                        on_progress()
-                    continue
-
-                stem = f"floor_{floor.floor_no:03d}_{index:02d}"
-                try:
-                    target = _download_with_retries(
-                        image_url,
-                        staging_dir=staging_dir,
-                        stem=stem,
-                        timeout=timeout,
-                        retries=retries,
-                        opener=opener,
-                        headers=headers,
-                        referer=referer,
-                        cancel_check=cancel_check,
+                    if _is_shared_forum_asset(image_url):
+                        shared_target = _shared_target_path(paths, image_url)
+                        task_key = shared_target.resolve(strict=False)
+                        if task_key in shared_targets:
+                            skipped_relpaths.setdefault(floor.pid, []).append(image_url)
+                            if on_progress is not None:
+                                on_progress()
+                            continue
+                        shared_targets[task_key] = image_url
+                        tasks.append(
+                            _DownloadTask(
+                                task_index=len(tasks),
+                                floor_pid=floor.pid,
+                                image_url=image_url,
+                                kind="shared",
+                                target=shared_target,
+                            )
+                        )
+                        continue
+                    if not _is_exportable_content_image(snapshot, floor):
+                        skipped_relpaths.setdefault(floor.pid, []).append(image_url)
+                        if on_progress is not None:
+                            on_progress()
+                        continue
+                    tasks.append(
+                        _DownloadTask(
+                            task_index=len(tasks),
+                            floor_pid=floor.pid,
+                            image_url=image_url,
+                            kind="content",
+                            stem=f"floor_{floor.floor_no:03d}_{index:02d}",
+                        )
                     )
-                except Exception:  # noqa: BLE001 - 图片失败先记录，不阻断整帖同步
-                    missing_urls.append(image_url)
+                if not floor.image_urls:
                     if on_progress is not None:
                         on_progress()
-                    continue
-                relative = f"images/{target.name}"
-                if _should_exclude_from_export(target, image_url=image_url):
-                    floor_non_export_relpaths.append(relative)
-                else:
-                    floor_relpaths.append(relative)
-                if on_progress is not None:
-                    on_progress()
-            if floor_relpaths:
-                downloaded_relpaths[floor.pid] = floor_relpaths
-            if floor_non_export_relpaths:
-                non_export_relpaths[floor.pid] = floor_non_export_relpaths
-            if floor_shared_relpaths:
-                shared_relpaths[floor.pid] = floor_shared_relpaths
-            if floor_skipped:
-                skipped_relpaths[floor.pid] = floor_skipped
-            if on_progress is not None and not floor.image_urls:
-                on_progress()
-            if stopped_reason is not None:
-                break
 
-        return ImageDownloadResult(
-            downloaded_relpaths=downloaded_relpaths,
-            non_export_relpaths=non_export_relpaths,
-            shared_relpaths=shared_relpaths,
-            skipped_relpaths=skipped_relpaths,
-            downloaded_count=sum(len(paths) for paths in downloaded_relpaths.values()),
-            non_export_count=sum(len(paths) for paths in non_export_relpaths.values()),
-            shared_downloaded_count=sum(len(paths) for paths in shared_relpaths.values()),
-            missing_urls=missing_urls,
-            missing_shared_urls=missing_shared_urls,
-            stopped_reason=stopped_reason,
+            if tasks:
+                max_workers = min(4, len(tasks))
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = {
+                        executor.submit(
+                            _download_task,
+                            task,
+                            paths=paths,
+                            staging_dir=staging_dir,
+                            timeout=timeout,
+                            retries=retries,
+                            cookie_jar=cookie_jar,
+                            use_system_proxy=use_system_proxy,
+                            headers=headers,
+                            referer=referer,
+                            cancel_check=cancel_check,
+                        ): task.task_index
+                        for task in tasks
+                    }
+                    future_results: list[_DownloadTaskResult | None] = [None] * len(tasks)
+                    while futures:
+                        if cancel_check is not None:
+                            cancel_check()
+                        if _stop_if_timed_out():
+                            stopped_reason = stopped_reason or "stage_timeout"
+                            for future in futures:
+                                future.cancel()
+                            break
+                        done, _ = wait(tuple(futures), timeout=0.2, return_when=FIRST_COMPLETED)
+                        if not done:
+                            continue
+                        for future in done:
+                            task_index = futures.pop(future)
+                            result = future.result()
+                            future_results[task_index] = result
+                            if on_progress is not None:
+                                on_progress()
+
+                for result in future_results:
+                    if result is None:
+                        continue
+                    if result.missing:
+                        if result.kind == "shared":
+                            missing_shared_urls.append(result.image_url)
+                        else:
+                            missing_urls.append(result.image_url)
+                        continue
+                    if result.relative_path is None:
+                        continue
+                    if result.kind == "shared":
+                        shared_relpaths.setdefault(result.floor_pid, []).append(result.relative_path)
+                    elif result.kind == "content":
+                        if result.non_export:
+                            non_export_relpaths.setdefault(result.floor_pid, []).append(result.relative_path)
+                        else:
+                            floor_relpaths = downloaded_relpaths.setdefault(result.floor_pid, [])
+                            floor_relpaths.append(result.relative_path)
+
+                if stopped_reason is None and _stage_timed_out():
+                    stopped_reason = "stage_timeout"
+
+            return ImageDownloadResult(
+                downloaded_relpaths=downloaded_relpaths,
+                non_export_relpaths=non_export_relpaths,
+                shared_relpaths=shared_relpaths,
+                skipped_relpaths=skipped_relpaths,
+                downloaded_count=sum(len(values) for values in downloaded_relpaths.values()),
+                non_export_count=sum(len(values) for values in non_export_relpaths.values()),
+                shared_downloaded_count=sum(len(values) for values in shared_relpaths.values()),
+                missing_urls=missing_urls,
+                missing_shared_urls=missing_shared_urls,
+                stopped_reason=stopped_reason,
+            )
+    except CookieDownloadSlotTimeoutError:
+        LOG.warning(
+            "Image download slot timed out job_id=%s cookie_file=%s wait_seconds=%s",
+            job_id,
+            cookie_file,
+            slot_wait_seconds,
         )
+        return ImageDownloadResult(stopped_reason="download_slot_timeout")
 
 
 def materialize_staged_images(paths: StoragePaths, job_id: str, tid: int) -> None:

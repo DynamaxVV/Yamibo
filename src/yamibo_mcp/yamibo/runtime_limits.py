@@ -28,6 +28,10 @@ _STATE_REGISTRY: dict[str, _CookieRuntimeState] = {}
 _REGISTRY_LOCK = Lock()
 
 
+class CookieDownloadSlotTimeoutError(TimeoutError):
+    pass
+
+
 def _state_for(cookie_file: str | Path | None) -> _CookieRuntimeState:
     key = cookie_limit_key(cookie_file)
     with _REGISTRY_LOCK:
@@ -52,9 +56,11 @@ def throttle_cookie_request(cookie_file: str | Path | None, *, request_interval:
 
 
 @contextmanager
-def acquire_cookie_download_slot(cookie_file: str | Path | None) -> Iterator[None]:
+def acquire_cookie_download_slot(cookie_file: str | Path | None, *, timeout: float | None = None) -> Iterator[None]:
     state = _state_for(cookie_file)
-    state.download_slots.acquire()
+    acquired = state.download_slots.acquire() if timeout is None else state.download_slots.acquire(timeout=max(timeout, 0.0))
+    if not acquired:
+        raise CookieDownloadSlotTimeoutError(f"timed out waiting for cookie download slot after {timeout} seconds")
     try:
         yield
     finally:

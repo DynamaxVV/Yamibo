@@ -15,6 +15,7 @@ from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.web.api import (
     _archive_threads_batch,
     _batch_delete_threads,
+    _delete_thread,
     _forums_list,
     _refresh_forum_size_cache,
     _rag_index_batch,
@@ -24,6 +25,7 @@ from yamibo_mcp.web.api import (
     _rag_threads,
     _retry_job,
     _resync_threads_batch,
+    _threads_list,
     _thread_detail,
     _thread_update_check,
     _update_thread,
@@ -198,6 +200,43 @@ def test_thread_detail_merges_rich_body_html_from_metadata(db, tmp_path: Path):
     assert payload["floors"][0]["rich_body_html"] == "<div><strong>富文本</strong>链接</div>"
 
 
+def test_threads_list_returns_paginated_payload(db):
+    repo = ThreadsRepository(db)
+    seeded = [
+        (101, "2025-01-04 08:00:00", "complete"),
+        (102, "2025-01-03 08:00:00", "complete"),
+        (103, "2025-01-02 08:00:00", "partial"),
+        (104, "2025-01-01 08:00:00", "complete"),
+    ]
+    for tid, sync_time, archive_status in seeded:
+        repo.upsert_snapshot(_make_snapshot(tid=tid), forum_id=55)
+        db.execute(
+            "UPDATE threads SET sync_time = ?, pub_time = ?, archive_status = ?, forum_id = ? WHERE tid = ?",
+            (sync_time, sync_time, archive_status, 55, tid),
+        )
+    db.commit()
+
+    handler = _CaptureHandler()
+    _threads_list(
+        handler,
+        {
+            "forum_id": ["55"],
+            "page": ["2"],
+            "page_size": ["2"],
+            "sort_key": ["sync_time"],
+            "sort_dir": ["desc"],
+        },
+        db,
+    )
+
+    payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
+    assert payload["page"] == 2
+    assert payload["page_size"] == 2
+    assert payload["total_count"] == 4
+    assert payload["total_pages"] == 2
+    assert [item["tid"] for item in payload["items"]] == [103, 104]
+
+
 def test_thread_update_check_endpoint_returns_json(db):
     handler = _CaptureHandler()
     settings = SimpleNamespace()
@@ -255,6 +294,30 @@ def test_batch_delete_threads_endpoint_deletes_requested_threads(db):
     assert payload["deleted"] == 2
     assert repo.get_thread(42) is None
     assert repo.get_thread(43) is None
+
+
+def test_delete_thread_endpoint_removes_thread_directory(db, tmp_path: Path):
+    data_dir = tmp_path / "data"
+    settings = SimpleNamespace(data_dir=data_dir)
+    repo = ThreadsRepository(db)
+    repo.upsert_snapshot(_make_snapshot(tid=42), forum_id=55)
+
+    thread_dir = data_dir / "threads" / "42"
+    thread_dir.mkdir(parents=True, exist_ok=True)
+    (thread_dir / "metadata.json").write_text("{}", encoding="utf-8")
+
+    handler = _CaptureHandler()
+    handler.command = "POST"
+    body = {"tid": 42}
+    handler.headers["Content-Length"] = str(len(json.dumps(body)))
+    handler.rfile = io.BytesIO(json.dumps(body).encode("utf-8"))
+
+    _delete_thread(handler, db, settings)
+
+    payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
+    assert payload["ok"] is True
+    assert repo.get_thread(42) is None
+    assert not thread_dir.exists()
 
 
 def test_batch_resync_threads_endpoint_creates_jobs(db):
@@ -429,13 +492,16 @@ def test_rag_index_endpoint_returns_job_payload(db):
 
 def test_rag_index_batch_endpoint_creates_jobs(db):
     _seed_rag_thread(db)
+    db_path = db.execute("PRAGMA database_list").fetchone()["file"]
+    settings = SimpleNamespace(db_path=Path(db_path), rag_embedding_dimensions=512)
     handler = _CaptureHandler()
     handler.command = "POST"
     body = {"tids": [42], "force": False}
     handler.headers["Content-Length"] = str(len(json.dumps(body)))
     handler.rfile = io.BytesIO(json.dumps(body).encode("utf-8"))
 
-    _rag_index_batch(handler, db)
+    with patch("yamibo_mcp.application.rag_commands.load_settings", return_value=settings):
+        _rag_index_batch(handler, db)
 
     payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
     assert payload["ok"] is True

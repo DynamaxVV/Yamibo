@@ -13,6 +13,7 @@ import { Review } from './pages/Review'
 import { Forums } from './pages/Forums'
 import { Logs } from './pages/Logs'
 import { Rag } from './pages/Rag'
+import { Settings } from './pages/Settings'
 
 export default function App() {
   return (
@@ -32,6 +33,7 @@ export default function App() {
             <Route path="/exports" element={<Exports />} />
             <Route path="/forums" element={<Forums />} />
             <Route path="/rag" element={<Rag />} />
+            <Route path="/settings" element={<Settings />} />
             <Route path="/logs" element={<Logs />} />
           </Route>
         </Routes>

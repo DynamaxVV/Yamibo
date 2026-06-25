@@ -25,6 +25,7 @@ export function Threads() {
   const { t, lang } = useI18n()
   const [searchParams] = useSearchParams()
   const [threads, setThreads] = useState<ThreadSummary[]>([])
+  const [totalPages, setTotalPages] = useState(1)
   const [forums, setForums] = useState<Forum[]>([])
   const [q, setQ] = useState(() => sessionStorage.getItem('threads_q') || '')
   const [forumId, setForumId] = useState<number | undefined>(() => {
@@ -52,11 +53,21 @@ export function Threads() {
     setForums(fs.filter(f => f.thread_count > 0))
   }, [])
 
-  const loadThreads = useCallback(async (resetPage = false) => {
-    const nextThreads = await api.threads({ q: q || undefined, forum_id: forumId, days })
-    setThreads(nextThreads)
-    if (resetPage) setPage(1)
-  }, [q, forumId, days])
+  const loadThreads = useCallback(async () => {
+    const response = await api.threads({
+      q: q || undefined,
+      forum_id: forumId,
+      days,
+      archive_status: archiveFilter || undefined,
+      sort_key: sortKey || undefined,
+      sort_dir: sortKey ? sortDir : undefined,
+      page,
+      page_size: PAGE_SIZE,
+    })
+    setThreads(response.items)
+    setTotalPages(response.total_pages)
+    if (response.page !== page) setPage(response.page)
+  }, [q, forumId, days, archiveFilter, sortKey, sortDir, page])
 
   useEffect(() => {
     void refreshForums()
@@ -71,7 +82,16 @@ export function Threads() {
     sessionStorage.setItem('threads_sortDir', sortDir)
   }, [q, forumId, days, archiveFilter, sortKey, sortDir])
 
-  useEffect(() => { void loadThreads(true) }, [loadThreads])
+  useEffect(() => {
+    let active = true
+    setThreads([])
+    void loadThreads().catch(() => {
+      if (!active) return
+      setThreads([])
+      setTotalPages(1)
+    })
+    return () => { active = false }
+  }, [loadThreads])
 
   useEffect(() => {
     return () => {
@@ -81,7 +101,7 @@ export function Threads() {
 
   useEffect(() => {
     setSelectedTids(new Set())
-  }, [threads, archiveFilter])
+  }, [threads])
 
   const handleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -90,29 +110,11 @@ export function Threads() {
       setSortKey(key)
       setSortDir('desc')
     }
+    setPage(1)
   }
-
-  const sorted = sortKey
-    ? [...threads].sort((a, b) => {
-        const av = a[sortKey] ?? (sortKey === 'reply_count' ? 0 : '')
-        const bv = b[sortKey] ?? (sortKey === 'reply_count' ? 0 : '')
-        const cmp = av < bv ? -1 : av > bv ? 1 : 0
-        return sortDir === 'asc' ? cmp : -cmp
-      })
-    : threads
-
-  const filtered = archiveFilter
-    ? sorted.filter(t_ => archiveFilter === 'none' ? !t_.archive_status : t_.archive_status === archiveFilter)
-    : sorted
-
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
-  const paged = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
+  const paged = threads
   const pagedIds = paged.map(t_ => t_.tid)
   const allPagedSelected = pagedIds.length > 0 && pagedIds.every(id => selectedTids.has(id))
-
-  useEffect(() => {
-    if (page > totalPages) setPage(totalPages)
-  }, [page, totalPages])
 
   const toggleSelect = (tid: number) => {
     setSelectedTids(prev => {
@@ -140,7 +142,7 @@ export function Threads() {
     try {
       const result = await api.deleteThreads(tids)
       const deletedIds = new Set(result.tids.length > 0 ? result.tids : tids)
-      await Promise.all([refreshForums(), loadThreads(false)])
+      await Promise.all([refreshForums(), loadThreads()])
       setBulkMessage(null)
       setSelectedTids(prev => {
         const next = new Set(prev)
@@ -161,7 +163,7 @@ export function Threads() {
     setDeleteSubmitting(true)
     try {
       const result = await api.resyncThreads(tids)
-      await Promise.all([refreshForums(), loadThreads(false)])
+      await Promise.all([refreshForums(), loadThreads()])
       if (bulkMessageTimerRef.current) window.clearTimeout(bulkMessageTimerRef.current)
       setBulkMessage(`已提交重新归档任务：目标 ${result.target_count}，新建 ${result.created_count}，复用 ${result.reused_count}`)
       bulkMessageTimerRef.current = window.setTimeout(() => {
@@ -197,7 +199,7 @@ export function Threads() {
         <input
           className="filter-search"
           value={q}
-          onChange={e => setQ(e.target.value)}
+          onChange={e => { setQ(e.target.value); setPage(1) }}
           placeholder={t('search_placeholder')}
         />
         <div className="filter-group">
@@ -208,7 +210,7 @@ export function Threads() {
             <option value="stale">{t('archive_stale')}</option>
             <option value="none">{t('archive_none')}</option>
           </select>
-          <select value={days ?? ''} onChange={e => setDays(e.target.value ? Number(e.target.value) : undefined)}>
+          <select value={days ?? ''} onChange={e => { setDays(e.target.value ? Number(e.target.value) : undefined); setPage(1) }}>
             {DATE_OPTIONS.map(o => <option key={o.label} value={o.value ?? ''}>{o.label}</option>)}
           </select>
         </div>
@@ -217,13 +219,13 @@ export function Threads() {
       <div className="threads-filter-row">
         <div className="forum-tags">
           <button className={`forum-tag ${forumId === undefined ? 'active' : ''}`}
-            onClick={() => setForumId(undefined)}>
+            onClick={() => { setForumId(undefined); setPage(1) }}>
             {t('all_forums')}
           </button>
           {forums.map(f => (
             <button key={f.forum_id}
               className={`forum-tag ${forumId === f.forum_id ? 'active' : ''}`}
-              onClick={() => setForumId(forumId === f.forum_id ? undefined : f.forum_id)}>
+              onClick={() => { setForumId(forumId === f.forum_id ? undefined : f.forum_id); setPage(1) }}>
               {lang === 'en' ? (f.name_en || f.name) : f.name}
               <span className="forum-tag-count">{f.thread_count}</span>
             </button>

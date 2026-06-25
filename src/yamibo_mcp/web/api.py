@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import urllib.request
 from http import HTTPStatus
 from urllib.parse import parse_qs, urlparse
 from urllib.parse import quote
@@ -17,16 +19,57 @@ from yamibo_mcp.db.repositories.rag_chunks import RagChunksRepository
 from yamibo_mcp.db.repositories.series import SeriesRepository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
 from yamibo_mcp.domain.enums import JobStatus, JobType
-from yamibo_mcp.config import Settings
+from yamibo_mcp.config import Settings, load_settings, read_local_config, write_local_config
 from yamibo_mcp.application.archive_commands import create_thread_archive_batch_jobs
 from yamibo_mcp.application.rag_commands import create_rag_index_batch_jobs, create_rag_index_job
 from yamibo_mcp.application.rag_queries import search_archived_content
+from yamibo_mcp.maintenance.cleanup_data import remove_thread_dir
 from yamibo_mcp.maintenance.forum_sizes import read_forum_size_cache, refresh_forum_size_cache
 from yamibo_mcp.application.update_queries import check_thread_updates
 from yamibo_mcp.server.agent_adapter import to_wire
 from yamibo_mcp.services.title_hints import update_title_hints
 from yamibo_mcp.yamibo.parsers.thread_detail import normalize_rich_body_html
 from yamibo_mcp.yamibo.urls import thread_author_url_from_tid, thread_url_from_tid
+
+
+_SETTINGS_FIELD_SPECS = {
+    "request_timeout_seconds": {"section": "yamibo", "key": "request_timeout_seconds", "type": "float", "default": 30.0, "env": "YAMIBO_REQUEST_TIMEOUT_SECONDS"},
+    "request_interval_seconds": {"section": "yamibo", "key": "request_interval_seconds", "type": "float", "default": 1.0, "env": "YAMIBO_REQUEST_INTERVAL_SECONDS"},
+    "request_interval_jitter_seconds": {"section": "yamibo", "key": "request_interval_jitter_seconds", "type": "float", "default": 0.5, "env": "YAMIBO_REQUEST_INTERVAL_JITTER_SECONDS"},
+    "use_system_proxy": {"section": "yamibo", "key": "use_system_proxy", "type": "bool", "default": False, "env": "YAMIBO_USE_SYSTEM_PROXY"},
+    "image_download_timeout_seconds": {"section": "yamibo", "key": "image_download_timeout_seconds", "type": "float", "default": 45.0, "env": "YAMIBO_IMAGE_DOWNLOAD_TIMEOUT_SECONDS"},
+    "image_download_retries": {"section": "yamibo", "key": "image_download_retries", "type": "int", "default": 2, "env": "YAMIBO_IMAGE_DOWNLOAD_RETRIES"},
+    "archive_thread_max_pages": {"section": "yamibo", "key": "archive_thread_max_pages", "type": "int", "default": 50, "env": "YAMIBO_ARCHIVE_THREAD_MAX_PAGES"},
+    "novel_author_only_max_pages": {"section": "yamibo", "key": "novel_author_only_max_pages", "type": "int", "default": 50, "env": "YAMIBO_NOVEL_AUTHOR_ONLY_MAX_PAGES"},
+    "novel_author_only_page_delay_seconds": {"section": "yamibo", "key": "novel_author_only_page_delay_seconds", "type": "float", "default": 0.5, "env": "YAMIBO_NOVEL_AUTHOR_ONLY_PAGE_DELAY_SECONDS"},
+    "llm_base_url": {"section": "llm", "key": "base_url", "type": "string", "default": "https://api.openai.com/v1", "env": "YAMIBO_LLM_BASE_URL"},
+    "llm_api_key": {"section": "llm", "key": "api_key", "type": "string", "default": None, "env": "YAMIBO_LLM_API_KEY", "sensitive": True},
+    "llm_model": {"section": "llm", "key": "model", "type": "string", "default": "gpt-4.1-mini", "env": "YAMIBO_LLM_MODEL"},
+    "rag_enabled": {"section": "rag", "key": "enabled", "type": "bool", "default": True, "env": "YAMIBO_RAG_ENABLED"},
+    "rag_base_url": {"section": "rag", "key": "base_url", "type": "string", "default": None, "env": "YAMIBO_RAG_BASE_URL", "inherit": "llm_base_url"},
+    "rag_api_key": {"section": "rag", "key": "api_key", "type": "string", "default": None, "env": "YAMIBO_RAG_API_KEY", "inherit": "llm_api_key", "sensitive": True},
+    "rag_embedding_model": {"section": "rag", "key": "embedding_model", "type": "string", "default": "text-embedding-3-small", "env": "YAMIBO_RAG_EMBEDDING_MODEL"},
+    "rag_embedding_dimensions": {"section": "rag", "key": "embedding_dimensions", "type": "int", "default": 512, "env": "YAMIBO_RAG_EMBEDDING_DIMENSIONS"},
+    "rag_chunker_version": {"section": "rag", "key": "chunker_version", "type": "string", "default": "rag-chunker-v1", "env": "YAMIBO_RAG_CHUNKER_VERSION"},
+    "rag_min_chunk_chars": {"section": "rag", "key": "min_chunk_chars", "type": "int", "default": 20, "env": "YAMIBO_RAG_MIN_CHUNK_CHARS"},
+    "rag_max_chunk_chars": {"section": "rag", "key": "max_chunk_chars", "type": "int", "default": 900, "env": "YAMIBO_RAG_MAX_CHUNK_CHARS"},
+    "rag_hybrid_fts_candidates": {"section": "rag", "key": "hybrid_fts_candidates", "type": "int", "default": 50, "env": "YAMIBO_RAG_HYBRID_FTS_CANDIDATES"},
+    "rag_hybrid_vector_candidates": {"section": "rag", "key": "hybrid_vector_candidates", "type": "int", "default": 50, "env": "YAMIBO_RAG_HYBRID_VECTOR_CANDIDATES"},
+    "rag_debug_indexing": {"section": "rag", "key": "debug_indexing", "type": "bool", "default": False, "env": "YAMIBO_RAG_DEBUG_INDEXING"},
+    "title_parse_use_llm": {"section": "title", "key": "use_llm", "type": "bool", "default": True, "env": "YAMIBO_TITLE_PARSE_USE_LLM"},
+    "common_scanlation_groups": {"section": "title", "key": "common_scanlation_groups", "type": "list", "default": [], "env": None},
+    "common_authors": {"section": "title", "key": "common_authors", "type": "list", "default": [], "env": None},
+    "export_default_strategy": {"section": "export", "key": "default_strategy", "type": "string", "default": "cache_only", "env": "YAMIBO_EXPORT_DEFAULT_STRATEGY"},
+    "export_stale_after_hours": {"section": "export", "key": "stale_after_hours", "type": "int", "default": 24, "env": "YAMIBO_EXPORT_STALE_AFTER_HOURS"},
+    "novel_txt_include_filtered_notes": {"section": "export", "key": "novel_txt_include_filtered_notes", "type": "bool", "default": False, "env": "YAMIBO_NOVEL_TXT_INCLUDE_FILTERED_NOTES"},
+    "novel_txt_debug_markers": {"section": "export", "key": "novel_txt_debug_markers", "type": "bool", "default": False, "env": "YAMIBO_NOVEL_TXT_DEBUG_MARKERS"},
+    "backup_keep_count": {"section": "maintenance", "key": "backup_keep_count", "type": "int", "default": 20, "env": "YAMIBO_BACKUP_KEEP_COUNT"},
+    "cleanup_staging_older_than_hours": {"section": "maintenance", "key": "cleanup_staging_older_than_hours", "type": "int", "default": 48, "env": "YAMIBO_CLEANUP_STAGING_OLDER_THAN_HOURS"},
+    "worker_poll_seconds": {"section": "worker", "key": "poll_seconds", "type": "float", "default": 2.0, "env": "YAMIBO_WORKER_POLL_SECONDS"},
+    "worker_lease_seconds": {"section": "worker", "key": "lease_seconds", "type": "int", "default": 60, "env": "YAMIBO_WORKER_LEASE_SECONDS"},
+    "worker_heartbeat_seconds": {"section": "worker", "key": "heartbeat_seconds", "type": "int", "default": 15, "env": "YAMIBO_WORKER_HEARTBEAT_SECONDS"},
+    "worker_parallelism": {"section": "worker", "key": "parallelism", "type": "int", "default": 2, "env": "YAMIBO_WORKER_PARALLELISM"},
+}
 
 
 def _json_response(handler, data, status=HTTPStatus.OK):
@@ -49,6 +92,177 @@ def _read_json_body(handler) -> dict:
 
 def _error_response(handler, message, status=HTTPStatus.BAD_REQUEST):
     _json_response(handler, {"error": message}, status)
+
+
+def _setting_value_from_raw(raw_config: dict[str, object], spec: dict[str, object]):
+    section = raw_config.get(spec["section"], {})
+    if not isinstance(section, dict) or spec["key"] not in section:
+        return None
+    value = section.get(spec["key"])
+    if value in {"", None}:
+        return None
+    if spec["type"] == "list":
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        return None
+    if spec["type"] == "bool":
+        return bool(value)
+    if spec["type"] == "int":
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+    if spec["type"] == "float":
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+    return str(value)
+
+
+def _setting_effective_value(settings: Settings, name: str):
+    value = getattr(settings, name)
+    if isinstance(value, tuple):
+        return list(value)
+    return value
+
+
+def _settings_payload(settings: Settings) -> dict[str, object]:
+    raw_config = read_local_config(settings.config_path)
+    values: dict[str, object] = {}
+    stored: dict[str, object] = {}
+    sources: dict[str, str] = {}
+    locked_fields: list[str] = []
+    for name, spec in _SETTINGS_FIELD_SPECS.items():
+        env_name = spec.get("env")
+        if env_name and os.environ.get(env_name) not in {None, ""}:
+            sources[name] = "env"
+            locked_fields.append(name)
+        elif spec["section"] in raw_config and isinstance(raw_config.get(spec["section"]), dict) and spec["key"] in raw_config[spec["section"]]:
+            sources[name] = "file"
+        elif spec.get("inherit"):
+            sources[name] = "derived"
+        else:
+            sources[name] = "default"
+        stored[name] = _setting_value_from_raw(raw_config, spec)
+        values[name] = _setting_effective_value(settings, name)
+    return {
+        "config_path": str(settings.config_path),
+        "values": values,
+        "stored": stored,
+        "sources": sources,
+        "locked_fields": locked_fields,
+    }
+
+
+def _normalize_setting_input(name: str, value):
+    spec = _SETTINGS_FIELD_SPECS[name]
+    if spec["type"] == "list":
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        if isinstance(value, str):
+            return [line.strip() for line in value.splitlines() if line.strip()]
+        return []
+    if spec["type"] == "bool":
+        return bool(value)
+    if spec["type"] == "int":
+        return int(value)
+    if spec["type"] == "float":
+        return float(value)
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text
+
+
+def _apply_setting_patch(raw_config: dict[str, object], name: str, value) -> None:
+    spec = _SETTINGS_FIELD_SPECS[name]
+    section = raw_config.setdefault(spec["section"], {})
+    if not isinstance(section, dict):
+        raise ValueError(f"invalid config section: {spec['section']}")
+    if spec["type"] == "list":
+        items = _normalize_setting_input(name, value)
+        if items:
+            section[spec["key"]] = items
+        else:
+            section.pop(spec["key"], None)
+        if not section:
+            raw_config.pop(spec["section"], None)
+        return
+    if value in {None, ""}:
+        if spec.get("inherit") or spec["type"] == "string":
+            section.pop(spec["key"], None)
+            if not section:
+                raw_config.pop(spec["section"], None)
+            return
+        raise ValueError(f"{name} is required")
+    normalized = _normalize_setting_input(name, value)
+    section[spec["key"]] = normalized
+
+
+def _settings_get(handler, settings: Settings) -> None:
+    _json_response(handler, _settings_payload(settings))
+
+
+def _settings_update(handler, settings: Settings) -> None:
+    body = _read_json_body(handler)
+    values = body.get("values")
+    if not isinstance(values, dict):
+        _error_response(handler, "values required")
+        return
+    locked_fields = set(_settings_payload(settings)["locked_fields"])
+    raw_config = read_local_config(settings.config_path)
+    for name, value in values.items():
+        if name not in _SETTINGS_FIELD_SPECS:
+            continue
+        if name in locked_fields:
+            _error_response(handler, f"{name} is overridden by environment variable")
+            return
+        try:
+            _apply_setting_patch(raw_config, name, value)
+        except (TypeError, ValueError) as exc:
+            _error_response(handler, str(exc))
+            return
+    write_local_config(settings.config_path, raw_config)
+    refreshed = load_settings()
+    payload = _settings_payload(refreshed)
+    payload["ok"] = True
+    payload["saved_path"] = str(settings.config_path)
+    payload["restart_required"] = True
+    _json_response(handler, payload)
+
+
+def _settings_models_get(handler, settings: Settings) -> None:
+    request = urllib.request.Request(
+        settings.llm_base_url.rstrip("/") + "/models",
+        headers={
+            "Content-Type": "application/json",
+            **({"Authorization": f"Bearer {settings.llm_api_key}"} if settings.llm_api_key else {}),
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=30) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        _error_response(handler, str(exc), HTTPStatus.BAD_GATEWAY)
+        return
+    models: list[str] = []
+    if isinstance(data, dict):
+        items = data.get("data")
+        if not isinstance(items, list):
+            items = data.get("models")
+        if isinstance(items, list):
+            for item in items:
+                if isinstance(item, dict):
+                    model_id = item.get("id") or item.get("model") or item.get("name")
+                    if model_id:
+                        models.append(str(model_id))
+                elif item:
+                    models.append(str(item))
+    _json_response(handler, {"models": sorted(dict.fromkeys(models))})
 
 
 def handle_api(handler, path: str, query: str, settings: Settings) -> bool:
@@ -173,6 +387,12 @@ def _route(handler, route: str, params, conn, settings):
         _delete_thread(handler, conn, settings)
     elif route == "/threads/batch-delete" and handler.command == "POST":
         _batch_delete_threads(handler, conn, settings)
+    elif route == "/settings" and handler.command == "GET":
+        _settings_get(handler, settings)
+    elif route == "/settings" and handler.command == "POST":
+        _settings_update(handler, settings)
+    elif route == "/settings/models" and handler.command == "GET":
+        _settings_models_get(handler, settings)
     elif route == "/debug/info" and handler.command == "GET":
         _debug_info(handler, conn, settings)
     elif route == "/logs" and handler.command == "GET":
@@ -415,16 +635,48 @@ def _threads_list(handler, params, conn):
     q = params.get("q", [""])[0].strip()
     forum_id = params.get("forum_id", [None])[0]
     days = params.get("days", [None])[0]
+    archive_status = (params.get("archive_status", [""])[0] or "").strip()
+    sort_key = (params.get("sort_key", ["sync_time"])[0] or "sync_time").strip()
+    sort_dir = (params.get("sort_dir", ["desc"])[0] or "desc").strip()
+    try:
+        page = max(int(params.get("page", ["1"])[0]), 1)
+    except (TypeError, ValueError):
+        page = 1
+    try:
+        page_size = min(max(int(params.get("page_size", ["50"])[0]), 1), 200)
+    except (TypeError, ValueError):
+        page_size = 50
     repo = ThreadsRepository(conn)
     fid = int(forum_id) if forum_id else None
-    rows = repo.search_threads(q, limit=200, forum_id=fid) if q else repo.list_threads(limit=200, forum_id=fid)
-    result = [_thread_summary_dict(r) for r in rows]
-    if days:
-        from datetime import datetime, timedelta, timezone
-        cutoff = datetime.now(timezone.utc) - timedelta(days=int(days))
-        cutoff_str = cutoff.strftime("%Y-%m-%d")
-        result = [r for r in result if r.get("pub_time") and r["pub_time"][:10] >= cutoff_str]
-    _json_response(handler, result)
+    try:
+        days_value = int(days) if days else None
+    except (TypeError, ValueError):
+        days_value = None
+    if archive_status == "all":
+        archive_status = ""
+    page_result = repo.list_threads_page(
+        page=page,
+        page_size=page_size,
+        q=q or None,
+        forum_id=fid,
+        days=days_value,
+        archive_status=archive_status or None,
+        sort_key=sort_key,
+        sort_dir=sort_dir,
+    )
+    _json_response(handler, {
+        "page": page_result["page"],
+        "page_size": page_result["page_size"],
+        "total_count": page_result["total_count"],
+        "total_pages": page_result["total_pages"],
+        "q": q,
+        "forum_id": fid,
+        "days": days_value,
+        "archive_status": archive_status or None,
+        "sort_key": sort_key,
+        "sort_dir": sort_dir,
+        "items": [_thread_summary_dict(r) for r in page_result["items"]],
+    })
 
 
 def _load_thread_archive_metadata(settings: Settings, tid: int) -> dict:
@@ -1373,7 +1625,7 @@ def _delete_thread(handler, conn, settings):
         _error_response(handler, "tid required")
         return
     try:
-        before, after, deleted_series = _delete_thread_record(conn, int(tid))
+        before, after, deleted_series = _delete_thread_record(conn, settings, int(tid))
         AuditEventsRepository(conn).record(
             actor="web", action="delete_thread", target_type="thread",
             target_id=str(tid), before=before, after=after,
@@ -1400,7 +1652,7 @@ def _batch_delete_threads(handler, conn, settings):
         audit_repo = AuditEventsRepository(conn)
         unique_tids = list(dict.fromkeys(int(tid) for tid in tids))
         for tid in unique_tids:
-            before, after, deleted_series = _delete_thread_record(conn, tid)
+            before, after, deleted_series = _delete_thread_record(conn, settings, tid)
             audit_repo.record(
                 actor="web", action="delete_thread", target_type="thread",
                 target_id=str(tid), before=before, after=after,
@@ -1420,9 +1672,12 @@ def _batch_delete_threads(handler, conn, settings):
         _error_response(handler, str(exc), HTTPStatus.NOT_FOUND)
 
 
-def _delete_thread_record(conn, tid: int) -> tuple[dict[str, object], dict[str, object], int | None]:
+def _delete_thread_record(conn, settings: Settings, tid: int) -> tuple[dict[str, object], dict[str, object], int | None]:
     repo = ThreadsRepository(conn)
     before, after = repo.delete_thread(tid)
+    data_dir = getattr(settings, "data_dir", None)
+    if data_dir is not None:
+        remove_thread_dir(data_dir=data_dir, tid=tid, dry_run=False)
     deleted_series = None
     series_id = before.get("series_id")
     if series_id:

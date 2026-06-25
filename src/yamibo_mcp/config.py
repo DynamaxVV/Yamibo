@@ -5,6 +5,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from yamibo_mcp.storage.atomic import atomic_write_text
 
 def _project_root() -> Path:
     return Path(__file__).resolve().parents[2]
@@ -84,6 +85,14 @@ def _read_local_config(path: Path) -> dict[str, object]:
     if not path.exists():
         return {}
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def read_local_config(path: Path) -> dict[str, object]:
+    return _read_local_config(path)
+
+
+def write_local_config(path: Path, config: dict[str, object]) -> None:
+    atomic_write_text(path, json.dumps(config, ensure_ascii=False, indent=2) + "\n")
 
 
 def _cfg_value(config: dict[str, object], section: str, key: str, default):

@@ -77,10 +77,10 @@ export function Dashboard() {
     let active = true
     Promise.all([
       api.dashboard(Math.max(primaryLimit, otherLimit)),
-      api.threads({ forum_id: 30 }).then(ts => ts.slice(0, primaryLimit)),
-      api.threads({ forum_id: 55 }).then(ts => ts.slice(0, primaryLimit)),
-      api.threads({ forum_id: 33 }).then(ts => ts.slice(0, otherLimit)),
-      api.threads({ forum_id: 5 }).then(ts => ts.slice(0, otherLimit)),
+      api.threads({ forum_id: 30, page_size: primaryLimit }).then(res => res.items),
+      api.threads({ forum_id: 55, page_size: primaryLimit }).then(res => res.items),
+      api.threads({ forum_id: 33, page_size: otherLimit }).then(res => res.items),
+      api.threads({ forum_id: 5, page_size: otherLimit }).then(res => res.items),
     ]).then(([d, comic, novel, sea, anime]) => {
       if (!active) return
       setData(d)

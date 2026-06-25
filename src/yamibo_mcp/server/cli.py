@@ -11,6 +11,7 @@ from yamibo_mcp.application.archive_commands import (
 from yamibo_mcp.application.archive_queries import list_exports
 from yamibo_mcp.application.job_queries import get_job_status_payload
 from yamibo_mcp.logging import configure_logging
+from yamibo_mcp.maintenance.cleanup_data import cleanup_orphan_thread_dirs
 from yamibo_mcp.server.agent_tools import (
     create_rag_index_batch_jobs,
     create_rag_index_job,
@@ -63,6 +64,17 @@ def cleanup_job(*, job_id: str | None = None, mode: str = "job_staging", older_t
         conn.close()
 
 
+def cleanup_orphan_threads(*, dry_run: bool = False) -> dict[str, object]:
+    settings = load_settings()
+    conn = connect(settings.db_path)
+    try:
+        migrate(conn)
+        removed = cleanup_orphan_thread_dirs(data_dir=settings.data_dir, conn=conn, dry_run=dry_run)
+        return {"removed_count": len(removed), "paths": [str(path) for path in removed], "dry_run": dry_run}
+    finally:
+        conn.close()
+
+
 def export_thread(*, tid: int, strategy: str | None = None) -> dict[str, object]:
     settings = load_settings()
     conn = connect(settings.db_path)
@@ -82,7 +94,7 @@ def update_thread(*, tid: int, base_url: str | None = None) -> dict[str, object]
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run Yamibo MCP server.")
+    parser = argparse.ArgumentParser(description="Run Yamibo Archive server.")
     sub = parser.add_subparsers(dest="command")
     stdio_parser = sub.add_parser("stdio")
     stdio_parser.add_argument("--transport", choices=["stdio", "sse", "streamable-http"], default="stdio")
@@ -157,6 +169,8 @@ def build_parser() -> argparse.ArgumentParser:
     cleanup_parser.add_argument("job_id", nargs="?")
     cleanup_parser.add_argument("--mode", default="job_staging")
     cleanup_parser.add_argument("--older-than-hours", type=int)
+    orphan_cleanup_parser = sub.add_parser("cleanup-orphan-thread-dirs")
+    orphan_cleanup_parser.add_argument("--dry-run", action="store_true")
     status_parser = sub.add_parser("job-status")
     status_parser.add_argument("job_id")
     return parser
@@ -277,6 +291,8 @@ def main() -> None:
         print(dump_json(read_resource(args.uri)))
     elif command == "cleanup-job":
         print(dump_json(cleanup_job(job_id=args.job_id, mode=args.mode, older_than_hours=args.older_than_hours)))
+    elif command == "cleanup-orphan-thread-dirs":
+        print(dump_json(cleanup_orphan_threads(dry_run=args.dry_run)))
     elif command == "job-status":
         print(dump_json(get_job_status_payload(args.job_id)))
     else:

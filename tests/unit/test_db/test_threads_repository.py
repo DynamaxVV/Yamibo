@@ -274,6 +274,35 @@ class TestListThreads:
         assert len(rows) == 2
 
 
+class TestListThreadsPage:
+    def test_list_threads_page_paginates_and_sorts(self, db):
+        repo = ThreadsRepository(db)
+        rows = [
+            (6001, "2025-01-03 10:00:00", "complete"),
+            (6002, "2025-01-02 10:00:00", "complete"),
+            (6003, "2025-01-01 10:00:00", "partial"),
+            (6004, "2025-01-04 10:00:00", "complete"),
+        ]
+        for tid, sync_time, archive_status in rows:
+            repo.upsert_snapshot(_make_snapshot(tid=tid))
+            db.execute(
+                "UPDATE threads SET forum_id = ?, sync_time = ?, pub_time = ?, archive_status = ? WHERE tid = ?",
+                (55, sync_time, sync_time, archive_status, tid),
+            )
+        db.commit()
+
+        page1 = repo.list_threads_page(page=1, page_size=2, forum_id=55, sort_key="sync_time", sort_dir="desc")
+        page2 = repo.list_threads_page(page=2, page_size=2, forum_id=55, sort_key="sync_time", sort_dir="desc")
+        complete_only = repo.list_threads_page(page=1, page_size=10, forum_id=55, archive_status="complete")
+
+        assert page1["total_count"] == 4
+        assert page1["total_pages"] == 2
+        assert [row["tid"] for row in page1["items"]] == [6004, 6001]
+        assert [row["tid"] for row in page2["items"]] == [6002, 6003]
+        assert complete_only["total_count"] == 3
+        assert [row["tid"] for row in complete_only["items"]] == [6004, 6001, 6002]
+
+
 class TestSearchThreads:
     def test_search_by_display_title(self, db):
         # Arrange

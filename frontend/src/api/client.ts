@@ -74,6 +74,20 @@ export interface ThreadSummary {
   reply_count: number
 }
 
+export interface ThreadListResponse {
+  page: number
+  page_size: number
+  total_count: number
+  total_pages: number
+  q: string
+  forum_id: number | null
+  days: number | null
+  archive_status: string | null
+  sort_key: string
+  sort_dir: string
+  items: ThreadSummary[]
+}
+
 export interface ThreadDetail extends ThreadSummary {
   url: string | null
   publisher_uid: string | null
@@ -260,6 +274,24 @@ export interface RagOverview {
   recent_jobs: JobSummary[]
 }
 
+export interface SettingsResponse {
+  config_path: string
+  values: Record<string, unknown>
+  stored: Record<string, unknown>
+  sources: Record<string, string>
+  locked_fields: string[]
+}
+
+export interface SettingsUpdateResponse extends SettingsResponse {
+  ok: boolean
+  saved_path: string
+  restart_required: boolean
+}
+
+export interface SettingsModelsResponse {
+  models: string[]
+}
+
 export interface RagThreadRow {
   tid: number
   raw_title: string
@@ -374,13 +406,18 @@ export const api = {
   jobCounts: () => fetchJson<Record<string, number>>('/jobs/counts'),
   job: (id: string) => fetchJson<JobSummary>(`/jobs/${id}`),
   jobEvents: (id: string) => fetchJson<JobEvent[]>(`/jobs/${id}/events`),
-  threads: (params?: { q?: string; forum_id?: number; days?: number }) => {
+  threads: (params?: { q?: string; forum_id?: number; days?: number; archive_status?: string; sort_key?: string; sort_dir?: string; page?: number; page_size?: number }) => {
     const qs = new URLSearchParams()
     if (params?.q) qs.set('q', params.q)
     if (params?.forum_id) qs.set('forum_id', String(params.forum_id))
     if (params?.days) qs.set('days', String(params.days))
+    if (params?.archive_status) qs.set('archive_status', params.archive_status)
+    if (params?.sort_key) qs.set('sort_key', params.sort_key)
+    if (params?.sort_dir) qs.set('sort_dir', params.sort_dir)
+    if (params?.page) qs.set('page', String(params.page))
+    if (params?.page_size) qs.set('page_size', String(params.page_size))
     const s = qs.toString()
-    return fetchJson<ThreadSummary[]>(`/threads${s ? `?${s}` : ''}`)
+    return fetchJson<ThreadListResponse>(`/threads${s ? `?${s}` : ''}`)
   },
   thread: (tid: number, params?: { preview_page?: number; preview_page_size?: number }) => {
     const qs = new URLSearchParams()
@@ -416,6 +453,9 @@ export const api = {
     return fetchJson<{ entries: LogEntry[]; count: number }>(`/logs${s ? `?${s}` : ''}`)
   },
   ragOverview: () => fetchJson<RagOverview>('/rag/overview'),
+  settings: () => fetchJson<SettingsResponse>('/settings'),
+  settingsModels: () => fetchJson<SettingsModelsResponse>('/settings/models'),
+  updateSettings: (values: Record<string, unknown>) => postJson<SettingsUpdateResponse>('/settings', { values }),
   ragThreads: (params?: { q?: string; forum_id?: number | 'all'; index_state?: string; rag_status?: string; page?: number; page_size?: number }) => {
     const qs = new URLSearchParams()
     if (params?.q) qs.set('q', params.q)
