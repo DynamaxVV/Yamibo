@@ -1,33 +1,48 @@
-# 账号池与自动登录设计
+# 账号池与权限分配
 
-> 版本：0.9.3 | 更新日期：2026-06-26
+> 版本：0.9.3 | 更新日期：2026-06-28
 
-本文定义 Yamibo 远端抓取的第一阶段账号池方案。目标不是立刻做复杂分布式调度，而是在保持单账号兼容的前提下，引入多账号配置、自动登录和 cookie 自动持久化。
+本文记录当前已经落地的账号池行为。目标很直接：普通抓取默认走低权限账号，只有在权限不足或需要看列表/搜索时，才切到更高权限账号。
 
-## 1. 目标
+## 1. 规则
 
-- 从配置文件读取多个论坛账号。
-- 每个账号拥有独立 cookie 文件。
-- 远端抓取前优先复用已有 cookie。
-- cookie 不可用时，使用配置中的账号密码自动登录。
-- 登录成功后自动保存 cookie。
-- 在单进程内支持基于账号的轻量轮转，为后续多 worker 并发打基础。
+- 每个账号都有独立 `cookie_file`。
+- 每个账号都要标注 `permission_level`，数值越大权限越高。
+- 推荐按 `0/10/20/...` 这种梯队配置，`0` 是最低权限，每一档增加 10。
+- 默认选择最低可用权限账号。
+- 列表、搜索、帖子预览优先选择更高权限账号。
+- 帖子抓取或更新遇到“阅读权限高于 xx 才能浏览”时，自动切到更高一档的账号重试。
+- 配置了 `cookie_file` 覆盖时，仍然直接使用该文件。
 
-## 2. 配置模型
+## 2. 配置
 
-新增 `yamibo.account_pool`：
+`yamibo.account_pool` 由若干账号组成：
 
 ```json
 {
   "yamibo": {
     "account_pool": [
       {
-        "account_id": "primary",
-        "username": "user_a",
-        "password": "pass_a",
-        "cookie_file": "data/cookies/primary.cookie",
+        "account_id": "low",
+        "username": "user_low",
+        "password": "pass_low",
+        "cookie_file": "data/cookies/low.cookie",
         "enabled": true,
-        "weight": 2,
+        "weight": 1,
+        "permission_level": 0,
+        "request_interval_seconds": 1.0,
+        "request_interval_jitter_seconds": 0.5,
+        "max_concurrent_leases": 1,
+        "login_mode": "refresh_on_login_required"
+      },
+      {
+        "account_id": "high",
+        "username": "user_high",
+        "password": "pass_high",
+        "cookie_file": "data/cookies/high.cookie",
+        "enabled": true,
+        "weight": 1,
+        "permission_level": 10,
         "request_interval_seconds": 1.0,
         "request_interval_jitter_seconds": 0.5,
         "max_concurrent_leases": 1,
@@ -40,87 +55,48 @@
 
 兼容规则：
 
-- 未配置 `account_pool` 时，继续使用现有单账号字段：
+- 未配置 `account_pool` 时，继续使用单账号字段：
   - `yamibo.cookie_file`
   - `login.username`
   - `login.password`
-- 配置 `account_pool` 后，daemon 远端抓取优先使用账号池。
+- `permission_level` 默认为 `0`，不写也能跑，但文档和配置最好显式标出来。
 
-## 3. 核心模型
+## 3. 选择逻辑
 
-### 3.1 AccountIdentity
+`AccountPool.acquire()` 现在只做三件事：
 
-运行时身份包含：
+1. 过滤 `enabled` 账号。
+2. 按 `min_permission` 过滤可用账号。
+3. 在可用账号里按权限和当前占用数选一个。
 
-- `account_id`
-- `username`
-- `password`
-- `cookie_file`
-- `enabled`
-- `weight`
-- `request_interval_seconds`
-- `request_interval_jitter_seconds`
-- `max_concurrent_leases`
-- `login_mode`
+默认模式下优先低权限账号；`prefer_high_permission=True` 时反过来优先高权限账号。
 
-### 3.2 AccountPool
+当页面提示“阅读权限高于 xx 才能浏览”时，系统会按 `xx + 1` 重新选择账号，避免再次落回同一档权限。
 
-第一阶段为进程内轻量池，职责：
+## 4. 接入点
 
-- 从可用账号中选择一个身份。
-- 在单进程内维护 `inflight` 计数。
-- 按轮转顺序分散请求。
-- 在没有配置池时自动退化到单账号默认身份。
+当前已经接入：
 
-## 4. 请求流程
+- `application/remote_queries.py` 的 `browse_forum_page`、`search_threads`、`inspect_remote_thread`
+- `application/update_queries.py` 的 `check_thread_updates`
+- `daemon/handlers/sync_thread.py`
+- `daemon/handlers/update_thread.py`
 
-每次借出账号后：
+行为约定：
 
-1. 读取该账号的 `cookie_file`
-2. 用该账号创建 `YamiboClient`
-3. 远端请求优先走现有 cookie
-4. 如果返回登录页，使用该账号的用户名和密码执行登录
-5. 登录成功后自动保存 cookie
+- 列表/搜索/预览优先高权限账号。
+- `sync_thread` 和 `update_thread` 先按默认账号跑，遇到权限提示后再按所需权限重试。
+- 如果没有配置账号池，继续走原来的单账号逻辑。
 
-关键约束：
+## 5. 错误处理
 
-- 一个账号对应一个 cookie 文件
-- 不同账号不得共用 cookie 文件
-- 一个抓取流程内尽量固定使用同一账号
+解析到“阅读权限高于 xx 才能浏览”时，会抛出 `ThreadPermissionRequiredError`，并向上游映射为 `REMOTE_THREAD_PERMISSION_REQUIRED`。这样上层只要知道“需要更高权限”就行，不用自己解析页面文案。
 
-## 5. 当前接入范围
+## 6. 不做的事
 
-第一阶段已优先接入：
+- 不做多进程共享租约。
+- 不做数据库级账号健康管理。
+- 不做验证码和二次验证。
+- 不做复杂调度器。
 
-- daemon `sync_thread`
-- daemon `update_thread`
-
-原因：
-
-- 这些路径最容易受论坛登录态和吞吐影响
-- 它们覆盖了大多数真实远端抓取工作流
-- `application/*` 只读查询暂时保持原有单账号构造方式，以避免扩大兼容面
-
-## 6. 非目标
-
-第一阶段暂不解决：
-
-- 多进程 / 多 daemon 之间共享账号租约
-- 基于数据库的账号健康度与熔断状态
-- 单贴内部 aggressive 并发抓取
-- 自动验证码 / 二次验证处理
-
-这些属于第二阶段。
-
-## 7. 后续演进
-
-第二阶段建议新增 SQLite 持久化状态表，记录：
-
-- `account_id`
-- `inflight_count`
-- `failure_count`
-- `cooldown_until`
-- `last_success_at`
-- `last_error_code`
-
-这样多 worker 才能真正共享账号健康和租约状态。
+这些都不是当前这版要解决的问题。

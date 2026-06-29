@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 import os
 import re
+from decimal import Decimal
+from datetime import date, datetime
 import urllib.request
+from copy import deepcopy
 from http import HTTPStatus
 from urllib.parse import parse_qs, urlparse
 from urllib.parse import quote
@@ -15,6 +18,7 @@ from yamibo_mcp.db.repositories.assets import AssetsRepository
 from yamibo_mcp.db.repositories.content_blocks import ContentBlocksRepository
 from yamibo_mcp.db.repositories.job_events import JobEventsRepository
 from yamibo_mcp.db.repositories.jobs import JobsRepository
+from yamibo_mcp.db.repositories.forums import ForumsRepository
 from yamibo_mcp.db.repositories.rag_chunks import RagChunksRepository
 from yamibo_mcp.db.repositories.series import SeriesRepository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
@@ -28,52 +32,87 @@ from yamibo_mcp.maintenance.forum_sizes import read_forum_size_cache, refresh_fo
 from yamibo_mcp.application.update_queries import check_thread_updates
 from yamibo_mcp.server.agent_adapter import to_wire
 from yamibo_mcp.services.title_hints import update_title_hints
+from yamibo_mcp.yamibo.anti_bot import clear_remote_access_pause, get_remote_access_pause_state
 from yamibo_mcp.yamibo.parsers.thread_detail import normalize_rich_body_html
 from yamibo_mcp.yamibo.urls import thread_author_url_from_tid, thread_url_from_tid
+from yamibo_mcp.db.observability import describe_engine_pool
 
 
 _SETTINGS_FIELD_SPECS = {
-    "request_timeout_seconds": {"section": "yamibo", "key": "request_timeout_seconds", "type": "float", "default": 30.0, "env": "YAMIBO_REQUEST_TIMEOUT_SECONDS"},
-    "request_interval_seconds": {"section": "yamibo", "key": "request_interval_seconds", "type": "float", "default": 1.0, "env": "YAMIBO_REQUEST_INTERVAL_SECONDS"},
-    "request_interval_jitter_seconds": {"section": "yamibo", "key": "request_interval_jitter_seconds", "type": "float", "default": 0.5, "env": "YAMIBO_REQUEST_INTERVAL_JITTER_SECONDS"},
-    "use_system_proxy": {"section": "yamibo", "key": "use_system_proxy", "type": "bool", "default": False, "env": "YAMIBO_USE_SYSTEM_PROXY"},
-    "image_download_timeout_seconds": {"section": "yamibo", "key": "image_download_timeout_seconds", "type": "float", "default": 45.0, "env": "YAMIBO_IMAGE_DOWNLOAD_TIMEOUT_SECONDS"},
-    "image_download_retries": {"section": "yamibo", "key": "image_download_retries", "type": "int", "default": 2, "env": "YAMIBO_IMAGE_DOWNLOAD_RETRIES"},
-    "archive_thread_max_pages": {"section": "yamibo", "key": "archive_thread_max_pages", "type": "int", "default": 50, "env": "YAMIBO_ARCHIVE_THREAD_MAX_PAGES"},
-    "novel_author_only_max_pages": {"section": "yamibo", "key": "novel_author_only_max_pages", "type": "int", "default": 50, "env": "YAMIBO_NOVEL_AUTHOR_ONLY_MAX_PAGES"},
-    "novel_author_only_page_delay_seconds": {"section": "yamibo", "key": "novel_author_only_page_delay_seconds", "type": "float", "default": 0.5, "env": "YAMIBO_NOVEL_AUTHOR_ONLY_PAGE_DELAY_SECONDS"},
-    "llm_base_url": {"section": "llm", "key": "base_url", "type": "string", "default": "https://api.openai.com/v1", "env": "YAMIBO_LLM_BASE_URL"},
-    "llm_api_key": {"section": "llm", "key": "api_key", "type": "string", "default": None, "env": "YAMIBO_LLM_API_KEY", "sensitive": True},
-    "llm_model": {"section": "llm", "key": "model", "type": "string", "default": "gpt-4.1-mini", "env": "YAMIBO_LLM_MODEL"},
-    "rag_enabled": {"section": "rag", "key": "enabled", "type": "bool", "default": True, "env": "YAMIBO_RAG_ENABLED"},
-    "rag_base_url": {"section": "rag", "key": "base_url", "type": "string", "default": None, "env": "YAMIBO_RAG_BASE_URL", "inherit": "llm_base_url"},
-    "rag_api_key": {"section": "rag", "key": "api_key", "type": "string", "default": None, "env": "YAMIBO_RAG_API_KEY", "inherit": "llm_api_key", "sensitive": True},
-    "rag_embedding_model": {"section": "rag", "key": "embedding_model", "type": "string", "default": "text-embedding-3-small", "env": "YAMIBO_RAG_EMBEDDING_MODEL"},
-    "rag_embedding_dimensions": {"section": "rag", "key": "embedding_dimensions", "type": "int", "default": 512, "env": "YAMIBO_RAG_EMBEDDING_DIMENSIONS"},
-    "rag_chunker_version": {"section": "rag", "key": "chunker_version", "type": "string", "default": "rag-chunker-v1", "env": "YAMIBO_RAG_CHUNKER_VERSION"},
-    "rag_min_chunk_chars": {"section": "rag", "key": "min_chunk_chars", "type": "int", "default": 20, "env": "YAMIBO_RAG_MIN_CHUNK_CHARS"},
-    "rag_max_chunk_chars": {"section": "rag", "key": "max_chunk_chars", "type": "int", "default": 900, "env": "YAMIBO_RAG_MAX_CHUNK_CHARS"},
-    "rag_hybrid_fts_candidates": {"section": "rag", "key": "hybrid_fts_candidates", "type": "int", "default": 50, "env": "YAMIBO_RAG_HYBRID_FTS_CANDIDATES"},
-    "rag_hybrid_vector_candidates": {"section": "rag", "key": "hybrid_vector_candidates", "type": "int", "default": 50, "env": "YAMIBO_RAG_HYBRID_VECTOR_CANDIDATES"},
-    "rag_debug_indexing": {"section": "rag", "key": "debug_indexing", "type": "bool", "default": False, "env": "YAMIBO_RAG_DEBUG_INDEXING"},
-    "title_parse_use_llm": {"section": "title", "key": "use_llm", "type": "bool", "default": True, "env": "YAMIBO_TITLE_PARSE_USE_LLM"},
-    "common_scanlation_groups": {"section": "title", "key": "common_scanlation_groups", "type": "list", "default": [], "env": None},
-    "common_authors": {"section": "title", "key": "common_authors", "type": "list", "default": [], "env": None},
-    "export_default_strategy": {"section": "export", "key": "default_strategy", "type": "string", "default": "cache_only", "env": "YAMIBO_EXPORT_DEFAULT_STRATEGY"},
-    "export_stale_after_hours": {"section": "export", "key": "stale_after_hours", "type": "int", "default": 24, "env": "YAMIBO_EXPORT_STALE_AFTER_HOURS"},
-    "novel_txt_include_filtered_notes": {"section": "export", "key": "novel_txt_include_filtered_notes", "type": "bool", "default": False, "env": "YAMIBO_NOVEL_TXT_INCLUDE_FILTERED_NOTES"},
-    "novel_txt_debug_markers": {"section": "export", "key": "novel_txt_debug_markers", "type": "bool", "default": False, "env": "YAMIBO_NOVEL_TXT_DEBUG_MARKERS"},
-    "backup_keep_count": {"section": "maintenance", "key": "backup_keep_count", "type": "int", "default": 20, "env": "YAMIBO_BACKUP_KEEP_COUNT"},
-    "cleanup_staging_older_than_hours": {"section": "maintenance", "key": "cleanup_staging_older_than_hours", "type": "int", "default": 48, "env": "YAMIBO_CLEANUP_STAGING_OLDER_THAN_HOURS"},
-    "worker_poll_seconds": {"section": "worker", "key": "poll_seconds", "type": "float", "default": 2.0, "env": "YAMIBO_WORKER_POLL_SECONDS"},
-    "worker_lease_seconds": {"section": "worker", "key": "lease_seconds", "type": "int", "default": 60, "env": "YAMIBO_WORKER_LEASE_SECONDS"},
-    "worker_heartbeat_seconds": {"section": "worker", "key": "heartbeat_seconds", "type": "int", "default": 15, "env": "YAMIBO_WORKER_HEARTBEAT_SECONDS"},
-    "worker_parallelism": {"section": "worker", "key": "parallelism", "type": "int", "default": 2, "env": "YAMIBO_WORKER_PARALLELISM"},
+    "db_backend": {"section": "database", "key": "backend", "type": "string", "default": "sqlite", "env": "YAMIBO_DB_BACKEND", "effect": "restart_daemon_web"},
+    "db_url": {"section": "database", "key": "url", "type": "string", "default": None, "env": "YAMIBO_DB_URL", "sensitive": True, "effect": "restart_daemon_web"},
+    "db_pool_min": {"section": "database", "key": "pool_min", "type": "int", "default": 1, "env": "YAMIBO_DB_POOL_MIN", "effect": "restart_daemon_web"},
+    "db_pool_max": {"section": "database", "key": "pool_max", "type": "int", "default": 5, "env": "YAMIBO_DB_POOL_MAX", "effect": "restart_daemon_web"},
+    "db_pool_timeout": {"section": "database", "key": "pool_timeout", "type": "float", "default": 30.0, "env": "YAMIBO_DB_POOL_TIMEOUT", "effect": "restart_daemon_web"},
+    "db_connect_timeout": {"section": "database", "key": "connect_timeout", "type": "float", "default": 10.0, "env": "YAMIBO_DB_CONNECT_TIMEOUT", "effect": "restart_daemon_web"},
+    "db_schema": {"section": "database", "key": "schema", "type": "string", "default": "public", "env": "YAMIBO_DB_SCHEMA", "effect": "restart_daemon_web"},
+    "db_ssl_mode": {"section": "database", "key": "ssl_mode", "type": "string", "default": "prefer", "env": "YAMIBO_DB_SSL_MODE", "effect": "restart_daemon_web"},
+    "db_ssl_root_cert": {"section": "database", "key": "ssl_root_cert", "type": "string", "default": None, "env": "YAMIBO_DB_SSL_ROOT_CERT", "effect": "restart_daemon_web"},
+    "request_timeout_seconds": {"section": "yamibo", "key": "request_timeout_seconds", "type": "float", "default": 30.0, "env": "YAMIBO_REQUEST_TIMEOUT_SECONDS", "effect": "immediate"},
+    "request_interval_seconds": {"section": "yamibo", "key": "request_interval_seconds", "type": "float", "default": 1.0, "env": "YAMIBO_REQUEST_INTERVAL_SECONDS", "effect": "immediate"},
+    "request_interval_jitter_seconds": {"section": "yamibo", "key": "request_interval_jitter_seconds", "type": "float", "default": 0.5, "env": "YAMIBO_REQUEST_INTERVAL_JITTER_SECONDS", "effect": "immediate"},
+    "use_system_proxy": {"section": "yamibo", "key": "use_system_proxy", "type": "bool", "default": False, "env": "YAMIBO_USE_SYSTEM_PROXY", "effect": "immediate"},
+    "image_download_timeout_seconds": {"section": "yamibo", "key": "image_download_timeout_seconds", "type": "float", "default": 45.0, "env": "YAMIBO_IMAGE_DOWNLOAD_TIMEOUT_SECONDS", "effect": "restart_daemon"},
+    "image_download_retries": {"section": "yamibo", "key": "image_download_retries", "type": "int", "default": 2, "env": "YAMIBO_IMAGE_DOWNLOAD_RETRIES", "effect": "restart_daemon"},
+    "archive_thread_max_pages": {"section": "yamibo", "key": "archive_thread_max_pages", "type": "int", "default": 50, "env": "YAMIBO_ARCHIVE_THREAD_MAX_PAGES", "effect": "restart_daemon"},
+    "novel_author_only_max_pages": {"section": "yamibo", "key": "novel_author_only_max_pages", "type": "int", "default": 50, "env": "YAMIBO_NOVEL_AUTHOR_ONLY_MAX_PAGES", "effect": "restart_daemon"},
+    "novel_author_only_page_delay_seconds": {"section": "yamibo", "key": "novel_author_only_page_delay_seconds", "type": "float", "default": 0.5, "env": "YAMIBO_NOVEL_AUTHOR_ONLY_PAGE_DELAY_SECONDS", "effect": "restart_daemon"},
+    "llm_base_url": {"section": "llm", "key": "base_url", "type": "string", "default": "https://api.openai.com/v1", "env": "YAMIBO_LLM_BASE_URL", "effect": "restart_daemon_web"},
+    "llm_api_key": {"section": "llm", "key": "api_key", "type": "string", "default": None, "env": "YAMIBO_LLM_API_KEY", "sensitive": True, "effect": "restart_daemon_web"},
+    "llm_model": {"section": "llm", "key": "model", "type": "string", "default": "gpt-4.1-mini", "env": "YAMIBO_LLM_MODEL", "effect": "restart_daemon_web"},
+    "rag_enabled": {"section": "rag", "key": "enabled", "type": "bool", "default": True, "env": "YAMIBO_RAG_ENABLED", "effect": "restart_daemon_web"},
+    "rag_base_url": {"section": "rag", "key": "base_url", "type": "string", "default": None, "env": "YAMIBO_RAG_BASE_URL", "inherit": "llm_base_url", "effect": "restart_daemon_web"},
+    "rag_api_key": {"section": "rag", "key": "api_key", "type": "string", "default": None, "env": "YAMIBO_RAG_API_KEY", "inherit": "llm_api_key", "sensitive": True, "effect": "restart_daemon_web"},
+    "rag_embedding_model": {"section": "rag", "key": "embedding_model", "type": "string", "default": "text-embedding-3-small", "env": "YAMIBO_RAG_EMBEDDING_MODEL", "effect": "restart_daemon_web"},
+    "rag_embedding_dimensions": {"section": "rag", "key": "embedding_dimensions", "type": "int", "default": 512, "env": "YAMIBO_RAG_EMBEDDING_DIMENSIONS", "effect": "restart_daemon_web"},
+    "rag_chunker_version": {"section": "rag", "key": "chunker_version", "type": "string", "default": "rag-chunker-v1", "env": "YAMIBO_RAG_CHUNKER_VERSION", "effect": "restart_daemon"},
+    "rag_min_chunk_chars": {"section": "rag", "key": "min_chunk_chars", "type": "int", "default": 20, "env": "YAMIBO_RAG_MIN_CHUNK_CHARS", "effect": "restart_daemon"},
+    "rag_max_chunk_chars": {"section": "rag", "key": "max_chunk_chars", "type": "int", "default": 900, "env": "YAMIBO_RAG_MAX_CHUNK_CHARS", "effect": "restart_daemon"},
+    "rag_hybrid_fts_candidates": {"section": "rag", "key": "hybrid_fts_candidates", "type": "int", "default": 50, "env": "YAMIBO_RAG_HYBRID_FTS_CANDIDATES", "effect": "immediate"},
+    "rag_hybrid_vector_candidates": {"section": "rag", "key": "hybrid_vector_candidates", "type": "int", "default": 50, "env": "YAMIBO_RAG_HYBRID_VECTOR_CANDIDATES", "effect": "immediate"},
+    "rag_debug_indexing": {"section": "rag", "key": "debug_indexing", "type": "bool", "default": False, "env": "YAMIBO_RAG_DEBUG_INDEXING", "effect": "restart_daemon"},
+    "title_parse_use_llm": {"section": "title", "key": "use_llm", "type": "bool", "default": True, "env": "YAMIBO_TITLE_PARSE_USE_LLM", "effect": "restart_daemon"},
+    "common_scanlation_groups": {"section": "title", "key": "common_scanlation_groups", "type": "list", "default": [], "env": None, "effect": "restart_daemon"},
+    "common_authors": {"section": "title", "key": "common_authors", "type": "list", "default": [], "env": None, "effect": "restart_daemon"},
+    "export_default_strategy": {"section": "export", "key": "default_strategy", "type": "string", "default": "cache_only", "env": "YAMIBO_EXPORT_DEFAULT_STRATEGY", "effect": "restart_daemon_web"},
+    "export_stale_after_hours": {"section": "export", "key": "stale_after_hours", "type": "int", "default": 24, "env": "YAMIBO_EXPORT_STALE_AFTER_HOURS", "effect": "restart_daemon_web"},
+    "novel_txt_include_filtered_notes": {"section": "export", "key": "novel_txt_include_filtered_notes", "type": "bool", "default": False, "env": "YAMIBO_NOVEL_TXT_INCLUDE_FILTERED_NOTES", "effect": "restart_daemon"},
+    "novel_txt_debug_markers": {"section": "export", "key": "novel_txt_debug_markers", "type": "bool", "default": False, "env": "YAMIBO_NOVEL_TXT_DEBUG_MARKERS", "effect": "restart_daemon"},
+    "backup_keep_count": {"section": "maintenance", "key": "backup_keep_count", "type": "int", "default": 20, "env": "YAMIBO_BACKUP_KEEP_COUNT", "effect": "immediate"},
+    "cleanup_staging_older_than_hours": {"section": "maintenance", "key": "cleanup_staging_older_than_hours", "type": "int", "default": 48, "env": "YAMIBO_CLEANUP_STAGING_OLDER_THAN_HOURS", "effect": "immediate"},
+    "worker_poll_seconds": {"section": "worker", "key": "poll_seconds", "type": "float", "default": 2.0, "env": "YAMIBO_WORKER_POLL_SECONDS", "effect": "restart_daemon"},
+    "worker_lease_seconds": {"section": "worker", "key": "lease_seconds", "type": "int", "default": 60, "env": "YAMIBO_WORKER_LEASE_SECONDS", "effect": "restart_daemon"},
+    "worker_heartbeat_seconds": {"section": "worker", "key": "heartbeat_seconds", "type": "int", "default": 15, "env": "YAMIBO_WORKER_HEARTBEAT_SECONDS", "effect": "restart_daemon"},
+    "worker_parallelism": {"section": "worker", "key": "parallelism", "type": "int", "default": 2, "env": "YAMIBO_WORKER_PARALLELISM", "effect": "restart_daemon"},
+}
+
+_SETTINGS_RESTART_TARGETS = {
+    "immediate": [],
+    "restart_daemon": ["daemon"],
+    "restart_web": ["web"],
+    "restart_daemon_web": ["daemon", "web"],
 }
 
 
+def _json_default(value):
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        integral = value.to_integral_value()
+        return int(value) if value == integral else float(value)
+    raise TypeError(f"Object of type {value.__class__.__name__} is not JSON serializable")
+
+
+def _jsonish_loads(value, default):
+    if value is None or value == "":
+        return default
+    if isinstance(value, (dict, list)):
+        return value
+    return json.loads(value)
+
+
 def _json_response(handler, data, status=HTTPStatus.OK):
-    body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+    body = json.dumps(data, ensure_ascii=False, default=_json_default).encode("utf-8")
     try:
         handler.send_response(status.value)
         handler.send_header("Content-Type", "application/json; charset=utf-8")
@@ -152,6 +191,7 @@ def _settings_payload(settings: Settings) -> dict[str, object]:
         "stored": stored,
         "sources": sources,
         "locked_fields": locked_fields,
+        "effects": {name: spec["effect"] for name, spec in _SETTINGS_FIELD_SPECS.items()},
     }
 
 
@@ -202,6 +242,26 @@ def _apply_setting_patch(raw_config: dict[str, object], name: str, value) -> Non
     section[spec["key"]] = normalized
 
 
+def _summarize_setting_effects(field_names: list[str]) -> dict[str, object]:
+    targets: list[str] = []
+    for name in field_names:
+        for target in _SETTINGS_RESTART_TARGETS[_SETTINGS_FIELD_SPECS[name]["effect"]]:
+            if target not in targets:
+                targets.append(target)
+    summary = "immediate"
+    if targets == ["daemon"]:
+        summary = "restart_daemon"
+    elif targets == ["web"]:
+        summary = "restart_web"
+    elif "daemon" in targets and "web" in targets:
+        summary = "restart_daemon_web"
+    return {
+        "restart_required": bool(targets),
+        "restart_targets": targets,
+        "effect_mode_summary": summary,
+    }
+
+
 def _settings_get(handler, settings: Settings) -> None:
     _json_response(handler, _settings_payload(settings))
 
@@ -214,23 +274,29 @@ def _settings_update(handler, settings: Settings) -> None:
         return
     locked_fields = set(_settings_payload(settings)["locked_fields"])
     raw_config = read_local_config(settings.config_path)
+    next_raw_config = deepcopy(raw_config)
+    changed_fields: list[str] = []
     for name, value in values.items():
         if name not in _SETTINGS_FIELD_SPECS:
             continue
         if name in locked_fields:
             _error_response(handler, f"{name} is overridden by environment variable")
             return
+        before = _setting_value_from_raw(raw_config, _SETTINGS_FIELD_SPECS[name])
         try:
-            _apply_setting_patch(raw_config, name, value)
+            _apply_setting_patch(next_raw_config, name, value)
         except (TypeError, ValueError) as exc:
             _error_response(handler, str(exc))
             return
-    write_local_config(settings.config_path, raw_config)
+        after = _setting_value_from_raw(next_raw_config, _SETTINGS_FIELD_SPECS[name])
+        if before != after and name not in changed_fields:
+            changed_fields.append(name)
+    write_local_config(settings.config_path, next_raw_config)
     refreshed = load_settings()
     payload = _settings_payload(refreshed)
+    payload.update(_summarize_setting_effects(changed_fields))
     payload["ok"] = True
     payload["saved_path"] = str(settings.config_path)
-    payload["restart_required"] = True
     _json_response(handler, payload)
 
 
@@ -292,6 +358,8 @@ def _route(handler, route: str, params, conn, settings):
         _jobs_list(handler, params, conn)
     elif route == "/jobs/counts" and handler.command == "GET":
         _jobs_counts(handler, conn)
+    elif route == "/jobs/failure-counts" and handler.command == "GET":
+        _jobs_failure_counts(handler, params, conn)
     elif route.startswith("/jobs/") and route.endswith("/events"):
         job_id = route[6:-7]
         _job_events(handler, job_id, conn)
@@ -383,6 +451,8 @@ def _route(handler, route: str, params, conn, settings):
         _update_thread(handler, conn)
     elif route == "/threads/export" and handler.command == "POST":
         _export_thread(handler, conn, settings)
+    elif route == "/remote-access/resume" and handler.command == "POST":
+        _resume_remote_access(handler, conn)
     elif route == "/threads/delete" and handler.command == "POST":
         _delete_thread(handler, conn, settings)
     elif route == "/threads/batch-delete" and handler.command == "POST":
@@ -404,20 +474,27 @@ def _route(handler, route: str, params, conn, settings):
 def _dashboard(handler, conn, params):
     jobs_repo = JobsRepository(conn)
     threads_repo = ThreadsRepository(conn)
-    thread_count = conn.execute("SELECT COUNT(*) FROM threads").fetchone()[0]
-    series_count = conn.execute("SELECT COUNT(*) FROM series").fetchone()[0]
-    export_count = conn.execute("SELECT COUNT(*) FROM threads WHERE is_exported = 1").fetchone()[0]
-    forum_rows = conn.execute(
-        "SELECT forum_id, COUNT(*) as cnt FROM threads WHERE forum_id IS NOT NULL GROUP BY forum_id ORDER BY cnt DESC"
-    ).fetchall()
-    forum_counts = {r["forum_id"]: r["cnt"] for r in forum_rows}
+    thread_count = threads_repo.count_threads()
+    series_count = SeriesRepository(conn).count_series()
+    export_count = threads_repo.count_exported_threads()
+    forum_counts = {int(row["forum_id"]): int(row["cnt"]) for row in threads_repo.count_threads_by_forum()}
 
     recent_limit = int(params.get("limit", ["10"])[0])
-    recent_jobs = [_job_to_dict(j, conn) for j in jobs_repo.list(limit=10)]
-    live_thread_statuses = _live_sync_thread_statuses(conn)
-    workers = _worker_heartbeats(conn)
-    audits = [_audit_to_dict(r) for r in AuditEventsRepository(conn).list_recent(limit=8)]
+    recent_job_rows = jobs_repo.list_recent(limit=10)
+    recent_jobs = _job_rows_to_dicts(recent_job_rows, conn, include_details=False)
+    live_thread_statuses = jobs_repo.list_live_sync_thread_statuses()
+    workers = [
+        {
+            "worker_id": row["worker_id"],
+            "running_jobs": row["running_jobs"],
+            "seen_jobs": row["seen_jobs"],
+            "latest_heartbeat_at": row["latest_heartbeat_at"],
+        }
+        for row in jobs_repo.list_worker_heartbeats()
+    ]
+    audits = [_audit_to_dict(r, conn) for r in AuditEventsRepository(conn).list_recent(limit=8)]
     recent_threads = [_thread_summary_dict(r) for r in threads_repo.list_threads(limit=recent_limit)]
+    remote_access_pause = get_remote_access_pause_state(conn)
 
     _json_response(handler, {
         "thread_count": thread_count,
@@ -429,6 +506,7 @@ def _dashboard(handler, conn, params):
         "workers": workers,
         "recent_audits": audits,
         "recent_threads": recent_threads,
+        "remote_access_pause": remote_access_pause,
     })
 
 
@@ -442,38 +520,63 @@ _SYNC_THREAD_LIVE_STATUSES = {
 
 
 def _live_sync_thread_statuses(conn) -> dict[int, str]:
-    rows = conn.execute(
-        """
-        SELECT tid, status
-        FROM jobs
-        WHERE job_type = 'sync_thread'
-          AND tid IS NOT NULL
-          AND status IN (?, ?, ?, ?, ?)
-        ORDER BY updated_at DESC, created_at DESC
-        """,
-        tuple(sorted(_SYNC_THREAD_LIVE_STATUSES)),
-    ).fetchall()
-    statuses: dict[int, str] = {}
-    for row in rows:
-        tid = row["tid"]
-        if tid is None or tid in statuses:
-            continue
-        statuses[int(tid)] = row["status"]
-    return statuses
+    return JobsRepository(conn).list_live_sync_thread_statuses()
 
 
 def _jobs_list(handler, params, conn):
     status = params.get("status", [None])[0]
-    jobs = JobsRepository(conn).list(limit=150, status=status)
-    _json_response(handler, [_job_to_dict(j, conn) for j in jobs])
+    failure_kind = params.get("failure_kind", [None])[0]
+    try:
+        page = max(1, int(params.get("page", ["1"])[0] or 1))
+    except ValueError:
+        page = 1
+    try:
+        page_size = int(params.get("page_size", ["25"])[0] or 25)
+    except ValueError:
+        page_size = 25
+    page_size = min(max(page_size, 1), 100)
+
+    repo = JobsRepository(conn)
+    if failure_kind:
+        filtered_jobs = [
+            job for job in repo.list(limit=None, status=status)
+            if _job_failure_kind(job, artifacts=job.artifacts if isinstance(job.artifacts, dict) else {}) == failure_kind
+        ]
+        total_count = len(filtered_jobs)
+        offset = (page - 1) * page_size
+        jobs = filtered_jobs[offset:offset + page_size]
+    else:
+        total_count = repo.count_filtered(status=status)
+        offset = (page - 1) * page_size
+        jobs = repo.list(limit=page_size, offset=offset, status=status)
+
+    total_pages = max(1, (total_count + page_size - 1) // page_size)
+    if page > total_pages:
+        page = total_pages
+        offset = (page - 1) * page_size
+        jobs = filtered_jobs[offset:offset + page_size] if failure_kind else repo.list(limit=page_size, offset=offset, status=status)
+
+    _json_response(handler, {
+        "page": page,
+        "page_size": page_size,
+        "total_count": total_count,
+        "total_pages": total_pages,
+        "status": status,
+        "failure_kind": failure_kind,
+        "items": _job_rows_to_dicts(jobs, conn, include_details=False),
+    })
 
 
 def _jobs_counts(handler, conn):
-    rows = conn.execute("SELECT status, COUNT(*) as cnt FROM jobs GROUP BY status").fetchall()
-    counts = {"all": 0}
-    for r in rows:
-        counts[r["status"]] = r["cnt"]
-        counts["all"] += r["cnt"]
+    _json_response(handler, JobsRepository(conn).count_by_status())
+
+
+def _jobs_failure_counts(handler, params, conn):
+    status = params.get("status", [None])[0]
+    counts: dict[str, int] = {}
+    for job in JobsRepository(conn).list(limit=None, status=status):
+        kind = _job_failure_kind(job, artifacts=job.artifacts if isinstance(job.artifacts, dict) else {}) or "other"
+        counts[kind] = counts.get(kind, 0) + 1
     _json_response(handler, counts)
 
 
@@ -501,9 +604,7 @@ def _delete_job(handler, conn):
     if job.status in ("running",):
         _error_response(handler, "Cannot delete a running job")
         return
-    conn.execute("DELETE FROM job_events WHERE job_id = ?", (job_id,))
-    conn.execute("DELETE FROM jobs WHERE job_id = ?", (job_id,))
-    conn.commit()
+    repo.delete_job(job_id)
     _json_response(handler, {"ok": True, "job_id": job_id})
 
 
@@ -515,8 +616,8 @@ def _retry_job(handler, conn):
         return
     repo = JobsRepository(conn)
     job = repo.get(job_id)
-    if job.status not in (JobStatus.PARTIAL.value, JobStatus.FAILED.value):
-        _error_response(handler, "Only partial or failed jobs can be retried")
+    if job.status not in (JobStatus.PARTIAL.value, JobStatus.FAILED.value, JobStatus.INTERRUPTED.value):
+        _error_response(handler, "Only partial, failed, or interrupted jobs can be retried")
         return
     try:
         next_job = repo.rerun(job.job_id)
@@ -565,6 +666,10 @@ def _resume_job(handler, conn):
     _json_response(handler, {"ok": True, "job_id": job_id, "status": JobStatus.QUEUED.value})
 
 
+def _resume_remote_access(handler, conn):
+    _json_response(handler, clear_remote_access_pause(conn))
+
+
 def _batch_delete_jobs(handler, conn):
     body = _read_json_body(handler)
     status_filter = body.get("status")
@@ -574,15 +679,11 @@ def _batch_delete_jobs(handler, conn):
     if status_filter == "running":
         _error_response(handler, "Cannot batch delete running jobs")
         return
-    rows = conn.execute("SELECT job_id FROM jobs WHERE status = ?", (status_filter,)).fetchall()
-    job_ids = [r["job_id"] for r in rows]
+    job_ids = JobsRepository(conn).list_ids_by_status(status_filter)
     if not job_ids:
         _json_response(handler, {"ok": True, "deleted": 0})
         return
-    for jid in job_ids:
-        conn.execute("DELETE FROM job_events WHERE job_id = ?", (jid,))
-    conn.execute("DELETE FROM jobs WHERE status = ?", (status_filter,))
-    conn.commit()
+    JobsRepository(conn).delete_jobs(job_ids)
     _json_response(handler, {"ok": True, "deleted": len(job_ids)})
 
 
@@ -592,18 +693,11 @@ def _batch_delete_jobs_by_ids(handler, conn):
     if not job_ids:
         _error_response(handler, "job_ids required")
         return
-    placeholders = ",".join("?" for _ in job_ids)
-    running = conn.execute(
-        f"SELECT job_id FROM jobs WHERE job_id IN ({placeholders}) AND status = 'running'",
-        job_ids,
-    ).fetchall()
+    running = JobsRepository(conn).list_running_job_ids([str(job_id) for job_id in job_ids])
     if running:
         _error_response(handler, "Cannot delete running jobs")
         return
-    for jid in job_ids:
-        conn.execute("DELETE FROM job_events WHERE job_id = ?", (jid,))
-    conn.execute(f"DELETE FROM jobs WHERE job_id IN ({placeholders})", job_ids)
-    conn.commit()
+    JobsRepository(conn).delete_jobs(job_ids)
     _json_response(handler, {"ok": True, "deleted": len(job_ids)})
 
 
@@ -625,9 +719,7 @@ def _safe_delete_job(handler, conn):
             return
         _json_response(handler, {"ok": True, "action": "cancel_requested", "job_id": job_id})
     else:
-        conn.execute("DELETE FROM job_events WHERE job_id = ?", (job_id,))
-        conn.execute("DELETE FROM jobs WHERE job_id = ?", (job_id,))
-        conn.commit()
+        JobsRepository(conn).delete_job(job_id)
         _json_response(handler, {"ok": True, "action": "deleted", "job_id": job_id})
 
 
@@ -688,16 +780,10 @@ def _load_thread_archive_metadata(settings: Settings, tid: int) -> dict:
     except (OSError, ValueError):
         return {}
 
-
-def _strip_anchor_tags(html: str) -> str:
-    return re.sub(r"</?a\b[^>]*>", "", html, flags=re.IGNORECASE)
-
-
 def _clean_rich_body_html(html: str | None) -> str | None:
     if not html:
         return None
-    cleaned = _strip_anchor_tags(html)
-    return normalize_rich_body_html(cleaned)
+    return normalize_rich_body_html(html)
 
 
 def _load_thread_archive_summary(settings: Settings, tid: int) -> dict:
@@ -718,6 +804,7 @@ def _load_thread_archive_summary(settings: Settings, tid: int) -> dict:
 
 def _thread_detail(handler, tid, conn, params, settings):
     repo = ThreadsRepository(conn)
+    rag_repo = RagChunksRepository(conn)
     thread = repo.get_thread(tid)
     if thread is None:
         _error_response(handler, "Thread not found", HTTPStatus.NOT_FOUND)
@@ -764,11 +851,25 @@ def _thread_detail(handler, tid, conn, params, settings):
             rich_body_map[int(pid)] = _clean_rich_body_html(str(rich_body_html)) or ""
         except (TypeError, ValueError):
             continue
+    floor_meta_map: dict[int, dict] = {}
+    for floor_meta in archive_meta.get("floors") or []:
+        if not isinstance(floor_meta, dict):
+            continue
+        pid = floor_meta.get("pid")
+        try:
+            floor_meta_map[int(pid)] = floor_meta
+        except (TypeError, ValueError):
+            continue
     if rich_body_map:
         for floor in data["floors"]:
             rich_body_html = rich_body_map.get(floor["pid"])
             if rich_body_html:
                 floor["rich_body_html"] = rich_body_html
+    for floor in data["floors"]:
+        floor_meta = floor_meta_map.get(floor["pid"]) or {}
+        floor["remote_image_urls"] = list(floor_meta.get("remote_image_urls") or [])
+        floor["missing_image_urls"] = list(floor_meta.get("missing_image_urls") or [])
+        floor["image_slots"] = list(floor_meta.get("image_slots") or [])
     data["floor_count"] = floor_count
     data["floor_page"] = preview_page
     data["floor_page_size"] = preview_page_size
@@ -780,53 +881,32 @@ def _thread_detail(handler, tid, conn, params, settings):
     data["archive_summary"] = _load_thread_archive_summary(settings, tid)
     if "missing_images_json" in thread.keys():
         try:
-            data["missing_image_urls"] = json.loads(thread["missing_images_json"] or "[]")
+            data["missing_image_urls"] = _jsonish_loads(thread["missing_images_json"], [])
         except ValueError:
             data["missing_image_urls"] = []
     else:
         data["missing_image_urls"] = []
     series_id = thread["series_id"] if "series_id" in thread.keys() else None
     if series_id:
-        series_row = conn.execute("SELECT canonical_title FROM series WHERE series_id = ?", (series_id,)).fetchone()
+        series_row = SeriesRepository(conn).get_series(int(series_id))
         data["series_title"] = series_row["canonical_title"] if series_row else None
     else:
         data["series_title"] = None
-    rag_row = conn.execute(
-        """
-        SELECT
-          COUNT(*) AS chunk_count,
-          SUM(CASE WHEN embedding_status = 'indexed' THEN 1 ELSE 0 END) AS indexed_chunk_count,
-          SUM(CASE WHEN embedding_status = 'pending' THEN 1 ELSE 0 END) AS pending_chunk_count,
-          SUM(CASE WHEN embedding_status = 'failed' THEN 1 ELSE 0 END) AS failed_chunk_count,
-          MAX(indexed_at) AS last_indexed_at
-        FROM rag_chunks
-        WHERE tid = ?
-        """,
-        (tid,),
-    ).fetchone()
-    latest_rag_job = conn.execute(
-        """
-        SELECT job_id, status, stage, updated_at, created_at
-        FROM jobs
-        WHERE job_type = 'rag_index' AND tid = ?
-        ORDER BY created_at DESC
-        LIMIT 1
-        """,
-        (tid,),
-    ).fetchone()
+    rag_row = rag_repo.count_thread_rag_stats(tid)
+    latest_rag_job = JobsRepository(conn).get_latest_job(job_type="rag_index", tid=tid)
     data["rag_summary"] = {
         "enabled": bool(getattr(settings, "rag_enabled", False)),
-        "chunk_count": int(rag_row["chunk_count"] or 0),
-        "indexed_chunk_count": int(rag_row["indexed_chunk_count"] or 0),
-        "pending_chunk_count": int(rag_row["pending_chunk_count"] or 0),
-        "failed_chunk_count": int(rag_row["failed_chunk_count"] or 0),
+        "chunk_count": rag_row["chunk_count"],
+        "indexed_chunk_count": rag_row["indexed_chunk_count"],
+        "pending_chunk_count": rag_row["pending_chunk_count"],
+        "failed_chunk_count": rag_row["failed_chunk_count"],
         "last_indexed_at": rag_row["last_indexed_at"],
         "latest_job": None if latest_rag_job is None else {
-            "job_id": latest_rag_job["job_id"],
-            "status": latest_rag_job["status"],
-            "stage": latest_rag_job["stage"],
-            "updated_at": latest_rag_job["updated_at"],
-            "created_at": latest_rag_job["created_at"],
+            "job_id": latest_rag_job.job_id,
+            "status": latest_rag_job.status,
+            "stage": latest_rag_job.stage,
+            "updated_at": latest_rag_job.updated_at,
+            "created_at": latest_rag_job.created_at,
         },
     }
     _json_response(handler, data)
@@ -919,15 +999,14 @@ def _forums_list(handler, conn, settings):
     cache = read_forum_size_cache(settings) or {}
     cache_forums = cache.get("forums") if isinstance(cache, dict) else {}
     size_map = cache_forums if isinstance(cache_forums, dict) else {}
-    rows = conn.execute(
-        "SELECT f.*, COUNT(t.tid) AS thread_count FROM forums f "
-        "LEFT JOIN threads t ON t.forum_id = f.forum_id "
-        "GROUP BY f.forum_id ORDER BY f.forum_id"
-    ).fetchall()
+    forums_repo = ForumsRepository(conn)
+    threads_repo = ThreadsRepository(conn)
+    thread_counts = {int(row["forum_id"]): int(row["cnt"]) for row in threads_repo.count_threads_by_forum()}
+    rows = forums_repo.list_forums()
     _json_response(handler, [
         {"forum_id": r["forum_id"], "name": r["name"], "name_en": r["name_en"] if "name_en" in r.keys() else None,
          "content_kind": r["content_kind"],
-         "thread_count": r["thread_count"], "enabled": bool(r["enabled"]),
+         "thread_count": thread_counts.get(int(r["forum_id"]), 0), "enabled": bool(r["enabled"]),
          "archive_size_bytes": size_map.get(str(r["forum_id"]), {}).get("archive_bytes") if isinstance(size_map.get(str(r["forum_id"])), dict) else None,
          "archive_size_updated_at": size_map.get(str(r["forum_id"]), {}).get("updated_at") if isinstance(size_map.get(str(r["forum_id"])), dict) else None}
         for r in rows
@@ -972,56 +1051,16 @@ def _fonts_list(handler, settings):
 
 def _rag_overview(handler, conn, settings):
     jobs_repo = JobsRepository(conn)
-    meta = RagChunksRepository(conn).read_index_meta()
-    counts_row = conn.execute(
-        """
-        SELECT
-          COUNT(*) AS total_threads,
-          SUM(CASE WHEN COALESCE(rag_stats.indexed_chunk_count, 0) > 0 THEN 1 ELSE 0 END) AS indexed_threads,
-          SUM(CASE WHEN COALESCE(rag_stats.indexed_chunk_count, 0) = 0 THEN 1 ELSE 0 END) AS unindexed_threads,
-          SUM(CASE WHEN COALESCE(rag_stats.total_chunk_count, 0) > 0 THEN rag_stats.total_chunk_count ELSE 0 END) AS total_chunks,
-          SUM(CASE WHEN COALESCE(rag_stats.indexed_chunk_count, 0) > 0 THEN rag_stats.indexed_chunk_count ELSE 0 END) AS indexed_chunks,
-          SUM(CASE WHEN COALESCE(rag_stats.pending_chunk_count, 0) > 0 THEN rag_stats.pending_chunk_count ELSE 0 END) AS pending_chunks,
-          SUM(CASE WHEN COALESCE(rag_stats.failed_chunk_count, 0) > 0 THEN rag_stats.failed_chunk_count ELSE 0 END) AS failed_chunks
-        FROM threads t
-        LEFT JOIN (
-          SELECT
-            tid,
-            COUNT(*) AS total_chunk_count,
-            SUM(CASE WHEN embedding_status = 'indexed' THEN 1 ELSE 0 END) AS indexed_chunk_count,
-            SUM(CASE WHEN embedding_status = 'pending' THEN 1 ELSE 0 END) AS pending_chunk_count,
-            SUM(CASE WHEN embedding_status = 'failed' THEN 1 ELSE 0 END) AS failed_chunk_count
-          FROM rag_chunks
-          GROUP BY tid
-        ) rag_stats ON rag_stats.tid = t.tid
-        """
-    ).fetchone()
-    thread_total = conn.execute("SELECT COUNT(*) FROM threads").fetchone()[0]
-    recent_jobs = [_job_to_dict(job, conn) for job in jobs_repo.list(limit=150) if job.job_type == "rag_index"][:12]
-    forum_rows = conn.execute(
-        """
-        SELECT
-          f.forum_id,
-          f.name,
-          f.name_en,
-          f.content_kind,
-          COUNT(DISTINCT t.tid) AS thread_count,
-          SUM(CASE WHEN COALESCE(rag_stats.indexed_chunk_count, 0) > 0 THEN 1 ELSE 0 END) AS indexed_thread_count,
-          SUM(CASE WHEN COALESCE(rag_stats.total_chunk_count, 0) > 0 THEN rag_stats.total_chunk_count ELSE 0 END) AS chunk_count
-        FROM forums f
-        LEFT JOIN threads t ON t.forum_id = f.forum_id
-        LEFT JOIN (
-          SELECT
-            tid,
-            COUNT(*) AS total_chunk_count,
-            SUM(CASE WHEN embedding_status = 'indexed' THEN 1 ELSE 0 END) AS indexed_chunk_count
-          FROM rag_chunks
-          GROUP BY tid
-        ) rag_stats ON rag_stats.tid = t.tid
-        GROUP BY f.forum_id, f.name, f.name_en, f.content_kind
-        ORDER BY f.forum_id
-        """
-    ).fetchall()
+    rag_repo = RagChunksRepository(conn)
+    meta = rag_repo.read_index_meta()
+    counts_row = rag_repo.count_rag_overview()
+    thread_total = counts_row["total_threads"]
+    recent_jobs = _job_rows_to_dicts(
+        [job for job in jobs_repo.list(limit=150) if job.job_type == "rag_index"][:12],
+        conn,
+        include_details=False,
+    )
+    forum_rows = rag_repo.list_rag_forum_breakdown()
     _json_response(handler, {
         "enabled": settings.rag_enabled,
         "config": {
@@ -1037,12 +1076,12 @@ def _rag_overview(handler, conn, settings):
         "index_meta": meta,
         "counts": {
             "thread_total": thread_total,
-            "indexed_threads": int(counts_row["indexed_threads"] or 0),
-            "unindexed_threads": int(counts_row["unindexed_threads"] or 0),
-            "total_chunks": int(counts_row["total_chunks"] or 0),
-            "indexed_chunks": int(counts_row["indexed_chunks"] or 0),
-            "pending_chunks": int(counts_row["pending_chunks"] or 0),
-            "failed_chunks": int(counts_row["failed_chunks"] or 0),
+            "indexed_threads": counts_row["indexed_threads"],
+            "unindexed_threads": counts_row["unindexed_threads"],
+            "total_chunks": counts_row["total_chunks"],
+            "indexed_chunks": counts_row["indexed_chunks"],
+            "pending_chunks": counts_row["pending_chunks"],
+            "failed_chunks": counts_row["failed_chunks"],
         },
         "forum_breakdown": [
             {
@@ -1073,120 +1112,23 @@ def _rag_threads(handler, params, conn):
         page_size = min(max(int(params.get("page_size", ["20"])[0]), 1), 50)
     except (TypeError, ValueError):
         page_size = 20
-    filters = []
-    args: list[object] = []
-    if query:
-        filters.append("(COALESCE(t.display_title, t.raw_title) LIKE ? OR COALESCE(t.publisher, '') LIKE ?)")
-        like = f"%{query}%"
-        args.extend([like, like])
     if forum_id not in {None, "", "all"}:
-        filters.append("t.forum_id = ?")
-        args.append(int(forum_id))
-    if index_state == "indexed":
-        filters.append("COALESCE(rag_stats.indexed_chunk_count, 0) > 0 AND COALESCE(rag_jobs.live_job_count, 0) = 0")
-    elif index_state == "indexing":
-        filters.append("COALESCE(rag_jobs.live_job_count, 0) > 0")
-    elif index_state == "unindexed":
-        filters.append("(COALESCE(rag_stats.indexed_chunk_count, 0) = 0 OR COALESCE(rag_jobs.live_job_count, 0) > 0)")
-    if rag_status == "pending":
-        filters.append("(COALESCE(rag_stats.total_chunk_count, 0) = 0 OR COALESCE(rag_stats.pending_chunk_count, 0) > 0)")
-    elif rag_status == "failed":
-        filters.append("COALESCE(rag_stats.failed_chunk_count, 0) > 0")
-    where = f"WHERE {' AND '.join(filters)}" if filters else ""
-    total_count_row = conn.execute(
-        f"""
-        SELECT COUNT(*) AS total_count
-        FROM threads t
-        LEFT JOIN (
-          SELECT
-            tid,
-            COUNT(*) AS total_chunk_count,
-            SUM(CASE WHEN embedding_status = 'indexed' THEN 1 ELSE 0 END) AS indexed_chunk_count,
-            SUM(CASE WHEN embedding_status = 'pending' THEN 1 ELSE 0 END) AS pending_chunk_count,
-            SUM(CASE WHEN embedding_status = 'failed' THEN 1 ELSE 0 END) AS failed_chunk_count,
-            MAX(indexed_at) AS last_indexed_at
-          FROM rag_chunks
-          GROUP BY tid
-        ) rag_stats ON rag_stats.tid = t.tid
-        LEFT JOIN (
-          SELECT
-            tid,
-            COUNT(*) AS live_job_count
-          FROM jobs
-          WHERE job_type = 'rag_index'
-            AND status IN ('queued', 'running', 'retrying', 'cancel_requested', 'paused', 'interrupted')
-          GROUP BY tid
-        ) rag_jobs ON rag_jobs.tid = t.tid
-        {where}
-        """,
-        args,
-    ).fetchone()
-    total_count = int(total_count_row["total_count"] or 0)
-    total_pages = max(1, (total_count + page_size - 1) // page_size)
-    page = min(page, total_pages)
-    offset = (page - 1) * page_size
-    order_clause = (
-        "COALESCE(rag_stats.last_indexed_at, '') DESC, t.tid DESC"
-        if index_state == "indexed"
-        else "CASE WHEN COALESCE(rag_jobs.live_job_count, 0) > 0 THEN 1 ELSE 0 END ASC, COALESCE(t.sync_time, '') DESC, t.tid DESC"
+        forum_id = int(forum_id)
+    payload = RagChunksRepository(conn).list_rag_threads(
+        q=query,
+        forum_id=forum_id if forum_id not in {None, "", "all"} else None,
+        page=page,
+        page_size=page_size,
+        index_state=index_state,
+        rag_status=rag_status,
     )
-    rows = conn.execute(
-        f"""
-        SELECT
-          t.tid,
-          t.raw_title,
-          t.display_title,
-          t.publisher,
-          t.sync_time,
-          t.archive_status,
-          t.forum_id,
-          t.content_kind,
-          t.category,
-          COALESCE(rag_stats.chunk_count, 0) AS rag_chunk_count,
-          COALESCE(rag_stats.indexed_chunk_count, 0) AS rag_indexed_chunk_count,
-          COALESCE(rag_stats.pending_chunk_count, 0) AS rag_pending_chunk_count,
-          COALESCE(rag_stats.failed_chunk_count, 0) AS rag_failed_chunk_count,
-          rag_stats.last_indexed_at AS rag_last_indexed_at,
-          CASE
-            WHEN COALESCE(rag_stats.indexed_chunk_count, 0) > 0 AND COALESCE(rag_jobs.live_job_count, 0) > 0 THEN 'indexing'
-            WHEN COALESCE(rag_stats.indexed_chunk_count, 0) > 0 THEN 'indexed'
-            WHEN COALESCE(rag_jobs.live_job_count, 0) > 0 THEN 'indexing'
-            ELSE 'unindexed'
-          END AS rag_index_state
-        FROM threads t
-        LEFT JOIN (
-          SELECT
-            tid,
-            COUNT(*) AS chunk_count,
-            SUM(CASE WHEN embedding_status = 'indexed' THEN 1 ELSE 0 END) AS indexed_chunk_count,
-            SUM(CASE WHEN embedding_status = 'pending' THEN 1 ELSE 0 END) AS pending_chunk_count,
-            SUM(CASE WHEN embedding_status = 'failed' THEN 1 ELSE 0 END) AS failed_chunk_count,
-            MAX(indexed_at) AS last_indexed_at
-          FROM rag_chunks
-          GROUP BY tid
-        ) rag_stats ON rag_stats.tid = t.tid
-        LEFT JOIN (
-          SELECT
-            tid,
-            COUNT(*) AS live_job_count
-          FROM jobs
-          WHERE job_type = 'rag_index'
-            AND status IN ('queued', 'running', 'retrying', 'cancel_requested', 'paused', 'interrupted')
-          GROUP BY tid
-        ) rag_jobs ON rag_jobs.tid = t.tid
-        {where}
-        ORDER BY {order_clause}
-        LIMIT ? OFFSET ?
-        """,
-        [*args, page_size, offset],
-    ).fetchall()
     _json_response(handler, {
         "index_state": index_state,
         "rag_status": rag_status,
-        "page": page,
-        "page_size": page_size,
-        "total_count": total_count,
-        "total_pages": total_pages,
+        "page": payload["page"],
+        "page_size": payload["page_size"],
+        "total_count": payload["total_count"],
+        "total_pages": payload["total_pages"],
         "items": [
             {
                 "tid": row["tid"],
@@ -1205,7 +1147,7 @@ def _rag_threads(handler, params, conn):
                 "rag_last_indexed_at": row["rag_last_indexed_at"],
                 "rag_index_state": row["rag_index_state"],
             }
-            for row in rows
+            for row in payload["rows"]
         ],
     })
 
@@ -1231,64 +1173,13 @@ def _select_rag_thread_ids(
     index_state: str = "unindexed",
     rag_status: str = "all",
 ) -> list[int]:
-    if tids:
-        placeholders = ",".join("?" for _ in tids)
-        rows = conn.execute(
-            f"SELECT tid FROM threads WHERE tid IN ({placeholders}) ORDER BY tid DESC",
-            tids,
-        ).fetchall()
-        return [int(row["tid"]) for row in rows]
-
-    filters = []
-    args: list[object] = []
-    if q:
-        like = f"%{q}%"
-        filters.append("(COALESCE(t.display_title, t.raw_title) LIKE ? OR COALESCE(t.publisher, '') LIKE ?)")
-        args.extend([like, like])
-    if forum_id is not None:
-        filters.append("t.forum_id = ?")
-        args.append(forum_id)
-    if index_state == "indexed":
-        filters.append("COALESCE(rag_stats.indexed_chunk_count, 0) > 0 AND COALESCE(rag_jobs.live_job_count, 0) = 0")
-    elif index_state == "indexing":
-        filters.append("COALESCE(rag_jobs.live_job_count, 0) > 0")
-    elif index_state == "unindexed":
-        filters.append("(COALESCE(rag_stats.indexed_chunk_count, 0) = 0 OR COALESCE(rag_jobs.live_job_count, 0) > 0)")
-    if rag_status == "pending":
-        filters.append("(COALESCE(rag_stats.chunk_count, 0) = 0 OR COALESCE(rag_stats.pending_chunk_count, 0) > 0)")
-    elif rag_status == "failed":
-        filters.append("COALESCE(rag_stats.failed_chunk_count, 0) > 0")
-    where = f"WHERE {' AND '.join(filters)}" if filters else ""
-    rows = conn.execute(
-        f"""
-        SELECT t.tid
-        FROM threads t
-        LEFT JOIN (
-          SELECT
-            tid,
-            COUNT(*) AS chunk_count,
-            SUM(CASE WHEN embedding_status = 'indexed' THEN 1 ELSE 0 END) AS indexed_chunk_count,
-            SUM(CASE WHEN embedding_status = 'pending' THEN 1 ELSE 0 END) AS pending_chunk_count,
-            SUM(CASE WHEN embedding_status = 'failed' THEN 1 ELSE 0 END) AS failed_chunk_count
-          FROM rag_chunks
-          GROUP BY tid
-        ) rag_stats ON rag_stats.tid = t.tid
-        LEFT JOIN (
-          SELECT
-            tid,
-            COUNT(*) AS live_job_count
-          FROM jobs
-          WHERE job_type = 'rag_index'
-            AND status IN ('queued', 'running', 'retrying', 'cancel_requested', 'paused', 'interrupted')
-          GROUP BY tid
-        ) rag_jobs ON rag_jobs.tid = t.tid
-        {where}
-        ORDER BY CASE WHEN COALESCE(rag_jobs.live_job_count, 0) > 0 THEN 1 ELSE 0 END ASC, COALESCE(t.sync_time, '') DESC, t.tid DESC
-        LIMIT 200
-        """,
-        args,
-    ).fetchall()
-    return [int(row["tid"]) for row in rows]
+    return RagChunksRepository(conn).select_rag_thread_ids(
+        tids=tids,
+        q=q,
+        forum_id=forum_id,
+        index_state=index_state,
+        rag_status=rag_status,
+    )
 
 
 def _rag_index_batch(handler, conn):
@@ -1472,13 +1363,13 @@ def _update_title(handler, conn, settings):
             author_guess=body.get("author_guess") if body.get("author_guess") is not None else (title_row["author_guess"] if "author_guess" in title_row.keys() else None),
             core_title_guess=body.get("core_title_guess") or (title_row["core_title_guess"] if "core_title_guess" in title_row.keys() else thread_row["raw_title"] or ""),
             series_key=body.get("series_key") or (title_row["series_key"] if "series_key" in title_row.keys() else ""),
-            title_aliases=body.get("title_aliases") if body.get("title_aliases") is not None else json.loads(title_row["title_aliases_json"] or "[]"),
+            title_aliases=body.get("title_aliases") if body.get("title_aliases") is not None else _jsonish_loads(title_row["title_aliases_json"], []),
             chapter_name=body.get("chapter_name") if body.get("chapter_name") is not None else (title_row["chapter_name"] if "chapter_name" in title_row.keys() else None),
             chapter_index=body.get("chapter_index") if body.get("chapter_index") is not None else (title_row["chapter_index"] if "chapter_index" in title_row.keys() else None),
             chapter_index_end=body.get("chapter_index_end") if body.get("chapter_index_end") is not None else (title_row["chapter_index_end"] if "chapter_index_end" in title_row.keys() else None),
             chapter_title=body.get("chapter_title") if body.get("chapter_title") is not None else (title_row["chapter_title"] if "chapter_title" in title_row.keys() else None),
             subtitle=body.get("subtitle") if body.get("subtitle") is not None else (title_row["subtitle"] if "subtitle" in title_row.keys() else None),
-            tags=body.get("tags") if body.get("tags") is not None else json.loads(title_row["tags_json"] or "[]"),
+            tags=body.get("tags") if body.get("tags") is not None else _jsonish_loads(title_row["tags_json"], []),
             confidence=body.get("confidence") if body.get("confidence") is not None else (title_row["confidence"] if "confidence" in title_row.keys() else None),
             needs_review=False,
         )
@@ -1510,9 +1401,12 @@ def _update_chapter(handler, conn):
     chapter_index = body.get("chapter_index")
     author_guess = body.get("author_guess")
     group_name = body.get("group_name")
-    conn.execute(
-        "UPDATE title_parse SET chapter_name=?, chapter_index=?, author_guess=?, group_name=? WHERE tid=?",
-        (chapter_name, chapter_index, author_guess, group_name, int(tid)),
+    ThreadsRepository(conn).update_chapter_info(
+        int(tid),
+        chapter_name=chapter_name,
+        chapter_index=chapter_index,
+        author_guess=author_guess,
+        group_name=group_name,
     )
     conn.commit()
     _json_response(handler, {"ok": True, "tid": int(tid)})
@@ -1540,9 +1434,11 @@ def _update_series(handler, conn, settings):
         author_guess = body.get("author_guess")
         if author_guess is None or author_guess == "":
             author_guess = series["author_guess"]
-        conn.execute(
-            "UPDATE series SET canonical_title=?, series_key=?, author_guess=?, updated_at=CURRENT_TIMESTAMP WHERE series_id=?",
-            (canonical_title, series_key, author_guess, int(series_id)),
+        SeriesRepository(conn).update_series_metadata(
+            int(series_id),
+            canonical_title=canonical_title,
+            series_key=series_key,
+            author_guess=author_guess,
         )
         AuditEventsRepository(conn).record(
             actor="web", action="update_series", target_type="series",
@@ -1605,7 +1501,7 @@ def _export_thread(handler, conn, settings):
     if forum_id is not None:
         forum_id = int(forum_id)
     else:
-        row = conn.execute("SELECT forum_id FROM threads WHERE tid = ?", (int(tid),)).fetchone()
+        row = ThreadsRepository(conn).get_thread(int(tid))
         forum_id = row["forum_id"] if row and row["forum_id"] is not None else None
     if forum_id is not None and forum_id not in EXPORTABLE_FORUMS:
         _error_response(handler, "仅漫画区和轻小说区的贴子支持导出")
@@ -1681,9 +1577,9 @@ def _delete_thread_record(conn, settings: Settings, tid: int) -> tuple[dict[str,
     deleted_series = None
     series_id = before.get("series_id")
     if series_id:
-        remaining = conn.execute("SELECT COUNT(*) FROM threads WHERE series_id = ?", (series_id,)).fetchone()[0]
+        remaining = ThreadsRepository(conn).count_threads_for_series(int(series_id))
         if remaining == 0:
-            conn.execute("DELETE FROM series WHERE series_id = ?", (series_id,))
+            SeriesRepository(conn).delete_series(int(series_id))
             deleted_series = int(series_id)
     return before, after, deleted_series
 
@@ -1727,25 +1623,35 @@ def _thread_images(handler, tid, conn, settings):
 def _debug_info(handler, conn, settings):
     import platform
     from pathlib import Path
-    thread_count = conn.execute("SELECT COUNT(*) FROM threads").fetchone()[0]
-    series_count = conn.execute("SELECT COUNT(*) FROM series").fetchone()[0]
-    job_count = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
-    event_count = conn.execute("SELECT COUNT(*) FROM job_events").fetchone()[0]
-    asset_count = conn.execute("SELECT COUNT(*) FROM assets").fetchone()[0]
-    block_count = conn.execute("SELECT COUNT(*) FROM content_blocks").fetchone()[0]
-    forum_count = conn.execute("SELECT COUNT(*) FROM forums").fetchone()[0]
-    recent_jobs = conn.execute(
-        "SELECT job_id, job_type, status, created_at FROM jobs ORDER BY created_at DESC LIMIT 10"
-    ).fetchall()
-    recent_errors = conn.execute(
-        "SELECT job_id, error_code, error_message, finished_at FROM jobs WHERE error_code IS NOT NULL ORDER BY finished_at DESC LIMIT 10"
-    ).fetchall()
+    from urllib.parse import urlparse
+    jobs_repo = JobsRepository(conn)
+    thread_count = ThreadsRepository(conn).count_threads()
+    series_count = SeriesRepository(conn).count_series()
+    job_count = jobs_repo.count()
+    event_count = JobEventsRepository(conn).count()
+    asset_count = AssetsRepository(conn).count_assets()
+    block_count = ContentBlocksRepository(conn).count_blocks()
+    forum_count = ForumsRepository(conn).count_forums()
+    recent_jobs = jobs_repo.list_recent(limit=10)
+    recent_errors = jobs_repo.list_recent_errors(limit=10)
     static_dir = Path(__file__).parent / "static"
+    db_url = getattr(settings, "db_url", None)
+    db_host = None
+    db_name = None
+    if db_url:
+        parsed = urlparse(db_url)
+        db_host = parsed.hostname
+        db_name = parsed.path.lstrip("/") or None
     _json_response(handler, {
         "platform": platform.platform(),
         "python": platform.python_version(),
+        "db_backend": settings.db_backend,
+        "db_host": db_host,
+        "db_name": db_name,
+        "db_ssl_mode": settings.db_ssl_mode if settings.db_backend == "postgres" else None,
         "data_dir": str(settings.data_dir),
         "db_path": str(settings.db_path),
+        "db_pool": describe_engine_pool(getattr(conn, "engine", None)),
         "static_exists": static_dir.exists(),
         "stats": {
             "threads": thread_count,
@@ -1813,20 +1719,20 @@ _EXPORT_STRATEGY_LABELS_EN = {
 }
 
 
-def _describe_job(conn, job) -> str:
+def _describe_job(conn, job, thread_title: str | None = None, *, allow_thread_lookup: bool = True) -> str:
     payload = job.payload if isinstance(job.payload, dict) else {}
     tid = payload.get("tid") or job.tid
 
-    thread_title = ""
-    if tid:
-        row = conn.execute("SELECT raw_title FROM threads WHERE tid = ?", (tid,)).fetchone()
+    resolved_thread_title = thread_title or ""
+    if allow_thread_lookup and tid and not resolved_thread_title:
+        row = ThreadsRepository(conn).get_thread(int(tid))
         if row:
-            thread_title = row["raw_title"] or ""
+            resolved_thread_title = row["raw_title"] or ""
 
     def _short():
-        if not thread_title:
+        if not resolved_thread_title:
             return ""
-        return (thread_title[:30] + "...") if len(thread_title) > 30 else thread_title
+        return (resolved_thread_title[:30] + "...") if len(resolved_thread_title) > 30 else resolved_thread_title
 
     if job.job_type == "sync_thread":
         desc = "同步贴子"
@@ -1881,20 +1787,20 @@ def _describe_job(conn, job) -> str:
     return _JOB_TYPE_LABELS.get(job.job_type, job.job_type)
 
 
-def _describe_job_en(conn, job) -> str:
+def _describe_job_en(conn, job, thread_title: str | None = None, *, allow_thread_lookup: bool = True) -> str:
     payload = job.payload if isinstance(job.payload, dict) else {}
     tid = payload.get("tid") or job.tid
 
-    thread_title = ""
-    if tid:
-        row = conn.execute("SELECT raw_title FROM threads WHERE tid = ?", (tid,)).fetchone()
+    resolved_thread_title = thread_title or ""
+    if allow_thread_lookup and tid and not resolved_thread_title:
+        row = ThreadsRepository(conn).get_thread(int(tid))
         if row:
-            thread_title = row["raw_title"] or ""
+            resolved_thread_title = row["raw_title"] or ""
 
     def _short():
-        if not thread_title:
+        if not resolved_thread_title:
             return ""
-        return (thread_title[:30] + "...") if len(thread_title) > 30 else thread_title
+        return (resolved_thread_title[:30] + "...") if len(resolved_thread_title) > 30 else resolved_thread_title
 
     if job.job_type == "sync_thread":
         desc = "Sync thread"
@@ -1949,21 +1855,93 @@ def _describe_job_en(conn, job) -> str:
     return _JOB_TYPE_LABELS_EN.get(job.job_type, job.job_type)
 
 
-def _job_to_dict(job, conn=None) -> dict:
+def _thread_titles_by_tids(conn, tids: list[int]) -> dict[int, str]:
+    unique_tids = sorted({int(tid) for tid in tids if tid is not None})
+    if not unique_tids:
+        return {}
+    placeholders = ",".join("?" for _ in unique_tids)
+    rows = conn.execute(
+        f"SELECT tid, raw_title FROM threads WHERE tid IN ({placeholders})",
+        unique_tids,
+    ).fetchall()
+    return {int(row["tid"]): (row["raw_title"] or "") for row in rows}
+
+
+def _job_rows_to_dicts(jobs, conn=None, include_details: bool = True) -> list[dict]:
+    thread_titles_by_tid = None
+    if conn is not None:
+        thread_titles_by_tid = _thread_titles_by_tids(conn, [_job_tid(job) for job in jobs if _job_tid(job) is not None])
+    return [_job_to_dict(job, conn, include_details=include_details, thread_titles_by_tid=thread_titles_by_tid) for job in jobs]
+
+
+def _job_to_dict(job, conn=None, include_details: bool = True, thread_titles_by_tid: dict[int, str] | None = None) -> dict:
     payload = job.payload if isinstance(job.payload, dict) else {}
     artifacts = job.artifacts if isinstance(job.artifacts, dict) else {}
-    description = _describe_job(conn, job) if conn else job.job_type
-    description_en = _describe_job_en(conn, job) if conn else job.job_type
-    return {
+    job_tid = _job_tid(job)
+    thread_title = thread_titles_by_tid.get(int(job_tid)) if thread_titles_by_tid is not None and job_tid is not None and int(job_tid) in thread_titles_by_tid else None
+    allow_thread_lookup = thread_titles_by_tid is None
+    rerun_job = None
+    if conn is not None and job.status == "superseded":
+        rerun_job = JobsRepository(conn).get_latest_child_job(job.job_id)
+    description = _describe_job(conn, job, thread_title=thread_title, allow_thread_lookup=allow_thread_lookup) if conn else job.job_type
+    description_en = _describe_job_en(conn, job, thread_title=thread_title, allow_thread_lookup=allow_thread_lookup) if conn else job.job_type
+    data = {
         "job_id": job.job_id, "job_type": job.job_type, "status": job.status,
         "stage": job.stage, "tid": job.tid,
         "description": description, "description_en": description_en,
-        "payload": payload, "artifacts": artifacts,
         "progress_current": job.progress_current, "progress_total": job.progress_total,
         "worker_id": job.worker_id, "error_code": job.error_code,
         "error_message": job.error_message, "paused_at": getattr(job, "paused_at", None), "created_at": job.created_at,
         "updated_at": job.updated_at, "finished_at": job.finished_at,
+        "failure_kind": _job_failure_kind(job, artifacts=artifacts),
+        "rerun_job_id": rerun_job.job_id if rerun_job is not None else None,
+        "rerun_job_status": rerun_job.status if rerun_job is not None else None,
     }
+    data["url"] = thread_url_from_tid(int(job_tid)) if job_tid is not None else None
+    if include_details:
+        data["payload"] = payload
+        data["artifacts"] = artifacts
+    return data
+
+
+def _job_failure_kind(job, *, artifacts: dict[str, object] | None = None) -> str | None:
+    error_code = str(getattr(job, "error_code", "") or "").strip().lower()
+    error_message = str(getattr(job, "error_message", "") or "").strip()
+    failure_context = {}
+    if isinstance(artifacts, dict):
+        failure_context = artifacts.get("failure_context") if isinstance(artifacts.get("failure_context"), dict) else {}
+    remote_fetch = failure_context.get("remote_fetch") if isinstance(failure_context, dict) and isinstance(failure_context.get("remote_fetch"), dict) else {}
+    page_type = str(remote_fetch.get("page_type") or "").strip().lower() if isinstance(remote_fetch, dict) else ""
+    prompt_text = str(remote_fetch.get("prompt_text") or "").strip() if isinstance(remote_fetch, dict) else ""
+    combined = f"{error_code} {error_message} {page_type} {prompt_text}".lower()
+
+    if error_code == "cancelled" or "was cancelled by user" in combined:
+        return "cancelled"
+    if error_code in {"local_archive_not_found", "export_precheck_failed"} or "thread archive is partial" in combined or "thread archive is not complete" in combined or "not archived locally" in combined:
+        return "local_missing"
+    if "content is required when no images are present" in combined:
+        return "empty_content"
+    if page_type == "prompt_forum_closed" or any(marker in combined for marker in ("查无此区", "此区已关闭", "版块已关闭")):
+        return "forum_closed"
+    if page_type == "prompt_thread_missing_or_removed_or_review" or any(marker in combined for marker in ("指定的主题不存在", "已被删除", "正在被审核")):
+        return "thread_missing"
+    if error_code in {"loginrequirederror", "remote_login_required"} or "login required" in combined or "login_required" in combined:
+        return "login_required"
+    if error_code in {"remotemaintenanceerror", "remote_maintenance"} or "maintenance" in combined:
+        return "maintenance"
+    if error_code in {"remotefetcherror", "remote_fetch_failed"} or "failed to read" in combined or "remote fetch" in combined:
+        return "remote_fetch"
+    if error_code in {"unexpectedpageerror", "unexpected_remote_page"} or "unexpected page" in combined or "expected thread detail page" in combined:
+        return "unexpected_page"
+    if error_code in {"invalid_argument", "valueerror"}:
+        return "validation"
+    return None
+
+
+def _job_tid(job) -> int | None:
+    payload = job.payload if isinstance(job.payload, dict) else {}
+    tid = payload.get("tid") or job.tid
+    return None if tid is None else int(tid)
 
 
 def _event_to_dict(e) -> dict:
@@ -2030,13 +2008,13 @@ def _series_to_dict(row) -> dict:
     }
 
 
-def _audit_to_dict(row) -> dict:
+def _audit_to_dict(row, conn=None) -> dict:
     return {
         "event_id": str(row["event_id"]), "actor": row["actor"],
         "action": row["action"], "target_type": row["target_type"],
         "target_id": row["target_id"], "created_at": row["created_at"],
-        "description": _describe_audit(row),
-        "description_en": _describe_audit_en(row),
+        "description": _describe_audit(row, conn),
+        "description_en": _describe_audit_en(row, conn),
     }
 
 
@@ -2071,7 +2049,7 @@ _AUDIT_TARGET_LABELS_EN = {
 }
 
 
-def _describe_audit(row) -> str:
+def _describe_audit(row, conn=None) -> str:
     action = row["action"]
     target_type = row["target_type"]
     target_id = row["target_id"]
@@ -2079,10 +2057,9 @@ def _describe_audit(row) -> str:
     target_label = _AUDIT_TARGET_LABELS.get(target_type, target_type)
 
     if target_type == "thread" and target_id and target_id.isdigit():
-        conn = row._connection if hasattr(row, '_connection') else None
         title = ""
         if conn:
-            r = conn.execute("SELECT raw_title FROM threads WHERE tid = ?", (int(target_id),)).fetchone()
+            r = ThreadsRepository(conn).get_thread(int(target_id))
             if r:
                 title = r["raw_title"] or ""
         short = (title[:20] + "...") if len(title) > 20 else title
@@ -2096,7 +2073,7 @@ def _describe_audit(row) -> str:
     return f"{action_label}：{target_label} {target_id}"
 
 
-def _describe_audit_en(row) -> str:
+def _describe_audit_en(row, conn=None) -> str:
     action = row["action"]
     target_type = row["target_type"]
     target_id = row["target_id"]
@@ -2104,10 +2081,9 @@ def _describe_audit_en(row) -> str:
     target_label = _AUDIT_TARGET_LABELS_EN.get(target_type, target_type)
 
     if target_type == "thread" and target_id and target_id.isdigit():
-        conn = row._connection if hasattr(row, '_connection') else None
         title = ""
         if conn:
-            r = conn.execute("SELECT raw_title FROM threads WHERE tid = ?", (int(target_id),)).fetchone()
+            r = ThreadsRepository(conn).get_thread(int(target_id))
             if r:
                 title = r["raw_title"] or ""
         short = (title[:20] + "...") if len(title) > 20 else title
@@ -2122,13 +2098,6 @@ def _describe_audit_en(row) -> str:
 
 
 def _worker_heartbeats(conn) -> list[dict]:
-    rows = conn.execute(
-        "SELECT worker_id, MAX(heartbeat_at) AS latest_heartbeat_at, "
-        "SUM(CASE WHEN status='running' THEN 1 ELSE 0 END) AS running_jobs, "
-        "COUNT(*) AS seen_jobs "
-        "FROM jobs WHERE worker_id IS NOT NULL GROUP BY worker_id "
-        "HAVING SUM(CASE WHEN status='running' THEN 1 ELSE 0 END) > 0 "
-        "ORDER BY COALESCE(MAX(heartbeat_at), MAX(updated_at)) DESC LIMIT 20"
-    ).fetchall()
+    rows = JobsRepository(conn).list_worker_heartbeats()
     return [{"worker_id": r["worker_id"], "running_jobs": r["running_jobs"],
              "seen_jobs": r["seen_jobs"], "latest_heartbeat_at": r["latest_heartbeat_at"]} for r in rows]

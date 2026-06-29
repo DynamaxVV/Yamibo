@@ -1,0 +1,160 @@
+import { Fragment, type ReactNode } from 'react'
+
+const BBS_URL_RE = /https:\/\/bbs\.yamibo\.com[^\s"'<>）)\]]*/g
+
+export type JobFailureKind =
+  | 'cancelled'
+  | 'local_missing'
+  | 'empty_content'
+  | 'forum_closed'
+  | 'thread_missing'
+  | 'login_required'
+  | 'maintenance'
+  | 'remote_fetch'
+  | 'unexpected_page'
+  | 'validation'
+  | 'other'
+
+const JOB_FAILURE_KIND_LABELS: Record<'zh' | 'en', Record<JobFailureKind, string>> = {
+  zh: {
+    cancelled: '已取消',
+    local_missing: '本地缺档',
+    empty_content: '正文为空',
+    forum_closed: '查无此区/已关闭',
+    thread_missing: '主题不存在/已删除',
+    login_required: '需要登录',
+    maintenance: '论坛维护',
+    remote_fetch: '远程抓取失败',
+    unexpected_page: '页面不符合预期',
+    validation: '校验失败',
+    other: '其他失败',
+  },
+  en: {
+    cancelled: 'Cancelled',
+    local_missing: 'Local archive missing',
+    empty_content: 'Empty content',
+    forum_closed: 'Forum closed',
+    thread_missing: 'Thread missing',
+    login_required: 'Login required',
+    maintenance: 'Maintenance',
+    remote_fetch: 'Remote fetch failed',
+    unexpected_page: 'Unexpected page',
+    validation: 'Validation failed',
+    other: 'Other failure',
+  },
+}
+
+type JobFailureLike = {
+  error_code?: string | null
+  error_message?: string | null
+  artifacts?: Record<string, unknown> | null
+}
+
+function getRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
+}
+
+function getString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function includesAny(text: string, parts: string[]): boolean {
+  return parts.some(part => text.includes(part))
+}
+
+export function renderBbsLinks(text: string): ReactNode {
+  const parts: ReactNode[] = []
+  let lastIndex = 0
+  for (const match of text.matchAll(BBS_URL_RE)) {
+    const url = match[0]
+    const index = match.index || 0
+    if (index > lastIndex) {
+      parts.push(text.slice(lastIndex, index))
+    }
+    parts.push(
+      <a key={`${index}:${url}`} href={url} target="_blank" rel="noreferrer">
+        {url}
+      </a>,
+    )
+    lastIndex = index + url.length
+  }
+  if (lastIndex < text.length) {
+    parts.push(text.slice(lastIndex))
+  }
+  return parts.length > 0 ? <Fragment>{parts}</Fragment> : text
+}
+
+export function formatJobFailureKind(kind: string | null | undefined, lang: 'zh' | 'en'): string {
+  if (!kind) return '-'
+  return JOB_FAILURE_KIND_LABELS[lang][kind as JobFailureKind] || JOB_FAILURE_KIND_LABELS[lang].other
+}
+
+export function getJobFailureKind(job: JobFailureLike): JobFailureKind | null {
+  const errorCode = getString(job.error_code).toLowerCase()
+  const errorMessage = getString(job.error_message)
+  const artifacts = getRecord(job.artifacts)
+  const failureContext = artifacts ? getRecord(artifacts.failure_context) : null
+  const remoteFetch = failureContext ? getRecord(failureContext.remote_fetch) : null
+  const pageType = getString(remoteFetch?.page_type).toLowerCase()
+  const promptText = getString(remoteFetch?.prompt_text)
+  const combined = `${errorCode} ${errorMessage} ${pageType} ${promptText}`.toLowerCase()
+
+  if (errorCode === 'cancelled' || combined.includes('was cancelled by user')) return 'cancelled'
+  if (includesAny(combined, ['local_archive_not_found', 'export_precheck_failed', 'not archived locally', 'thread archive is partial', 'thread archive is not complete'])) return 'local_missing'
+  if (includesAny(combined, ['content is required when no images are present'])) return 'empty_content'
+  if (pageType === 'prompt_forum_closed' || includesAny(combined, ['查无此区', '此区已关闭', '版块已关闭'])) return 'forum_closed'
+  if (pageType === 'prompt_thread_missing_or_removed_or_review' || includesAny(combined, ['指定的主题不存在', '已被删除', '正在被审核'])) return 'thread_missing'
+  if (includesAny(errorCode, ['loginrequirederror', 'remote_login_required']) || includesAny(combined, ['login required', 'login_required'])) return 'login_required'
+  if (includesAny(errorCode, ['remotemaintenanceerror', 'remote_maintenance']) || combined.includes('maintenance')) return 'maintenance'
+  if (includesAny(errorCode, ['remotefetcherror', 'remote_fetch_failed']) || includesAny(combined, ['failed to read', 'remote fetch'])) return 'remote_fetch'
+  if (includesAny(errorCode, ['unexpectedpageerror', 'unexpected_remote_page']) || includesAny(combined, ['unexpected page', 'expected thread detail page'])) return 'unexpected_page'
+  if (includesAny(errorCode, ['invalid_argument', 'valueerror'])) return 'validation'
+  return null
+}
+
+export function formatJobErrorMessage(
+  errorCode: string | null | undefined,
+  errorMessage: string | null | undefined,
+  lang: 'zh' | 'en',
+): string {
+  const code = (errorCode || '').trim()
+  const message = (errorMessage || '').trim()
+  if (!code && !message) return '-'
+  if (lang !== 'zh') return [code, message].filter(Boolean).join(' ').trim() || '-'
+
+  const promptMatch = message.match(/expected thread detail page but got prompt page for [^:]+:\s*(.+)$/i)
+  if (promptMatch?.[1]) {
+    return `帖子页面返回了论坛提示：${promptMatch[1].trim()}`
+  }
+
+  if (/expected thread detail page but got login_required/i.test(message)) {
+    return '帖子页面提示需要登录，当前账号未通过访问校验'
+  }
+
+  if (/expected thread detail page but got remote_maintenance/i.test(message)) {
+    return '论坛正在维护，帖子暂时无法访问'
+  }
+
+  const missingContentMatch = message.match(/floor\s+(\d+)\s+content is required when no images are present/i)
+  if (missingContentMatch?.[1]) {
+    return `第 ${missingContentMatch[1]} 楼正文为空且没有图片，无法归档`
+  }
+  if (/content is required when no images are present/i.test(message)) {
+    return '正文为空且没有图片，无法归档'
+  }
+
+  if (/remote fetch/i.test(message) || code === 'RemoteFetchError') {
+    return `远程抓取失败：${message}`
+  }
+  if (/unexpected page/i.test(message) || code === 'UnexpectedPageError') {
+    return `抓取到的页面不符合预期：${message}`
+  }
+  if (/login required/i.test(message) || code === 'LoginRequiredError') {
+    return `需要登录后才能访问：${message}`
+  }
+  if (/maintenance/i.test(message) || code === 'RemoteMaintenanceError') {
+    return `论坛正在维护：${message}`
+  }
+  if (code && message) return `${code}：${message}`
+  return code || message || '-'
+}

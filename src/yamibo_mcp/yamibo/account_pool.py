@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from threading import Lock
+from pathlib import Path
 
 from yamibo_mcp.config import AccountConfig, Settings
 from yamibo_mcp.yamibo.client import YamiboClient
+
+LOG = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -17,10 +21,16 @@ class AccountIdentity:
     cookie_file: str
     enabled: bool
     weight: int
+    permission_level: int
     request_interval_seconds: float
     request_interval_jitter_seconds: float
     max_concurrent_leases: int
     login_mode: str
+
+
+def next_permission_threshold(required_permission: int | None) -> int:
+    # ponytail: 只提升到“高于当前门槛”的最小值，让账号池自然落到下一档可用账号。
+    return (required_permission or 0) + 1
 
 
 def _identity_from_config(config: AccountConfig) -> AccountIdentity:
@@ -31,6 +41,7 @@ def _identity_from_config(config: AccountConfig) -> AccountIdentity:
         cookie_file=str(config.cookie_file),
         enabled=config.enabled,
         weight=config.weight,
+        permission_level=config.permission_level,
         request_interval_seconds=config.request_interval_seconds,
         request_interval_jitter_seconds=config.request_interval_jitter_seconds,
         max_concurrent_leases=config.max_concurrent_leases,
@@ -39,13 +50,19 @@ def _identity_from_config(config: AccountConfig) -> AccountIdentity:
 
 
 def _default_identity_from_settings(settings: Settings) -> AccountIdentity:
+    cookie_file = Path(settings.cookie_file)
+    if not cookie_file.exists():
+        fallback = Path(settings.data_dir) / "cookies.txt"
+        if fallback.exists():
+            cookie_file = fallback
     return AccountIdentity(
         account_id="default",
         username=settings.login_username,
         password=settings.login_password,
-        cookie_file=str(settings.cookie_file),
+        cookie_file=str(cookie_file),
         enabled=True,
         weight=1,
+        permission_level=0,
         request_interval_seconds=settings.request_interval_seconds,
         request_interval_jitter_seconds=settings.request_interval_jitter_seconds,
         max_concurrent_leases=5,
@@ -58,23 +75,40 @@ class AccountPool:
         self._identities = identities
         self._lock = Lock()
         self._inflight = {identity.account_id: 0 for identity in identities}
-        self._cursor = 0
 
-    def acquire(self) -> AccountIdentity:
+    def acquire(self, *, min_permission: int | None = None, prefer_high_permission: bool = False) -> AccountIdentity:
         with self._lock:
-            available = [identity for identity in self._identities if identity.enabled]
+            available = [
+                identity
+                for identity in self._identities
+                if identity.enabled and (min_permission is None or identity.permission_level >= min_permission)
+            ]
             if not available:
-                raise ValueError("no enabled account identities configured")
+                configured = ",".join(f"{identity.account_id}:{identity.permission_level}" for identity in self._identities if identity.enabled)
+                LOG.warning(
+                    "No Yamibo account matched min_permission=%s prefer_high_permission=%s configured=[%s]",
+                    min_permission,
+                    prefer_high_permission,
+                    configured,
+                )
+                if min_permission is None:
+                    raise ValueError("no enabled account identities configured")
+                raise ValueError(f"no enabled account identities configured for permission >= {min_permission}")
 
-            size = len(available)
-            for offset in range(size):
-                identity = available[(self._cursor + offset) % size]
+            def _score(identity: AccountIdentity) -> tuple[float, int, str]:
+                load = self._inflight[identity.account_id] / max(identity.weight, 1)
+                if prefer_high_permission:
+                    return (-float(identity.permission_level), load, identity.account_id)
+                return (float(identity.permission_level), load, identity.account_id)
+
+            available.sort(key=_score)
+
+            for identity in available:
                 if self._inflight[identity.account_id] < identity.max_concurrent_leases:
                     self._inflight[identity.account_id] += 1
-                    self._cursor = (self._cursor + offset + 1) % size
                     return identity
 
-            identity = min(available, key=lambda item: self._inflight[item.account_id] / max(item.weight, 1))
+            identity = min(available, key=_score)
             self._inflight[identity.account_id] += 1
             return identity
 
@@ -94,7 +128,23 @@ def get_account_pool(settings: Settings) -> AccountPool:
         raw_pool = ()
     configured = tuple(_identity_from_config(item) for item in raw_pool if item.enabled)
     identities = configured or (_default_identity_from_settings(settings),)
-    key = (str(getattr(settings, "db_path", "default")), tuple(identity.account_id for identity in identities))
+    key = (
+        str(getattr(settings, "db_path", "default")),
+        tuple(
+            (
+                identity.account_id,
+                identity.cookie_file,
+                identity.enabled,
+                identity.weight,
+                identity.permission_level,
+                identity.request_interval_seconds,
+                identity.request_interval_jitter_seconds,
+                identity.max_concurrent_leases,
+                identity.login_mode,
+            )
+            for identity in identities
+        ),
+    )
     with _POOL_REGISTRY_LOCK:
         pool = _POOL_BY_KEY.get(key)
         if pool is None:
@@ -115,6 +165,8 @@ def borrow_yamibo_client(
     settings: Settings,
     *,
     cookie_file: str | None = None,
+    min_permission: int | None = None,
+    prefer_high_permission: bool = False,
 ) -> Iterator[tuple[AccountIdentity, YamiboClient]]:
     if cookie_file is not None:
         identity = AccountIdentity(
@@ -124,6 +176,7 @@ def borrow_yamibo_client(
             cookie_file=cookie_file,
             enabled=True,
             weight=1,
+            permission_level=0,
             request_interval_seconds=settings.request_interval_seconds,
             request_interval_jitter_seconds=settings.request_interval_jitter_seconds,
             max_concurrent_leases=5,
@@ -142,7 +195,15 @@ def borrow_yamibo_client(
         return
 
     pool = get_account_pool(settings)
-    identity = pool.acquire()
+    identity = pool.acquire(min_permission=min_permission, prefer_high_permission=prefer_high_permission)
+    if min_permission is not None or prefer_high_permission:
+        LOG.info(
+            "Borrowed Yamibo account account_id=%s permission_level=%s min_permission=%s prefer_high_permission=%s",
+            identity.account_id,
+            identity.permission_level,
+            min_permission,
+            prefer_high_permission,
+        )
     try:
         client = YamiboClient(
             timeout=getattr(settings, "request_timeout_seconds", 15.0),

@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import re
+import logging
+from contextlib import contextmanager
 
 from yamibo_mcp.config import load_settings
 from yamibo_mcp.db.connection import connect
-from yamibo_mcp.db.migrations import migrate
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
 from yamibo_mcp.server.schemas import build_series_summary, thread_summary_payload
+from yamibo_mcp.yamibo.anti_bot import activate_remote_access_pause, ensure_remote_access_allowed, is_http_444_error
+from yamibo_mcp.yamibo.account_pool import borrow_yamibo_client, has_configured_account_pool, next_permission_threshold
 from yamibo_mcp.yamibo.client import YamiboClient
+from yamibo_mcp.errors import ThreadPermissionRequiredError
 from yamibo_mcp.yamibo.parsers.forum_list import ForumThreadItem
 from yamibo_mcp.yamibo.parsers.search_results import SearchResultItem
 from yamibo_mcp.yamibo.parsers.thread_detail import (
@@ -17,6 +21,73 @@ from yamibo_mcp.yamibo.parsers.thread_detail import (
 )
 from yamibo_mcp.yamibo.title.normalizer import normalize_series_key
 from yamibo_mcp.yamibo.urls import thread_url_from_tid
+
+LOG = logging.getLogger(__name__)
+
+
+@contextmanager
+def _open_remote_client(
+    settings,
+    *,
+    cookie_file: str | None = None,
+    prefer_high_permission: bool = False,
+    min_permission: int | None = None,
+):
+    if cookie_file is None and not has_configured_account_pool(settings):
+        resolved_cookie_file = str(settings.cookie_file)
+        if not settings.cookie_file.exists():
+            fallback = settings.data_dir / "cookies.txt"
+            if fallback.exists():
+                resolved_cookie_file = str(fallback)
+        client = YamiboClient(
+            timeout=getattr(settings, "request_timeout_seconds", 15.0),
+            cookie_file=resolved_cookie_file,
+            use_system_proxy=settings.use_system_proxy,
+            login_username=settings.login_username,
+            login_password=settings.login_password,
+            request_interval=settings.request_interval_seconds,
+            request_interval_jitter=settings.request_interval_jitter_seconds,
+        )
+        yield None, client
+        return
+
+    with borrow_yamibo_client(
+        settings,
+        cookie_file=cookie_file,
+        min_permission=min_permission,
+        prefer_high_permission=prefer_high_permission,
+    ) as borrowed:
+        yield borrowed
+
+
+def _run_remote_action_with_permission_retry(
+    settings,
+    *,
+    cookie_file: str | None = None,
+    prefer_high_permission: bool = False,
+    action,
+):
+    min_permission: int | None = None
+    while True:
+        try:
+            with _open_remote_client(
+                settings,
+                cookie_file=cookie_file,
+                prefer_high_permission=prefer_high_permission,
+                min_permission=min_permission,
+            ) as borrowed:
+                return action(*borrowed)
+        except ThreadPermissionRequiredError as exc:
+            if min_permission is not None:
+                raise
+            next_min_permission = next_permission_threshold(exc.required_permission)
+            LOG.info(
+                "Remote permission retry requested required_permission=%s next_min_permission=%s prefer_high_permission=%s",
+                exc.required_permission,
+                next_min_permission,
+                prefer_high_permission,
+            )
+            min_permission = next_min_permission
 
 
 def browse_forum_page(
@@ -33,24 +104,33 @@ def browse_forum_page(
         raise ValueError("page must be positive")
 
     settings = load_settings()
-    client = YamiboClient(
-        timeout=getattr(settings, "request_timeout_seconds", 15.0),
-        cookie_file=cookie_file or str(settings.cookie_file),
-        use_system_proxy=settings.use_system_proxy,
-        login_username=settings.login_username,
-        login_password=settings.login_password,
-        request_interval=settings.request_interval_seconds,
-        request_interval_jitter=settings.request_interval_jitter_seconds,
-    )
-    if order == "dateline":
-        result, items, total_pages = client.fetch_forum_threads_dateline(page=page, base_url=base_url, forum_id=forum_id)
-    else:
-        result, items = client.fetch_forum_threads(page=page, base_url=base_url, forum_id=forum_id)
-        total_pages = 0
-
     conn = connect(settings.db_path)
     try:
-        migrate(conn)
+        ensure_remote_access_allowed(conn)
+        try:
+            def _browse(_identity, client):
+                if order == "dateline":
+                    result, items, total_pages = client.fetch_forum_threads_dateline(page=page, base_url=base_url, forum_id=forum_id)
+                else:
+                    result, items = client.fetch_forum_threads(page=page, base_url=base_url, forum_id=forum_id)
+                    total_pages = 0
+                return result, items, total_pages
+
+            result, items, total_pages = _run_remote_action_with_permission_retry(
+                settings,
+                cookie_file=cookie_file,
+                prefer_high_permission=True,
+                action=_browse,
+            )
+        except Exception as exc:
+            if is_http_444_error(exc):
+                activate_remote_access_pause(
+                    conn,
+                    source="remote_queries:browse_forum_page",
+                    message="Yamibo returned HTTP 444. Remote browse/search/access has been paused.",
+                    context={"page": page, "forum_id": forum_id, "order": order},
+                )
+            raise
         repo = ThreadsRepository(conn)
         filtered: list[dict[str, object]] = []
         for item in items:
@@ -101,23 +181,39 @@ def search_threads(
     settings = load_settings()
     conn = connect(settings.db_path)
     try:
-        migrate(conn)
+        ensure_remote_access_allowed(conn)
         repo = ThreadsRepository(conn)
         remote_error: dict[str, str] | None = None
         result_source = "forum"
         total_result_pages = 0
         try:
-            remote_items, scanned_pages, total_result_pages = _remote_search_items(
-                query=query.strip(),
-                limit=limit,
-                start_page=start_page,
-                end_page=end_page,
-                posted_on=posted_on,
-                base_url=base_url,
+            def _search(_identity, client):
+                return _remote_search_items(
+                    client,
+                    query=query.strip(),
+                    limit=limit,
+                    start_page=start_page,
+                    end_page=end_page,
+                    posted_on=posted_on,
+                    base_url=base_url,
+                    forum_id=forum_id,
+                )
+
+            remote_items, scanned_pages, total_result_pages = _run_remote_action_with_permission_retry(
+                settings,
                 cookie_file=cookie_file,
-                forum_id=forum_id,
+                prefer_high_permission=True,
+                action=_search,
             )
         except Exception as exc:  # noqa: BLE001 - remote search falls back to local FTS
+            if is_http_444_error(exc):
+                activate_remote_access_pause(
+                    conn,
+                    source="remote_queries:search_threads",
+                    message="Yamibo returned HTTP 444. Remote browse/search/access has been paused.",
+                    context={"query": query, "forum_id": forum_id, "start_page": start_page, "end_page": end_page},
+                )
+                raise
             remote_items = []
             scanned_pages = []
             total_result_pages = 0
@@ -175,41 +271,54 @@ def inspect_remote_thread(
     base_url: str | None = None,
 ) -> dict[str, object]:
     settings = load_settings()
-    client = YamiboClient(
-        timeout=getattr(settings, "request_timeout_seconds", 15.0),
-        cookie_file=str(settings.cookie_file),
-        use_system_proxy=settings.use_system_proxy,
-        login_username=settings.login_username,
-        login_password=settings.login_password,
-        request_interval=settings.request_interval_seconds,
-        request_interval_jitter=settings.request_interval_jitter_seconds,
-    )
-    fetched = client.fetch_thread(tid=tid, base_url=base_url)
-    snapshot = parse_thread_snapshot(fetched.html, url=fetched.final_url, tid=tid)
-    resolved_forum_id = forum_id if forum_id is not None else extract_forum_id_from_html(fetched.html)
-    category = extract_category_from_html(fetched.html)
-    floor_preview = []
-    for floor in snapshot.floors[:3]:
-        content = (floor.content or "").strip()
-        floor_preview.append(
-            {
-                "floor_no": floor.floor_no,
-                "publisher": floor.publisher,
-                "content_preview": content[:200],
-            }
-        )
-    return {
-        "tid": snapshot.tid,
-        "title": snapshot.display_title,
-        "publisher": snapshot.publisher,
-        "publisher_uid": snapshot.publisher_uid,
-        "forum_id": resolved_forum_id,
-        "category": category,
-        "floor_count": len(snapshot.floors),
-        "image_url_count": snapshot.image_count,
-        "preview": floor_preview,
-        "remote_url": fetched.final_url,
-    }
+    conn = connect(settings.db_path)
+    try:
+        ensure_remote_access_allowed(conn)
+        try:
+            def _inspect(_identity, client):
+                return client.fetch_thread(tid=tid, base_url=base_url)
+
+            fetched = _run_remote_action_with_permission_retry(
+                settings,
+                prefer_high_permission=True,
+                action=_inspect,
+            )
+        except Exception as exc:
+            if is_http_444_error(exc):
+                activate_remote_access_pause(
+                    conn,
+                    source="remote_queries:inspect_remote_thread",
+                    message="Yamibo returned HTTP 444. Remote browse/search/access has been paused.",
+                    context={"tid": tid, "forum_id": forum_id},
+                )
+            raise
+        snapshot = parse_thread_snapshot(fetched.html, url=fetched.final_url, tid=tid)
+        resolved_forum_id = forum_id if forum_id is not None else extract_forum_id_from_html(fetched.html)
+        category = extract_category_from_html(fetched.html)
+        floor_preview = []
+        for floor in snapshot.floors[:3]:
+            content = (floor.content or "").strip()
+            floor_preview.append(
+                {
+                    "floor_no": floor.floor_no,
+                    "publisher": floor.publisher,
+                    "content_preview": content[:200],
+                }
+            )
+        return {
+            "tid": snapshot.tid,
+            "title": snapshot.display_title,
+            "publisher": snapshot.publisher,
+            "publisher_uid": snapshot.publisher_uid,
+            "forum_id": resolved_forum_id,
+            "category": category,
+            "floor_count": len(snapshot.floors),
+            "image_url_count": snapshot.image_count,
+            "preview": floor_preview,
+            "remote_url": fetched.final_url,
+        }
+    finally:
+        conn.close()
 
 
 def _normalize_date_only(value: str | None) -> str | None:
@@ -233,6 +342,7 @@ def _matches_remote_filters(item: ForumThreadItem | SearchResultItem, *, query: 
 
 
 def _remote_search_items(
+    client: YamiboClient,
     *,
     query: str,
     limit: int,
@@ -240,19 +350,8 @@ def _remote_search_items(
     end_page: int | None,
     posted_on: str | None,
     base_url: str,
-    cookie_file: str | None,
     forum_id: int = 30,
 ) -> tuple[list[SearchResultItem | ForumThreadItem], list[str], int]:
-    settings = load_settings()
-    client = YamiboClient(
-        timeout=getattr(settings, "request_timeout_seconds", 15.0),
-        cookie_file=cookie_file or str(settings.cookie_file),
-        use_system_proxy=settings.use_system_proxy,
-        login_username=settings.login_username,
-        login_password=settings.login_password,
-        request_interval=settings.request_interval_seconds,
-        request_interval_jitter=settings.request_interval_jitter_seconds,
-    )
     if posted_on:
         return _dateline_search(client, query=query, limit=limit, posted_on=posted_on, base_url=base_url, forum_id=forum_id)
 

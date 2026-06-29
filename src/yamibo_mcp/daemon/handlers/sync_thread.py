@@ -24,7 +24,8 @@ from yamibo_mcp.storage.thread_archive import materialize_thread
 from yamibo_mcp.services.title_hints import update_title_hints
 from yamibo_mcp.services.title_llm import refine_title_parse_with_llm, title_parse_to_dict
 from yamibo_mcp.daemon.heartbeat import HeartbeatPacer
-from yamibo_mcp.yamibo.account_pool import borrow_yamibo_client, has_configured_account_pool
+from yamibo_mcp.yamibo.account_pool import borrow_yamibo_client, has_configured_account_pool, next_permission_threshold
+from yamibo_mcp.errors import ThreadPermissionRequiredError
 from yamibo_mcp.yamibo.client import YamiboClient
 from yamibo_mcp.yamibo.parsers.thread_detail import parse_thread_snapshot
 from yamibo_mcp.yamibo.urls import thread_page_url_from_tid
@@ -67,9 +68,15 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
     client: YamiboClient | None = None
     title_parse_log: dict[str, object] | None = None
     fetch_artifacts: dict[str, object] = {"archive_mode": "default"}
+    client_stack = ExitStack()
 
     try:
-        with ExitStack() as stack:
+        stack = client_stack
+        with stack:
+            def _check_control_flags() -> None:
+                _check_cancelled(repo, job.job_id)
+                _check_paused(repo, job.job_id)
+
             if html_path_value:
                 html_path = Path(str(html_path_value))
                 if not html_path.is_absolute():
@@ -82,8 +89,64 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
                 if not cookie_path.exists():
                     fallback = settings.data_dir / "cookies.txt"
                     cookie_path = fallback if fallback.exists() else cookie_path
+                author_uid_from_url = _extract_author_uid_from_url(str(url_value)) if url_value else None
+                if tid is None:
+                    raise ValueError("sync_thread requires tid")
                 if has_configured_account_pool(settings):
-                    _, client = stack.enter_context(borrow_yamibo_client(settings))
+                    min_permission: int | None = None
+                    identity = None
+                    while True:
+                        try:
+                            identity, client = stack.enter_context(
+                                borrow_yamibo_client(settings, min_permission=min_permission)
+                            )
+                            LOG.info(
+                                "sync_thread job=%s fetching with account_id=%s permission_level=%s cookie_file=%s min_permission=%s",
+                                job.job_id,
+                                getattr(identity, "account_id", "unknown"),
+                                getattr(identity, "permission_level", "unknown"),
+                                getattr(identity, "cookie_file", "unknown"),
+                                min_permission,
+                            )
+                            if author_uid_from_url:
+                                fetched = client.fetch_thread_page(
+                                    tid=tid,
+                                    page=1,
+                                    author_uid=author_uid_from_url,
+                                    base_url=str(base_url) if base_url else None,
+                                )
+                                fetch_artifacts = {
+                                    "archive_mode": "novel_author_only",
+                                    "author_uid": author_uid_from_url,
+                                    "pages_fetched": 1,
+                                    "page_urls": [fetched.final_url],
+                                    "stopped_reason": "input_author_page",
+                                }
+                            else:
+                                fetched = client.fetch_thread(
+                                    tid=tid,
+                                    url=str(url_value) if url_value else None,
+                                    base_url=str(base_url) if base_url else None,
+                                )
+                            html = fetched.html
+                            source_url = fetched.final_url
+                            break
+                        except ThreadPermissionRequiredError as exc:
+                            if min_permission is not None:
+                                raise
+                            next_min_permission = next_permission_threshold(exc.required_permission)
+                            account_id = getattr(identity, "account_id", "unknown")
+                            LOG.info(
+                                "sync_thread job=%s switching account after permission gate account_id=%s required_permission=%s next_min_permission=%s",
+                                job.job_id,
+                                account_id,
+                                exc.required_permission,
+                                next_min_permission,
+                            )
+                            stack.close()
+                            client_stack = ExitStack()
+                            stack = client_stack
+                            min_permission = next_min_permission
                 else:
                     client = YamiboClient(
                         timeout=getattr(settings, "request_timeout_seconds", 15.0),
@@ -94,31 +157,28 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
                         request_interval=settings.request_interval_seconds,
                         request_interval_jitter=settings.request_interval_jitter_seconds,
                     )
-                author_uid_from_url = _extract_author_uid_from_url(str(url_value)) if url_value else None
-                if tid is None:
-                    raise ValueError("sync_thread requires tid")
-                if author_uid_from_url:
-                    fetched = client.fetch_thread_page(
-                        tid=tid,
-                        page=1,
-                        author_uid=author_uid_from_url,
-                        base_url=str(base_url) if base_url else None,
-                    )
-                    fetch_artifacts = {
-                        "archive_mode": "novel_author_only",
-                        "author_uid": author_uid_from_url,
-                        "pages_fetched": 1,
-                        "page_urls": [fetched.final_url],
-                        "stopped_reason": "input_author_page",
-                    }
-                else:
-                    fetched = client.fetch_thread(
-                        tid=tid,
-                        url=str(url_value) if url_value else None,
-                        base_url=str(base_url) if base_url else None,
-                    )
-                html = fetched.html
-                source_url = fetched.final_url
+                    if author_uid_from_url:
+                        fetched = client.fetch_thread_page(
+                            tid=tid,
+                            page=1,
+                            author_uid=author_uid_from_url,
+                            base_url=str(base_url) if base_url else None,
+                        )
+                        fetch_artifacts = {
+                            "archive_mode": "novel_author_only",
+                            "author_uid": author_uid_from_url,
+                            "pages_fetched": 1,
+                            "page_urls": [fetched.final_url],
+                            "stopped_reason": "input_author_page",
+                        }
+                    else:
+                        fetched = client.fetch_thread(
+                            tid=tid,
+                            url=str(url_value) if url_value else None,
+                            base_url=str(base_url) if base_url else None,
+                        )
+                    html = fetched.html
+                    source_url = fetched.final_url
 
             repo.update_stage(job.job_id, "parse", progress_current=1, progress_total=6)
             _check_paused(repo, job.job_id)
@@ -142,6 +202,7 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
                     base_url=str(base_url) if base_url else None,
                     max_pages=max(settings.novel_author_only_max_pages, 1),
                     page_delay_seconds=max(settings.novel_author_only_page_delay_seconds, 0.0),
+                    before_each_page=_check_control_flags,
                 )
                 page_snapshots = [
                     parse_thread_snapshot(result.html, url=result.final_url, tid=tid)
@@ -175,6 +236,7 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
                     max_pages=max(int(settings.archive_thread_max_pages), 1),
                     first_page=fetched,
                     page_delay_seconds=0.0,
+                    before_each_page=_check_control_flags,
                 )
                 page_snapshots = [
                     parse_thread_snapshot(result.html, url=result.final_url, tid=tid)
@@ -303,7 +365,7 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
             repo.update_stage(job.job_id, "validate", progress_current=3, progress_total=6)
             _check_paused(repo, job.job_id)
             validation = validate_thread_snapshot(snapshot)
-            if not validation.valid:
+            if validation.errors:
                 raise ValueError("; ".join(validation.errors))
 
             # 图片下载先走 staging，失败 URL 先记录下来，后续再演进成 partial 状态。
@@ -552,6 +614,8 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
             },
         )
         raise
+    finally:
+        client_stack.close()
 
 
 def _extract_author_uid_from_url(value: str) -> str | None:

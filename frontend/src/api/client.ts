@@ -28,19 +28,23 @@ export interface JobSummary {
   status: string
   stage: string | null
   tid: number | null
+  url: string | null
+  rerun_job_id: string | null
+  rerun_job_status: string | null
   description: string
   description_en: string
-  payload: Record<string, unknown>
-  artifacts: Record<string, unknown>
   progress_current: number
   progress_total: number | null
   worker_id: string | null
   error_code: string | null
   error_message: string | null
+  failure_kind: string | null
   paused_at: string | null
   created_at: string
   updated_at: string
   finished_at: string | null
+  payload?: Record<string, unknown>
+  artifacts?: Record<string, unknown>
 }
 
 export interface JobEvent {
@@ -86,6 +90,16 @@ export interface ThreadListResponse {
   sort_key: string
   sort_dir: string
   items: ThreadSummary[]
+}
+
+export interface JobListResponse {
+  page: number
+  page_size: number
+  total_count: number
+  total_pages: number
+  status: string | null
+  failure_kind: string | null
+  items: JobSummary[]
 }
 
 export interface ThreadDetail extends ThreadSummary {
@@ -143,6 +157,13 @@ export interface FloorSummary {
   quote_text: string | null
   reply_text: string | null
   rich_body_html: string | null
+  remote_image_urls?: string[]
+  missing_image_urls?: string[]
+  image_slots?: Array<{
+    remote_url: string
+    local_path: string | null
+    status: string
+  }>
 }
 
 export interface Asset {
@@ -231,6 +252,17 @@ export interface DashboardData {
   workers: WorkerHeartbeat[]
   recent_audits: AuditEvent[]
   recent_threads: ThreadSummary[]
+  remote_access_pause: {
+    active: boolean
+    reason: string
+    message: string
+    source: string
+    triggered_at: string
+    paused_job_ids: string[]
+    paused_job_count: number
+    job_types: string[]
+    context: Record<string, unknown>
+  } | null
 }
 
 export interface FontAsset {
@@ -280,12 +312,15 @@ export interface SettingsResponse {
   stored: Record<string, unknown>
   sources: Record<string, string>
   locked_fields: string[]
+  effects: Record<string, 'immediate' | 'restart_daemon' | 'restart_web' | 'restart_daemon_web'>
 }
 
 export interface SettingsUpdateResponse extends SettingsResponse {
   ok: boolean
   saved_path: string
   restart_required: boolean
+  restart_targets: Array<'daemon' | 'web'>
+  effect_mode_summary: 'immediate' | 'restart_daemon' | 'restart_web' | 'restart_daemon_web'
 }
 
 export interface SettingsModelsResponse {
@@ -402,10 +437,20 @@ export interface ThreadBatchResyncResult {
 // API methods
 export const api = {
   dashboard: (limit?: number) => fetchJson<DashboardData>(`/dashboard${limit ? `?limit=${limit}` : ''}`),
-  jobs: (status?: string) => fetchJson<JobSummary[]>(`/jobs${status ? `?status=${status}` : ''}`),
+  jobs: (params?: { status?: string; failure_kind?: string; page?: number; page_size?: number }) => {
+    const qs = new URLSearchParams()
+    if (params?.status) qs.set('status', params.status)
+    if (params?.failure_kind) qs.set('failure_kind', params.failure_kind)
+    if (params?.page) qs.set('page', String(params.page))
+    if (params?.page_size) qs.set('page_size', String(params.page_size))
+    const s = qs.toString()
+    return fetchJson<JobListResponse>(`/jobs${s ? `?${s}` : ''}`)
+  },
   jobCounts: () => fetchJson<Record<string, number>>('/jobs/counts'),
+  jobFailureCounts: (status?: string) => fetchJson<Record<string, number>>(`/jobs/failure-counts${status ? `?status=${status}` : ''}`),
   job: (id: string) => fetchJson<JobSummary>(`/jobs/${id}`),
   jobEvents: (id: string) => fetchJson<JobEvent[]>(`/jobs/${id}/events`),
+  resumeRemoteAccess: () => postJson<{ ok: boolean; resumed_job_ids: string[]; resumed_job_count: number }>('/remote-access/resume', {}),
   threads: (params?: { q?: string; forum_id?: number; days?: number; archive_status?: string; sort_key?: string; sort_dir?: string; page?: number; page_size?: number }) => {
     const qs = new URLSearchParams()
     if (params?.q) qs.set('q', params.q)

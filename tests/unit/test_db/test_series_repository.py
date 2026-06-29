@@ -86,6 +86,32 @@ class TestListSeries:
         rows = repo.list_series(limit=2)
         assert len(rows) == 2
 
+    def test_list_series_orders_on_outer_query_for_postgres(self):
+        class _Result:
+            def fetchall(self):
+                return []
+
+        class _Conn:
+            backend = "postgres"
+
+            def __init__(self):
+                self.calls = []
+
+            def execute(self, statement, parameters=None):
+                self.calls.append((str(statement), parameters))
+                return _Result()
+
+        conn = _Conn()
+        repo = SeriesRepository(conn)
+
+        repo.list_series(limit=2)
+
+        assert conn.calls
+        sql, params = conn.calls[0]
+        assert "FROM (" in sql
+        assert "ORDER BY COALESCE(series_rows.last_sync_time, series_rows.updated_at)" in sql
+        assert params == (2,)
+
 
 class TestConfirmSeriesReview:
     def test_confirm_clears_needs_review(self, db):
@@ -175,3 +201,33 @@ class TestDeleteSeries:
         threads_repo.upsert_snapshot(snap)
         with pytest.raises(ValueError, match="still has"):
             series_repo.delete_series(sid)
+
+
+class TestListSeriesReviewItems:
+    def test_excludes_empty_review_series(self, db):
+        from yamibo_mcp.db.repositories.threads import ThreadsRepository
+        from yamibo_mcp.domain.models import FloorSnapshot, ThreadSnapshot
+
+        repo = SeriesRepository(db)
+        threads_repo = ThreadsRepository(db)
+
+        empty_title = _make_title(series_key="空复核系列", needs_review=True)
+        empty_sid, _ = repo.resolve_for_title(empty_title)
+
+        nonempty_title = _make_title(series_key="有贴复核系列", needs_review=True)
+        nonempty_sid, _ = repo.resolve_for_title(nonempty_title)
+        snap = ThreadSnapshot(
+            tid=7777, url=None, page_type="thread_detail",
+            raw_title="[A组] 有贴复核系列 第1话", display_title="有贴复核系列 第1话",
+            title=nonempty_title, publisher="u", publisher_uid="1",
+            pub_time=None, permission=0,
+            floors=[FloorSnapshot(pid=77770, tid=7777, floor_no=1,
+                                  publisher="u", content="c", pub_time=None,
+                                  has_images=False)],
+        )
+        threads_repo.upsert_snapshot(snap)
+
+        rows = repo.list_series_review_items(limit=20)
+        series_ids = [int(row["series_id"]) for row in rows]
+        assert empty_sid not in series_ids
+        assert nonempty_sid in series_ids

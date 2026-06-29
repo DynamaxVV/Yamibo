@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from dataclasses import replace
 from types import SimpleNamespace
 
+from yamibo_mcp.errors import ThreadPermissionRequiredError
 from yamibo_mcp.daemon.handlers.sync_thread import handle_sync_thread
 from yamibo_mcp.db.repositories.assets import AssetsRepository
 from yamibo_mcp.db.repositories.content_blocks import ContentBlocksRepository
@@ -11,6 +13,7 @@ from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
 from yamibo_mcp.domain.models import FloorSnapshot, ThreadSnapshot, TitleSnapshot
 from yamibo_mcp.storage.images import ImageDownloadResult
+from yamibo_mcp.yamibo.client import FetchResult
 
 
 def _make_settings(tmp_path: Path) -> SimpleNamespace:
@@ -159,6 +162,190 @@ def test_sync_thread_partial_updates_forum_blocks_assets_and_events(db, tmp_path
     assert len(asset_rows) == 1
     assert asset_rows[0]["status"] == "missing"
     assert any(event.event_type == "job.partial" for event in events)
+
+
+def test_sync_thread_retries_permission_gate_with_next_threshold(db, tmp_path, monkeypatch):
+    settings = _make_settings(tmp_path)
+    repo = JobsRepository(db)
+    job = repo.create(
+        "sync_thread",
+        tid=42,
+        payload={"tid": 42, "forum_id": 55},
+    )
+    job = repo.acquire(job.job_id, "worker-1", 300)
+    snapshot = replace(
+        _make_snapshot(),
+        image_count=0,
+        floors=[replace(_make_snapshot().floors[0], has_images=False, image_urls=[])],
+    )
+
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.sync_thread.parse_thread_snapshot",
+        lambda html, url=None, tid=None: snapshot,
+    )
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.sync_thread.refine_title_parse_with_llm",
+        lambda settings, raw_title, parsed: (parsed, None),
+    )
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.sync_thread.write_staging_title_parse_log",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.sync_thread.write_staging_snapshot",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.sync_thread.update_title_hints",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.sync_thread.materialize_thread",
+        lambda *args, **kwargs: (
+            settings.data_dir / "threads/42/context.md",
+            settings.data_dir / "threads/42/metadata.json",
+        ),
+    )
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.sync_thread.download_images_to_staging",
+        lambda *args, **kwargs: ImageDownloadResult(),
+    )
+
+    calls: list[int | None] = []
+
+    class _BorrowContext:
+        def __init__(self, fail: bool) -> None:
+            self.fail = fail
+
+        def __enter__(self):
+            if self.fail:
+                raise ThreadPermissionRequiredError(
+                    "thread requires read permission above 10 for https://bbs.yamibo.com/forum.php?mod=viewthread&tid=42",
+                    required_permission=10,
+                )
+            client = SimpleNamespace(
+                headers={},
+                cookie_jar=None,
+                use_system_proxy=False,
+                cookie_file=None,
+                fetch_thread=lambda **kwargs: FetchResult(
+                    url="https://bbs.yamibo.com/forum.php?mod=viewthread&tid=42",
+                    final_url="https://bbs.yamibo.com/forum.php?mod=viewthread&tid=42",
+                    status_code=200,
+                    html="<html><body><div id='post_1'><td id='postmessage_1'>正文</td></div></body></html>",
+                ),
+                fetch_author_only_thread_pages=lambda **kwargs: (
+                    [
+                        FetchResult(
+                            url="https://bbs.yamibo.com/forum.php?mod=viewthread&tid=42&page=1",
+                            final_url="https://bbs.yamibo.com/forum.php?mod=viewthread&tid=42&page=1",
+                            status_code=200,
+                            html="<html><body><div id='post_1'><td id='postmessage_1'>正文</td></div></body></html>",
+                        )
+                    ],
+                    1,
+                    "done",
+                ),
+                fetch_thread_pages=lambda **kwargs: (
+                    [
+                        FetchResult(
+                            url="https://bbs.yamibo.com/forum.php?mod=viewthread&tid=42&page=1",
+                            final_url="https://bbs.yamibo.com/forum.php?mod=viewthread&tid=42&page=1",
+                            status_code=200,
+                            html="<html><body><div id='post_1'><td id='postmessage_1'>正文</td></div></body></html>",
+                        )
+                    ],
+                    1,
+                    "done",
+                ),
+            )
+            return SimpleNamespace(account_id="high"), client
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_borrow(settings_arg, *, min_permission=None, prefer_high_permission=False, cookie_file=None):
+        calls.append(min_permission)
+        return _BorrowContext(fail=len(calls) == 1)
+
+    monkeypatch.setattr("yamibo_mcp.daemon.handlers.sync_thread.has_configured_account_pool", lambda settings: True)
+    monkeypatch.setattr("yamibo_mcp.daemon.handlers.sync_thread.borrow_yamibo_client", fake_borrow)
+
+    handle_sync_thread(repo, job, "worker-1", 300, settings)
+
+    assert calls == [None, 11]
+
+
+def test_sync_thread_fails_empty_primary_floor_without_images(db, tmp_path, monkeypatch):
+    settings = _make_settings(tmp_path)
+    html_path = tmp_path / "thread.html"
+    html_path.write_text("<html></html>", encoding="utf-8")
+    repo = JobsRepository(db)
+    job = repo.create(
+        "sync_thread",
+        tid=42,
+        payload={"html_path": str(html_path), "forum_id": 55},
+    )
+    job = repo.acquire(job.job_id, "worker-1", 300)
+    snapshot = _make_snapshot()
+    snapshot = replace(
+        snapshot,
+        floors=[replace(snapshot.floors[0], content="", has_images=False, image_urls=[])],
+        image_count=0,
+    )
+
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.sync_thread.parse_thread_snapshot",
+        lambda html, url=None, tid=None: snapshot,
+    )
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.sync_thread.refine_title_parse_with_llm",
+        lambda settings, raw_title, parsed: (parsed, None),
+    )
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.sync_thread.write_staging_title_parse_log",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.sync_thread.write_staging_snapshot",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.sync_thread.update_title_hints",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.sync_thread.materialize_thread",
+        lambda *args, **kwargs: (
+            settings.data_dir / "threads/42/context.md",
+            settings.data_dir / "threads/42/metadata.json",
+        ),
+    )
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.sync_thread.download_images_to_staging",
+        lambda *args, **kwargs: ImageDownloadResult(
+            downloaded_relpaths={},
+            non_export_relpaths={},
+            shared_relpaths={},
+            skipped_relpaths={},
+            downloaded_count=0,
+            non_export_count=0,
+            shared_downloaded_count=0,
+            missing_urls=[],
+            missing_shared_urls=[],
+        ),
+    )
+
+    try:
+        handle_sync_thread(repo, job, "worker-1", 300, settings)
+        raise AssertionError("expected ValueError")
+    except ValueError as exc:
+        assert "content is required when no images are present" in str(exc)
+
+    failure_path = settings.data_dir / "staging" / "jobs" / job.job_id / "failure.json"
+    assert failure_path.exists()
+    assert "content is required when no images are present" in failure_path.read_text(encoding="utf-8")
+    assert ThreadsRepository(db).get_thread(42) is None
 
 
 def test_sync_thread_partial_on_download_timeout(db, tmp_path, monkeypatch):

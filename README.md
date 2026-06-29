@@ -2,7 +2,7 @@
 
 百合会 (yamibo.com) 论坛本地归档系统。通过 MCP 协议让 LLM 客户端浏览、搜索、归档、检查更新和导出论坛贴子；内嵌 React WebUI 控制台，支持多主题切换。
 
-> 当前版本：`0.9.3`
+> 当前版本：`0.10.0`
 
 ## 功能特性
 
@@ -17,7 +17,7 @@
 - **批量任务** — 支持批量归档和批量 RAG 索引，便于一次性处理多个 tid
 - **批量归档探测** — `probe_archived_threads` 可先读取本地归档尾部状态，再配合远端 `last_reply_at` 决定是否补跑
 - **Job Event Outbox** — 任务状态变更追加耐久化事件，支持诊断和未来通知
-- **本地 RAG 检索** — 基于 SQLite FTS5 + `sqlite-vec` 的归档内容混合检索，返回可追溯证据片段
+- **本地 RAG 检索** — 基于 FTS5 / PostgreSQL `tsvector` + `pgvector` 的归档内容混合检索，返回可追溯证据片段
 - **Agent-Friendly Interface** — 区分远端预览/任务创建与本地归档读取，统一结构化错误和紧凑输出
 - **Web 控制台** — React+Vite SPA，中英文双语，4 套可切换主题 + 暗黑模式
 - **CLI** — 所有工具均可通过命令行直接调用
@@ -66,6 +66,20 @@ uv sync --extra dev
 }
 ```
 
+如果要启用多账号池，可以在 `yamibo.account_pool` 里为不同账号配置独立的账号项。常用字段如下：
+
+- `account_id`：账号标识
+- `username` / `password`：登录凭据
+- `cookie_file`：该账号自己的 cookie 文件
+- `enabled`：是否启用
+- `weight`：并发/负载权重
+- `permission_level`：阅读权限梯队，推荐按 `0/10/20/...` 配置，`0` 是最低
+- `request_interval_seconds` / `request_interval_jitter_seconds`：请求节流
+- `max_concurrent_leases`：最大并发租约数
+- `login_mode`：登录策略
+
+默认低权限账号会优先用于普通抓取；遇到“阅读权限高于 xx 才能浏览”或需要先看论坛列表/搜索结果时，会自动切到更高权限账号。
+
 其中：
 
 - `llm.*` 负责标题解析等 chat/completions 场景
@@ -74,6 +88,8 @@ uv sync --extra dev
 - `rag.debug_indexing` 或 `YAMIBO_RAG_DEBUG_INDEXING=1` 可开启 RAG 索引调试日志，daemon 会在终端输出请求与失败上下文
 
 所有配置项均可通过 `YAMIBO_*` 环境变量覆盖。详见 [`.env.example`](.env.example)。
+
+数据库后端预留了 `database` 配置段和 `YAMIBO_DB_*` 环境变量，当前默认仍是 SQLite；后续切到 PostgreSQL 时会复用这组开关。
 
 其中轻小说 TXT 导出目录对应 `YAMIBO_NOVEL_TXT_EXPORT_DIR`，轻小说只看楼主更新检测阈值对应 `YAMIBO_NOVEL_AUTHOR_ONLY_MAX_PAGES` 和 `YAMIBO_NOVEL_AUTHOR_ONLY_PAGE_DELAY_SECONDS`。
 
@@ -113,6 +129,29 @@ yamibo-daemon ──────────────────────
 ```
 
 ## MCP 客户端集成
+
+### SSE 模式
+
+如果你的 LLM 客户端支持 URL 形式的 MCP 连接，可以把服务端改为 SSE：
+
+```bash
+uv run yamibo-mcp-server stdio --transport sse
+```
+
+客户端一般需要配置为指向 SSE 入口，例如：
+
+```json
+{
+  "mcpServers": {
+    "yamibo": {
+      "transport": "sse",
+      "url": "http://127.0.0.1:8000/sse"
+    }
+  }
+}
+```
+
+SSE 模式适合需要保持一个常驻 MCP 服务进程的场景；如果客户端只支持本地进程启动，继续用下面的 `stdio` 配置。
 
 ### Claude Desktop
 

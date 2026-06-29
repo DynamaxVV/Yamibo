@@ -3,7 +3,6 @@ from __future__ import annotations
 from yamibo_mcp.application.contracts import AgentAction, AgentResult
 from yamibo_mcp.config import load_settings
 from yamibo_mcp.db.connection import connect
-from yamibo_mcp.db.migrations import migrate
 from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.domain.enums import JobType
 from yamibo_mcp.server.resource_uris import job_events_uri
@@ -18,7 +17,6 @@ def create_rag_index_job(
     settings = load_settings()
     conn = connect(settings.db_path)
     try:
-        migrate(conn)
         repo = JobsRepository(conn)
         if tid is not None and not force:
             existing = repo.find_live_job_for_thread(job_type=JobType.RAG_INDEX.value, tid=tid)
@@ -70,7 +68,6 @@ def create_rag_index_batch_jobs(
     settings = load_settings()
     conn = connect(settings.db_path)
     try:
-        migrate(conn)
         repo = JobsRepository(conn)
         created_job_ids: list[str] = []
         reused_job_ids: list[str] = []

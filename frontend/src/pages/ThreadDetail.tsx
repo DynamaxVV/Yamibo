@@ -7,6 +7,7 @@ import { useI18n } from '../context/I18nContext'
 import { useTheme } from '../context/ThemeContext'
 import { formatDateTime } from '../utils/time'
 import { getArchiveBreakdown, getPartialArchiveReason, hasPartialArchiveBreakdown } from '../utils/archiveSummary'
+import { formatJobErrorMessage, renderBbsLinks } from '../utils/jobMessages'
 
 const FORUM_NAMES: Record<number, string> = {}
 
@@ -360,7 +361,7 @@ function getJobStageTrack(jobType: string | null | undefined, stage: string | nu
 }
 
 function JobProgressDialog({ jobId, title, onClose }: { jobId: string; title: string; onClose: () => void }) {
-  const { t } = useI18n()
+  const { t, lang } = useI18n()
   const [job, setJob] = useState<JobSummary | null>(null)
   const [events, setEvents] = useState<import('../api/client').JobEvent[]>([])
 
@@ -429,7 +430,7 @@ function JobProgressDialog({ jobId, title, onClose }: { jobId: string; title: st
             </div>
 
             {job?.error_message && isError && (
-              <div className="job-progress-error">{job.error_message}</div>
+              <div className="job-progress-error">{renderBbsLinks(formatJobErrorMessage(job.error_code, job.error_message, lang))}</div>
             )}
 
             <div className="job-stage-track">
@@ -495,6 +496,11 @@ interface FloorGroup {
   quoteText: string | null
   replyText: string | null
   richBodyHtml: string | null
+  imageSlots: Array<{
+    remote_url: string
+    local_path: string | null
+    status: string
+  }>
 }
 
 export function ThreadDetail() {
@@ -687,9 +693,9 @@ export function ThreadDetail() {
     let poll: ReturnType<typeof window.setInterval> | null = null
     const refresh = async () => {
       try {
-        const jobs = await api.jobs()
+        const jobs = await api.jobs({ page: 1, page_size: 200 })
         if (!active) return
-        const activeJob = jobs.find(j => j.tid === tid && j.job_type === 'sync_thread' && ACTIVE_JOB_STATUSES.has(j.status))
+        const activeJob = jobs.items.find(j => j.tid === tid && j.job_type === 'sync_thread' && ACTIVE_JOB_STATUSES.has(j.status))
         if (!activeJob) {
           setActiveSyncStatus(null)
           if (poll != null) {
@@ -845,6 +851,7 @@ export function ThreadDetail() {
       quoteText: f.quote_text || null,
       replyText: f.reply_text || null,
       richBodyHtml: f.rich_body_html || null,
+      imageSlots: (f.image_slots || []).filter(slot => slot && typeof slot.remote_url === 'string'),
     }
   })
   const floorAnchorKey = floorGroups.map(group => `${group.pid}:${group.floor_no}`).join('|')
@@ -1302,7 +1309,28 @@ export function ThreadDetail() {
                       )}
                     </>
                   )}
-                  {fg.contentImages.length > 0 && (
+                  {fg.imageSlots.length > 0 ? (
+                    <div className="floor-images">
+                      {fg.imageSlots
+                        .filter(slot => slot.status !== 'shared' && slot.status !== 'skipped')
+                        .map((slot, i) => {
+                          if (slot.local_path) {
+                            const src = `/media/threads/${tid}/${slot.local_path}`
+                            return (
+                              <a key={`${slot.remote_url}-${i}`} href={src} target="_blank" rel="noreferrer" className="floor-image-link">
+                                <img src={src} loading="lazy" alt="" />
+                              </a>
+                            )
+                          }
+                          return (
+                            <div key={`${slot.remote_url}-${i}`} className="missing-image-url-card">
+                              <div className="missing-image-url-label">{lang === 'en' ? 'Missing image URL' : '缺失图片 URL'}</div>
+                              <a href={slot.remote_url} target="_blank" rel="noreferrer">{slot.remote_url}</a>
+                            </div>
+                          )
+                        })}
+                    </div>
+                  ) : fg.contentImages.length > 0 ? (
                     <div className="floor-images">
                       {fg.contentImages.map((img, i) => {
                         const src = `/media/threads/${tid}/${img.url}`
@@ -1313,8 +1341,8 @@ export function ThreadDetail() {
                         )
                       })}
                     </div>
-                  )}
-                  {fg.smallImages.length > 0 && (
+                  ) : null}
+                  {fg.imageSlots.length === 0 && fg.smallImages.length > 0 && (
                     <div className="floor-small-images">
                       {fg.smallImages.map((img, i) => {
                         const src = `/media/threads/${tid}/${img.url}`

@@ -13,7 +13,12 @@ LOG = logging.getLogger(__name__)
 
 def _event_from_row(row: sqlite3.Row) -> JobEvent:
     payload_raw = row["payload_json"]
-    payload = json.loads(payload_raw) if payload_raw else {}
+    if payload_raw in {None, ""}:
+        payload = {}
+    elif isinstance(payload_raw, dict):
+        payload = payload_raw
+    else:
+        payload = json.loads(payload_raw)
     return JobEvent(
         event_id=row["event_id"],
         job_id=row["job_id"],
@@ -44,11 +49,13 @@ class JobEventsRepository:
             """
             INSERT INTO job_events (job_id, event_type, status, stage, payload_json, created_at)
             VALUES (?, ?, ?, ?, ?, ?)
+            RETURNING event_id
             """,
             (job_id, event_type, status, stage, payload_json, now),
         )
+        row = cur.fetchone()
         self.conn.commit()
-        event_id = int(cur.lastrowid)
+        event_id = int(row["event_id"]) if row is not None else 0
         return JobEvent(
             event_id=event_id,
             job_id=job_id,
@@ -81,3 +88,7 @@ class JobEventsRepository:
             params,
         ).fetchall()
         return [_event_from_row(row) for row in rows]
+
+    def count(self) -> int:
+        row = self.conn.execute("SELECT COUNT(*) AS c FROM job_events").fetchone()
+        return int(row["c"]) if row is not None else 0

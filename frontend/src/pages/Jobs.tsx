@@ -5,19 +5,39 @@ import { Badge } from '../components/Badge'
 import { PaginationControls } from '../components/PaginationControls'
 import { useI18n } from '../context/I18nContext'
 import { formatDateTime } from '../utils/time'
+import { formatJobFailureKind, getJobFailureKind, type JobFailureKind } from '../utils/jobMessages'
 
-const STATUSES = [null, 'queued', 'running', 'paused', 'succeeded', 'partial', 'failed', 'interrupted'] as const
-const PAGE_SIZE = 50
+const STATUSES = [null, 'queued', 'running', 'paused', 'succeeded', 'partial', 'failed', 'interrupted', 'superseded'] as const
+const FAILURE_KINDS: Array<JobFailureKind | null> = [null, 'forum_closed', 'thread_missing', 'login_required', 'maintenance', 'remote_fetch', 'unexpected_page', 'empty_content', 'local_missing', 'validation', 'cancelled', 'other']
+const PAGE_SIZE_OPTIONS = [25, 50, 100] as const
 const STORAGE_KEY = 'yamibo_jobs_status'
+const FAILURE_STORAGE_KEY = 'yamibo_jobs_failure_kind'
+const PAGE_SIZE_STORAGE_KEY = 'yamibo_jobs_page_size'
+const LOADING_DELAY_MS = 180
 
 export function Jobs() {
   const { t, lang } = useI18n()
   const [jobs, setJobs] = useState<JobSummary[]>([])
   const [statusCounts, setStatusCounts] = useState<Record<string, number>>({})
+  const [isLoading, setIsLoading] = useState(true)
   const [status, setStatus] = useState<string | null>(() => {
     try { return localStorage.getItem(STORAGE_KEY) as string | null || null } catch { return null }
   })
+  const [failureKind, setFailureKind] = useState<JobFailureKind | null>(() => {
+    try { return (localStorage.getItem(FAILURE_STORAGE_KEY) as JobFailureKind | null) || null } catch { return null }
+  })
   const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState<number>(() => {
+    try {
+      const saved = Number(localStorage.getItem(PAGE_SIZE_STORAGE_KEY) || 25)
+      return PAGE_SIZE_OPTIONS.includes(saved as typeof PAGE_SIZE_OPTIONS[number]) ? saved : 25
+    } catch {
+      return 25
+    }
+  })
+  const [totalPages, setTotalPages] = useState(1)
+  const [totalCount, setTotalCount] = useState(0)
+  const [failureKindCounts, setFailureKindCounts] = useState<Record<string, number>>({})
   const [confirmDelete, setConfirmDelete] = useState<JobSummary | null>(null)
   const [confirmBatchDelete, setConfirmBatchDelete] = useState<string | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
@@ -26,10 +46,24 @@ export function Jobs() {
   const [jobActionError, setJobActionError] = useState<string | null>(null)
   const [pendingCancelId, setPendingCancelId] = useState<string | null>(null)
   const [pendingRetryId, setPendingRetryId] = useState<string | null>(null)
+  const [pendingSelectedRetry, setPendingSelectedRetry] = useState(false)
   const jobsRef = useRef<JobSummary[]>([])
   const countsRef = useRef<Record<string, number>>({})
+  const refreshTokenRef = useRef(0)
+  const loadingTimerRef = useRef<number | null>(null)
 
   const desc = (j: JobSummary) => lang === 'en' ? j.description_en : j.description
+
+  useEffect(() => {
+    setPage(1)
+    setSelectedIds(new Set())
+    setFailureKind(null)
+    try { localStorage.removeItem(FAILURE_STORAGE_KEY) } catch {}
+  }, [status])
+
+  useEffect(() => {
+    setSelectedIds(new Set())
+  }, [page, pageSize])
 
   const refreshCounts = useCallback(() => {
     api.jobCounts().then(next => {
@@ -38,56 +72,83 @@ export function Jobs() {
     }).catch(() => {})
   }, [])
 
-  useEffect(() => {
-    refreshCounts()
-    api.jobs(status || undefined).then(next => {
-      setJobs(next)
-      jobsRef.current = next
-    }).catch(() => {})
-  }, [refreshCounts, status])
-
-  useEffect(() => {
-    setPage(1)
-    setSelectedIds(new Set())
-  }, [status])
-
-  const refreshJobs = useCallback(async () => {
+  const refreshJobs = useCallback(async (showLoading = false) => {
+    const token = ++refreshTokenRef.current
+    if (loadingTimerRef.current !== null) {
+      window.clearTimeout(loadingTimerRef.current)
+      loadingTimerRef.current = null
+    }
+    if (showLoading) {
+      loadingTimerRef.current = window.setTimeout(() => {
+        if (token === refreshTokenRef.current) setIsLoading(true)
+      }, LOADING_DELAY_MS)
+    }
     try {
-      const [nextJobs, nextCounts] = await Promise.all([
-        api.jobs(status || undefined),
-        api.jobCounts(),
-      ])
-      setJobs(nextJobs)
+      const jobsRequest = api.jobs({
+        status: status || undefined,
+        failure_kind: status === 'failed' ? failureKind || undefined : undefined,
+        page,
+        page_size: pageSize,
+      })
+      const failureCountsRequest = status === 'failed' ? api.jobFailureCounts('failed') : Promise.resolve<Record<string, number>>({})
+      const [nextJobs, nextCounts, nextFailureCounts] = await Promise.all([jobsRequest, api.jobCounts(), failureCountsRequest])
+      if (token !== refreshTokenRef.current) return
+      setJobs(nextJobs.items)
+      setTotalPages(nextJobs.total_pages)
+      setTotalCount(nextJobs.total_count)
       setStatusCounts(nextCounts)
-      jobsRef.current = nextJobs
+      setFailureKindCounts(nextFailureCounts)
+      jobsRef.current = nextJobs.items
       countsRef.current = nextCounts
     } catch {
       // ignore
+    } finally {
+      if (loadingTimerRef.current !== null) {
+        window.clearTimeout(loadingTimerRef.current)
+        loadingTimerRef.current = null
+      }
+      if (showLoading && token === refreshTokenRef.current) setIsLoading(false)
     }
-  }, [status])
+  }, [failureKind, page, pageSize, status])
+
+  useEffect(() => () => {
+    if (loadingTimerRef.current !== null) {
+      window.clearTimeout(loadingTimerRef.current)
+      loadingTimerRef.current = null
+    }
+  }, [])
+
+  useEffect(() => {
+    void refreshJobs(true)
+  }, [refreshJobs])
 
   useEffect(() => {
     let active = true
     const poll = window.setInterval(async () => {
       try {
-        const [nextJobs, nextCounts] = await Promise.all([
-          api.jobs(status || undefined),
-          api.jobCounts(),
-        ])
+        const jobsRequest = api.jobs({
+          status: status || undefined,
+          failure_kind: status === 'failed' ? failureKind || undefined : undefined,
+          page,
+          page_size: pageSize,
+        })
+        const failureCountsRequest = status === 'failed' ? api.jobFailureCounts('failed') : Promise.resolve<Record<string, number>>({})
+        const [nextJobs, nextCounts, nextFailureCounts] = await Promise.all([jobsRequest, api.jobCounts(), failureCountsRequest])
         if (!active) return
         const prevJobsKey = JSON.stringify(jobsRef.current.map(j => [j.job_id, j.status, j.stage, j.updated_at]))
-        const nextJobsKey = JSON.stringify(nextJobs.map(j => [j.job_id, j.status, j.stage, j.updated_at]))
+        const nextJobsKey = JSON.stringify(nextJobs.items.map(j => [j.job_id, j.status, j.stage, j.updated_at]))
         const prevCountsKey = JSON.stringify(countsRef.current)
         const nextCountsKey = JSON.stringify(nextCounts)
-        if (prevJobsKey !== nextJobsKey || prevCountsKey !== nextCountsKey) {
-          setJobs(nextJobs)
+        const prevFailureCountsKey = JSON.stringify(failureKindCounts)
+        const nextFailureCountsKey = JSON.stringify(nextFailureCounts)
+        if (prevJobsKey !== nextJobsKey || prevCountsKey !== nextCountsKey || prevFailureCountsKey !== nextFailureCountsKey) {
+          setJobs(nextJobs.items)
+          setTotalPages(nextJobs.total_pages)
+          setTotalCount(nextJobs.total_count)
           setStatusCounts(nextCounts)
-          jobsRef.current = nextJobs
+          setFailureKindCounts(nextFailureCounts)
+          jobsRef.current = nextJobs.items
           countsRef.current = nextCounts
-          setPage(currentPage => {
-            const totalPages = Math.max(1, Math.ceil(nextJobs.length / PAGE_SIZE))
-            return Math.min(currentPage, totalPages)
-          })
         }
       } catch { /* ignore */ }
     }, 5000)
@@ -95,7 +156,7 @@ export function Jobs() {
       active = false
       window.clearInterval(poll)
     }
-  }, [status, t])
+  }, [failureKind, failureKindCounts, page, pageSize, status, t])
 
   useEffect(() => {
     if (!pendingCancelId) return
@@ -107,7 +168,7 @@ export function Jobs() {
         if (j.status !== 'running' && j.status !== 'cancel_requested') {
           await api.deleteJob(pendingCancelId)
           setPendingCancelId(null)
-          refreshJobs()
+          await refreshJobs(false)
         }
       } catch {
         setPendingCancelId(null)
@@ -121,8 +182,20 @@ export function Jobs() {
     try { s ? localStorage.setItem(STORAGE_KEY, s) : localStorage.removeItem(STORAGE_KEY) } catch {}
   }
 
-  const totalPages = Math.max(1, Math.ceil(jobs.length / PAGE_SIZE))
-  const paged = jobs.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
+  const setFailureKindAndRemember = (kind: JobFailureKind | null) => {
+    setFailureKind(kind)
+    try { kind ? localStorage.setItem(FAILURE_STORAGE_KEY, kind) : localStorage.removeItem(FAILURE_STORAGE_KEY) } catch {}
+  }
+
+  const setPageSizeAndRemember = (nextPageSize: number) => {
+    setPageSize(nextPageSize)
+    setPage(1)
+    setSelectedIds(new Set())
+    try { localStorage.setItem(PAGE_SIZE_STORAGE_KEY, String(nextPageSize)) } catch {}
+  }
+
+  const showFailureKindSelect = status === 'failed'
+  const paged = jobs
 
   const toggleSelect = (jobId: string) => {
     setSelectedIds(prev => {
@@ -146,6 +219,8 @@ export function Jobs() {
     })
   }
 
+  const selectedJobs = jobs.filter(job => selectedIds.has(job.job_id))
+
   const handleDelete = async (j: JobSummary) => {
     setDeleteError(null)
     setConfirmDelete(j)
@@ -159,7 +234,7 @@ export function Jobs() {
       } else {
         await api.pauseJob(j.job_id)
       }
-      await refreshJobs()
+      await refreshJobs(false)
     } catch (e: any) {
       setJobActionError(e.message || String(e))
     }
@@ -170,7 +245,7 @@ export function Jobs() {
     setPendingRetryId(j.job_id)
     try {
       await api.retryJob(j.job_id)
-      await refreshJobs()
+      await refreshJobs(false)
     } catch (e: any) {
       setJobActionError(e.message || String(e))
     } finally {
@@ -233,13 +308,70 @@ export function Jobs() {
     }
   }
 
-  const batchDeleteKey = (status === 'succeeded' || status === 'failed' || status === 'interrupted' || status === 'partial') ? status : null
-  const pagedIds = paged.map(j => j.job_id)
+  const handleSelectedRetry = async () => {
+    const retryableJobs = selectedJobs.filter(job => job.status === 'failed' || job.status === 'partial' || job.status === 'interrupted')
+    if (retryableJobs.length === 0) return
+    setJobActionError(null)
+    setPendingSelectedRetry(true)
+    try {
+      for (const job of retryableJobs) {
+        await api.retryJob(job.job_id)
+      }
+      setSelectedIds(new Set())
+      await refreshJobs(false)
+    } catch (e: any) {
+      setJobActionError(e.message || String(e))
+    } finally {
+      setPendingSelectedRetry(false)
+    }
+  }
+
+  const handleSelectedPause = async () => {
+    const queuedJobs = selectedJobs.filter(job => job.status === 'queued')
+    if (queuedJobs.length === 0) return
+    setJobActionError(null)
+    setPendingSelectedRetry(true)
+    try {
+      for (const job of queuedJobs) {
+        await api.pauseJob(job.job_id)
+      }
+      setSelectedIds(new Set())
+      await refreshJobs(false)
+    } catch (e: any) {
+      setJobActionError(e.message || String(e))
+    } finally {
+      setPendingSelectedRetry(false)
+    }
+  }
+
+  const handleSelectedResume = async () => {
+    const pausedJobs = selectedJobs.filter(job => job.status === 'paused')
+    if (pausedJobs.length === 0) return
+    setJobActionError(null)
+    setPendingSelectedRetry(true)
+    try {
+      for (const job of pausedJobs) {
+        await api.resumeJob(job.job_id)
+      }
+      setSelectedIds(new Set())
+      await refreshJobs(false)
+    } catch (e: any) {
+      setJobActionError(e.message || String(e))
+    } finally {
+      setPendingSelectedRetry(false)
+    }
+  }
+
+  const batchDeleteKey = (status === 'succeeded' || status === 'failed' || status === 'interrupted' || status === 'partial' || status === 'superseded') ? status : null
+  const pagedIds = jobs.map(j => j.job_id)
   const allPagedSelected = pagedIds.length > 0 && pagedIds.every(id => selectedIds.has(id))
+  const canRetrySelected = selectedJobs.some(job => job.status === 'failed' || job.status === 'partial' || job.status === 'interrupted')
+  const canPauseSelected = selectedJobs.length > 0 && selectedJobs.every(job => job.status === 'queued')
+  const canResumeSelected = selectedJobs.length > 0 && selectedJobs.every(job => job.status === 'paused')
 
   return (
     <>
-      <div className="segmented">
+      <div className="segmented jobs-toolbar">
         {STATUSES.map(s => {
           const key = s || 'all'
           const count = statusCounts[key]
@@ -250,22 +382,71 @@ export function Jobs() {
             </a>
           )
         })}
-        {batchDeleteKey && jobs.length > 0 && (
-          <button className="btn-danger-outline" style={{ marginLeft: 8, fontSize: 12, padding: '3px 8px' }}
+        {showFailureKindSelect && (
+          <label className="job-failure-filter">
+            <span>{lang === 'en' ? 'Failure kind' : '失败类型'}</span>
+            <select
+              value={failureKind || ''}
+              onChange={e => {
+                const next = (e.target.value || null) as JobFailureKind | null
+                setFailureKindAndRemember(next)
+                setPage(1)
+                setSelectedIds(new Set())
+              }}
+            >
+              {FAILURE_KINDS.map(kind => (
+                <option key={kind || 'all'} value={kind || ''}>
+                  {kind ? `${formatJobFailureKind(kind, lang)} (${failureKindCounts[kind] || 0})` : `${lang === 'en' ? 'All failure kinds' : '全部失败类型'} (${statusCounts.failed || 0})`}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        {batchDeleteKey && totalCount > 0 && (
+          <button className="btn-danger-outline toolbar-compact-btn" style={{ marginLeft: 8 }}
             onClick={() => setConfirmBatchDelete(batchDeleteKey)}>
             {t(`delete_all_${batchDeleteKey}`)}
           </button>
         )}
-        {selectedIds.size > 0 && (
-          <button className="btn-danger-outline" style={{ marginLeft: 8, fontSize: 12, padding: '3px 8px' }}
-            onClick={() => setConfirmSelectedDelete(true)}>
-            {t('delete_selected')} ({selectedIds.size})
-          </button>
-        )}
+        <div className="jobs-toolbar-end">
+          {selectedIds.size > 0 && (
+            <>
+            <button className="btn-danger-outline toolbar-compact-btn" style={{ marginLeft: 8 }}
+              onClick={() => setConfirmSelectedDelete(true)}>
+              {t('delete_selected')} ({selectedIds.size})
+            </button>
+            {canRetrySelected && (
+              <button className="btn-subtle toolbar-compact-btn" style={{ marginLeft: 8 }}
+                onClick={() => void handleSelectedRetry()} disabled={pendingSelectedRetry}>
+                {pendingSelectedRetry ? t('running') : `${t('rerun')} (${selectedIds.size})`}
+              </button>
+            )}
+            {canPauseSelected && (
+              <button className="btn-subtle toolbar-compact-btn" style={{ marginLeft: 8 }}
+                onClick={() => void handleSelectedPause()} disabled={pendingSelectedRetry}>
+                {pendingSelectedRetry ? t('running') : `${t('batch_pause_selected')} (${selectedIds.size})`}
+              </button>
+            )}
+            {canResumeSelected && (
+              <button className="btn-subtle toolbar-compact-btn" style={{ marginLeft: 8 }}
+                onClick={() => void handleSelectedResume()} disabled={pendingSelectedRetry}>
+                {pendingSelectedRetry ? t('running') : `${t('batch_resume_selected')} (${selectedIds.size})`}
+              </button>
+            )}
+            </>
+          )}
+          <label className="job-page-size">
+            <span>{t('page_size')}</span>
+            <select value={String(pageSize)} onChange={e => setPageSizeAndRemember(Number(e.target.value))}>
+              {PAGE_SIZE_OPTIONS.map(option => <option key={option} value={option}>{option}</option>)}
+            </select>
+          </label>
+        </div>
       </div>
       {jobActionError && <div className="panel" style={{ marginTop: 12, color: 'var(--status-error)' }}>{jobActionError}</div>}
       <div id="jobs-pagination-top" />
-      <div className="table-wrap"><table style={{ tableLayout: 'fixed', width: '100%' }}>
+      <div className="jobs-table-shell">
+        <div className="table-wrap"><table style={{ tableLayout: 'fixed', width: '100%' }}>
         <thead><tr>
           <th style={{ width: 32 }}><input type="checkbox" checked={allPagedSelected} onChange={toggleSelectAll} /></th>
           <th style={{ width: 65 }}>{t('tid')}</th>
@@ -277,18 +458,32 @@ export function Jobs() {
           <th style={{ width: 110 }}>{t('action')}</th>
         </tr></thead>
         <tbody>
-          {paged.map(j => (
+          {jobs.map(j => (
             <tr key={j.job_id}>
               <td><input type="checkbox" checked={selectedIds.has(j.job_id)} onChange={() => toggleSelect(j.job_id)} /></td>
               <td>{j.tid ? <Link to={`/threads/${j.tid}`}>{j.tid}</Link> : '-'}</td>
               <td className="truncate" title={desc(j)}><Link to={`/jobs/${j.job_id}`}>{desc(j)}</Link></td>
-              <td><Badge status={j.status} /></td>
+              <td>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'center', justifyContent: 'center' }}>
+                  <Badge status={j.status} />
+                  {j.status === 'superseded' && j.rerun_job_status && (
+                    <div style={{ display: 'inline-flex', gap: 4, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'center', fontSize: 11, color: 'var(--text-tertiary)' }}>
+                      <span>{t('rerun_status')}</span>
+                      <Badge status={j.rerun_job_status} />
+                    </div>
+                  )}
+                  {(() => {
+                    const kind = j.failure_kind || getJobFailureKind(j)
+                    return kind ? <span className="badge badge-muted">{formatJobFailureKind(kind, lang)}</span> : null
+                  })()}
+                </div>
+              </td>
               <td className="nowrap hide-mobile">{j.stage || '-'}</td>
               <td className="nowrap hide-mobile">{j.progress_current}/{j.progress_total ?? '?'}</td>
               <td className="nowrap col-time">{formatDateTime(j.created_at)}</td>
               <td>
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                  {(j.status === 'partial' || j.status === 'failed') && (
+                  {(j.status === 'partial' || j.status === 'failed' || j.status === 'interrupted') && (
                     <button className="btn-subtle" onClick={() => void handleRetry(j)} disabled={pendingRetryId === j.job_id} style={{ fontSize: 11, padding: '2px 6px' }}>
                       {pendingRetryId === j.job_id ? t('running') : t('rerun')}
                     </button>
@@ -305,6 +500,15 @@ export function Jobs() {
           ))}
         </tbody>
       </table></div>
+        {isLoading && (
+          <div className="jobs-loading-overlay" aria-live="polite" aria-busy="true">
+            <div className="jobs-loading-card">
+              <span className="loading-spinner" />
+              <span>{t('loading')}</span>
+            </div>
+          </div>
+        )}
+      </div>
 
       <PaginationControls page={page} totalPages={totalPages} onPageChange={setPage} scrollTargetId="jobs-pagination-top" />
 

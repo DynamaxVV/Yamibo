@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 
 from yamibo_mcp.db.repositories.rag_chunks import RagChunksRepository
-from yamibo_mcp.db.repositories.rag_vectors import RagVectorUnavailableError, RagVectorsRepository
+from yamibo_mcp.db.repositories.rag_vectors import RagVectorUnavailableError, get_vector_repository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
 from yamibo_mcp.rag.chunker import build_rag_chunks
 from yamibo_mcp.rag.embeddings import build_embedding_provider
@@ -107,8 +107,8 @@ def handle_rag_index(repo, job, worker_id: str, lease_seconds: int, settings) ->
     repo.heartbeat(job.job_id, worker_id, lease_seconds)
     repo.update_stage(job.job_id, "vec", progress_current=5, progress_total=6)
     try:
-        vectors_repo = RagVectorsRepository(repo.conn)
-        sqlite_vec_version = vectors_repo.reset_if_dimensions_changed(
+        vectors_repo = get_vector_repository(repo.conn)
+        vector_backend_version = vectors_repo.reset_if_dimensions_changed(
             dimensions=embedding_dimensions
         )
         vectors_repo.delete_thread_embeddings([int(row["id"]) for row in chunk_rows])
@@ -127,7 +127,7 @@ def handle_rag_index(repo, job, worker_id: str, lease_seconds: int, settings) ->
                 "embedding_dimensions": str(embedding_dimensions),
                 "embedding_provider": settings.rag_embedding_provider,
                 "chunker_version": settings.rag_chunker_version,
-                "sqlite_vec_version": sqlite_vec_version,
+                "vector_backend_version": vector_backend_version,
             }
         )
     except RagVectorUnavailableError as exc:

@@ -1,6 +1,6 @@
 # 部署指南 & 运维手册
 
-> 版本：0.9.3 | 更新日期：2026-06-26
+> 版本：0.9.3 | 更新日期：2026-06-28
 
 ## 1. 环境要求
 
@@ -14,8 +14,14 @@
 
 RAG 相关补充：
 
-- 若要启用向量检索，运行环境需要能安装并加载 `sqlite-vec`
+- 若要启用向量检索，SQLite 开发环境需要能安装并加载 `sqlite-vec`；PostgreSQL 环境需要 `pgvector`
 - 若要生成 embedding，需要配置可用的 RAG API 凭据；未单独配置时会回退到 `YAMIBO_LLM_API_KEY`
+
+数据库后端预留配置：
+
+- 默认后端仍是 SQLite，继续使用 `YAMIBO_DB_PATH`
+- 预留的 PostgreSQL 开关包括 `YAMIBO_DB_BACKEND`、`YAMIBO_DB_URL`、`YAMIBO_DB_POOL_MIN`、`YAMIBO_DB_POOL_MAX`、`YAMIBO_DB_POOL_TIMEOUT`、`YAMIBO_DB_CONNECT_TIMEOUT`、`YAMIBO_DB_SCHEMA`、`YAMIBO_DB_SSL_MODE` 和 `YAMIBO_DB_SSL_ROOT_CERT`
+- 当前阶段这些值只作为配置底座，不改变运行时默认行为
 
 ---
 
@@ -49,6 +55,8 @@ uv sync --extra dev
   }
 }
 ```
+
+如需多账号池，可在 `yamibo.account_pool` 里补充多个账号。每个账号建议使用独立的 `cookie_file`，并用 `permission_level` 标记阅读权限；推荐按 `0/10/20/...` 这种梯队配置，`0` 是最低权限。系统会优先用低权限账号做普通抓取，只有在权限不足或列表/搜索场景下才切换到更高权限账号。
 
 #### 方式二：环境变量
 
@@ -152,6 +160,29 @@ uv run yamibo-mcp-server read-resource "yamibo://threads/572313/summary"
 
 ## 4. LLM 客户端集成
 
+### 4.0 SSE 连接方式
+
+如果你的 LLM 客户端支持通过 URL 连接 MCP 服务，可以使用 SSE 模式：
+
+```bash
+uv run yamibo-mcp-server stdio --transport sse
+```
+
+对应的客户端配置一般写成指向 SSE 入口的 URL，例如：
+
+```json
+{
+  "mcpServers": {
+    "yamibo": {
+      "transport": "sse",
+      "url": "http://127.0.0.1:8000/sse"
+    }
+  }
+}
+```
+
+SSE 适合常驻服务进程；如果客户端只支持本地命令启动，继续使用下面的 `stdio` 配置即可。
+
 ### 4.1 Claude Desktop
 
 在 `claude_desktop_config.json` 中添加：
@@ -204,9 +235,22 @@ uv run yamibo-backup-db --copy-cookie
 uv run yamibo-backup-db --keep-count 10
 ```
 
-备份文件格式：`forum_YYYYMMDD_HHMMSS.sqlite3`
+备份文件格式：SQLite 为 `forum_YYYYMMDD_HHMMSS.sqlite3`，PostgreSQL 为 `forum_YYYYMMDD_HHMMSS.pgdump`
 
-### 5.2 清理过期数据
+### 5.2 SQLite -> PostgreSQL 迁移
+
+完整切换步骤见 [docs/postgres-migration-runbook.md](postgres-migration-runbook.md)。常用 ETL 命令：
+
+```bash
+uv run python scripts/migrate_sqlite_to_postgres.py \
+  --source-db data/forum.db \
+  --target-db-url "$YAMIBO_DB_URL" \
+  --schema public
+```
+
+迁移脚本会导入源表、同步自增序列、重建搜索索引，并执行 `ANALYZE`。
+
+### 5.3 清理过期数据
 
 ```bash
 # 清理过期 staging 目录和临时导出文件
@@ -309,4 +353,4 @@ Daemon 和 Server 使用 Python stdlib logging：
 | 任务 partial | 部分图片下载失败 | 检查 `missing_images_json`，可重新同步 |
 | LLM 解析失败 | API Key 未配置或无效 | 检查 `llm.api_key` 配置 |
 | Web 控制台无法访问 | 端口被占用 | 修改 `web.port` 配置 |
-| RAG 向量索引失败 | `sqlite-vec` 无法加载或 embedding 配置缺失 | 检查 `sqlite-vec` 安装、`YAMIBO_LLM_API_KEY` 和 RAG 页面中的失败提示 |
+| RAG 向量索引失败 | SQLite 下 `sqlite-vec` 无法加载，或 PostgreSQL 下 `pgvector` / embedding 配置缺失 | 检查向量扩展、`YAMIBO_LLM_API_KEY` 和 RAG 页面中的失败提示 |

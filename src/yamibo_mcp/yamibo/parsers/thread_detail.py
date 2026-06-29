@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from html import escape as html_escape
+from html import unescape as html_unescape
 from html.parser import HTMLParser
 import re
 from dataclasses import dataclass
@@ -133,10 +134,16 @@ def _sanitize_href(value: str, *, base_url: str | None = None) -> str | None:
     lower = href.lower()
     if lower.startswith(("javascript:", "data:", "vbscript:")):
         return None
-    parsed = urlparse(href)
-    if not parsed.scheme and base_url:
-        href = urljoin(base_url, href)
+    try:
         parsed = urlparse(href)
+    except ValueError:
+        return None
+    if not parsed.scheme and base_url:
+        try:
+            href = urljoin(base_url, href)
+            parsed = urlparse(href)
+        except ValueError:
+            return None
     if parsed.scheme and parsed.scheme not in {"http", "https", "mailto", "tel"}:
         return None
     return href
@@ -149,7 +156,7 @@ def _format_style(style_map: dict[str, str]) -> str | None:
 
 
 _RICH_BLOCK_TAGS = {"div", "p", "blockquote", "ul", "ol", "li", "pre"}
-_RICH_IGNORED_TAGS = {"a"}
+_RICH_IGNORED_TAGS: set[str] = set()
 
 
 class _RichBodyNormalizer(HTMLParser):
@@ -236,6 +243,15 @@ class _RichBodyNormalizer(HTMLParser):
         return False
 
     def _render_starttag(self, tag: str, attrs) -> str:
+        if tag == "a":
+            href = None
+            for key, value in attrs:
+                if key.lower() == "href" and value is not None:
+                    href = _sanitize_href(value)
+                    break
+            if not href:
+                return ""
+            return f'<a href="{html_escape(href, quote=True)}" target="_blank" rel="noreferrer">'
         rendered_attrs: list[str] = []
         for key, value in attrs:
             if value is None:
@@ -273,14 +289,18 @@ class _ThreadSubjectParser(TextCaptureParser):
         self._subject_parts: list[str] = []
         self._capture_floor = False
         self._floor_td_depth = 0
+        self._floor_block_depth = 0
         self._floor_pid: int | None = None
         self._floor_parts: list[str] = []
         self._rich_parts: list[str] = []
         self._rich_tag_stack: list[tuple[str, str | None]] = []
+        self._in_floor_block = False
         self._floor_no = 0
         self._floors: list[FloorSnapshot] = []
         self._floor_has_images = False
         self._floor_image_urls: list[str] = []
+        self._floor_heading_capture = False
+        self._floor_heading_parts: list[str] = []
         self._in_quote = False
         self._quote_parts: list[str] = []
         self._reply_parts: list[str] = []
@@ -290,6 +310,11 @@ class _ThreadSubjectParser(TextCaptureParser):
         data = attrs_dict(attrs)
         if tag == "span" and data.get("id") == "thread_subject":
             self._capture_subject = True
+        if self._in_floor_block and tag == "div":
+            self._floor_block_depth += 1
+        if tag == "div" and "pcb" in set(data.get("class", "").split()):
+            self._in_floor_block = True
+            self._floor_block_depth = 1
         if tag == "td" and data.get("id", "").startswith("postmessage_"):
             try:
                 self._floor_pid = int(data["id"].split("_", 1)[1])
@@ -302,10 +327,13 @@ class _ThreadSubjectParser(TextCaptureParser):
             self._rich_tag_stack = []
             self._floor_has_images = False
             self._floor_image_urls = []
+            self._floor_heading_capture = False
             self._in_quote = False
             self._quote_parts = []
             self._reply_parts = []
             self._skip_depth = 0
+        elif self._in_floor_block and tag == "h2":
+            self._floor_heading_capture = True
         elif self._capture_floor and tag == "td":
             self._floor_td_depth += 1
         if self._capture_floor and tag == "img":
@@ -337,6 +365,13 @@ class _ThreadSubjectParser(TextCaptureParser):
     def handle_endtag(self, tag: str):
         if tag == "span" and self._capture_subject:
             self._capture_subject = False
+        if tag == "h2" and self._in_floor_block:
+            self._floor_heading_capture = False
+        if self._in_floor_block and tag == "div":
+            self._floor_block_depth -= 1
+            if self._floor_block_depth <= 0:
+                self._in_floor_block = False
+                self._floor_block_depth = 0
         if tag == "div" and self._in_quote:
             self._in_quote = False
         if self._capture_floor and self._skip_depth > 0:
@@ -359,6 +394,9 @@ class _ThreadSubjectParser(TextCaptureParser):
                 if self._floor_pid is not None:
                     self._floor_no += 1
                     content = clean_content("".join(self._floor_parts))
+                    heading_content = clean_content("".join(self._floor_heading_parts)) if self._floor_heading_parts else ""
+                    if not content and heading_content and not self._floor_has_images:
+                        content = heading_content
                     quote_text = clean_content("".join(self._quote_parts)) if self._quote_parts else None
                     reply_text = clean_content("".join(self._reply_parts)) if self._reply_parts else None
                     while self._rich_tag_stack:
@@ -382,6 +420,7 @@ class _ThreadSubjectParser(TextCaptureParser):
                             rich_body_html=rich_body_html,
                         )
                     )
+                self._floor_heading_parts = []
                 self._capture_floor = False
                 self._floor_td_depth = 0
                 self._floor_pid = None
@@ -390,6 +429,8 @@ class _ThreadSubjectParser(TextCaptureParser):
     def handle_data(self, data: str):
         if self._capture_subject:
             self._subject_parts.append(data)
+        if self._in_floor_block and self._floor_heading_capture:
+            self._floor_heading_parts.append(data)
         if self._capture_floor:
             if self._skip_depth > 0:
                 return
@@ -443,7 +484,13 @@ class _ThreadSubjectParser(TextCaptureParser):
         if tag == "blockquote":
             return "<blockquote>", "</blockquote>"
         if tag == "a":
-            return None, None
+            href = _sanitize_href(data.get("href", ""), base_url=self._base_url)
+            if not href:
+                return None, None
+            return (
+                f'<a href="{html_escape(href, quote=True)}" target="_blank" rel="noreferrer">',
+                "</a>",
+            )
         if tag == "font":
             style_map: dict[str, str] = {}
             color = _sanitize_color(data.get("color", ""))
@@ -500,6 +547,16 @@ def parse_thread_detail(html: str, *, base_url: str | None = None) -> ThreadDeta
     floors: list[FloorSnapshot] = []
     for floor in summary.floors:
         block_image_urls = _extract_floor_image_urls_from_post_block(html, pid=floor.pid, base_url=base_url)
+        poll_text = _extract_poll_text_from_post_block(html, pid=floor.pid)
+        content = floor.content
+        rich_body_html = floor.rich_body_html
+        if poll_text:
+            content = f"{content}\n{poll_text}".strip() if content else poll_text
+            poll_html = f"<div class=\"poll\">{html_escape(poll_text)}</div>"
+            if rich_body_html:
+                rich_body_html = f"{rich_body_html}\n{poll_html}"
+            else:
+                rich_body_html = poll_html
         if block_image_urls:
             deduped_urls: list[str] = []
             seen: set[str] = set()
@@ -514,18 +571,33 @@ def parse_thread_detail(html: str, *, base_url: str | None = None) -> ThreadDeta
                     tid=floor.tid,
                     floor_no=floor.floor_no,
                     publisher=floor.publisher,
-                    content=floor.content,
+                    content=content,
                     pub_time=floor.pub_time,
                     has_images=bool(deduped_urls),
                     publisher_uid=None,
                     image_urls=deduped_urls,
                     quote_text=floor.quote_text,
                     reply_text=floor.reply_text,
-                    rich_body_html=floor.rich_body_html,
+                    rich_body_html=rich_body_html,
                 )
             )
         else:
-            floors.append(floor)
+            floors.append(
+                FloorSnapshot(
+                    pid=floor.pid,
+                    tid=floor.tid,
+                    floor_no=floor.floor_no,
+                    publisher=floor.publisher,
+                    content=content,
+                    pub_time=floor.pub_time,
+                    has_images=floor.has_images,
+                    publisher_uid=floor.publisher_uid,
+                    image_urls=floor.image_urls,
+                    quote_text=floor.quote_text,
+                    reply_text=floor.reply_text,
+                    rich_body_html=rich_body_html,
+                )
+            )
     return ThreadDetailSummary(title=summary.title, floors=floors)
 
 
@@ -739,13 +811,20 @@ def _extract_post_meta(html: str) -> dict[int, dict[str, str | None]]:
 def _extract_attachment_download_map(html: str, *, base_url: str | None) -> dict[str, str]:
     if not base_url:
         return {}
+    try:
+        urlparse(base_url)
+    except ValueError:
+        return {}
     aid_to_file: dict[str, str] = {}
     for tag in re.findall(r"<img\b[^>]*>", html, flags=re.IGNORECASE):
         aid_match = re.search(r'\baid="(?P<aid>\d+)"', tag)
         file_match = re.search(r'\b(?:zoomfile|file)="(?P<file>[^"]+)"', tag)
         if aid_match is None or file_match is None:
             continue
-        aid_to_file[aid_match.group("aid")] = urljoin(base_url, file_match.group("file"))
+        try:
+            aid_to_file[aid_match.group("aid")] = urljoin(base_url, file_match.group("file"))
+        except ValueError:
+            continue
 
     result: dict[str, str] = {}
     tip_pattern = re.compile(
@@ -757,27 +836,84 @@ def _extract_attachment_download_map(html: str, *, base_url: str | None) -> dict
         source_url = aid_to_file.get(aid)
         if not source_url:
             continue
-        result[source_url] = urljoin(base_url, match.group("href").replace("&amp;", "&"))
+        try:
+            result[source_url] = urljoin(base_url, match.group("href").replace("&amp;", "&"))
+        except ValueError:
+            continue
     return result
 
 
 def _extract_floor_image_urls_from_post_block(html: str, *, pid: int, base_url: str | None) -> list[str]:
-    start_marker = f'id="postmessage_{pid}"'
-    start = html.find(start_marker)
-    if start < 0:
+    block = _extract_post_block(html, pid=pid)
+    if not block:
         return []
-    end_marker = f'id="comment_{pid}"'
-    end = html.find(end_marker, start)
-    if end < 0:
-        next_post = re.search(r'<div id="post_\d+"', html[start:], re.S)
-        end = start + next_post.start() if next_post and next_post.start() > 0 else len(html)
-    block = html[start:end]
     image_urls: list[str] = []
     for tag in re.findall(r"<img\b[^>]*>", block, flags=re.IGNORECASE):
         image_url = _resolve_image_url_from_tag(tag, base_url=base_url)
         if image_url:
             image_urls.append(image_url)
     return image_urls
+
+
+def _extract_poll_text_from_post_block(html: str, *, pid: int) -> str | None:
+    block = _extract_post_block(html, pid=pid)
+    if not block:
+        return None
+    match = re.search(r'<form\b[^>]*\bid="poll"[^>]*>(?P<body>.*?)</form>', block, re.S | re.IGNORECASE)
+    if match is None:
+        return None
+    body = match.group("body")
+    lines: list[str] = []
+    header_match = re.search(r'<div class="pinf">(.*?)</div>', body, re.S | re.IGNORECASE)
+    if header_match is not None:
+        header_text = _html_fragment_to_text(header_match.group(1))
+        if header_text:
+            lines.extend(header_text.splitlines())
+    option_matches = re.findall(r'<label[^>]*>(.*?)</label>', body, re.S | re.IGNORECASE)
+    for option in option_matches:
+        option_text = _html_fragment_to_text(option)
+        if option_text:
+            lines.append(option_text)
+    closing_text = _html_fragment_to_text(body)
+    if "该投票已经关闭或者过期，不能投票" in closing_text and "该投票已经关闭或者过期，不能投票" not in lines:
+        lines.append("该投票已经关闭或者过期，不能投票")
+    cleaned = "\n".join(line.strip() for line in lines if line.strip())
+    return cleaned or None
+
+
+def _extract_post_block(html: str, *, pid: int) -> str | None:
+    start_marker = f'id="postmessage_{pid}"'
+    start = html.find(start_marker)
+    if start < 0:
+        return None
+    end_marker = f'id="comment_{pid}"'
+    end = html.find(end_marker, start)
+    if end < 0:
+        next_post = re.search(r'<div id="post_\d+"', html[start:], re.S)
+        end = start + next_post.start() if next_post and next_post.start() > 0 else len(html)
+    return html[start:end]
+
+
+def _html_fragment_to_text(fragment: str) -> str:
+    text = fragment
+    replacements = (
+        ("<br>", "\n"),
+        ("<br/>", "\n"),
+        ("<br />", "\n"),
+        ("</tr>", "\n"),
+        ("</table>", "\n"),
+        ("</div>", "\n"),
+        ("</p>", "\n"),
+        ("</label>", "\n"),
+        ("</li>", "\n"),
+        ("</td>", "\t"),
+    )
+    for old, new in replacements:
+        text = re.sub(old, new, text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = html_unescape(text)
+    lines = [re.sub(r"\s+", " ", line).strip() for line in text.splitlines()]
+    return "\n".join(line for line in lines if line)
 
 
 def _resolve_image_url_from_tag(tag: str, *, base_url: str | None) -> str | None:
@@ -793,8 +929,11 @@ def _resolve_image_url_from_attrs(attrs: dict[str, str], *, base_url: str | None
     raw = raw.strip()
     if not raw or raw.lstrip("/").startswith(("data:", "javascript:")):
         return None
-    resolved = urljoin(base_url, raw) if base_url else raw
-    parsed = urlparse(resolved)
+    try:
+        resolved = urljoin(base_url, raw) if base_url else raw
+        parsed = urlparse(resolved)
+    except ValueError:
+        return None
     if _is_embedded_image_url(resolved, parsed=parsed):
         return None
     return resolved
@@ -813,14 +952,20 @@ def _is_embedded_image_url(image_url: str, *, parsed=None) -> bool:
 def _resolve_local_saved_image(attrs: dict[str, str], *, base_url: str | None) -> str | None:
     if not base_url:
         return None
-    parsed = urlparse(base_url)
+    try:
+        parsed = urlparse(base_url)
+    except ValueError:
+        return None
     if parsed.scheme != "file":
         return None
     src = (attrs.get("src") or attrs.get("data-src") or "").strip()
     if not src or src.startswith(("data:", "javascript:")):
         return None
-    resolved = urljoin(base_url, src)
-    resolved_parsed = urlparse(resolved)
+    try:
+        resolved = urljoin(base_url, src)
+        resolved_parsed = urlparse(resolved)
+    except ValueError:
+        return None
     if resolved_parsed.scheme != "file":
         return None
     local_path = Path(resolved_parsed.path)

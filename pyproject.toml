@@ -1,16 +1,21 @@
 [project]
 name = "yamibo-mcp"
-version = "0.9.3"
+version = "0.10.0"
 description = "百合会归档助手 — 本地论坛归档 MCP server, daemon, and web console."
 requires-python = ">=3.11"
 dependencies = [
   "mcp>=1.27.2",
-  "sqlite-vec",
+  "sqlalchemy>=2.0.0",
+  "psycopg[binary,pool]>=3.1.0",
+  "pgvector>=0.3.0",
+  "alembic>=1.13.0",
 ]
 
 [project.optional-dependencies]
 dev = [
   "pytest>=8.0",
+  "testcontainers[postgres]>=4.0.0",
+  "sqlite-vec",
 ]
 
 [project.scripts]

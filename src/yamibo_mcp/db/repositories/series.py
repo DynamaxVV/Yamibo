@@ -27,6 +27,10 @@ class SeriesRepository:
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
 
+    def _bool_true_clause(self, column: str) -> str:
+        backend = getattr(self.conn, "backend", None)
+        return f"{column} IS TRUE" if backend in {"postgres", "postgresql"} else f"{column} = 1"
+
     def resolve_for_title(self, title: TitleSnapshot) -> tuple[int, bool]:
         decision = build_series_match_decision(title)
         base_key = decision.base_key
@@ -63,6 +67,7 @@ class SeriesRepository:
               needs_review
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            RETURNING series_id
             """,
             (
                 title.core_title_guess,
@@ -73,10 +78,12 @@ class SeriesRepository:
                 title.author_guess,
                 creator_key,
                 title.confidence,
-                1 if needs_review else 0,
+                needs_review,
             ),
         )
-        return int(cur.lastrowid), needs_review
+        row = cur.fetchone()
+        self.conn.commit()
+        return (int(row["series_id"]) if row is not None else 0), needs_review
 
     def _update_series(
         self,
@@ -115,7 +122,7 @@ class SeriesRepository:
                 final_author,
                 final_creator_key,
                 confidence,
-                1 if final_needs_review else 0,
+                final_needs_review,
                 row["series_id"],
             ),
         )
@@ -139,11 +146,14 @@ class SeriesRepository:
               aliases_json, author_guess, creator_key, merge_confidence,
               needs_review
             )
-            VALUES (?, ?, ?, '[]', '[]', NULL, NULL, 1.0, 0)
+            VALUES (?, ?, ?, '[]', '[]', NULL, NULL, 1.0, ?)
+            RETURNING series_id
             """,
-            (profile.default_series_title, profile.default_series_title, profile.default_series_key),
+            (profile.default_series_title, profile.default_series_title, profile.default_series_key, False),
         )
-        return int(cur.lastrowid), False
+        row = cur.fetchone()
+        self.conn.commit()
+        return (int(row["series_id"]) if row is not None else 0), False
 
     def _creator_compatible(self, existing: str | None, incoming: str | None) -> bool:
         return not existing or not incoming or existing == incoming
@@ -151,18 +161,25 @@ class SeriesRepository:
     def list_series(self, *, limit: int = 100) -> list[sqlite3.Row]:
         return self.conn.execute(
             """
-            SELECT
-              s.*,
-              COUNT(t.tid) AS thread_count,
-              MAX(t.sync_time) AS last_sync_time
-            FROM series s
-            LEFT JOIN threads t ON t.series_id = s.series_id
-            GROUP BY s.series_id
-            ORDER BY COALESCE(last_sync_time, s.updated_at) DESC, s.series_id DESC
+            SELECT *
+            FROM (
+                SELECT
+                  s.*,
+                  COUNT(t.tid) AS thread_count,
+                  MAX(t.sync_time) AS last_sync_time
+                FROM series s
+                LEFT JOIN threads t ON t.series_id = s.series_id
+                GROUP BY s.series_id
+            ) series_rows
+            ORDER BY COALESCE(series_rows.last_sync_time, series_rows.updated_at) DESC, series_rows.series_id DESC
             LIMIT ?
             """,
             (limit,),
-        ).fetchall()
+            ).fetchall()
+
+    def count_series(self) -> int:
+        row = self.conn.execute("SELECT COUNT(*) AS c FROM series").fetchone()
+        return int(row["c"]) if row is not None else 0
 
     def get_series(self, series_id: int) -> sqlite3.Row | None:
         return self.conn.execute(
@@ -172,19 +189,20 @@ class SeriesRepository:
 
     def list_series_review_items(self, *, limit: int = 100) -> list[sqlite3.Row]:
         return self.conn.execute(
-            """
+            f"""
             SELECT
               s.*,
               COUNT(t.tid) AS thread_count
             FROM series s
             LEFT JOIN threads t ON t.series_id = s.series_id
-            WHERE s.needs_review = 1
+            WHERE {self._bool_true_clause("s.needs_review")}
                OR EXISTS (
                     SELECT 1 FROM threads rt
                     WHERE rt.series_id = s.series_id
-                      AND rt.needs_series_review = 1
+                      AND {self._bool_true_clause("rt.needs_series_review")}
                   )
             GROUP BY s.series_id
+            HAVING COUNT(t.tid) > 0
             ORDER BY s.updated_at DESC, s.series_id DESC
             LIMIT ?
             """,
@@ -200,18 +218,38 @@ class SeriesRepository:
             raise ValueError(f"series not found: {series_id}")
         before = dict(before_row)
         self.conn.execute(
-            "UPDATE series SET needs_review = 0, updated_at = CURRENT_TIMESTAMP WHERE series_id = ?",
-            (series_id,),
+            "UPDATE series SET needs_review = ?, updated_at = CURRENT_TIMESTAMP WHERE series_id = ?",
+            (False, series_id),
         )
         self.conn.execute(
-            "UPDATE threads SET needs_series_review = 0 WHERE series_id = ?",
-            (series_id,),
+            "UPDATE threads SET needs_series_review = ? WHERE series_id = ?",
+            (False, series_id),
         )
         after_row = self.conn.execute(
             "SELECT * FROM series WHERE series_id = ?",
             (series_id,),
         ).fetchone()
         return before, dict(after_row)
+
+    def update_series_metadata(
+        self,
+        series_id: int,
+        *,
+        canonical_title: str,
+        series_key: str,
+        author_guess: str | None,
+    ) -> None:
+        self.conn.execute(
+            """
+            UPDATE series
+            SET canonical_title = ?,
+                series_key = ?,
+                author_guess = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE series_id = ?
+            """,
+            (canonical_title, series_key, author_guess, series_id),
+        )
 
     def list_threads_for_series(self, series_id: int) -> list[sqlite3.Row]:
         return self.conn.execute(
@@ -241,18 +279,19 @@ class SeriesRepository:
         self.conn.execute(
             """
             UPDATE series
-            SET aliases_json = ?, alias_keys_json = ?, needs_review = 0, updated_at = CURRENT_TIMESTAMP
+            SET aliases_json = ?, alias_keys_json = ?, needs_review = ?, updated_at = CURRENT_TIMESTAMP
             WHERE series_id = ?
             """,
             (
                 json.dumps(merged_aliases, ensure_ascii=False),
                 json.dumps(merged_alias_keys, ensure_ascii=False),
+                False,
                 target_series_id,
             ),
         )
         self.conn.execute(
-            "UPDATE threads SET series_id = ?, needs_series_review = 0 WHERE series_id = ?",
-            (target_series_id, source_series_id),
+            "UPDATE threads SET series_id = ?, needs_series_review = ? WHERE series_id = ?",
+            (target_series_id, False, source_series_id),
         )
         self.conn.execute("DELETE FROM series WHERE series_id = ?", (source_series_id,))
         after_target = self.get_series(target_series_id)

@@ -73,6 +73,35 @@ class TestClassifySearchResult:
         assert result.page_type == PageType.SEARCH_RESULT
 
 
+class TestClassifyDiscuzPrompt:
+    def test_forum_closed_prompt(self):
+        html = (
+            "<html><head><title>提示信息 - 百合会 - Powered by Discuz!</title></head>"
+            '<body><div id="messagetext" class="alert_info">查无此区，此区已关闭</div></body></html>'
+        )
+        result = classify_html(html)
+        assert result.page_type == PageType.PROMPT_FORUM_CLOSED
+        assert "查无此区" in result.reason
+
+    def test_thread_missing_or_removed_or_review_prompt(self):
+        html = (
+            "<html><head><title>提示信息 - 百合会 - Powered by Discuz!</title></head>"
+            '<body><div id="messagetext" class="alert_error">抱歉，指定的主题不存在或已被删除或正在被审核</div></body></html>'
+        )
+        result = classify_html(html)
+        assert result.page_type == PageType.PROMPT_THREAD_MISSING_OR_REMOVED_OR_REVIEW
+        assert "指定的主题不存在" in result.reason
+
+    def test_thread_permission_required_prompt(self):
+        html = (
+            "<html><head><title>提示信息 - 百合会 - Powered by Discuz!</title></head>"
+            '<body><div id="messagetext" class="alert_error">抱歉，本帖要求阅读权限高于 30 才能浏览</div></body></html>'
+        )
+        result = classify_html(html)
+        assert result.page_type == PageType.PROMPT_THREAD_PERMISSION_REQUIRED
+        assert "阅读权限高于 30" in result.reason
+
+
 class TestClassifyUnknown:
     def test_empty_html(self):
         result = classify_html("")

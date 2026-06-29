@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import struct
+from typing import Any
 
 
 class RagVectorUnavailableError(RuntimeError):
@@ -12,7 +13,7 @@ def serialize_f32(vector: list[float]) -> bytes:
     return struct.pack(f"{len(vector)}f", *vector)
 
 
-class RagVectorsRepository:
+class SqliteVectorRepository:
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
         self._loaded = False
@@ -120,3 +121,12 @@ class RagVectorsRepository:
             """,
             params,
         ).fetchall()
+
+
+def get_vector_repository(conn: Any):
+    backend = getattr(conn, "backend", None)
+    if backend in {"postgres", "postgresql"}:
+        from yamibo_mcp.db.repositories.postgres_vectors import PostgresVectorRepository
+
+        return PostgresVectorRepository(conn)
+    return SqliteVectorRepository(conn)

@@ -171,7 +171,7 @@ def test_search_archived_content_vector_uses_fake_provider(tmp_path, db):
     with patch("yamibo_mcp.application.rag_queries.load_settings", return_value=settings), \
          patch("yamibo_mcp.application.rag_queries.connect", return_value=db), \
          patch("yamibo_mcp.application.rag_queries.build_embedding_provider", return_value=FakeProvider()), \
-         patch("yamibo_mcp.application.rag_queries.RagVectorsRepository", FakeVectorsRepo):
+         patch("yamibo_mcp.application.rag_queries.get_vector_repository", FakeVectorsRepo):
         result = search_archived_content(query="语义查询", mode="vector", top_k=5)
 
     assert result.ok is True

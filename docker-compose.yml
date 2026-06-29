@@ -1,0 +1,26 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg15
+    container_name: yamibo-postgres
+    environment:
+      POSTGRES_DB: yamibo
+      POSTGRES_USER: yamibo
+      POSTGRES_PASSWORD: yamibo
+    ports:
+      - "5432:5432"
+    volumes:
+      - yamibo_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U yamibo -d yamibo"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  yamibo_postgres_data:

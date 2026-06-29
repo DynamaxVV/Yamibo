@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+
 from yamibo_mcp.domain.forums import resolve_forum
 from yamibo_mcp.domain.models import (
     AssetSnapshot,
@@ -167,7 +169,7 @@ def _build_assets(snapshot: ThreadSnapshot) -> list[AssetSnapshot]:
             asset_type = _classify_asset_type(url)
             assets.append(
                 AssetSnapshot(
-                    asset_id=f"asset_{abs(hash(url)) % (10**8):08d}",
+                    asset_id=_asset_id_for(snapshot.tid, url),
                     tid=snapshot.tid,
                     pid=floor.pid,
                     asset_type=asset_type,
@@ -179,6 +181,11 @@ def _build_assets(snapshot: ThreadSnapshot) -> list[AssetSnapshot]:
                 )
             )
     return assets
+
+
+def _asset_id_for(tid: int, url: str) -> str:
+    digest = hashlib.sha256(f"{tid}:{url}".encode("utf-8")).hexdigest()
+    return f"asset_{digest[:16]}"
 
 
 def _classify_asset_type(url: str) -> str:

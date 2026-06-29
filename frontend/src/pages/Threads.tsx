@@ -8,6 +8,8 @@ import { formatDateTime } from '../utils/time'
 
 type SortKey = 'pub_time' | 'sync_time' | 'reply_count'
 type SortDir = 'asc' | 'desc'
+const PAGE_SIZE_OPTIONS = [25, 50, 100] as const
+const PAGE_SIZE_STORAGE_KEY = 'threads_page_size'
 
 function SortHeader({ label, sortKey, currentKey, currentDir, onSort, width, className }: {
   label: string; sortKey: SortKey; currentKey: SortKey | null; currentDir: SortDir; onSort: (key: SortKey) => void; width?: number; className?: string
@@ -40,14 +42,20 @@ export function Threads() {
   const [sortKey, setSortKey] = useState<SortKey | null>(() => (sessionStorage.getItem('threads_sortKey') as SortKey) || null)
   const [sortDir, setSortDir] = useState<SortDir>(() => (sessionStorage.getItem('threads_sortDir') as SortDir) || 'desc')
   const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState<number>(() => {
+    try {
+      const saved = Number(sessionStorage.getItem(PAGE_SIZE_STORAGE_KEY) || 25)
+      return PAGE_SIZE_OPTIONS.includes(saved as typeof PAGE_SIZE_OPTIONS[number]) ? saved : 25
+    } catch {
+      return 25
+    }
+  })
   const [selectedTids, setSelectedTids] = useState<Set<number>>(new Set())
   const [confirmDeleteTids, setConfirmDeleteTids] = useState<number[] | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [deleteSubmitting, setDeleteSubmitting] = useState(false)
   const [bulkMessage, setBulkMessage] = useState<string | null>(null)
   const bulkMessageTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null)
-  const PAGE_SIZE = 50
-
   const refreshForums = useCallback(async () => {
     const fs = await api.forums()
     setForums(fs.filter(f => f.thread_count > 0))
@@ -62,12 +70,12 @@ export function Threads() {
       sort_key: sortKey || undefined,
       sort_dir: sortKey ? sortDir : undefined,
       page,
-      page_size: PAGE_SIZE,
+      page_size: pageSize,
     })
     setThreads(response.items)
     setTotalPages(response.total_pages)
     if (response.page !== page) setPage(response.page)
-  }, [q, forumId, days, archiveFilter, sortKey, sortDir, page])
+  }, [q, forumId, days, archiveFilter, sortKey, sortDir, page, pageSize])
 
   useEffect(() => {
     void refreshForums()
@@ -80,7 +88,8 @@ export function Threads() {
     sessionStorage.setItem('threads_archiveFilter', archiveFilter)
     sessionStorage.setItem('threads_sortKey', sortKey || '')
     sessionStorage.setItem('threads_sortDir', sortDir)
-  }, [q, forumId, days, archiveFilter, sortKey, sortDir])
+    sessionStorage.setItem(PAGE_SIZE_STORAGE_KEY, String(pageSize))
+  }, [q, forumId, days, archiveFilter, sortKey, sortDir, pageSize])
 
   useEffect(() => {
     let active = true
@@ -102,6 +111,13 @@ export function Threads() {
   useEffect(() => {
     setSelectedTids(new Set())
   }, [threads])
+
+  const setPageSizeAndRemember = (nextPageSize: number) => {
+    setPageSize(nextPageSize)
+    setPage(1)
+    setSelectedTids(new Set())
+    try { sessionStorage.setItem(PAGE_SIZE_STORAGE_KEY, String(nextPageSize)) } catch {}
+  }
 
   const handleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -231,17 +247,25 @@ export function Threads() {
             </button>
           ))}
         </div>
-        {selectedTids.size > 0 && (
-          <div className="threads-filter-actions">
-            {bulkMessage && <span className="threads-inline-message">{bulkMessage}</span>}
-            <button className="btn-subtle" onClick={() => void handleResyncThreads(Array.from(selectedTids))} disabled={deleteSubmitting}>
-              {t('sync_selected')} ({selectedTids.size})
-            </button>
-            <button className="btn-danger-outline" onClick={() => setConfirmDeleteTids(Array.from(selectedTids))}>
-              {t('delete_selected')} ({selectedTids.size})
-            </button>
-          </div>
-        )}
+        <div className="threads-filter-actions">
+          {bulkMessage && <span className="threads-inline-message">{bulkMessage}</span>}
+          {selectedTids.size > 0 && (
+            <>
+              <button className="btn-subtle" onClick={() => void handleResyncThreads(Array.from(selectedTids))} disabled={deleteSubmitting}>
+                {t('sync_selected')} ({selectedTids.size})
+              </button>
+              <button className="btn-danger-outline" onClick={() => setConfirmDeleteTids(Array.from(selectedTids))}>
+                {t('delete_selected')} ({selectedTids.size})
+              </button>
+            </>
+          )}
+          <label className="job-page-size">
+            <span>{t('page_size')}</span>
+            <select value={String(pageSize)} onChange={e => setPageSizeAndRemember(Number(e.target.value))}>
+              {PAGE_SIZE_OPTIONS.map(option => <option key={option} value={option}>{option}</option>)}
+            </select>
+          </label>
+        </div>
       </div>
 
       <div id="threads-pagination-top" />

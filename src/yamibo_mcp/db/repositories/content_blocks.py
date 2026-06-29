@@ -50,3 +50,7 @@ class ContentBlocksRepository:
 
     def delete_blocks(self, tid: int) -> None:
         self.conn.execute("DELETE FROM content_blocks WHERE tid = ?", (tid,))
+
+    def count_blocks(self) -> int:
+        row = self.conn.execute("SELECT COUNT(*) AS c FROM content_blocks").fetchone()
+        return int(row["c"]) if row is not None else 0

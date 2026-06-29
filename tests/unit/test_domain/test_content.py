@@ -176,6 +176,15 @@ class TestBuildContentSnapshot:
         assert len(content.assets) == 1
         assert content.assets[0].remote_url == "http://img/a.jpg"
         assert content.assets[0].asset_type == "image"
+        assert content.assets[0].asset_id.startswith("asset_")
+
+    def test_asset_ids_are_stable_per_tid_and_url(self):
+        snap_a = _snapshot(tid=1001, floors=[_floor(tid=1001, has_images=True, image_urls=["http://img/a.jpg"])])
+        snap_b = _snapshot(tid=1002, floors=[_floor(tid=1002, has_images=True, image_urls=["http://img/a.jpg"])])
+        content_a = build_content_snapshot(snap_a, forum_id=30)
+        content_b = build_content_snapshot(snap_b, forum_id=30)
+        assert content_a.assets[0].asset_id != content_b.assets[0].asset_id
+        assert content_a.assets[0].asset_id == build_content_snapshot(snap_a, forum_id=30).assets[0].asset_id
 
     def test_embedded_data_urls_do_not_become_required_image_assets(self):
         snap = _snapshot(floors=[_floor(has_images=True, image_urls=["http://data:image/jpeg;base64,abc123"])])

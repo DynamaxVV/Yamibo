@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from yamibo_mcp.application.contracts import AgentError, AgentResult
 from yamibo_mcp.config import load_settings
 from yamibo_mcp.db.connection import connect
-from yamibo_mcp.db.migrations import migrate
 from yamibo_mcp.db.repositories.rag_chunks import RagChunksRepository
-from yamibo_mcp.db.repositories.rag_vectors import RagVectorUnavailableError, RagVectorsRepository
+from yamibo_mcp.db.repositories.rag_vectors import RagVectorUnavailableError, get_vector_repository
 from yamibo_mcp.rag.embeddings import build_embedding_provider
 from yamibo_mcp.rag.scoring import hybrid_score, metadata_score, normalize_keyword_rank, normalize_vector_distance
 from yamibo_mcp.services.llm_client import LLMRequestError
@@ -34,7 +35,6 @@ def search_archived_content(
         return AgentResult(ok=False, error=AgentError(code="RAG_DISABLED", message="RAG is disabled in settings."))
     conn = connect(settings.db_path)
     try:
-        migrate(conn)
         chunks_repo = RagChunksRepository(conn)
         keyword_rows = []
         vector_rows = []
@@ -55,7 +55,7 @@ def search_archived_content(
             try:
                 provider = build_embedding_provider(settings)
                 query_embedding = provider.embed_texts([query])[0]
-                vector_rows = RagVectorsRepository(conn).search(
+                vector_rows = get_vector_repository(conn).search(
                     query_embedding=query_embedding,
                     top_k=settings.rag_hybrid_vector_candidates if mode == "hybrid" else top_k,
                     forum_id=forum_id,
@@ -77,6 +77,7 @@ def search_archived_content(
             vector_rows=vector_rows,
             top_k=top_k,
             query=query,
+            vector_metric="cosine" if conn.backend in {"postgres", "postgresql"} else "legacy",
             filters={
                 "tid": tid,
                 "series_id": series_id,
@@ -98,14 +99,14 @@ def search_archived_content(
         conn.close()
 
 
-def _merge_results(*, keyword_rows: list, vector_rows: list, top_k: int, query: str, filters: dict[str, object | None]) -> list[dict[str, object]]:
+def _merge_results(*, keyword_rows: list, vector_rows: list, top_k: int, query: str, vector_metric: Literal["legacy", "cosine"], filters: dict[str, object | None]) -> list[dict[str, object]]:
     merged: dict[str, dict[str, object]] = {}
     for rank, row in enumerate(keyword_rows):
         entry = merged.setdefault(str(row["chunk_id"]), _base_item(row, query))
         entry["score_parts"]["keyword"] = normalize_keyword_rank(rank)
     for row in vector_rows:
         entry = merged.setdefault(str(row["chunk_id"]), _base_item(row, query))
-        entry["score_parts"]["vector"] = normalize_vector_distance(float(row["vector_distance"]))
+        entry["score_parts"]["vector"] = normalize_vector_distance(float(row["vector_distance"]), metric=vector_metric)
     for entry in merged.values():
         entry["score_parts"]["metadata"] = metadata_score(
             tid_filter=filters["tid"],

@@ -21,6 +21,7 @@ def test_load_settings_parses_account_pool(monkeypatch, tmp_path):
                             "cookie_file": "data/cookies/primary.cookie",
                             "enabled": True,
                             "weight": 2,
+                            "permission_level": 3,
                             "request_interval_seconds": 0.2,
                             "request_interval_jitter_seconds": 0.1,
                             "max_concurrent_leases": 2,
@@ -44,6 +45,7 @@ def test_load_settings_parses_account_pool(monkeypatch, tmp_path):
     assert identity.username == "user_a"
     assert identity.password == "pass_a"
     assert identity.cookie_file == tmp_path / "data" / "cookies" / "primary.cookie"
+    assert identity.permission_level == 3
     assert identity.max_concurrent_leases == 2
     assert settings.request_timeout_seconds == 30.0
 
@@ -179,6 +181,56 @@ def test_load_settings_reads_worker_parallelism(monkeypatch, tmp_path):
     settings = load_settings()
 
     assert settings.worker_parallelism == 3
+
+
+def test_load_settings_reads_database_configuration(monkeypatch, tmp_path):
+    config_path = tmp_path / "yamibo.local.json"
+    data_dir = tmp_path / "data"
+    config_path.write_text(
+        json.dumps(
+            {
+                "database": {
+                    "backend": "postgres",
+                    "url": "postgresql://yamibo:secret@db.example.com:5432/yamibo",
+                    "pool_min": 2,
+                    "pool_max": 8,
+                    "pool_timeout": 12.5,
+                    "connect_timeout": 4.5,
+                    "schema": "yamibo_test",
+                    "ssl_mode": "require",
+                    "ssl_root_cert": "certs/ca.pem",
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("YAMIBO_CONFIG_PATH", str(config_path))
+    monkeypatch.setenv("YAMIBO_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("YAMIBO_DB_POOL_MAX", "10")
+
+    settings = load_settings()
+
+    assert settings.db_backend == "postgres"
+    assert settings.db_url == "postgresql://yamibo:secret@db.example.com:5432/yamibo"
+    assert settings.db_pool_min == 2
+    assert settings.db_pool_max == 10
+    assert settings.db_pool_timeout == 12.5
+    assert settings.db_connect_timeout == 4.5
+    assert settings.db_schema == "yamibo_test"
+    assert settings.db_ssl_mode == "require"
+    assert settings.db_ssl_root_cert == config_path.parent / "certs/ca.pem"
+
+
+def test_load_settings_rejects_invalid_database_backend(monkeypatch, tmp_path):
+    config_path = tmp_path / "yamibo.local.json"
+    data_dir = tmp_path / "data"
+    config_path.write_text(json.dumps({"database": {"backend": "oracle"}}), encoding="utf-8")
+    monkeypatch.setenv("YAMIBO_CONFIG_PATH", str(config_path))
+    monkeypatch.setenv("YAMIBO_DATA_DIR", str(data_dir))
+
+    with pytest.raises(ValueError, match="unsupported database backend"):
+        load_settings()
 
 
 def test_load_settings_rag_endpoint_falls_back_to_llm(monkeypatch, tmp_path):

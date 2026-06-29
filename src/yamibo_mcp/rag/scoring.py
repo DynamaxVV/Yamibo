@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+from typing import Literal
+
 
 def normalize_keyword_rank(rank: int) -> float:
     return 1.0 / float(rank + 1)
 
 
-def normalize_vector_distance(distance: float) -> float:
+def normalize_vector_distance(distance: float, *, metric: Literal["legacy", "cosine"] = "legacy") -> float:
+    if metric == "cosine":
+        return max(0.0, min(1.0, 1.0 - (max(distance, 0.0) / 2.0)))
     return 1.0 / (1.0 + max(distance, 0.0))
 
 

@@ -1,0 +1,282 @@
+{
+  "version": 1,
+  "source": "tests/fixtures/threads/*.json",
+  "thread_search": [
+    {
+      "query": "梦路明灯与魔法之书 13话",
+      "top_k": 3,
+      "expected_tids": [569610],
+      "expected_titles": ["[汉化工房九九组][2222楠]梦路明灯与魔法之书 13话"]
+    },
+    {
+      "query": "梦路明灯与魔法之书",
+      "top_k": 3,
+      "expected_tids": [569610],
+      "expected_titles": ["[汉化工房九九组][2222楠]梦路明灯与魔法之书 13话"]
+    },
+    {
+      "query": "2222楠",
+      "top_k": 3,
+      "expected_tids": [569610],
+      "expected_titles": ["[汉化工房九九组][2222楠]梦路明灯与魔法之书 13话"]
+    },
+    {
+      "query": "校内恋爱 13话其2",
+      "top_k": 3,
+      "expected_tids": [571281],
+      "expected_titles": ["【!】【汉化工房九九组】[花野ちあき]校内恋爱 13话其2"]
+    },
+    {
+      "query": "花野ちあき",
+      "top_k": 3,
+      "expected_tids": [571281],
+      "expected_titles": ["【!】【汉化工房九九组】[花野ちあき]校内恋爱 13话其2"]
+    },
+    {
+      "query": "100天后就辞职的面包屋打工",
+      "top_k": 3,
+      "expected_tids": [572427],
+      "expected_titles": ["【提灯喵汉化组】[梦幻魔法公主][コロネ店長]100天后就辞职的面包屋打工 51~60"]
+    },
+    {
+      "query": "面包屋打工 51~60",
+      "top_k": 3,
+      "expected_tids": [572427],
+      "expected_titles": ["【提灯喵汉化组】[梦幻魔法公主][コロネ店長]100天后就辞职的面包屋打工 51~60"]
+    },
+    {
+      "query": "女孩们×吸血鬼 33",
+      "top_k": 3,
+      "expected_tids": [572448],
+      "expected_titles": ["【提灯喵汉化组】[原作:みかみてれん×作画:千種みのり]女孩们×吸血鬼 33:露露娜大人、获得新天地(笑)"]
+    },
+    {
+      "query": "露露娜大人 获得新天地",
+      "top_k": 3,
+      "expected_tids": [572448],
+      "expected_titles": ["【提灯喵汉化组】[原作:みかみてれん×作画:千種みのり]女孩们×吸血鬼 33:露露娜大人、获得新天地(笑)"]
+    },
+    {
+      "query": "摇曳百合 233",
+      "top_k": 3,
+      "expected_tids": [572458],
+      "expected_titles": ["【提灯喵汉化组】[なもり]摇曳百合 233 两个人的活动记录"]
+    },
+    {
+      "query": "两个人的活动记录",
+      "top_k": 3,
+      "expected_tids": [572458],
+      "expected_titles": ["【提灯喵汉化组】[なもり]摇曳百合 233 两个人的活动记录"]
+    },
+    {
+      "query": "我会替你全部吃掉的 上篇",
+      "top_k": 3,
+      "expected_tids": [572530],
+      "expected_titles": ["【春井夕】 我会替你全部吃掉的 上篇 Kakukuroi汉化组"]
+    },
+    {
+      "query": "春井夕",
+      "top_k": 3,
+      "expected_tids": [572530],
+      "expected_titles": ["【春井夕】 我会替你全部吃掉的 上篇 Kakukuroi汉化组"]
+    },
+    {
+      "query": "对残香施以獠牙",
+      "top_k": 3,
+      "expected_tids": [572617],
+      "expected_titles": ["【金城まち】 对残香施以獠牙 Kakukuroi汉化组"]
+    },
+    {
+      "query": "金城まち",
+      "top_k": 3,
+      "expected_tids": [572617],
+      "expected_titles": ["【金城まち】 对残香施以獠牙 Kakukuroi汉化组"]
+    },
+    {
+      "query": "ray",
+      "top_k": 3,
+      "expected_tids": [572627],
+      "expected_titles": ["【超时空辉夜姬】[ポテトルス] ray"]
+    },
+    {
+      "query": "ポテトルス",
+      "top_k": 3,
+      "expected_tids": [572627],
+      "expected_titles": ["【超时空辉夜姬】[ポテトルス] ray"]
+    },
+    {
+      "query": "汉化工房九九组",
+      "top_k": 3,
+      "expected_tids": [569610, 571281],
+      "expected_titles": [
+        "[汉化工房九九组][2222楠]梦路明灯与魔法之书 13话",
+        "【!】【汉化工房九九组】[花野ちあき]校内恋爱 13话其2"
+      ]
+    },
+    {
+      "query": "提灯喵汉化组",
+      "top_k": 3,
+      "expected_tids": [572427, 572448, 572458],
+      "expected_titles": [
+        "【提灯喵汉化组】[梦幻魔法公主][コロネ店長]100天后就辞职的面包屋打工 51~60",
+        "【提灯喵汉化组】[原作:みかみてれん×作画:千種みのり]女孩们×吸血鬼 33:露露娜大人、获得新天地(笑)",
+        "【提灯喵汉化组】[なもり]摇曳百合 233 两个人的活动记录"
+      ]
+    },
+    {
+      "query": "Kakukuroi汉化组",
+      "top_k": 3,
+      "expected_tids": [572530, 572617],
+      "expected_titles": [
+        "【春井夕】 我会替你全部吃掉的 上篇 Kakukuroi汉化组",
+        "【金城まち】 对残香施以獠牙 Kakukuroi汉化组"
+      ]
+    }
+  ],
+  "rag_vector_search": [
+    {
+      "query": "梦路明灯与魔法之书 13话",
+      "top_k": 3,
+      "expected": [
+        {"chunk_id": "thread:569610:title", "distance": 0.0}
+      ]
+    },
+    {
+      "query": "梦路明灯与魔法之书",
+      "top_k": 3,
+      "expected": [
+        {"chunk_id": "thread:569610:title", "distance": 0.0}
+      ]
+    },
+    {
+      "query": "2222楠",
+      "top_k": 3,
+      "expected": [
+        {"chunk_id": "thread:569610:title", "distance": 0.12}
+      ]
+    },
+    {
+      "query": "校内恋爱 13话其2",
+      "top_k": 3,
+      "expected": [
+        {"chunk_id": "thread:571281:title", "distance": 0.0}
+      ]
+    },
+    {
+      "query": "花野ちあき",
+      "top_k": 3,
+      "expected": [
+        {"chunk_id": "thread:571281:title", "distance": 0.12}
+      ]
+    },
+    {
+      "query": "100天后就辞职的面包屋打工",
+      "top_k": 3,
+      "expected": [
+        {"chunk_id": "thread:572427:title", "distance": 0.0}
+      ]
+    },
+    {
+      "query": "面包屋打工 51~60",
+      "top_k": 3,
+      "expected": [
+        {"chunk_id": "thread:572427:title", "distance": 0.0}
+      ]
+    },
+    {
+      "query": "女孩们×吸血鬼 33",
+      "top_k": 3,
+      "expected": [
+        {"chunk_id": "thread:572448:title", "distance": 0.0}
+      ]
+    },
+    {
+      "query": "露露娜大人 获得新天地",
+      "top_k": 3,
+      "expected": [
+        {"chunk_id": "thread:572448:title", "distance": 0.12}
+      ]
+    },
+    {
+      "query": "摇曳百合 233",
+      "top_k": 3,
+      "expected": [
+        {"chunk_id": "thread:572458:title", "distance": 0.0}
+      ]
+    },
+    {
+      "query": "两个人的活动记录",
+      "top_k": 3,
+      "expected": [
+        {"chunk_id": "thread:572458:title", "distance": 0.12}
+      ]
+    },
+    {
+      "query": "我会替你全部吃掉的 上篇",
+      "top_k": 3,
+      "expected": [
+        {"chunk_id": "thread:572530:title", "distance": 0.0}
+      ]
+    },
+    {
+      "query": "春井夕",
+      "top_k": 3,
+      "expected": [
+        {"chunk_id": "thread:572530:title", "distance": 0.12}
+      ]
+    },
+    {
+      "query": "对残香施以獠牙",
+      "top_k": 3,
+      "expected": [
+        {"chunk_id": "thread:572617:title", "distance": 0.0}
+      ]
+    },
+    {
+      "query": "金城まち",
+      "top_k": 3,
+      "expected": [
+        {"chunk_id": "thread:572617:title", "distance": 0.12}
+      ]
+    },
+    {
+      "query": "ray",
+      "top_k": 3,
+      "expected": [
+        {"chunk_id": "thread:572627:title", "distance": 0.0}
+      ]
+    },
+    {
+      "query": "ポテトルス",
+      "top_k": 3,
+      "expected": [
+        {"chunk_id": "thread:572627:title", "distance": 0.12}
+      ]
+    },
+    {
+      "query": "汉化工房九九组",
+      "top_k": 3,
+      "expected": [
+        {"chunk_id": "thread:569610:title", "distance": 0.12},
+        {"chunk_id": "thread:571281:title", "distance": 0.12}
+      ]
+    },
+    {
+      "query": "提灯喵汉化组",
+      "top_k": 3,
+      "expected": [
+        {"chunk_id": "thread:572427:title", "distance": 0.12},
+        {"chunk_id": "thread:572448:title", "distance": 0.12},
+        {"chunk_id": "thread:572458:title", "distance": 0.12}
+      ]
+    },
+    {
+      "query": "Kakukuroi汉化组",
+      "top_k": 3,
+      "expected": [
+        {"chunk_id": "thread:572530:title", "distance": 0.12},
+        {"chunk_id": "thread:572617:title", "distance": 0.12}
+      ]
+    }
+  ]
+}

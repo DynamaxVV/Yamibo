@@ -7,6 +7,8 @@ from datetime import datetime, timedelta, timezone
 from yamibo_mcp.domain.models import ThreadSnapshot
 from yamibo_mcp.domain.content import build_content_snapshot
 from yamibo_mcp.db.repositories.series import SeriesRepository
+from yamibo_mcp.db.repositories.postgres_search import search_threads_postgres
+from yamibo_mcp.db.repositories.sqlite_search import search_threads_sqlite
 from yamibo_mcp.time_utils import utc_now_iso
 from yamibo_mcp.yamibo.title.normalizer import normalize_display_title, normalize_series_key
 
@@ -14,6 +16,16 @@ from yamibo_mcp.yamibo.title.normalizer import normalize_display_title, normaliz
 class ThreadsRepository:
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
+
+    def _uses_sqlite_fts(self) -> bool:
+        backend = getattr(self.conn, "backend", None)
+        return backend not in {"postgres", "postgresql"}
+
+    def _bool_value(self, value: bool) -> bool | int:
+        return bool(value) if getattr(self.conn, "backend", None) in {"postgres", "postgresql"} else (1 if value else 0)
+
+    def _bool_true_clause(self, column: str) -> str:
+        return f"{column} IS TRUE" if getattr(self.conn, "backend", None) in {"postgres", "postgresql"} else f"{column} = 1"
 
     def _thread_list_filters(
         self,
@@ -25,17 +37,39 @@ class ThreadsRepository:
     ) -> tuple[str, list[object]]:
         filters: list[str] = []
         args: list[object] = []
+        backend = getattr(self.conn, "backend", None)
         if q:
             keywords = [kw for kw in q.strip().split() if kw]
             if keywords:
-                filters.append("thread_fts MATCH ?")
-                args.append(" AND ".join(keywords))
+                if backend in {"postgres", "postgresql"}:
+                    like_terms = []
+                    for keyword in keywords:
+                        like = f"%{keyword}%"
+                        like_terms.append(
+                            "("
+                            "COALESCE(t.raw_title, '') ILIKE ? OR "
+                            "COALESCE(t.display_title, '') ILIKE ? OR "
+                            "COALESCE(t.publisher, '') ILIKE ? OR "
+                            "COALESCE(t.content_preview, '') ILIKE ? OR "
+                            "COALESCE(tp.core_title_guess, '') ILIKE ? OR "
+                            "COALESCE(tp.series_key, '') ILIKE ?"
+                            ")"
+                        )
+                        args.extend([like, like, like, like, like, like])
+                    filters.append(" AND ".join(like_terms))
+                else:
+                    filters.append("thread_fts MATCH ?")
+                    args.append(" AND ".join(keywords))
         if forum_id is not None:
             filters.append("t.forum_id = ?")
             args.append(forum_id)
         if days is not None:
-            cutoff = (datetime.now(timezone.utc) - timedelta(days=max(days, 0))).strftime("%Y-%m-%d")
-            filters.append("substr(COALESCE(t.pub_time, ''), 1, 10) >= ?")
+            if backend in {"postgres", "postgresql"}:
+                cutoff = datetime.now(timezone.utc) - timedelta(days=max(days, 0))
+                filters.append("COALESCE(t.pub_time, TIMESTAMPTZ 'epoch') >= ?")
+            else:
+                cutoff = (datetime.now(timezone.utc) - timedelta(days=max(days, 0))).strftime("%Y-%m-%d")
+                filters.append("substr(COALESCE(t.pub_time, ''), 1, 10) >= ?")
             args.append(cutoff)
         if archive_status:
             if archive_status == "none":
@@ -57,17 +91,21 @@ class ThreadsRepository:
         """
 
     def _thread_list_from_clause(self, *, q: str | None = None) -> str:
+        backend = getattr(self.conn, "backend", None)
+        if backend in {"postgres", "postgresql"}:
+            return "FROM threads t LEFT JOIN title_parse tp ON tp.tid = t.tid"
         from_clause = "FROM threads t LEFT JOIN title_parse tp ON tp.tid = t.tid"
         if q and q.strip():
             from_clause = "FROM threads t JOIN thread_fts ON thread_fts.tid = t.tid LEFT JOIN title_parse tp ON tp.tid = t.tid"
         return from_clause
 
     def _thread_list_order_clause(self, sort_key: str, sort_dir: str) -> str:
+        backend = getattr(self.conn, "backend", None)
         sort_key = sort_key if sort_key in {"sync_time", "pub_time", "reply_count"} else "sync_time"
         sort_dir = "asc" if sort_dir == "asc" else "desc"
         order_expr = {
-            "sync_time": "COALESCE(t.sync_time, '')",
-            "pub_time": "COALESCE(t.pub_time, '')",
+            "sync_time": "COALESCE(t.sync_time, TIMESTAMPTZ 'epoch')" if backend in {"postgres", "postgresql"} else "COALESCE(t.sync_time, '')",
+            "pub_time": "COALESCE(t.pub_time, TIMESTAMPTZ 'epoch')" if backend in {"postgres", "postgresql"} else "COALESCE(t.pub_time, '')",
             "reply_count": "reply_count",
         }[sort_key]
         return f"{order_expr} {sort_dir.upper()}, t.tid {sort_dir.upper()}"
@@ -143,8 +181,8 @@ class ThreadsRepository:
                 context_path,
                 archive_status,
                 missing_images_json,
-                1 if snapshot.title.needs_review else 0,
-                1 if needs_series_review else 0,
+                self._bool_value(snapshot.title.needs_review),
+                self._bool_value(needs_series_review),
                 content.forum_id,
                 content.content_kind,
                 primary_media_type,
@@ -204,7 +242,7 @@ class ThreadsRepository:
                 json.dumps(title.tags, ensure_ascii=False),
                 title.confidence,
                 title.parser_version,
-                1 if title.needs_review else 0,
+                self._bool_value(title.needs_review),
                 json.dumps(title_warnings, ensure_ascii=False) if title_warnings is not None else None,
             ),
         )
@@ -243,13 +281,15 @@ class ThreadsRepository:
                     floor.publisher_uid,
                     floor.content,
                     floor.pub_time,
-                    1 if floor.has_images else 0,
+                    self._bool_value(floor.has_images),
                     floor.quote_text,
                     floor.reply_text,
                 ),
             )
 
     def _upsert_fts(self, snapshot: ThreadSnapshot) -> None:
+        if not self._uses_sqlite_fts():
+            return
         content_preview = "\n".join(floor.content for floor in snapshot.floors[:3])
         self.conn.execute("DELETE FROM thread_fts WHERE tid = ?", (snapshot.tid,))
         self.conn.execute(
@@ -271,6 +311,10 @@ class ThreadsRepository:
     def get_thread(self, tid: int) -> sqlite3.Row | None:
         return self.conn.execute("SELECT * FROM threads WHERE tid = ?", (tid,)).fetchone()
 
+    def count_threads_for_series(self, series_id: int) -> int:
+        row = self.conn.execute("SELECT COUNT(*) AS c FROM threads WHERE series_id = ?", (series_id,)).fetchone()
+        return int(row["c"]) if row is not None else 0
+
     def delete_thread(self, tid: int) -> tuple[dict[str, object], dict[str, object]]:
         thread_row = self.get_thread(tid)
         if thread_row is None:
@@ -282,7 +326,11 @@ class ThreadsRepository:
             "title_parse": None if title_row is None else dict(title_row),
             "floors": [dict(row) for row in floor_rows],
         }
-        self.conn.execute("DELETE FROM rag_chunks_fts WHERE chunk_id IN (SELECT chunk_id FROM rag_chunks WHERE tid = ?)", (tid,))
+        if self._uses_sqlite_fts():
+            self.conn.execute(
+                "DELETE FROM rag_chunks_fts WHERE chunk_id IN (SELECT chunk_id FROM rag_chunks WHERE tid = ?)",
+                (tid,),
+            )
         self.conn.execute("DELETE FROM rag_chunks WHERE tid = ?", (tid,))
         self.conn.execute("DELETE FROM assets WHERE tid = ?", (tid,))
         self.conn.execute("DELETE FROM content_blocks WHERE tid = ?", (tid,))
@@ -290,16 +338,79 @@ class ThreadsRepository:
         self.conn.execute("DELETE FROM sync_runs WHERE tid = ?", (tid,))
         self.conn.execute("DELETE FROM floors WHERE tid = ?", (tid,))
         self.conn.execute("DELETE FROM title_parse WHERE tid = ?", (tid,))
-        self.conn.execute("DELETE FROM thread_fts WHERE tid = ?", (tid,))
+        if self._uses_sqlite_fts():
+            self.conn.execute("DELETE FROM thread_fts WHERE tid = ?", (tid,))
         self.conn.execute("DELETE FROM threads WHERE tid = ?", (tid,))
         return before, {"tid": tid, "deleted": True}
+
+    def reset_series_assignments(self) -> None:
+        self.conn.execute(
+            "UPDATE threads SET series_id = NULL, needs_series_review = ?",
+            (self._bool_value(False),),
+        )
+        self.conn.execute("DELETE FROM series")
+
+    def list_title_parse_rows(self) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            """
+            SELECT
+              tp.tid,
+              tp.raw_title,
+              tp.display_title,
+              tp.group_name,
+              tp.author_guess,
+              tp.core_title_guess,
+              tp.normalized_core_title,
+              tp.series_key,
+              tp.title_aliases_json,
+              tp.chapter_name,
+              tp.chapter_index,
+              tp.chapter_index_end,
+              tp.chapter_title,
+              tp.subtitle,
+              tp.tags_json,
+              tp.confidence,
+              tp.parser_version,
+              tp.needs_review
+            FROM title_parse tp
+            ORDER BY tp.tid ASC
+            """
+        ).fetchall()
+
+    def set_thread_series(self, tid: int, series_id: int, needs_series_review: bool) -> None:
+        self.conn.execute(
+            """
+            UPDATE threads
+            SET series_id = ?, needs_series_review = ?
+            WHERE tid = ?
+            """,
+            (series_id, self._bool_value(needs_series_review), tid),
+        )
+
+    def update_chapter_info(
+        self,
+        tid: int,
+        *,
+        chapter_name: str | None,
+        chapter_index: float | None,
+        author_guess: str | None,
+        group_name: str | None,
+    ) -> None:
+        self.conn.execute(
+            """
+            UPDATE title_parse
+            SET chapter_name = ?, chapter_index = ?, author_guess = ?, group_name = ?
+            WHERE tid = ?
+            """,
+            (chapter_name, chapter_index, author_guess, group_name, tid),
+        )
 
     def get_title_parse(self, tid: int) -> sqlite3.Row | None:
         return self.conn.execute("SELECT * FROM title_parse WHERE tid = ?", (tid,)).fetchone()
 
     def list_title_review_items(self, *, limit: int = 100) -> list[sqlite3.Row]:
         return self.conn.execute(
-            """
+            f"""
             SELECT
               t.tid, t.raw_title, t.display_title, t.series_id,
               t.needs_title_review, t.needs_series_review,
@@ -308,9 +419,9 @@ class ThreadsRepository:
               tp.subtitle, tp.tags_json, tp.confidence, tp.needs_review
             FROM threads t
             LEFT JOIN title_parse tp ON tp.tid = t.tid
-            WHERE t.needs_title_review = 1
-               OR t.needs_series_review = 1
-               OR tp.needs_review = 1
+            WHERE {self._bool_true_clause("t.needs_title_review")}
+               OR {self._bool_true_clause("t.needs_series_review")}
+               OR {self._bool_true_clause("tp.needs_review")}
             ORDER BY t.sync_time DESC, t.tid DESC
             LIMIT ?
             """,
@@ -333,12 +444,12 @@ class ThreadsRepository:
             raise ValueError(f"thread not found: {tid}")
         before = dict(before_row)
         self.conn.execute(
-            "UPDATE title_parse SET needs_review = 0 WHERE tid = ?",
-            (tid,),
+            "UPDATE title_parse SET needs_review = ? WHERE tid = ?",
+            (self._bool_value(False), tid),
         )
         self.conn.execute(
-            "UPDATE threads SET needs_title_review = 0 WHERE tid = ?",
-            (tid,),
+            "UPDATE threads SET needs_title_review = ? WHERE tid = ?",
+            (self._bool_value(False), tid),
         )
         after_row = self.conn.execute(
             """
@@ -456,7 +567,7 @@ class ThreadsRepository:
                 title.subtitle,
                 json.dumps(title.tags, ensure_ascii=False),
                 title.confidence,
-                1 if title.needs_review else 0,
+                self._bool_value(title.needs_review),
                 title.parser_version,
                 tid,
             ),
@@ -474,12 +585,19 @@ class ThreadsRepository:
             (
                 title.display_title,
                 series_id,
-                1 if title.needs_review else 0,
-                1 if needs_series_review else 0,
+                self._bool_value(title.needs_review),
+                self._bool_value(needs_series_review),
                 utc_now_iso(),
                 tid,
             ),
         )
+        if not self._uses_sqlite_fts():
+            after_thread = self.get_thread(tid)
+            after_title = self.get_title_parse(tid)
+            return before, {
+                "thread": None if after_thread is None else dict(after_thread),
+                "title_parse": None if after_title is None else dict(after_title),
+            }
         fts_existing = self.conn.execute(
             "SELECT content_preview, catalog_text FROM thread_fts WHERE tid = ?",
             (tid,),
@@ -512,11 +630,11 @@ class ThreadsRepository:
         base_select = f"""{self._thread_list_select()} {self._thread_list_from_clause()}"""
         if forum_id is not None:
             return self.conn.execute(
-                f"{base_select} WHERE t.forum_id = ? ORDER BY COALESCE(t.sync_time, '') DESC, t.tid DESC LIMIT ?",
+                f"{base_select} WHERE t.forum_id = ? ORDER BY {self._thread_list_order_clause('sync_time', 'desc')} LIMIT ?",
                 (forum_id, limit),
             ).fetchall()
         return self.conn.execute(
-            f"{base_select} ORDER BY COALESCE(t.sync_time, '') DESC, t.tid DESC LIMIT ?",
+            f"{base_select} ORDER BY {self._thread_list_order_clause('sync_time', 'desc')} LIMIT ?",
             (limit,),
         ).fetchall()
 
@@ -562,24 +680,43 @@ class ThreadsRepository:
             "items": rows,
         }
 
+    def count_threads(self) -> int:
+        row = self.conn.execute("SELECT COUNT(*) AS c FROM threads").fetchone()
+        return int(row["c"]) if row is not None else 0
+
+    def count_threads_by_forum(self) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            """
+            SELECT forum_id, COUNT(*) AS cnt
+            FROM threads
+            WHERE forum_id IS NOT NULL
+            GROUP BY forum_id
+            ORDER BY cnt DESC
+            """
+        ).fetchall()
+
+    def count_exported_threads(self) -> int:
+        row = self.conn.execute(f"SELECT COUNT(*) AS c FROM threads WHERE {self._bool_true_clause('is_exported')}").fetchone()
+        return int(row["c"]) if row is not None else 0
+
     def mark_exported(self, tid: int, export_path: str) -> None:
         cur = self.conn.execute(
             """
             UPDATE threads
-            SET is_exported = 1, export_path = ?
+            SET is_exported = ?, export_path = ?
             WHERE tid = ?
             """,
-            (export_path, tid),
+            (self._bool_value(True), export_path, tid),
         )
         if cur.rowcount != 1:
             raise ValueError(f"thread not found: {tid}")
 
     def list_exports(self, *, limit: int = 100) -> list[sqlite3.Row]:
         return self.conn.execute(
-            """
+            f"""
             SELECT tid, raw_title, display_title, archive_status, is_exported, export_path
             FROM threads
-            WHERE is_exported = 1 OR export_path IS NOT NULL
+            WHERE {self._bool_true_clause("is_exported")} OR export_path IS NOT NULL
             ORDER BY tid DESC
             LIMIT ?
             """,
@@ -587,70 +724,10 @@ class ThreadsRepository:
         ).fetchall()
 
     def search_threads(self, query: str, *, limit: int = 50, forum_id: int | None = None) -> list[sqlite3.Row]:
-        normalized = query.strip()
-        if not normalized:
-            return self.list_threads(limit=limit, forum_id=forum_id)
-
-        keywords = [kw for kw in normalized.split() if kw]
-
-        try:
-            fts_terms = " AND ".join(keywords)
-            fts_where = "WHERE thread_fts MATCH ?"
-            params: list[object] = [fts_terms]
-            if forum_id is not None:
-                fts_where += " AND t.forum_id = ?"
-                params.append(forum_id)
-            params.append(limit)
-            rows = self.conn.execute(
-                f"""
-                SELECT
-                  t.tid, t.raw_title, t.display_title, t.publisher, t.pub_time, t.sync_time,
-                  t.archive_status, t.validation_status, t.context_path, t.series_id, t.export_path,
-                  t.forum_id, t.content_kind, t.category,
-                  tp.core_title_guess, tp.series_key, tp.chapter_name, tp.needs_review,
-                  bm25(thread_fts) AS rank,
-                  (SELECT COUNT(*) FROM floors f WHERE f.tid = t.tid) AS reply_count
-                FROM thread_fts
-                JOIN threads t ON t.tid = thread_fts.tid
-                LEFT JOIN title_parse tp ON tp.tid = t.tid
-                {fts_where}
-                ORDER BY rank
-                LIMIT ?
-                """,
-                params,
-            ).fetchall()
-            if rows:
-                return rows
-        except sqlite3.OperationalError:
-            pass
-
-        or_cols = "(t.raw_title LIKE ? OR t.display_title LIKE ? OR t.publisher LIKE ? OR tp.core_title_guess LIKE ? OR tp.series_key LIKE ?)"
-        and_parts = [f"({or_cols})" for _ in keywords]
-        like_params: list[object] = []
-        for kw in keywords:
-            like = f"%{kw}%"
-            like_params.extend([like, like, like, like, like])
-        like_where = ""
-        if forum_id is not None:
-            like_where = " AND t.forum_id = ?"
-            like_params.append(forum_id)
-        like_params.append(limit)
-        return self.conn.execute(
-            f"""
-            SELECT
-              t.tid, t.raw_title, t.display_title, t.publisher, t.pub_time, t.sync_time,
-              t.archive_status, t.validation_status, t.context_path, t.series_id, t.export_path,
-              t.forum_id, t.content_kind, t.category,
-              tp.core_title_guess, tp.series_key, tp.chapter_name, tp.needs_review,
-              (SELECT COUNT(*) FROM floors f WHERE f.tid = t.tid) AS reply_count
-            FROM threads t
-            LEFT JOIN title_parse tp ON tp.tid = t.tid
-            WHERE {" AND ".join(and_parts)}{like_where}
-            ORDER BY COALESCE(t.sync_time, '') DESC, t.tid DESC
-            LIMIT ?
-            """,
-            like_params,
-        ).fetchall()
+        backend = getattr(self.conn, "backend", None)
+        if backend in {"postgres", "postgresql"}:
+            return search_threads_postgres(self.conn, query, limit=limit, forum_id=forum_id)
+        return search_threads_sqlite(self.conn, query, limit=limit, forum_id=forum_id)
 
     def probe_archive_states(self, tids: list[int]) -> list[dict[str, object]]:
         if not tids:

@@ -228,6 +228,47 @@ class TestDeleteThread:
         with pytest.raises(ValueError, match="thread not found"):
             repo.delete_thread(99999)
 
+    def test_postgres_backend_skips_sqlite_fts_tables(self, db):
+        repo = ThreadsRepository(db)
+        db.execute("DROP TABLE thread_fts")
+        db.execute("DROP TABLE rag_chunks_fts")
+        db.commit()
+        db.backend = "postgres"
+
+        snapshot = _make_snapshot(tid=4010, floors=[_make_floor(pid=4011, tid=4010)])
+        repo.upsert_snapshot(snapshot, forum_id=55)
+        RagChunksRepository(db).replace_thread_chunks(
+            tid=4010,
+            chunks=[
+                RagChunk(
+                    chunk_id="thread:4010:floor:1:part:1",
+                    tid=4010,
+                    pid=4011,
+                    floor_no=1,
+                    chunk_type="floor",
+                    forum_id=55,
+                    content_kind="comic",
+                    series_id=1,
+                    series_key="测试漫画",
+                    chapter_index=1.0,
+                    publisher="user1",
+                    pub_time="2025-01-01T00:00:00",
+                    title="测试漫画 第1话",
+                    metadata_text="测试漫画",
+                    text="测试内容",
+                    text_hash="hash-4010",
+                    source_uri="yamibo://threads/4010/posts#floor=1",
+                ),
+            ],
+            embedding_model="text-embedding-3-small",
+            embedding_dimensions=512,
+        )
+
+        assert repo.get_thread(4010) is not None
+        before, after = repo.delete_thread(4010)
+        assert before["thread"]["tid"] == 4010
+        assert after == {"tid": 4010, "deleted": True}
+
 
 class TestMarkExported:
     def test_mark_exported_sets_fields(self, db):
@@ -323,3 +364,13 @@ class TestSearchThreads:
         results = repo.search_threads("")
         # Assert
         assert len(results) >= 1
+
+    def test_search_with_tilde_falls_back_to_like(self, db):
+        # Arrange
+        repo = ThreadsRepository(db)
+        title = _make_title(display_title="100天后就辞职的面包屋打工 51~60", core_title_guess="100天后就辞职的面包屋打工")
+        repo.upsert_snapshot(_make_snapshot(tid=9002, title=title))
+        # Act
+        results = repo.search_threads("面包屋打工 51~60")
+        # Assert
+        assert any(r["tid"] == 9002 for r in results)

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import argparse
-import sqlite3
 import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from yamibo_mcp.config import load_settings
+from yamibo_mcp.db.connection import connect
 
 
 def _older_than(path: Path, *, hours: int) -> bool:
@@ -46,7 +46,7 @@ def remove_thread_dir(*, data_dir: Path, tid: int, dry_run: bool) -> Path | None
     return thread_dir
 
 
-def cleanup_orphan_thread_dirs(*, data_dir: Path, conn: sqlite3.Connection, dry_run: bool) -> list[Path]:
+def cleanup_orphan_thread_dirs(*, data_dir: Path, conn, dry_run: bool) -> list[Path]:
     removed: list[Path] = []
     thread_root = data_dir / "threads"
     if not thread_root.exists():
@@ -75,8 +75,7 @@ def main() -> None:
     args = parser.parse_args()
 
     settings = load_settings()
-    conn = sqlite3.connect(str(settings.db_path))
-    conn.row_factory = sqlite3.Row
+    conn = connect(settings)
     try:
         staging_root = settings.data_dir / "staging" / "jobs"
         exports_dir = settings.data_dir / "exports"

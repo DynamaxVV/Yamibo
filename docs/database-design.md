@@ -354,7 +354,8 @@ data/
 │   └── {series_name}/
 │       └── {chapter}.zip
 └── backups/                    # 数据库备份
-    └── forum_{timestamp}.sqlite3
+    ├── forum_{timestamp}.sqlite3
+    └── forum_{timestamp}.pgdump
 ```
 
 ### 3.1 context.md 格式

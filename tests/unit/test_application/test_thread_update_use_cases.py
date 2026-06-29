@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from yamibo_mcp.errors import ThreadPermissionRequiredError
 from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
 from yamibo_mcp.domain.models import FloorSnapshot, ThreadSnapshot, TitleSnapshot
@@ -174,6 +175,68 @@ def test_check_thread_updates_reports_updated_when_remote_tail_changes(tmp_path,
 
     assert result["status"] == "updated"
     assert any(item["field"] == "last_floor_hash" for item in result["evidence"])
+
+
+def test_check_thread_updates_retries_permission_gate_with_next_threshold(tmp_path, db):
+    settings = _fake_settings(tmp_path)
+    snapshot = _novel_snapshot(tid=540745, last_content="尾章内容")
+    ThreadsRepository(db).upsert_snapshot(snapshot, forum_id=55)
+
+    page_1 = _page_html(
+        tid=540745,
+        title=snapshot.raw_title,
+        last_pid=1,
+        last_content="开头",
+        page_links="""
+            <div class="pg">
+              <a href="forum.php?mod=viewthread&tid=540745&authorid=229047&page=2">2</a>
+              <span title="共 2 页"> / 2 页</span>
+            </div>
+        """,
+    )
+    page_2 = _page_html(tid=540745, title=snapshot.raw_title, last_pid=2, last_content="尾章内容")
+
+    calls: list[int | None] = []
+
+    class _BorrowContext:
+        def __init__(self, fail: bool) -> None:
+            self.fail = fail
+
+        def __enter__(self):
+            if self.fail:
+                raise ThreadPermissionRequiredError(
+                    "thread requires read permission above 10 for https://bbs.yamibo.com/forum.php?mod=viewthread&tid=540745",
+                    required_permission=10,
+                )
+            return (
+                SimpleNamespace(account_id="high"),
+                SimpleNamespace(
+                    fetch_thread_page=lambda *, tid, page, author_uid, base_url=None: FetchResult(
+                        url=f"https://bbs.yamibo.com/forum.php?mod=viewthread&tid={tid}&page={page}&authorid={author_uid}",
+                        final_url=f"https://bbs.yamibo.com/forum.php?mod=viewthread&tid={tid}&page={page}&authorid={author_uid}",
+                        status_code=200,
+                        html=page_1 if page == 1 else page_2,
+                    ),
+                ),
+            )
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_borrow(settings_arg, *, min_permission=None, prefer_high_permission=False, cookie_file=None):
+        calls.append(min_permission)
+        return _BorrowContext(fail=len(calls) == 1)
+
+    with patch("yamibo_mcp.application.update_queries.load_settings", return_value=settings), \
+         patch("yamibo_mcp.application.update_queries.connect", return_value=db), \
+         patch("yamibo_mcp.application.update_queries.has_configured_account_pool", lambda settings: True), \
+         patch("yamibo_mcp.application.update_queries.borrow_yamibo_client", fake_borrow):
+        from yamibo_mcp.application.update_queries import check_thread_updates
+
+        result = check_thread_updates(tid=540745)
+
+    assert result["status"] == "up_to_date"
+    assert calls == [None, 11]
 
 
 def test_check_thread_updates_returns_not_supported_for_non_novel_forum(tmp_path, db):

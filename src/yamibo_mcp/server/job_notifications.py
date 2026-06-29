@@ -8,7 +8,7 @@ from typing import Any
 
 from yamibo_mcp.config import load_settings
 from yamibo_mcp.db.connection import connect
-from yamibo_mcp.db.migrations import migrate
+from yamibo_mcp.db.repositories.job_events import JobEventsRepository
 from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.server.resource_uris import job_events_uri, job_status_uri, parse_resource_uri
 from yamibo_mcp.server.schemas import job_status_payload
@@ -74,7 +74,6 @@ class JobResourceNotifier:
         settings = load_settings()
         conn = connect(settings.db_path)
         try:
-            migrate(conn)
             kind_root, _, kind = parse_resource_uri(uri)
             if kind_root != "jobs":
                 raise ValueError(f"unsupported job resource uri: {uri}")
@@ -83,24 +82,16 @@ class JobResourceNotifier:
                 job = JobsRepository(conn).get(job_id)
                 return json.dumps(job_status_payload(job), ensure_ascii=False, sort_keys=True)
             if kind.endswith("/events"):
-                rows = conn.execute(
-                    """
-                    SELECT event_id, event_type, status, stage, payload_json, created_at
-                    FROM job_events
-                    WHERE job_id = ?
-                    ORDER BY event_id ASC
-                    """,
-                    (job_id,),
-                ).fetchall()
+                rows = JobEventsRepository(conn).list(job_id=job_id)
                 return json.dumps(
                     [
                         {
-                            "event_id": row["event_id"],
-                            "event_type": row["event_type"],
-                            "status": row["status"],
-                            "stage": row["stage"],
-                            "payload_json": row["payload_json"],
-                            "created_at": row["created_at"],
+                            "event_id": row.event_id,
+                            "event_type": row.event_type,
+                            "status": row.status,
+                            "stage": row.stage,
+                            "payload_json": json.dumps(row.payload, ensure_ascii=False),
+                            "created_at": row.created_at,
                         }
                         for row in rows
                     ],

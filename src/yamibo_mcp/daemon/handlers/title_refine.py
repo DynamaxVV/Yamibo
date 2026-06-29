@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 
 from yamibo_mcp.db.connection import connect
-from yamibo_mcp.db.migrations import migrate
 from yamibo_mcp.db.repositories.series import SeriesRepository
+from yamibo_mcp.db.repositories.threads import ThreadsRepository
 from yamibo_mcp.domain.models import TitleSnapshot
 from yamibo_mcp.server.resource_uris import series_chapters_uri
 from yamibo_mcp.server.schemas import thread_summary_payload
@@ -71,7 +71,6 @@ def _write_series_artifacts(settings) -> dict[str, object]:
 
     conn = connect(settings.db_path)
     try:
-        migrate(conn)
         repo = SeriesRepository(conn)
         series_rows = repo.list_series(limit=10000)
         index_text = _generate_series_index_markdown(repo, limit=10000)
@@ -95,34 +94,10 @@ def _write_series_artifacts(settings) -> dict[str, object]:
 def handle_title_refine(repo, job, worker_id: str, lease_seconds: int, settings) -> None:
     repo.update_stage(job.job_id, "rebuild_series", progress_current=0, progress_total=1)
     conn = repo.conn
+    threads_repo = ThreadsRepository(conn)
     try:
-        conn.execute("UPDATE threads SET series_id = NULL, needs_series_review = 0")
-        conn.execute("DELETE FROM series")
-        rows = conn.execute(
-            """
-            SELECT
-              tp.tid,
-              tp.raw_title,
-              tp.display_title,
-              tp.group_name,
-              tp.author_guess,
-              tp.core_title_guess,
-              tp.normalized_core_title,
-              tp.series_key,
-              tp.title_aliases_json,
-              tp.chapter_name,
-              tp.chapter_index,
-              tp.chapter_index_end,
-              tp.chapter_title,
-              tp.subtitle,
-              tp.tags_json,
-              tp.confidence,
-              tp.parser_version,
-              tp.needs_review
-            FROM title_parse tp
-            ORDER BY tp.tid ASC
-            """
-        ).fetchall()
+        threads_repo.reset_series_assignments()
+        rows = threads_repo.list_title_parse_rows()
         total = len(rows)
         repo.update_stage(job.job_id, "rebuild_series", progress_current=0, progress_total=total or 1)
         series_repo = SeriesRepository(conn)
@@ -148,14 +123,7 @@ def handle_title_refine(repo, job, worker_id: str, lease_seconds: int, settings)
                 parser_version=row["parser_version"],
             )
             series_id, needs_review = series_repo.resolve_for_title(title)
-            conn.execute(
-                """
-                UPDATE threads
-                SET series_id = ?, needs_series_review = ?
-                WHERE tid = ?
-                """,
-                (series_id, 1 if needs_review else 0, row["tid"]),
-            )
+            threads_repo.set_thread_series(int(row["tid"]), series_id, needs_review)
             rebuilt += 1
             repo.heartbeat(job.job_id, worker_id, lease_seconds)
             repo.update_stage(job.job_id, "rebuild_series", progress_current=rebuilt, progress_total=total or 1)

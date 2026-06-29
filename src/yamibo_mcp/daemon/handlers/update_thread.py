@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import json
 import time
 from contextlib import ExitStack
@@ -22,9 +23,12 @@ from yamibo_mcp.domain.validation import validate_thread_snapshot
 from yamibo_mcp.storage.images import download_images_to_staging
 from yamibo_mcp.storage.paths import StoragePaths
 from yamibo_mcp.storage.thread_archive import materialize_thread
-from yamibo_mcp.yamibo.account_pool import borrow_yamibo_client, has_configured_account_pool
+from yamibo_mcp.errors import ThreadPermissionRequiredError
+from yamibo_mcp.yamibo.account_pool import borrow_yamibo_client, has_configured_account_pool, next_permission_threshold
 from yamibo_mcp.yamibo.client import YamiboClient
 from yamibo_mcp.yamibo.parsers.thread_detail import extract_author_only_total_pages, parse_thread_snapshot
+
+LOG = logging.getLogger(__name__)
 
 def handle_update_thread(repo: JobsRepository, job: Job, worker_id: str, lease_seconds: int, settings: Settings) -> None:
     paths = StoragePaths(
@@ -70,14 +74,59 @@ def handle_update_thread(repo: JobsRepository, job: Job, worker_id: str, lease_s
 
     forum_id = int(thread["forum_id"]) if "forum_id" in thread.keys() and thread["forum_id"] is not None else None
     resolved_base_url = str(base_url) if base_url else _base_url_for_thread(thread)
-    with ExitStack() as stack:
-        cookie_path = settings.cookie_file
-        if not cookie_path.exists():
-            fallback = settings.data_dir / "cookies.txt"
-            cookie_path = fallback if fallback.exists() else cookie_path
+    client_stack = ExitStack()
+    try:
+        stack = client_stack
         if has_configured_account_pool(settings):
-            _, client = stack.enter_context(borrow_yamibo_client(settings))
+            min_permission: int | None = None
+            identity = None
+            while True:
+                try:
+                    identity, client = stack.enter_context(borrow_yamibo_client(settings, min_permission=min_permission))
+                    LOG.info(
+                        "update_thread job=%s fetching with account_id=%s permission_level=%s cookie_file=%s min_permission=%s",
+                        job.job_id,
+                        getattr(identity, "account_id", "unknown"),
+                        getattr(identity, "permission_level", "unknown"),
+                        getattr(identity, "cookie_file", "unknown"),
+                        min_permission,
+                    )
+
+                    repo.update_stage(job.job_id, "fetch_tail", progress_current=1, progress_total=4)
+                    _check_cancelled(repo, job.job_id)
+                    _check_paused(repo, job.job_id)
+                    tail_page = client.fetch_thread_page(
+                        tid=tid,
+                        page=local_total_pages,
+                        author_uid=str(local_snapshot.publisher_uid),
+                        base_url=resolved_base_url,
+                    )
+                    tail_snapshot = parse_thread_snapshot(tail_page.html, url=tail_page.final_url, tid=tid)
+                    remote_tail = tail_snapshot.floors[-1] if tail_snapshot.floors else None
+                    if remote_tail is None:
+                        raise ValueError("remote author-only tail page has no floors")
+                    break
+                except ThreadPermissionRequiredError as exc:
+                    if min_permission is not None:
+                        raise
+                    next_min_permission = next_permission_threshold(exc.required_permission)
+                    account_id = getattr(identity, "account_id", "unknown")
+                    LOG.info(
+                        "update_thread job=%s switching account after permission gate account_id=%s required_permission=%s next_min_permission=%s",
+                        job.job_id,
+                        account_id,
+                        exc.required_permission,
+                        next_min_permission,
+                    )
+                    stack.close()
+                    client_stack = ExitStack()
+                    stack = client_stack
+                    min_permission = next_min_permission
         else:
+            cookie_path = settings.cookie_file
+            if not cookie_path.exists():
+                fallback = settings.data_dir / "cookies.txt"
+                cookie_path = fallback if fallback.exists() else cookie_path
             client = YamiboClient(
                 timeout=getattr(settings, "request_timeout_seconds", 15.0),
                 cookie_file=str(cookie_path),
@@ -87,20 +136,19 @@ def handle_update_thread(repo: JobsRepository, job: Job, worker_id: str, lease_s
                 request_interval=settings.request_interval_seconds,
                 request_interval_jitter=settings.request_interval_jitter_seconds,
             )
-
-        repo.update_stage(job.job_id, "fetch_tail", progress_current=1, progress_total=4)
-        _check_cancelled(repo, job.job_id)
-        _check_paused(repo, job.job_id)
-        tail_page = client.fetch_thread_page(
-            tid=tid,
-            page=local_total_pages,
-            author_uid=str(local_snapshot.publisher_uid),
-            base_url=resolved_base_url,
-        )
-        tail_snapshot = parse_thread_snapshot(tail_page.html, url=tail_page.final_url, tid=tid)
-        remote_tail = tail_snapshot.floors[-1] if tail_snapshot.floors else None
-        if remote_tail is None:
-            raise ValueError("remote author-only tail page has no floors")
+            repo.update_stage(job.job_id, "fetch_tail", progress_current=1, progress_total=4)
+            _check_cancelled(repo, job.job_id)
+            _check_paused(repo, job.job_id)
+            tail_page = client.fetch_thread_page(
+                tid=tid,
+                page=local_total_pages,
+                author_uid=str(local_snapshot.publisher_uid),
+                base_url=resolved_base_url,
+            )
+            tail_snapshot = parse_thread_snapshot(tail_page.html, url=tail_page.final_url, tid=tid)
+            remote_tail = tail_snapshot.floors[-1] if tail_snapshot.floors else None
+            if remote_tail is None:
+                raise ValueError("remote author-only tail page has no floors")
 
         local_tail_pid = archive_signature.get("last_pid")
         local_tail_hash = archive_signature.get("last_floor_hash")
@@ -217,7 +265,6 @@ def handle_update_thread(repo: JobsRepository, job: Job, worker_id: str, lease_s
             stage_deadline_seconds=download_stage_timeout_seconds,
         )
         _check_paused(repo, job.job_id)
-
         new_local_path_by_remote_url = _build_remote_local_path_map(new_snapshot, image_result)
         content = build_content_snapshot(merged_snapshot, forum_id=forum_id)
         synced_assets = [
@@ -280,38 +327,40 @@ def handle_update_thread(repo: JobsRepository, job: Job, worker_id: str, lease_s
             ),
         )
 
-    artifacts = {
-        "tid": tid,
-        "updated": True,
-        "status": "updated",
-        "local_total_pages": local_total_pages,
-        "remote_total_pages": remote_total_pages,
-        "pages_fetched": len(page_results),
-        "page_urls": [result.final_url for result in page_results],
-        "append_start_page": local_total_pages + 1,
-        "append_end_page": remote_total_pages,
-        "context_path": str(context_path),
-        "metadata_path": str(metadata_path),
-        "archive_status": archive_status,
-        "archive_signature": {
-            "author_uid": None if merged_snapshot.publisher_uid is None else str(merged_snapshot.publisher_uid),
-            "last_pid": None if not merged_snapshot.floors else merged_snapshot.floors[-1].pid,
-            "floor_count": len(merged_snapshot.floors),
-            "last_floor_hash": None if not merged_snapshot.floors else floor_content_hash(merged_snapshot.floors[-1].content),
-            "author_only_total_pages": remote_total_pages,
-        },
-        "downloaded_image_count": image_result.downloaded_count,
-        "non_export_image_count": image_result.non_export_count,
-        "shared_image_count": image_result.shared_downloaded_count,
-        "missing_image_count": len(image_result.missing_urls),
-        "missing_shared_image_count": len(image_result.missing_shared_urls),
-        "download_stopped_reason": image_result.stopped_reason,
-        "stopped_reason": image_result.stopped_reason,
-    }
-    if image_result.missing_urls or image_result.missing_shared_urls or image_result.stopped_reason or archive_status == "partial":
-        repo.partial(job.job_id, artifacts)
-    else:
-        repo.succeed(job.job_id, artifacts)
+        artifacts = {
+            "tid": tid,
+            "updated": True,
+            "status": "updated",
+            "local_total_pages": local_total_pages,
+            "remote_total_pages": remote_total_pages,
+            "pages_fetched": len(page_results),
+            "page_urls": [result.final_url for result in page_results],
+            "append_start_page": local_total_pages + 1,
+            "append_end_page": remote_total_pages,
+            "context_path": str(context_path),
+            "metadata_path": str(metadata_path),
+            "archive_status": archive_status,
+            "archive_signature": {
+                "author_uid": None if merged_snapshot.publisher_uid is None else str(merged_snapshot.publisher_uid),
+                "last_pid": None if not merged_snapshot.floors else merged_snapshot.floors[-1].pid,
+                "floor_count": len(merged_snapshot.floors),
+                "last_floor_hash": None if not merged_snapshot.floors else floor_content_hash(merged_snapshot.floors[-1].content),
+                "author_only_total_pages": remote_total_pages,
+            },
+            "downloaded_image_count": image_result.downloaded_count,
+            "non_export_image_count": image_result.non_export_count,
+            "shared_image_count": image_result.shared_downloaded_count,
+            "missing_image_count": len(image_result.missing_urls),
+            "missing_shared_image_count": len(image_result.missing_shared_urls),
+            "download_stopped_reason": image_result.stopped_reason,
+            "stopped_reason": image_result.stopped_reason,
+        }
+        if image_result.missing_urls or image_result.missing_shared_urls or image_result.stopped_reason or archive_status == "partial":
+            repo.partial(job.job_id, artifacts)
+        else:
+            repo.succeed(job.job_id, artifacts)
+    finally:
+        client_stack.close()
 
 
 def _load_local_thread_snapshot(paths: StoragePaths, conn, thread_row) -> ThreadSnapshot:

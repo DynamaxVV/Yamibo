@@ -15,7 +15,7 @@ class AssetsRepository:
             return
         self.conn.executemany(
             """
-            INSERT OR REPLACE INTO assets (asset_id, tid, pid, asset_type, remote_url, local_path, exportable, required, status)
+            INSERT INTO assets (asset_id, tid, pid, asset_type, remote_url, local_path, exportable, required, status)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
@@ -26,8 +26,8 @@ class AssetsRepository:
                     asset.asset_type,
                     asset.remote_url,
                     asset.local_path,
-                    1 if asset.exportable else 0,
-                    1 if asset.required else 0,
+                    asset.exportable,
+                    asset.required,
                     asset.status,
                 )
                 for asset in assets
@@ -48,3 +48,7 @@ class AssetsRepository:
             "SELECT * FROM assets WHERE asset_id = ?",
             (asset_id,),
         ).fetchone()
+
+    def count_assets(self) -> int:
+        row = self.conn.execute("SELECT COUNT(*) AS c FROM assets").fetchone()
+        return int(row["c"]) if row is not None else 0

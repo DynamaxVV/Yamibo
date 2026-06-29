@@ -5,11 +5,14 @@ from typing import Any
 
 from yamibo_mcp.config import load_settings
 from yamibo_mcp.db.connection import connect
-from yamibo_mcp.db.migrations import migrate
+from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
 from yamibo_mcp.domain.forums import resolve_forum
 from yamibo_mcp.domain.thread_fingerprint import floor_content_hash
 from yamibo_mcp.server.schemas import thread_summary_payload
+from yamibo_mcp.errors import RemoteAccessPausedError, ThreadPermissionRequiredError
+from yamibo_mcp.yamibo.anti_bot import activate_remote_access_pause, ensure_remote_access_allowed, is_http_444_error
+from yamibo_mcp.yamibo.account_pool import borrow_yamibo_client, has_configured_account_pool, next_permission_threshold
 from yamibo_mcp.yamibo.client import YamiboClient
 from yamibo_mcp.yamibo.parsers.thread_detail import extract_author_only_total_pages, parse_thread_snapshot
 from yamibo_mcp.yamibo.urls import thread_author_url_from_tid
@@ -18,8 +21,9 @@ from yamibo_mcp.yamibo.urls import thread_author_url_from_tid
 def check_thread_updates(*, tid: int, base_url: str | None = None) -> dict[str, Any]:
     settings = load_settings()
     conn = connect(settings.db_path)
+    client_stack = None
     try:
-        migrate(conn)
+        ensure_remote_access_allowed(conn)
         repo = ThreadsRepository(conn)
         thread = repo.get_thread(tid)
         if thread is None:
@@ -73,16 +77,34 @@ def check_thread_updates(*, tid: int, base_url: str | None = None) -> dict[str, 
         resolved_base_url = base_url or (forum.base_url if forum is not None else None) or "https://bbs.yamibo.com"
         author_only_url = thread_author_url_from_tid(tid, author_uid=str(author_uid), base_url=resolved_base_url)
 
-        client = YamiboClient(
-            timeout=getattr(settings, "request_timeout_seconds", 15.0),
-            cookie_file=str(settings.cookie_file),
-            use_system_proxy=settings.use_system_proxy,
-            login_username=settings.login_username,
-            login_password=settings.login_password,
-            request_interval=settings.request_interval_seconds,
-            request_interval_jitter=settings.request_interval_jitter_seconds,
-        )
-        first_page = client.fetch_thread_page(tid=tid, page=1, author_uid=str(author_uid), base_url=resolved_base_url)
+        client_stack = None
+        if has_configured_account_pool(settings):
+            min_permission: int | None = None
+            while True:
+                try:
+                    client_stack = borrow_yamibo_client(settings, min_permission=min_permission)
+                    _, client = client_stack.__enter__()
+                    first_page = client.fetch_thread_page(tid=tid, page=1, author_uid=str(author_uid), base_url=resolved_base_url)
+                    break
+                except ThreadPermissionRequiredError as exc:
+                    if client_stack is not None:
+                        client_stack.__exit__(None, None, None)
+                        client_stack = None
+                    if min_permission is not None:
+                        raise
+                    min_permission = next_permission_threshold(exc.required_permission)
+                    continue
+        else:
+            client = YamiboClient(
+                timeout=getattr(settings, "request_timeout_seconds", 15.0),
+                cookie_file=str(settings.cookie_file if settings.cookie_file.exists() else settings.data_dir / "cookies.txt"),
+                use_system_proxy=settings.use_system_proxy,
+                login_username=settings.login_username,
+                login_password=settings.login_password,
+                request_interval=settings.request_interval_seconds,
+                request_interval_jitter=settings.request_interval_jitter_seconds,
+            )
+            first_page = client.fetch_thread_page(tid=tid, page=1, author_uid=str(author_uid), base_url=resolved_base_url)
         first_snapshot = parse_thread_snapshot(first_page.html, url=first_page.final_url, tid=tid)
         total_pages = extract_author_only_total_pages(first_page.html, tid=tid, author_uid=str(author_uid))
         if total_pages is None:
@@ -154,6 +176,16 @@ def check_thread_updates(*, tid: int, base_url: str | None = None) -> dict[str, 
             "thread": thread_summary_payload(thread, include_export=True),
         }
     except Exception as exc:
+        if isinstance(exc, RemoteAccessPausedError):
+            raise
+        if is_http_444_error(exc):
+            activate_remote_access_pause(
+                conn,
+                source="update_queries:check_thread_updates",
+                message="Yamibo returned HTTP 444. Remote archive/update access has been paused.",
+                context={"tid": tid},
+            )
+            raise
         return {
             "tid": tid,
             "status": "failed",
@@ -163,6 +195,8 @@ def check_thread_updates(*, tid: int, base_url: str | None = None) -> dict[str, 
             "evidence": [],
         }
     finally:
+        if client_stack is not None:
+            client_stack.__exit__(None, None, None)
         conn.close()
 
 
@@ -205,22 +239,11 @@ def _build_local_snapshot(repo: ThreadsRepository, conn, tid: int, thread) -> di
 
 
 def _latest_archive_signature(conn, tid: int) -> dict[str, Any] | None:
-    row = conn.execute(
-        """
-        SELECT artifacts_json
-        FROM jobs
-        WHERE job_type = 'sync_thread'
-          AND tid = ?
-          AND status IN ('succeeded', 'partial')
-        ORDER BY created_at DESC, job_id DESC
-        LIMIT 1
-        """,
-        (tid,),
-    ).fetchone()
-    if row is None:
+    job = JobsRepository(conn).get_latest_job(job_type="sync_thread", tid=tid, statuses=("succeeded", "partial"))
+    if job is None:
         return None
     try:
-        artifacts = json.loads(row["artifacts_json"] or "{}")
+        artifacts = job.artifacts if isinstance(job.artifacts, dict) else {}
     except ValueError:
         return None
     signature = artifacts.get("archive_signature")

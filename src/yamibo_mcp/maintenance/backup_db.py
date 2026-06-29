@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import shutil
+import subprocess
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -13,20 +14,28 @@ def _timestamp() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S")
 
 
-def backup_database(*, db_path: Path, dest_dir: Path, keep_count: int) -> Path:
+def backup_database(*, backend: str, db_path: Path, db_url: str | None, dest_dir: Path, keep_count: int) -> Path:
     dest_dir.mkdir(parents=True, exist_ok=True)
-    backup_path = dest_dir / f"forum_{_timestamp()}.sqlite3"
-    src = sqlite3.connect(str(db_path))
-    try:
-        dst = sqlite3.connect(str(backup_path))
+    if backend == "postgres":
+        if not db_url:
+            raise ValueError("db_url is required when backing up a PostgreSQL database")
+        backup_path = dest_dir / f"forum_{_timestamp()}.pgdump"
+        subprocess.run(["pg_dump", "--format=custom", "--file", str(backup_path), db_url], check=True)
+        pattern = "forum_*.pgdump"
+    else:
+        backup_path = dest_dir / f"forum_{_timestamp()}.sqlite3"
+        src = sqlite3.connect(str(db_path))
         try:
-            src.backup(dst)
+            dst = sqlite3.connect(str(backup_path))
+            try:
+                src.backup(dst)
+            finally:
+                dst.close()
         finally:
-            dst.close()
-    finally:
-        src.close()
+            src.close()
+        pattern = "forum_*.sqlite3"
 
-    backups = sorted(dest_dir.glob("forum_*.sqlite3"))
+    backups = sorted(dest_dir.glob(pattern), key=lambda path: path.stat().st_mtime)
     if keep_count > 0 and len(backups) > keep_count:
         for old in backups[: len(backups) - keep_count]:
             old.unlink(missing_ok=True)
@@ -34,7 +43,7 @@ def backup_database(*, db_path: Path, dest_dir: Path, keep_count: int) -> Path:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Create a timestamped SQLite backup.")
+    parser = argparse.ArgumentParser(description="Create a timestamped database backup.")
     parser.add_argument("--db")
     parser.add_argument("--dest-dir")
     parser.add_argument("--keep-count", type=int)
@@ -42,10 +51,21 @@ def main() -> None:
     args = parser.parse_args()
 
     settings = load_settings()
-    db_path = settings.db_path if args.db is None else Path(args.db).expanduser()
+    if settings.db_backend == "postgres":
+        db_url = args.db or settings.db_url
+        db_path = settings.db_path
+    else:
+        db_url = None
+        db_path = settings.db_path if args.db is None else Path(args.db).expanduser()
     dest_dir = settings.backup_dir if args.dest_dir is None else Path(args.dest_dir).expanduser()
     keep_count = settings.backup_keep_count if args.keep_count is None else args.keep_count
-    backup_path = backup_database(db_path=db_path, dest_dir=dest_dir, keep_count=keep_count)
+    backup_path = backup_database(
+        backend=settings.db_backend,
+        db_path=db_path,
+        db_url=db_url,
+        dest_dir=dest_dir,
+        keep_count=keep_count,
+    )
     print(f"backup_created={backup_path}")
 
     if args.copy_cookie and settings.cookie_file.exists():

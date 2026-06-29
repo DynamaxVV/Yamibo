@@ -1,9 +1,31 @@
+import sqlite3
+
 import pytest
 
-from yamibo_mcp.db.repositories.jobs import JobsRepository
+import yamibo_mcp.db.repositories.jobs as jobs_module
+from yamibo_mcp.db.repositories.jobs import JobsRepository, _loads
 from yamibo_mcp.domain.enums import JobStatus
 from yamibo_mcp.domain.models import Job
 from yamibo_mcp.errors import JobNotFound, LeaseNotAcquired
+
+
+def test_locked_write_retry_retries_database_locked(monkeypatch, db):
+    repo = JobsRepository(db)
+    calls = {"count": 0}
+    monkeypatch.setattr(jobs_module, "_LOCK_RETRY_DELAYS_SECONDS", (0,))
+
+    def operation():
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return "ok"
+
+    assert repo._with_locked_retry(operation) == "ok"
+    assert calls["count"] == 2
+
+
+def test_jobs_json_loader_accepts_postgres_jsonb_dict():
+    assert _loads({"tid": 42}) == {"tid": 42}
 
 
 class TestCreateAndGet:
@@ -101,6 +123,20 @@ class TestList:
         # Assert
         assert len(jobs) == 3
 
+    def test_list_respects_offset(self, db):
+        repo = JobsRepository(db)
+        first = repo.create("noop")
+        second = repo.create("noop")
+        third = repo.create("noop")
+        db.execute("UPDATE jobs SET created_at = ? WHERE job_id = ?", ("2026-01-01T08:00:00+00:00", first.job_id))
+        db.execute("UPDATE jobs SET created_at = ? WHERE job_id = ?", ("2026-01-01T09:00:00+00:00", second.job_id))
+        db.execute("UPDATE jobs SET created_at = ? WHERE job_id = ?", ("2026-01-01T10:00:00+00:00", third.job_id))
+        db.commit()
+
+        jobs = repo.list(limit=2, offset=1)
+
+        assert [job.job_id for job in jobs] == [second.job_id, third.job_id]
+
     def test_list_filters_by_status(self, db):
         # Arrange
         repo = JobsRepository(db)
@@ -154,6 +190,16 @@ class TestList:
         jobs = repo.list()
         # Assert
         assert jobs == []
+
+    def test_count_returns_filtered_total(self, db):
+        repo = JobsRepository(db)
+        queued = repo.create("noop")
+        done = repo.create("noop")
+        repo.succeed(done.job_id)
+
+        assert repo.count_filtered() == 2
+        assert repo.count_filtered(status=JobStatus.QUEUED) == 1
+        assert repo.count_filtered(status=JobStatus.SUCCEEDED) == 1
 
 
 class TestFindLiveJobForThread:
@@ -339,6 +385,54 @@ class TestFail:
         assert failed.error_message == "Forbidden"
         assert failed.finished_at is not None
 
+    def test_fail_merges_artifacts(self, db):
+        repo = JobsRepository(db)
+        job = repo.create("noop")
+        db.execute("UPDATE jobs SET artifacts_json = ? WHERE job_id = ?", ('{"tid": 42}', job.job_id))
+        db.commit()
+
+        repo.fail(job.job_id, "RemoteFetchError", "boom", artifacts={"failure_context": {"url": "https://bbs.yamibo.com"}})
+
+        failed = repo.get(job.job_id)
+        assert failed.artifacts["tid"] == 42
+        assert failed.artifacts["failure_context"]["url"] == "https://bbs.yamibo.com"
+
+
+class TestRetryLater:
+    def test_retry_later_moves_running_job_to_retrying(self, db):
+        repo = JobsRepository(db)
+        job = repo.create("sync_thread", tid=42)
+        repo.acquire(job.job_id, "worker-1", 300)
+
+        ok = repo.retry_later(
+            job.job_id,
+            error_code="RemoteFetchError",
+            error_message="temporary disconnect",
+            artifacts={"failure_context": {"remote_fetch": {"retryable": True}}},
+        )
+
+        assert ok is True
+        retried = repo.get(job.job_id)
+        assert retried.status == JobStatus.RETRYING
+        assert retried.retry_count == 1
+        assert retried.worker_id is None
+        assert retried.artifacts["failure_context"]["remote_fetch"]["retryable"] is True
+
+    def test_retry_later_respects_max_retries(self, db):
+        repo = JobsRepository(db)
+        job = repo.create("sync_thread", tid=42, max_retries=1)
+        repo.acquire(job.job_id, "worker-1", 300)
+
+        assert repo.retry_later(job.job_id, error_code="RemoteFetchError", error_message="once") is True
+
+        db.execute(
+            "UPDATE jobs SET status = ?, worker_id = ?, lease_until = ? WHERE job_id = ?",
+            (JobStatus.RUNNING.value, "worker-1", "2099-01-01T00:00:00+00:00", job.job_id),
+        )
+        db.commit()
+
+        assert repo.retry_later(job.job_id, error_code="RemoteFetchError", error_message="twice") is False
+
 
 class TestRerun:
     def test_rerun_moves_partial_job_to_superseded_and_creates_queued_copy(self, db):
@@ -373,6 +467,24 @@ class TestRerun:
         assert next_job.status == JobStatus.QUEUED
         parent_row = db.execute("SELECT parent_job_id FROM jobs WHERE job_id = ?", (next_job.job_id,)).fetchone()
         assert parent_row["parent_job_id"] == job.job_id
+
+    def test_rerun_moves_interrupted_job_to_superseded_and_keeps_payload(self, db):
+        repo = JobsRepository(db)
+        job = repo.create("sync_thread", tid=100, payload={"tid": 100})
+        db.execute(
+            "UPDATE jobs SET status = ?, error_code = ?, error_message = ? WHERE job_id = ?",
+            (JobStatus.INTERRUPTED.value, "worker_lost", "lease expired", job.job_id),
+        )
+        db.commit()
+
+        next_job = repo.rerun(job.job_id)
+
+        source = repo.get(job.job_id)
+        assert source.status == JobStatus.SUPERSEDED
+        assert source.error_code == "worker_lost"
+        assert source.error_message == "lease expired"
+        assert next_job.status == JobStatus.QUEUED
+        assert next_job.payload == {"tid": 100}
 
 
 class TestUpdateStage:

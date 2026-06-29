@@ -68,13 +68,27 @@ def register_agent_tools(server) -> None:
 def _register_text_resource(server, *, name: str, uri_builder: Callable[..., str], mime_type: str, param: str | None = None, cast=int) -> None:
     resource_uri = uri_builder(f"{{{param}}}") if param is not None else uri_builder()
 
-    @server.resource(resource_uri, mime_type=mime_type, name=name)
-    def _resource(value: str | None = None):
-        uri = uri_builder(cast(value)) if param is not None else uri_builder()
-        content, _ = read_resource_content(uri)
-        if isinstance(content, bytes):
-            return content
-        return str(content)
+    if param is None:
+        @server.resource(resource_uri, mime_type=mime_type, name=name)
+        def _resource():
+            content, _ = read_resource_content(uri_builder())
+            if isinstance(content, bytes):
+                return content
+            return str(content)
+    else:
+        namespace = {"uri_builder": uri_builder, "cast": cast, "read_resource_content": read_resource_content}
+        exec(
+            f"""
+def _resource({param}: str):
+    uri = uri_builder(cast({param}))
+    content, _ = read_resource_content(uri)
+    if isinstance(content, bytes):
+        return content
+    return str(content)
+""",
+            namespace,
+        )
+        server.resource(resource_uri, mime_type=mime_type, name=name)(namespace["_resource"])
 
 
 def register_resources(server) -> None:

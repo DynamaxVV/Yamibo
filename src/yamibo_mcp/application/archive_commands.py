@@ -6,11 +6,11 @@ from yamibo_mcp.application.contracts import AgentAction, AgentError, AgentResul
 from yamibo_mcp.application.update_commands import create_update_thread_job
 from yamibo_mcp.config import load_settings
 from yamibo_mcp.db.connection import connect
-from yamibo_mcp.db.migrations import migrate
 from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
 from yamibo_mcp.domain.enums import JobType
 from yamibo_mcp.server.resource_uris import job_events_uri, thread_summary_uri
+from yamibo_mcp.yamibo.anti_bot import activate_remote_access_pause, ensure_remote_access_allowed, is_http_444_error
 from yamibo_mcp.yamibo.client import YamiboClient
 from yamibo_mcp.yamibo.urls import thread_url_from_tid
 
@@ -32,7 +32,8 @@ def archive_thread_job(
     settings = load_settings()
     conn = connect(settings.db_path)
     try:
-        migrate(conn)
+        if html_path is None:
+            ensure_remote_access_allowed(conn)
         repo = JobsRepository(conn)
         payload = {
             key: value
@@ -98,7 +99,7 @@ def create_thread_archive_batch_jobs(
     settings = load_settings()
     conn = connect(settings.db_path)
     try:
-        migrate(conn)
+        ensure_remote_access_allowed(conn)
         repo = JobsRepository(conn)
         created_job_ids: list[str] = []
         reused_job_ids: list[str] = []
@@ -145,7 +146,6 @@ def ensure_thread_archived(
     settings = load_settings()
     conn = connect(settings.db_path)
     try:
-        migrate(conn)
         thread = ThreadsRepository(conn).get_thread(tid)
     finally:
         conn.close()
@@ -174,7 +174,6 @@ def create_thread_export_job(*, tid: int, strategy: str | None = None) -> AgentR
     settings = load_settings()
     conn = connect(settings.db_path)
     try:
-        migrate(conn)
         repo = JobsRepository(conn)
         payload = {key: value for key, value in {"tid": tid, "strategy": strategy}.items() if value is not None}
         job = repo.find_live_job_for_thread(job_type=JobType.EXPORT_THREAD.value, tid=tid)
@@ -235,35 +234,45 @@ def sync_forum_range(
         raise ValueError("invalid forum page range")
 
     settings = load_settings()
-    client = YamiboClient(
-        timeout=getattr(settings, "request_timeout_seconds", 15.0),
-        cookie_file=cookie_file or str(settings.cookie_file),
-        use_system_proxy=settings.use_system_proxy,
-        login_username=settings.login_username,
-        login_password=settings.login_password,
-        request_interval=settings.request_interval_seconds,
-        request_interval_jitter=settings.request_interval_jitter_seconds,
-    )
-    collected = []
-    scanned_pages: list[str] = []
-    seen_tids: set[int] = set()
-
-    for page in range(start_page, end_page + 1):
-        result, items = client.fetch_forum_threads(page=page, base_url=base_url, forum_id=forum_id)
-        scanned_pages.append(result.final_url)
-        for item in items:
-            if not include_sticky and item.is_sticky:
-                continue
-            if not include_announcements and (item.category or "").strip() == "公告":
-                continue
-            if item.tid in seen_tids:
-                continue
-            seen_tids.add(item.tid)
-            collected.append(item)
-
     conn = connect(settings.db_path)
     try:
-        migrate(conn)
+        ensure_remote_access_allowed(conn)
+        client = YamiboClient(
+            timeout=getattr(settings, "request_timeout_seconds", 15.0),
+            cookie_file=cookie_file or str(settings.cookie_file),
+            use_system_proxy=settings.use_system_proxy,
+            login_username=settings.login_username,
+            login_password=settings.login_password,
+            request_interval=settings.request_interval_seconds,
+            request_interval_jitter=settings.request_interval_jitter_seconds,
+        )
+        collected = []
+        scanned_pages: list[str] = []
+        seen_tids: set[int] = set()
+
+        try:
+            for page in range(start_page, end_page + 1):
+                result, items = client.fetch_forum_threads(page=page, base_url=base_url, forum_id=forum_id)
+                scanned_pages.append(result.final_url)
+                for item in items:
+                    if not include_sticky and item.is_sticky:
+                        continue
+                    if not include_announcements and (item.category or "").strip() == "公告":
+                        continue
+                    if item.tid in seen_tids:
+                        continue
+                    seen_tids.add(item.tid)
+                    collected.append(item)
+        except Exception as exc:
+            if is_http_444_error(exc):
+                activate_remote_access_pause(
+                    conn,
+                    source="archive_commands:sync_forum_range",
+                    message="Yamibo returned HTTP 444. Remote archive/update access has been paused.",
+                    context={"start_page": start_page, "end_page": end_page, "forum_id": forum_id},
+                )
+            raise
+
         repo = JobsRepository(conn)
         job_items: list[dict[str, object]] = []
         for item in collected:

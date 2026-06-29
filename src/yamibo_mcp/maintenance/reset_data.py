@@ -4,9 +4,8 @@ import argparse
 import shutil
 from pathlib import Path
 
-from yamibo_mcp.config import load_settings
+from yamibo_mcp.config import Settings, load_settings
 from yamibo_mcp.db.connection import connect
-from yamibo_mcp.db.migrations import migrate
 
 
 def _remove_child(path: Path) -> None:
@@ -28,11 +27,11 @@ def reset_data_dir(*, data_dir: Path) -> list[Path]:
     return removed
 
 
-def initialize_empty_database(db_path: Path) -> None:
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = connect(db_path)
+def initialize_empty_database(settings: Settings) -> None:
+    if settings.db_backend == "sqlite":
+        settings.db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = connect(settings)
     try:
-        migrate(conn)
         conn.commit()
     finally:
         conn.close()
@@ -79,7 +78,7 @@ def main() -> None:
         print("db_reinitialized=false")
         return
 
-    initialize_empty_database(db_path)
+    initialize_empty_database(settings)
     print(f"db_reinitialized=true")
     print(f"db_created={db_path}")
 

@@ -4,6 +4,7 @@
 """
 
 import re
+from pathlib import Path
 
 import pytest
 from tests.fixtures.loader import load_thread, load_edge_case
@@ -318,6 +319,54 @@ class TestThreadDetailParser:
             "一周一次，三个小时。"
         )
 
+    def test_tid129_h2_content_is_preserved_when_postmessage_is_empty(self):
+        html = Path("/Users/vv/Code/html_sample/tid129.html").read_text(encoding="utf-8", errors="ignore")
+        summary = parse_thread_detail(html, base_url="file:///Users/vv/Code/html_sample/tid129.html")
+        assert summary.floors[0].content == "画很PL,和动画不同吧?"
+        assert summary.floors[1].content == "13个老婆,谁的呀?????"
+
+    def test_pure_poll_thread_keeps_poll_content_even_without_primary_text(self):
+        html = Path("/Users/vv/Code/html_sample/纯投票主楼.html").read_text(encoding="utf-8", errors="ignore")
+        summary = parse_thread_detail(html, base_url="file:///Users/vv/Code/html_sample/纯投票主楼.html")
+        first_floor = summary.floors[0]
+        assert "多选投票" in first_floor.content
+        assert "圣蓉（貌似后圣母时代的官配？）" in first_floor.content
+        assert "该投票已经关闭或者过期，不能投票" in first_floor.content
+        assert first_floor.rich_body_html is not None
+        assert "多选投票" in first_floor.rich_body_html
+
+    def test_poll_content_is_preserved_when_primary_text_is_present(self):
+        html = """
+        <html><body>
+          <span id="thread_subject">测试帖</span>
+          <div id="post_1">
+            <div class="authi"><a href="space-uid-1.html">楼主</a></div>
+            <em id="authorposton1">发表于 2026-06-14 12:00</em>
+            <td id="postmessage_1">
+              正文
+            </td>
+            <form id="poll" name="poll">
+              <div class="pinf"><strong>单选投票</strong>: ( 最多可选 1 项 ), 共有 2 人参与投票</div>
+              <div class="pcht">
+                <table summary="poll panel" cellspacing="0" cellpadding="0" width="100%">
+                  <tbody>
+                    <tr class="ptl"><td class="pvt"><label for="option_1">1. &nbsp;选项A</label></td><td class="pvts"></td></tr>
+                    <tr class="ptl"><td class="pvt"><label for="option_2">2. &nbsp;选项B</label></td><td class="pvts"></td></tr>
+                    <tr><td colspan="2">该投票已经关闭或者过期，不能投票</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </form>
+          </div>
+        </body></html>
+        """
+        summary = parse_thread_detail(html)
+        first_floor = summary.floors[0]
+        assert first_floor.content.startswith("正文")
+        assert "单选投票" in first_floor.content
+        assert "选项A" in first_floor.content
+        assert "选项B" in first_floor.content
+
     def test_rich_text_sample_floor_preserves_html_style(self):
         """样本贴应保留可展示的富文本样式"""
         summary = parse_thread_detail(RICH_TEXT_SAMPLE_HTML)
@@ -327,7 +376,7 @@ class TestThreadDetailParser:
         assert "font-size:" in first_floor.rich_body_html
         assert "text-align:left" in first_floor.rich_body_html
         assert "<strong>" in first_floor.rich_body_html or "<em>" in first_floor.rich_body_html
-        assert "<a" not in first_floor.rich_body_html
+        assert '<a href="https://example.com/thread" target="_blank" rel="noreferrer">' in first_floor.rich_body_html
         assert "本帖最后由" not in first_floor.content
         assert "本帖最后由" not in first_floor.rich_body_html
         assert "font-size:1em" not in first_floor.rich_body_html
@@ -348,9 +397,43 @@ class TestThreadDetailParser:
         rich = summary.floors[0].rich_body_html or ""
         assert "#a0522d" in rich
         assert "#ff0000" in rich
-        assert "<a" not in rich
         assert "标题" in rich
         assert "译名：测试" in rich
+
+    def test_javascript_anchor_is_not_preserved_in_rich_body_html(self):
+        html = """
+        <html><body>
+          <td id="postmessage_1">
+            <a href="javascript:alert(1)">危险链接</a>
+            <a href="http://www.dreamyou.net/bbs/viewthread.php?tid=6850">点此进入下载</a>
+          </td>
+        </body></html>
+        """
+        summary = parse_thread_detail(html)
+        rich = summary.floors[0].rich_body_html or ""
+        assert "javascript:" not in rich
+        assert "危险链接" in rich
+        assert 'href="http://www.dreamyou.net/bbs/viewthread.php?tid=6850"' in rich
+
+    def test_malformed_urls_do_not_break_parsing(self):
+        html = """
+        <html><body>
+          <span id="thread_subject">测试帖</span>
+          <div id="post_1">
+            <div class="authi"><a href="space-uid-1.html">楼主</a></div>
+            <em id="authorposton1">发表于 2026-06-14 12:00</em>
+            <td id="postmessage_1">
+              <a href="http://218：.64.245.18:8080/x">坏链接</a>
+              <img src="http://218：.64.245.18:8080/a.jpg" />
+              正文
+            </td>
+          </div>
+        </body></html>
+        """
+        summary = parse_thread_detail(html)
+        floor = summary.floors[0]
+        assert floor.content == "坏链接\n正文"
+        assert floor.image_urls == []
 
     def test_embedded_data_image_url_is_ignored(self):
         """伪装成 http 的 data:image 不应进入图片列表"""

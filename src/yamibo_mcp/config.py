@@ -4,6 +4,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from yamibo_mcp.storage.atomic import atomic_write_text
 
@@ -19,6 +20,7 @@ class AccountConfig:
     cookie_file: Path
     enabled: bool
     weight: int
+    permission_level: int
     request_interval_seconds: float
     request_interval_jitter_seconds: float
     max_concurrent_leases: int
@@ -31,6 +33,15 @@ class Settings:
     config_path: Path
     data_dir: Path
     db_path: Path
+    db_backend: Literal["sqlite", "postgres"]
+    db_url: str | None
+    db_pool_min: int
+    db_pool_max: int
+    db_pool_timeout: float
+    db_connect_timeout: float
+    db_schema: str
+    db_ssl_mode: str
+    db_ssl_root_cert: Path | None
     title_hints_path: Path
     web_host: str
     web_port: int
@@ -140,6 +151,7 @@ def _cfg_account_pool(config: dict[str, object], *, config_dir: Path, data_dir: 
         seen_cookie_files.add(cookie_file)
         enabled = str(item.get("enabled", True)).lower() in {"1", "true", "yes", "on"}
         weight = max(int(item.get("weight", 1) or 1), 1)
+        permission_level = int(item.get("permission_level", 0) or 0)
         request_interval_seconds = float(item.get("request_interval_seconds", 1.0) or 0.0)
         request_interval_jitter_seconds = float(item.get("request_interval_jitter_seconds", 0.5) or 0.0)
         max_concurrent_leases = max(int(item.get("max_concurrent_leases", 5) or 5), 1)
@@ -152,6 +164,7 @@ def _cfg_account_pool(config: dict[str, object], *, config_dir: Path, data_dir: 
                 cookie_file=cookie_file,
                 enabled=enabled,
                 weight=weight,
+                permission_level=permission_level,
                 request_interval_seconds=request_interval_seconds,
                 request_interval_jitter_seconds=request_interval_jitter_seconds,
                 max_concurrent_leases=max_concurrent_leases,
@@ -167,6 +180,39 @@ def load_settings() -> Settings:
     config = _read_local_config(config_path)
     data_dir = Path(os.environ.get("YAMIBO_DATA_DIR", root / "data")).expanduser()
     db_path = Path(os.environ.get("YAMIBO_DB_PATH", data_dir / "forum.db")).expanduser()
+    db_section_backend = str(_cfg_value(config, "database", "backend", "sqlite")).strip().lower()
+    db_backend = str(os.environ.get("YAMIBO_DB_BACKEND", db_section_backend) or "sqlite").strip().lower()
+    if db_backend not in {"sqlite", "postgres"}:
+        raise ValueError(f"unsupported database backend: {db_backend}")
+    db_url_value = os.environ.get("YAMIBO_DB_URL")
+    if db_url_value in {None, ""}:
+        db_url_config = _cfg_value(config, "database", "url", None)
+        db_url = None if db_url_config in {None, ""} else str(db_url_config)
+    else:
+        db_url = db_url_value
+    db_pool_min = max(int(os.environ.get("YAMIBO_DB_POOL_MIN", str(_cfg_value(config, "database", "pool_min", 1)))), 1)
+    db_pool_max = max(int(os.environ.get("YAMIBO_DB_POOL_MAX", str(_cfg_value(config, "database", "pool_max", 5)))), db_pool_min)
+    db_pool_timeout = float(
+        os.environ.get("YAMIBO_DB_POOL_TIMEOUT", str(_cfg_value(config, "database", "pool_timeout", 30.0)))
+    )
+    db_connect_timeout = float(
+        os.environ.get("YAMIBO_DB_CONNECT_TIMEOUT", str(_cfg_value(config, "database", "connect_timeout", 10.0)))
+    )
+    db_schema = str(os.environ.get("YAMIBO_DB_SCHEMA", str(_cfg_value(config, "database", "schema", "public")))).strip() or "public"
+    db_ssl_mode = str(os.environ.get("YAMIBO_DB_SSL_MODE", str(_cfg_value(config, "database", "ssl_mode", "prefer")))).strip() or "prefer"
+    db_ssl_root_cert_value = os.environ.get("YAMIBO_DB_SSL_ROOT_CERT")
+    if db_ssl_root_cert_value in {None, ""}:
+        db_ssl_root_cert_config = _cfg_value(config, "database", "ssl_root_cert", None)
+        if db_ssl_root_cert_config in {None, ""}:
+            db_ssl_root_cert = None
+        else:
+            db_ssl_root_cert = Path(str(db_ssl_root_cert_config)).expanduser()
+            if not db_ssl_root_cert.is_absolute():
+                db_ssl_root_cert = (config_path.parent / db_ssl_root_cert).resolve()
+    else:
+        db_ssl_root_cert = Path(db_ssl_root_cert_value).expanduser()
+        if not db_ssl_root_cert.is_absolute():
+            db_ssl_root_cert = (config_path.parent / db_ssl_root_cert).resolve()
     title_hints_path = Path(
         os.environ.get(
             "YAMIBO_TITLE_HINTS_PATH",
@@ -215,6 +261,15 @@ def load_settings() -> Settings:
         config_path=config_path,
         data_dir=data_dir,
         db_path=db_path,
+        db_backend=db_backend,  # type: ignore[arg-type]
+        db_url=db_url,
+        db_pool_min=db_pool_min,
+        db_pool_max=db_pool_max,
+        db_pool_timeout=db_pool_timeout,
+        db_connect_timeout=db_connect_timeout,
+        db_schema=db_schema,
+        db_ssl_mode=db_ssl_mode,
+        db_ssl_root_cert=db_ssl_root_cert,
         title_hints_path=title_hints_path,
         web_host=os.environ.get("YAMIBO_WEB_HOST", str(_cfg_value(config, "web", "host", "0.0.0.0"))),
         web_port=int(os.environ.get("YAMIBO_WEB_PORT", str(_cfg_value(config, "web", "port", 8765)))),

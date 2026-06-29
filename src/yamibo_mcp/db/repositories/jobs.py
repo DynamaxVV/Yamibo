@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-from typing import Any
+import time
+from collections.abc import Callable
+from typing import Any, TypeVar
 
 from yamibo_mcp.domain.enums import JobStatus
 from yamibo_mcp.domain.job_state import new_job_id
@@ -12,6 +14,9 @@ from yamibo_mcp.errors import JobNotFound, LeaseNotAcquired
 from yamibo_mcp.time_utils import utc_after_iso, utc_now_iso
 
 LOG = logging.getLogger(__name__)
+T = TypeVar("T")
+
+_LOCK_RETRY_DELAYS_SECONDS = (0.1, 0.2, 0.5, 1.0, 2.0)
 
 _LIVE_JOB_STATUSES = (
     JobStatus.QUEUED.value,
@@ -36,10 +41,25 @@ def _job_list_order_clause() -> str:
     """
 
 
-def _loads(value: str | None) -> dict[str, Any]:
-    if not value:
+def _loads(value: Any) -> dict[str, Any]:
+    if value is None or value == "":
         return {}
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, list):
+        return {"items": value}
     return json.loads(value)
+
+
+def _is_retryable_lock_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    if "database is locked" in message or "database table is locked" in message:
+        return True
+    sqlstate = getattr(exc, "sqlstate", None) or getattr(getattr(exc, "orig", None), "sqlstate", None)
+    if sqlstate in {"55P03", "40001", "40P01"}:
+        return True
+    pgcode = getattr(exc, "pgcode", None) or getattr(getattr(exc, "orig", None), "pgcode", None)
+    return pgcode in {"55P03", "40001", "40P01"}
 
 
 def _job_from_row(row: sqlite3.Row) -> Job:
@@ -71,6 +91,17 @@ def _job_from_row(row: sqlite3.Row) -> Job:
 class JobsRepository:
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
+
+    def _with_locked_retry(self, operation: Callable[[], T]) -> T:
+        for delay in (*_LOCK_RETRY_DELAYS_SECONDS, None):
+            try:
+                return operation()
+            except Exception as exc:  # noqa: BLE001 - backend-specific lock failures are normalized here
+                if not _is_retryable_lock_error(exc) or delay is None:
+                    raise
+                self.conn.rollback()
+                time.sleep(delay)
+        raise AssertionError("unreachable")
 
     def _append_event(
         self,
@@ -149,7 +180,7 @@ class JobsRepository:
                 payload_json,
                 JobStatus.QUEUED.value,
                 max_retries,
-                1 if resumable else 0,
+                resumable,
                 now,
                 now,
             ),
@@ -173,8 +204,8 @@ class JobsRepository:
 
     def rerun(self, job_id: str) -> Job:
         source = self.get(job_id)
-        if source.status not in (JobStatus.PARTIAL.value, JobStatus.FAILED.value):
-            raise ValueError("Only partial or failed jobs can be retried")
+        if source.status not in (JobStatus.PARTIAL.value, JobStatus.FAILED.value, JobStatus.INTERRUPTED.value):
+            raise ValueError("Only partial, failed, or interrupted jobs can be retried")
 
         next_job_id = new_job_id(source.job_type)
         now = utc_now_iso()
@@ -195,7 +226,7 @@ class JobsRepository:
                     json.dumps(source.payload or {}, ensure_ascii=False),
                     JobStatus.QUEUED.value,
                     source.max_retries,
-                    1 if source.resumable else 0,
+                    source.resumable,
                     now,
                     now,
                 ),
@@ -204,7 +235,7 @@ class JobsRepository:
                 """
                 UPDATE jobs
                 SET status = ?, updated_at = ?, finished_at = ?, lease_until = NULL
-                WHERE job_id = ? AND status IN (?, ?)
+                WHERE job_id = ? AND status IN (?, ?, ?)
                 """,
                 (
                     JobStatus.SUPERSEDED.value,
@@ -213,6 +244,7 @@ class JobsRepository:
                     source.job_id,
                     JobStatus.PARTIAL.value,
                     JobStatus.FAILED.value,
+                    JobStatus.INTERRUPTED.value,
                 ),
             )
             if cur.rowcount != 1:
@@ -236,18 +268,28 @@ class JobsRepository:
             raise JobNotFound(job_id)
         return _job_from_row(row)
 
-    def list(self, *, limit: int = 100, status: str | None = None) -> list[Job]:
+    def list(self, *, limit: int | None = 100, offset: int = 0, status: str | None = None) -> list[Job]:
+        clauses: list[str] = []
+        params: list[object] = []
         if status:
-            rows = self.conn.execute(
-                f"SELECT * FROM jobs WHERE status = ? ORDER BY {_job_list_order_clause()} LIMIT ?",
-                (status, limit),
-            ).fetchall()
-        else:
-            rows = self.conn.execute(
-                f"SELECT * FROM jobs ORDER BY {_job_list_order_clause()} LIMIT ?",
-                (limit,),
-            ).fetchall()
+            clauses.append("status = ?")
+            params.append(status)
+        sql = "SELECT * FROM jobs"
+        if clauses:
+            sql += f" WHERE {' AND '.join(clauses)}"
+        sql += f" ORDER BY {_job_list_order_clause()}"
+        if limit is not None:
+            sql += " LIMIT ? OFFSET ?"
+            params.extend([limit, max(offset, 0)])
+        rows = self.conn.execute(sql, params).fetchall()
         return [_job_from_row(row) for row in rows]
+
+    def count_filtered(self, *, status: str | None = None) -> int:
+        if status:
+            row = self.conn.execute("SELECT COUNT(*) AS n FROM jobs WHERE status = ?", (status,)).fetchone()
+        else:
+            row = self.conn.execute("SELECT COUNT(*) AS n FROM jobs").fetchone()
+        return int(row["n"] or 0)
 
     def find_live_job_for_thread(self, *, job_type: str, tid: int) -> Job | None:
         row = self.conn.execute(
@@ -257,10 +299,52 @@ class JobsRepository:
             WHERE job_type = ?
               AND tid = ?
               AND status IN ({",".join("?" for _ in _LIVE_JOB_STATUSES)})
-            ORDER BY rowid DESC
+            ORDER BY created_at DESC, job_id DESC
             LIMIT 1
             """,
             (job_type, tid, *_LIVE_JOB_STATUSES),
+        ).fetchone()
+        if row is None:
+            return None
+        return _job_from_row(row)
+
+    def get_latest_job(
+        self,
+        *,
+        job_type: str,
+        tid: int,
+        statuses: tuple[str, ...] | list[str] | None = None,
+    ) -> Job | None:
+        conditions = ["job_type = ?", "tid = ?"]
+        params: list[object] = [job_type, tid]
+        if statuses:
+            placeholders = ",".join("?" for _ in statuses)
+            conditions.append(f"status IN ({placeholders})")
+            params.extend(statuses)
+        row = self.conn.execute(
+            f"""
+            SELECT *
+            FROM jobs
+            WHERE {' AND '.join(conditions)}
+            ORDER BY created_at DESC, job_id DESC
+            LIMIT 1
+            """,
+            params,
+        ).fetchone()
+        if row is None:
+            return None
+        return _job_from_row(row)
+
+    def get_latest_child_job(self, parent_job_id: str) -> Job | None:
+        row = self.conn.execute(
+            """
+            SELECT *
+            FROM jobs
+            WHERE parent_job_id = ?
+            ORDER BY created_at DESC, job_id DESC
+            LIMIT 1
+            """,
+            (parent_job_id,),
         ).fetchone()
         if row is None:
             return None
@@ -339,32 +423,36 @@ class JobsRepository:
         )
 
     def acquire(self, job_id: str, worker_id: str, lease_seconds: int) -> Job:
-        now = utc_now_iso()
-        lease_until = utc_after_iso(lease_seconds)
-        # 通过条件 UPDATE 做租约抢占，保证多 worker 下只有一个执行者能拿到任务。
-        cur = self.conn.execute(
-            """
-            UPDATE jobs
-            SET status = ?, worker_id = ?, heartbeat_at = ?, lease_until = ?,
-                stage = COALESCE(stage, 'acquired'), updated_at = ?
-            WHERE job_id = ?
-              AND status IN (?, ?, ?)
-              AND (lease_until IS NULL OR lease_until < ?)
-            """,
-            (
-                JobStatus.RUNNING.value,
-                worker_id,
-                now,
-                lease_until,
-                now,
-                job_id,
-                JobStatus.QUEUED.value,
-                JobStatus.RETRYING.value,
-                JobStatus.INTERRUPTED.value,
-                now,
-            ),
-        )
-        self.conn.commit()
+        def _acquire() -> sqlite3.Cursor:
+            now = utc_now_iso()
+            lease_until = utc_after_iso(lease_seconds)
+            # 通过条件 UPDATE 做租约抢占，保证多 worker 下只有一个执行者能拿到任务。
+            cur = self.conn.execute(
+                """
+                UPDATE jobs
+                SET status = ?, worker_id = ?, heartbeat_at = ?, lease_until = ?,
+                    stage = COALESCE(stage, 'acquired'), updated_at = ?
+                WHERE job_id = ?
+                  AND status IN (?, ?, ?)
+                  AND (lease_until IS NULL OR lease_until < ?)
+                """,
+                (
+                    JobStatus.RUNNING.value,
+                    worker_id,
+                    now,
+                    lease_until,
+                    now,
+                    job_id,
+                    JobStatus.QUEUED.value,
+                    JobStatus.RETRYING.value,
+                    JobStatus.INTERRUPTED.value,
+                    now,
+                ),
+            )
+            self.conn.commit()
+            return cur
+
+        cur = self._with_locked_retry(_acquire)
         if cur.rowcount != 1:
             raise LeaseNotAcquired(job_id)
         self._append_event(
@@ -377,17 +465,20 @@ class JobsRepository:
         return self.get(job_id)
 
     def heartbeat(self, job_id: str, worker_id: str, lease_seconds: int) -> None:
-        now = utc_now_iso()
-        lease_until = utc_after_iso(lease_seconds)
-        self.conn.execute(
-            """
-            UPDATE jobs
-            SET heartbeat_at = ?, lease_until = ?, updated_at = ?
-            WHERE job_id = ? AND worker_id = ? AND status IN (?, ?)
-            """,
-            (now, lease_until, now, job_id, worker_id, JobStatus.RUNNING.value, JobStatus.PAUSED.value),
-        )
-        self.conn.commit()
+        def _heartbeat() -> None:
+            now = utc_now_iso()
+            lease_until = utc_after_iso(lease_seconds)
+            self.conn.execute(
+                """
+                UPDATE jobs
+                SET heartbeat_at = ?, lease_until = ?, updated_at = ?
+                WHERE job_id = ? AND worker_id = ? AND status IN (?, ?)
+                """,
+                (now, lease_until, now, job_id, worker_id, JobStatus.RUNNING.value, JobStatus.PAUSED.value),
+            )
+            self.conn.commit()
+
+        self._with_locked_retry(_heartbeat)
 
     def update_stage(
         self,
@@ -405,16 +496,19 @@ class JobsRepository:
         if progress_total is not None:
             params.append(progress_total)
         params.extend([utc_now_iso(), job_id])
-        self.conn.execute(
-            f"""
-            UPDATE jobs
-            SET stage = ?, progress_current = {current}, progress_total = {total},
-                updated_at = ?
-            WHERE job_id = ?
-            """,
-            params,
-        )
-        self.conn.commit()
+        def _update_stage() -> None:
+            self.conn.execute(
+                f"""
+                UPDATE jobs
+                SET stage = ?, progress_current = {current}, progress_total = {total},
+                    updated_at = ?
+                WHERE job_id = ?
+                """,
+                params,
+            )
+            self.conn.commit()
+
+        self._with_locked_retry(_update_stage)
         self._append_event(
             job_id,
             "job.progressed",
@@ -426,24 +520,27 @@ class JobsRepository:
         )
 
     def succeed(self, job_id: str, artifacts: dict[str, Any] | None = None) -> None:
-        now = utc_now_iso()
-        self.conn.execute(
-            """
-            UPDATE jobs
-            SET status = ?, stage = 'finalize', progress_current = COALESCE(progress_total, progress_current),
-                artifacts_json = ?, updated_at = ?, finished_at = ?,
-                lease_until = NULL
-            WHERE job_id = ?
-            """,
-            (
-                JobStatus.SUCCEEDED.value,
-                json.dumps(artifacts or {}, ensure_ascii=False),
-                now,
-                now,
-                job_id,
-            ),
-        )
-        self.conn.commit()
+        def _succeed() -> None:
+            now = utc_now_iso()
+            self.conn.execute(
+                """
+                UPDATE jobs
+                SET status = ?, stage = 'finalize', progress_current = COALESCE(progress_total, progress_current),
+                    artifacts_json = ?, updated_at = ?, finished_at = ?,
+                    lease_until = NULL
+                WHERE job_id = ?
+                """,
+                (
+                    JobStatus.SUCCEEDED.value,
+                    json.dumps(artifacts or {}, ensure_ascii=False),
+                    now,
+                    now,
+                    job_id,
+                ),
+            )
+            self.conn.commit()
+
+        self._with_locked_retry(_succeed)
         self._append_event(
             job_id,
             "job.succeeded",
@@ -451,43 +548,128 @@ class JobsRepository:
             payload={"artifacts": artifacts or {}},
         )
 
-    def fail(self, job_id: str, error_code: str, error_message: str) -> None:
-        now = utc_now_iso()
-        self.conn.execute(
-            """
-            UPDATE jobs
-            SET status = ?, error_code = ?, error_message = ?,
-                updated_at = ?, finished_at = ?, lease_until = NULL
-            WHERE job_id = ?
-            """,
-            (JobStatus.FAILED.value, error_code, error_message, now, now, job_id),
-        )
-        self.conn.commit()
+    def fail(
+        self,
+        job_id: str,
+        error_code: str,
+        error_message: str,
+        artifacts: dict[str, Any] | None = None,
+    ) -> None:
+        def _fail() -> dict[str, Any]:
+            now = utc_now_iso()
+            current = self.get(job_id)
+            next_artifacts = current.artifacts if isinstance(current.artifacts, dict) else {}
+            if artifacts:
+                next_artifacts = {**next_artifacts, **artifacts}
+            self.conn.execute(
+                """
+                UPDATE jobs
+                SET status = ?, error_code = ?, error_message = ?,
+                    artifacts_json = ?, updated_at = ?, finished_at = ?, lease_until = NULL
+                WHERE job_id = ?
+                """,
+                (
+                    JobStatus.FAILED.value,
+                    error_code,
+                    error_message,
+                    json.dumps(next_artifacts, ensure_ascii=False),
+                    now,
+                    now,
+                    job_id,
+                ),
+            )
+            self.conn.commit()
+            return next_artifacts
+
+        next_artifacts = self._with_locked_retry(_fail)
         self._append_event(
             job_id,
             "job.failed",
             status=JobStatus.FAILED.value,
-            payload={"error_code": error_code, "error_message": error_message},
+            payload={
+                "error_code": error_code,
+                "error_message": error_message,
+                "artifacts": next_artifacts,
+            },
         )
 
-    def partial(self, job_id: str, artifacts: dict[str, Any] | None = None) -> None:
-        now = utc_now_iso()
-        self.conn.execute(
-            """
-            UPDATE jobs
-            SET status = ?, stage = 'finalize', progress_current = COALESCE(progress_total, progress_current),
-                artifacts_json = ?, updated_at = ?, finished_at = ?, lease_until = NULL
-            WHERE job_id = ?
-            """,
-            (
-                JobStatus.PARTIAL.value,
-                json.dumps(artifacts or {}, ensure_ascii=False),
-                now,
-                now,
-                job_id,
-            ),
+    def retry_later(
+        self,
+        job_id: str,
+        *,
+        error_code: str,
+        error_message: str,
+        artifacts: dict[str, Any] | None = None,
+    ) -> bool:
+        def _retry_later() -> tuple[sqlite3.Cursor | None, dict[str, Any]]:
+            now = utc_now_iso()
+            current = self.get(job_id)
+            if current.retry_count >= current.max_retries:
+                return None, {}
+            next_artifacts = current.artifacts if isinstance(current.artifacts, dict) else {}
+            if artifacts:
+                next_artifacts = {**next_artifacts, **artifacts}
+            cur = self.conn.execute(
+                """
+                UPDATE jobs
+                SET status = ?, retry_count = retry_count + 1, error_code = ?, error_message = ?,
+                    artifacts_json = ?, worker_id = NULL, heartbeat_at = NULL, lease_until = NULL, updated_at = ?
+                WHERE job_id = ? AND status = ?
+                """,
+                (
+                    JobStatus.RETRYING.value,
+                    error_code,
+                    error_message,
+                    json.dumps(next_artifacts, ensure_ascii=False),
+                    now,
+                    job_id,
+                    JobStatus.RUNNING.value,
+                ),
+            )
+            self.conn.commit()
+            return cur, next_artifacts
+
+        cur, next_artifacts = self._with_locked_retry(_retry_later)
+        if cur is None:
+            return False
+        if cur.rowcount != 1:
+            return False
+        refreshed = self.get(job_id)
+        self._append_event(
+            job_id,
+            "job.retrying",
+            status=JobStatus.RETRYING.value,
+            payload={
+                "error_code": error_code,
+                "error_message": error_message,
+                "retry_count": refreshed.retry_count,
+                "max_retries": refreshed.max_retries,
+                "artifacts": next_artifacts,
+            },
         )
-        self.conn.commit()
+        return True
+
+    def partial(self, job_id: str, artifacts: dict[str, Any] | None = None) -> None:
+        def _partial() -> None:
+            now = utc_now_iso()
+            self.conn.execute(
+                """
+                UPDATE jobs
+                SET status = ?, stage = 'finalize', progress_current = COALESCE(progress_total, progress_current),
+                    artifacts_json = ?, updated_at = ?, finished_at = ?, lease_until = NULL
+                WHERE job_id = ?
+                """,
+                (
+                    JobStatus.PARTIAL.value,
+                    json.dumps(artifacts or {}, ensure_ascii=False),
+                    now,
+                    now,
+                    job_id,
+                ),
+            )
+            self.conn.commit()
+
+        self._with_locked_retry(_partial)
         self._append_event(
             job_id,
             "job.partial",
@@ -496,68 +678,84 @@ class JobsRepository:
         )
 
     def request_cancel(self, job_id: str) -> bool:
-        now = utc_now_iso()
-        cur = self.conn.execute(
-            """
-            UPDATE jobs
-            SET status = ?, cancel_requested_at = ?, updated_at = ?
-            WHERE job_id = ? AND status = ?
-            """,
-            (JobStatus.CANCEL_REQUESTED.value, now, now, job_id, JobStatus.RUNNING.value),
-        )
-        self.conn.commit()
+        def _request_cancel() -> sqlite3.Cursor:
+            now = utc_now_iso()
+            cur = self.conn.execute(
+                """
+                UPDATE jobs
+                SET status = ?, cancel_requested_at = ?, updated_at = ?
+                WHERE job_id = ? AND status = ?
+                """,
+                (JobStatus.CANCEL_REQUESTED.value, now, now, job_id, JobStatus.RUNNING.value),
+            )
+            self.conn.commit()
+            return cur
+
+        cur = self._with_locked_retry(_request_cancel)
         return cur.rowcount > 0
 
     def pause(self, job_id: str) -> bool:
-        now = utc_now_iso()
-        cur = self.conn.execute(
-            """
-            UPDATE jobs
-            SET status = ?, paused_at = COALESCE(paused_at, ?), updated_at = ?
-            WHERE job_id = ? AND status IN (?, ?, ?, ?)
-            """,
-            (
-                JobStatus.PAUSED.value,
-                now,
-                now,
-                job_id,
-                JobStatus.QUEUED.value,
-                JobStatus.RUNNING.value,
-                JobStatus.RETRYING.value,
-                JobStatus.INTERRUPTED.value,
-            ),
-        )
-        self.conn.commit()
+        def _pause() -> sqlite3.Cursor:
+            now = utc_now_iso()
+            cur = self.conn.execute(
+                """
+                UPDATE jobs
+                SET status = ?, paused_at = COALESCE(paused_at, ?), updated_at = ?
+                WHERE job_id = ? AND status IN (?, ?, ?, ?)
+                """,
+                (
+                    JobStatus.PAUSED.value,
+                    now,
+                    now,
+                    job_id,
+                    JobStatus.QUEUED.value,
+                    JobStatus.RUNNING.value,
+                    JobStatus.RETRYING.value,
+                    JobStatus.INTERRUPTED.value,
+                ),
+            )
+            self.conn.commit()
+            return cur
+
+        cur = self._with_locked_retry(_pause)
         if cur.rowcount > 0:
             self._append_event(job_id, "job.paused", status=JobStatus.PAUSED.value)
         return cur.rowcount > 0
 
     def finalize_pause(self, job_id: str) -> bool:
-        now = utc_now_iso()
-        cur = self.conn.execute(
-            """
-            UPDATE jobs
-            SET status = ?, worker_id = NULL, heartbeat_at = NULL, lease_until = NULL, updated_at = ?
-            WHERE job_id = ? AND status = ?
-            """,
-            (JobStatus.PAUSED.value, now, job_id, JobStatus.PAUSED.value),
-        )
-        self.conn.commit()
+        def _finalize_pause() -> sqlite3.Cursor:
+            now = utc_now_iso()
+            cur = self.conn.execute(
+                """
+                UPDATE jobs
+                SET status = ?, worker_id = NULL, heartbeat_at = NULL, lease_until = NULL, updated_at = ?
+                WHERE job_id = ? AND status = ?
+                """,
+                (JobStatus.PAUSED.value, now, job_id, JobStatus.PAUSED.value),
+            )
+            self.conn.commit()
+            return cur
+
+        cur = self._with_locked_retry(_finalize_pause)
         return cur.rowcount > 0
 
     def resume(self, job_id: str) -> bool:
-        now = utc_now_iso()
-        cur = self.conn.execute(
-            """
-            UPDATE jobs
-            SET status = ?, paused_at = NULL, worker_id = NULL, heartbeat_at = NULL, lease_until = NULL, updated_at = ?
-            WHERE job_id = ?
-              AND status = ?
-              AND (worker_id IS NULL OR lease_until IS NULL OR lease_until < ?)
-            """,
-            (JobStatus.QUEUED.value, now, job_id, JobStatus.PAUSED.value, now),
-        )
-        self.conn.commit()
+        def _resume() -> sqlite3.Cursor:
+            now = utc_now_iso()
+            cur = self.conn.execute(
+                """
+                UPDATE jobs
+                SET status = ?, paused_at = NULL, worker_id = NULL, heartbeat_at = NULL, lease_until = NULL, updated_at = ?
+                WHERE job_id = ?
+                  AND status = ?
+                  AND (worker_id IS NULL OR lease_until IS NULL OR lease_until < ?)
+                """,
+                (JobStatus.QUEUED.value, now, job_id, JobStatus.PAUSED.value, now),
+            )
+            self.conn.commit()
+            return cur
+
+        cur = self._with_locked_retry(_resume)
         if cur.rowcount > 0:
             self._append_event(job_id, "job.resumed", status=JobStatus.QUEUED.value)
         return cur.rowcount > 0
@@ -579,18 +777,21 @@ class JobsRepository:
         ]
         if not expired_job_ids:
             return 0
-        self.conn.execute(
-            """
-            UPDATE jobs
-            SET worker_id = NULL, heartbeat_at = NULL, lease_until = NULL, updated_at = ?
-            WHERE status = ?
-              AND worker_id IS NOT NULL
-              AND lease_until IS NOT NULL
-              AND lease_until < ?
-            """,
-            (now, JobStatus.PAUSED.value, now),
-        )
-        self.conn.commit()
+        def _release() -> None:
+            self.conn.execute(
+                """
+                UPDATE jobs
+                SET worker_id = NULL, heartbeat_at = NULL, lease_until = NULL, updated_at = ?
+                WHERE status = ?
+                  AND worker_id IS NOT NULL
+                  AND lease_until IS NOT NULL
+                  AND lease_until < ?
+                """,
+                (now, JobStatus.PAUSED.value, now),
+            )
+            self.conn.commit()
+
+        self._with_locked_retry(_release)
         for job_id in expired_job_ids:
             LOG.info("release_expired_paused_jobs job_id=%s", job_id)
         return len(expired_job_ids)
@@ -622,20 +823,24 @@ class JobsRepository:
             ).fetchall()
         ]
         # Worker 重启时先把超时的 running 标成 interrupted，后续再重新抢占执行。
-        cur = self.conn.execute(
-            """
-            UPDATE jobs
-            SET status = ?, updated_at = ?
-            WHERE status = ? AND lease_until IS NOT NULL AND lease_until < ?
-            """,
-            (
-                JobStatus.INTERRUPTED.value,
-                now,
-                JobStatus.RUNNING.value,
-                now,
-            ),
-        )
-        self.conn.commit()
+        def _mark_interrupted() -> sqlite3.Cursor:
+            cur = self.conn.execute(
+                """
+                UPDATE jobs
+                SET status = ?, updated_at = ?
+                WHERE status = ? AND lease_until IS NOT NULL AND lease_until < ?
+                """,
+                (
+                    JobStatus.INTERRUPTED.value,
+                    now,
+                    JobStatus.RUNNING.value,
+                    now,
+                ),
+            )
+            self.conn.commit()
+            return cur
+
+        cur = self._with_locked_retry(_mark_interrupted)
         for job_id in expired_job_ids:
             LOG.info("mark_expired_running_interrupted job_id=%s", job_id)
             self._append_event(
@@ -644,3 +849,101 @@ class JobsRepository:
                 status=JobStatus.INTERRUPTED.value,
             )
         return cur.rowcount
+
+    def count(self) -> int:
+        row = self.conn.execute("SELECT COUNT(*) AS c FROM jobs").fetchone()
+        return int(row["c"]) if row is not None else 0
+
+    def count_by_status(self) -> dict[str, int]:
+        rows = self.conn.execute("SELECT status, COUNT(*) AS cnt FROM jobs GROUP BY status").fetchall()
+        counts = {"all": 0}
+        for row in rows:
+            counts[str(row["status"])] = int(row["cnt"])
+            counts["all"] += int(row["cnt"])
+        return counts
+
+    def list_ids_by_status(self, status: str) -> list[str]:
+        rows = self.conn.execute("SELECT job_id FROM jobs WHERE status = ? ORDER BY created_at DESC, job_id DESC", (status,)).fetchall()
+        return [str(row["job_id"]) for row in rows]
+
+    def list_recent(self, *, limit: int = 10):
+        return self.list(limit=limit)
+
+    def list_live_sync_thread_statuses(self) -> dict[int, str]:
+        live_statuses = (
+            JobStatus.QUEUED.value,
+            JobStatus.RUNNING.value,
+            JobStatus.RETRYING.value,
+            JobStatus.CANCEL_REQUESTED.value,
+            JobStatus.INTERRUPTED.value,
+            JobStatus.PAUSED.value,
+        )
+        rows = self.conn.execute(
+            """
+            SELECT tid, status
+            FROM jobs
+            WHERE job_type = 'sync_thread'
+              AND tid IS NOT NULL
+              AND status IN (?, ?, ?, ?, ?, ?)
+            ORDER BY updated_at DESC, created_at DESC
+            """,
+            live_statuses,
+        ).fetchall()
+        statuses: dict[int, str] = {}
+        for row in rows:
+            tid = row["tid"]
+            if tid is None or tid in statuses:
+                continue
+            statuses[int(tid)] = row["status"]
+        return statuses
+
+    def list_worker_heartbeats(self) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            """
+            SELECT worker_id, MAX(heartbeat_at) AS latest_heartbeat_at,
+                   SUM(CASE WHEN status='running' THEN 1 ELSE 0 END) AS running_jobs,
+                   COUNT(*) AS seen_jobs
+            FROM jobs
+            WHERE worker_id IS NOT NULL
+            GROUP BY worker_id
+            HAVING SUM(CASE WHEN status='running' THEN 1 ELSE 0 END) > 0
+            ORDER BY COALESCE(MAX(heartbeat_at), MAX(updated_at)) DESC
+            LIMIT 20
+            """
+        ).fetchall()
+
+    def list_running_job_ids(self, job_ids: list[str]) -> list[str]:
+        if not job_ids:
+            return []
+        placeholders = ",".join("?" for _ in job_ids)
+        rows = self.conn.execute(
+            f"SELECT job_id FROM jobs WHERE job_id IN ({placeholders}) AND status = 'running'",
+            job_ids,
+        ).fetchall()
+        return [str(row["job_id"]) for row in rows]
+
+    def list_recent_errors(self, *, limit: int = 10):
+        return self.conn.execute(
+            """
+            SELECT job_id, error_code, error_message, finished_at
+            FROM jobs
+            WHERE error_code IS NOT NULL
+            ORDER BY finished_at DESC, job_id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+    def delete_job(self, job_id: str) -> None:
+        self.conn.execute("DELETE FROM job_events WHERE job_id = ?", (job_id,))
+        self.conn.execute("DELETE FROM jobs WHERE job_id = ?", (job_id,))
+        self.conn.commit()
+
+    def delete_jobs(self, job_ids: list[str]) -> int:
+        if not job_ids:
+            return 0
+        placeholders = ",".join("?" for _ in job_ids)
+        self.conn.execute(f"DELETE FROM job_events WHERE job_id IN ({placeholders})", job_ids)
+        self.conn.execute(f"DELETE FROM jobs WHERE job_id IN ({placeholders})", job_ids)
+        self.conn.commit()
+        return len(job_ids)

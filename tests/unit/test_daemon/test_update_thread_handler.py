@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
+from yamibo_mcp.errors import ThreadPermissionRequiredError
 from yamibo_mcp.daemon.handlers.update_thread import handle_update_thread
 from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
@@ -230,3 +231,88 @@ def test_handle_update_thread_refuses_tail_mismatch(db, tmp_path, monkeypatch):
 
     with pytest.raises(ValueError, match="full resync required"):
         handle_update_thread(repo, job, "worker-1", 300, settings)
+
+
+def test_handle_update_thread_retries_permission_gate_with_next_threshold(db, tmp_path, monkeypatch):
+    settings = _make_settings(tmp_path)
+    snapshot = _make_snapshot(tid=540745, content="旧尾章")
+    ThreadsRepository(db).upsert_snapshot(snapshot, forum_id=55)
+    paths = StoragePaths(settings.data_dir, export_dir=settings.export_dir, novel_txt_export_dir=settings.novel_txt_export_dir)
+    materialize_thread(paths, snapshot)
+
+    repo = JobsRepository(db)
+    job = repo.create("update_thread", tid=540745, payload={"tid": 540745})
+    job = repo.acquire(job.job_id, "worker-1", 300)
+
+    tail_page = _make_snapshot(tid=540745, content="旧尾章")
+    new_page = _make_snapshot(tid=540745, content="新增章节", floor_no=2, pid=1002)
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.update_thread.check_thread_updates",
+        lambda tid, base_url=None: {
+            "tid": tid,
+            "status": "updated",
+            "reason": "remote author-only snapshot differs from local archive",
+            "local_snapshot": {
+                "author_uid": "229047",
+                "archive_signature": {
+                    "author_uid": "229047",
+                    "last_pid": 1001,
+                    "floor_count": 1,
+                    "last_floor_hash": floor_content_hash("旧尾章"),
+                    "author_only_total_pages": 1,
+                },
+            },
+            "remote_snapshot": {"total_pages": 2},
+            "evidence": [],
+        },
+    )
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.update_thread.parse_thread_snapshot",
+        lambda html, url=None, tid=None: tail_page if "page=1" in (url or "") else new_page,
+    )
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.update_thread.download_images_to_staging",
+        lambda *args, **kwargs: ImageDownloadResult(),
+    )
+
+    calls: list[int | None] = []
+
+    class _BorrowContext:
+        def __init__(self, fail: bool) -> None:
+            self.fail = fail
+
+        def __enter__(self):
+            if self.fail:
+                raise ThreadPermissionRequiredError(
+                    "thread requires read permission above 10 for https://bbs.yamibo.com/forum.php?mod=viewthread&tid=540745",
+                    required_permission=10,
+                )
+            return (
+                SimpleNamespace(account_id="high"),
+                SimpleNamespace(
+                    headers={},
+                    cookie_jar=None,
+                    use_system_proxy=False,
+                    cookie_file=None,
+                    fetch_thread_page=lambda *, tid, page, author_uid, base_url=None: FetchResult(
+                        url=f"https://bbs.yamibo.com/forum.php?mod=viewthread&tid={tid}&page={page}&authorid={author_uid}",
+                        final_url=f"https://bbs.yamibo.com/forum.php?mod=viewthread&tid={tid}&page={page}&authorid={author_uid}",
+                        status_code=200,
+                        html=_page_html(tid=tid, page=page, content="旧尾章" if page == 1 else "新增章节"),
+                    ),
+                ),
+            )
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_borrow(settings_arg, *, min_permission=None, prefer_high_permission=False, cookie_file=None):
+        calls.append(min_permission)
+        return _BorrowContext(fail=len(calls) == 1)
+
+    monkeypatch.setattr("yamibo_mcp.daemon.handlers.update_thread.has_configured_account_pool", lambda settings: True)
+    monkeypatch.setattr("yamibo_mcp.daemon.handlers.update_thread.borrow_yamibo_client", fake_borrow)
+
+    handle_update_thread(repo, job, "worker-1", 300, settings)
+
+    assert calls == [None, 11]

@@ -6,7 +6,7 @@ from pathlib import Path
 from yamibo_mcp.application.contracts import AgentAction, AgentError, AgentResult
 from yamibo_mcp.config import load_settings
 from yamibo_mcp.db.connection import connect
-from yamibo_mcp.db.migrations import migrate
+from yamibo_mcp.db.repositories.forums import ForumsRepository
 from yamibo_mcp.db.repositories.assets import AssetsRepository
 from yamibo_mcp.db.repositories.content_blocks import ContentBlocksRepository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
@@ -48,7 +48,6 @@ def read_archived_thread(
     settings = load_settings()
     conn = connect(settings.db_path)
     try:
-        migrate(conn)
         repo = ThreadsRepository(conn)
         thread = repo.get_thread(tid)
         if thread is None:
@@ -212,7 +211,6 @@ def probe_archived_threads(*, tids: list[int]) -> AgentResult:
     settings = load_settings()
     conn = connect(settings.db_path)
     try:
-        migrate(conn)
         items = ThreadsRepository(conn).probe_archive_states(normalized_tids)
         return AgentResult(
             ok=True,
@@ -229,7 +227,6 @@ def list_exports(*, limit: int = 100) -> dict[str, object]:
     settings = load_settings()
     conn = connect(settings.db_path)
     try:
-        migrate(conn)
         rows = ThreadsRepository(conn).list_exports(limit=limit)
         return {"count": len(rows), "items": [thread_summary_payload(row, include_export=True) for row in rows]}
     finally:
@@ -240,10 +237,7 @@ def read_forum_profiles() -> AgentResult:
     settings = load_settings()
     conn = connect(settings.db_path)
     try:
-        migrate(conn)
-        rows = conn.execute(
-            "SELECT forum_id, name, name_en, content_kind, base_url, enabled FROM forums ORDER BY forum_id"
-        ).fetchall()
+        rows = ForumsRepository(conn).list_profiles()
     finally:
         conn.close()
 

@@ -1,17 +1,26 @@
 from __future__ import annotations
 
 import html as html_lib
+import http.client
+import logging
 import re
 import time
 import urllib.parse
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
 from http.cookiejar import Cookie
 from http.cookiejar import CookieJar
 from pathlib import Path
 
-from yamibo_mcp.errors import LoginRequiredError, RemoteFetchError, RemoteMaintenanceError, UnexpectedPageError
+from yamibo_mcp.errors import (
+    LoginRequiredError,
+    RemoteFetchError,
+    RemoteMaintenanceError,
+    ThreadPermissionRequiredError,
+    UnexpectedPageError,
+)
 from yamibo_mcp.yamibo.parsers.forum_list import ForumThreadItem, extract_total_pages, parse_forum_list
 from yamibo_mcp.yamibo.parsers.thread_detail import extract_author_only_total_pages
 from yamibo_mcp.yamibo.parsers.search_results import SearchResultItem, parse_search_results
@@ -32,6 +41,8 @@ DEFAULT_HEADERS = {
     "User-Agent": "YamiboMCP/0.1 (+https://bbs.yamibo.com)",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
+
+LOG = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -74,6 +85,7 @@ class YamiboClient:
             handlers.insert(0, urllib.request.ProxyHandler({}))
         self.opener = urllib.request.build_opener(*handlers)
         self._load_cookies()
+        self._bootstrap_login_if_needed()
 
     def fetch_url(self, url: str) -> FetchResult:
         return self._fetch_with_validation(url, self._validate_thread_page)
@@ -81,6 +93,7 @@ class YamiboClient:
     def _fetch_with_validation(self, url: str, validator, *, allow_login_retry: bool = True) -> FetchResult:
         self._throttle()
         last_error: Exception | None = None
+        last_error_details: dict[str, object] = {}
         for attempt in range(self.retries + 1):
             try:
                 result = self._open_html(url)
@@ -102,23 +115,65 @@ class YamiboClient:
                 break
             except TimeoutError as exc:
                 last_error = exc
+                last_error_details = {
+                    "attempt": attempt + 1,
+                    "error_type": exc.__class__.__name__,
+                    "error_message": str(exc),
+                }
                 if attempt >= self.retries:
                     break
                 time.sleep(min(0.25 * (attempt + 1), 1.0))
             except urllib.error.HTTPError as exc:
                 last_error = exc
+                last_error_details = {
+                    "attempt": attempt + 1,
+                    "error_type": exc.__class__.__name__,
+                    "error_message": str(exc),
+                    "status_code": exc.code,
+                }
                 if attempt >= self.retries or exc.code < 500:
                     break
                 time.sleep(min(0.25 * (attempt + 1), 1.0))
             except urllib.error.URLError as exc:
                 last_error = exc
+                last_error_details = {
+                    "attempt": attempt + 1,
+                    "error_type": exc.__class__.__name__,
+                    "error_message": str(exc),
+                    "reason": str(exc.reason) if getattr(exc, "reason", None) is not None else None,
+                }
+                if attempt >= self.retries:
+                    break
+                time.sleep(min(0.25 * (attempt + 1), 1.0))
+            except http.client.RemoteDisconnected as exc:
+                last_error = exc
+                last_error_details = {
+                    "attempt": attempt + 1,
+                    "error_type": exc.__class__.__name__,
+                    "error_message": str(exc),
+                    "retryable": True,
+                }
+                LOG.warning(
+                    "Remote disconnected while fetching %s attempt=%s/%s",
+                    url,
+                    attempt + 1,
+                    self.retries + 1,
+                )
                 if attempt >= self.retries:
                     break
                 time.sleep(min(0.25 * (attempt + 1), 1.0))
         if isinstance(last_error, LoginRequiredError):
             raise last_error
         raise RemoteFetchError(
-            f"failed to fetch {url} after {self.retries + 1} attempt(s) with timeout={self.timeout}s: {last_error}"
+            f"failed to fetch {url} after {self.retries + 1} attempt(s) with timeout={self.timeout}s: {last_error}",
+            details={
+                "url": url,
+                "attempts": self.retries + 1,
+                "timeout_seconds": self.timeout,
+                "last_error_type": None if last_error is None else last_error.__class__.__name__,
+                "last_error_message": None if last_error is None else str(last_error),
+                **last_error_details,
+            },
         )
 
     def _throttle(self) -> None:
@@ -164,6 +219,7 @@ class YamiboClient:
         base_url: str | None = None,
         max_pages: int,
         page_delay_seconds: float,
+        before_each_page: Callable[[], None] | None = None,
     ) -> tuple[list[FetchResult], int | None, str]:
         if max_pages <= 0:
             raise ValueError("max_pages must be positive")
@@ -176,6 +232,8 @@ class YamiboClient:
         max_target_page = max_pages if total_pages is None else min(total_pages, max_pages)
 
         for page in range(2, max_target_page + 1):
+            if before_each_page is not None:
+                before_each_page()
             if page_delay_seconds > 0:
                 time.sleep(page_delay_seconds)
             results.append(self.fetch_thread_page(tid=tid, page=page, author_uid=author_uid, base_url=base_url))
@@ -196,6 +254,7 @@ class YamiboClient:
         max_pages: int,
         first_page: FetchResult | None = None,
         page_delay_seconds: float = 0.0,
+        before_each_page: Callable[[], None] | None = None,
     ) -> tuple[list[FetchResult], int, str]:
         if max_pages <= 0:
             raise ValueError("max_pages must be positive")
@@ -208,6 +267,8 @@ class YamiboClient:
         max_target_page = min(total_pages, max_pages)
 
         for page in range(2, max_target_page + 1):
+            if before_each_page is not None:
+                before_each_page()
             if page_delay_seconds > 0:
                 time.sleep(page_delay_seconds)
             results.append(self.fetch_thread_page(tid=tid, page=page, base_url=base_url))
@@ -329,7 +390,29 @@ class YamiboClient:
             raise LoginRequiredError(f"login required for {result.final_url}")
         if classification.page_type == PageType.REMOTE_MAINTENANCE:
             raise RemoteMaintenanceError(f"remote maintenance for {result.final_url}")
+        if classification.page_type == PageType.PROMPT_THREAD_PERMISSION_REQUIRED:
+            prompt_text = _extract_discuz_prompt_text(result.html)
+            required_permission = _extract_required_read_permission(prompt_text)
+            raise ThreadPermissionRequiredError(
+                f"thread requires read permission above {required_permission if required_permission is not None else 'unknown'} for {result.final_url}",
+                required_permission=required_permission,
+                details={
+                    "url": result.final_url,
+                    "page_type": classification.page_type.value,
+                    "prompt_text": prompt_text,
+                },
+            )
         if classification.page_type != PageType.THREAD_DETAIL:
+            prompt_text = _extract_discuz_prompt_text(result.html)
+            if prompt_text:
+                raise UnexpectedPageError(
+                    f"expected thread detail page but got prompt page for {result.final_url}: {prompt_text}",
+                    details={
+                        "url": result.final_url,
+                        "page_type": classification.page_type.value,
+                        "prompt_text": prompt_text,
+                    },
+                )
             raise UnexpectedPageError(
                 f"expected thread detail page but got {classification.page_type.value} for {result.final_url}"
             )
@@ -461,6 +544,15 @@ class YamiboClient:
             )
             self.cookie_jar.set_cookie(cookie)
 
+    def _bootstrap_login_if_needed(self) -> None:
+        if self.cookie_file is None or self.cookie_file.exists():
+            return
+        if list(self.cookie_jar):
+            return
+        if not self._can_login():
+            return
+        self._login(base_url="https://bbs.yamibo.com", referer="https://bbs.yamibo.com/")
+
     def _save_cookies(self) -> None:
         if self.cookie_file is None or not self.persist_cookies:
             return
@@ -487,6 +579,40 @@ def _extract_formhash(html: str) -> str:
     if match is None:
         raise UnexpectedPageError("could not extract formhash from page")
     return match.group(1)
+
+
+def _extract_discuz_prompt_text(html: str) -> str | None:
+    prompt_match = re.search(
+        r'<div[^>]+id=["\']messagetext["\'][^>]*>(.*?)</div>',
+        html,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if prompt_match is None:
+        prompt_match = re.search(
+            r'<div[^>]+class=["\'][^"\']*\balert_(?:error|info)\b[^"\']*["\'][^>]*>(.*?)</div>',
+            html,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+    if prompt_match is None:
+        return None
+    body = prompt_match.group(1)
+    first_paragraph = re.search(r"<p[^>]*>(.*?)</p>", body, flags=re.IGNORECASE | re.DOTALL)
+    if first_paragraph is not None:
+        body = first_paragraph.group(1)
+    text = re.sub(r"<script[^>]*>.*?</script>", " ", body, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"<style[^>]*>.*?</style>", " ", text, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = html_lib.unescape(re.sub(r"\s+", " ", text)).strip()
+    return text or None
+
+
+def _extract_required_read_permission(prompt_text: str | None) -> int | None:
+    if not prompt_text:
+        return None
+    match = re.search(r"阅读权限高于\s*(\d+)", prompt_text)
+    if match is None:
+        return None
+    return int(match.group(1))
 
 
 def _extract_search_page_urls(html: str, *, base_url: str) -> dict[int, str]:

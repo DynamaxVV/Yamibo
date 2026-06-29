@@ -1,6 +1,6 @@
 # 核心模块开发说明
 
-> 版本：0.9.3 | 更新日期：2026-06-26
+> 版本：0.9.3 | 更新日期：2026-06-28
 
 ## 1. 标题解析引擎
 
@@ -417,6 +417,35 @@ Web 控制台的 `/rag` 页面对应以下后端接口：
 | image_download_retries | YAMIBO_IMAGE_DOWNLOAD_RETRIES | 2 | 图片下载重试次数 |
 | backup_keep_count | YAMIBO_BACKUP_KEEP_COUNT | 20 | 备份保留数量 |
 | cleanup_staging_older_than_hours | YAMIBO_CLEANUP_STAGING_OLDER_THAN_HOURS | 48 | staging 过期时间 |
+
+### 6.2.1 账号池
+
+账号池不是独立环境变量段，而是放在 `yamibo.account_pool` 里的配置数组。每个账号都应使用独立的 `cookie_file`，并显式写出 `permission_level`。推荐用 `0/10/20/...` 这种梯队，`0` 代表最低权限，每一档增加 10：
+
+```json
+{
+  "yamibo": {
+    "account_pool": [
+      {
+        "account_id": "low",
+        "username": "user_low",
+        "password": "pass_low",
+        "cookie_file": "data/cookies/low.cookie",
+        "permission_level": 0
+      },
+      {
+        "account_id": "high",
+        "username": "user_high",
+        "password": "pass_high",
+        "cookie_file": "data/cookies/high.cookie",
+        "permission_level": 10
+      }
+    ]
+  }
+}
+```
+
+默认单账号配置仍然可用；配置账号池后，远端列表、搜索和帖子预览会优先用高 `permission_level` 账号，普通归档和更新检查则先用低权限账号，只有遇到“阅读权限高于 xx 才能浏览”时才切到更高一档的账号重试。
 
 ### 6.3 配置文件格式
 

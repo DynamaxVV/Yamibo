@@ -8,8 +8,10 @@ from yamibo_mcp.application.contracts import AgentAction, AgentError, AgentResul
 from yamibo_mcp.errors import (
     JobNotFound,
     LoginRequiredError,
+    RemoteAccessPausedError,
     RemoteFetchError,
     RemoteMaintenanceError,
+    ThreadPermissionRequiredError,
     UnexpectedPageError,
 )
 from yamibo_mcp.storage.exports import ExportPrecheckError
@@ -76,6 +78,31 @@ def map_exception(exc: Exception) -> AgentResult:
                 code="REMOTE_MAINTENANCE",
                 message=str(exc),
                 agent_hint="Retry the remote call after the forum maintenance window ends.",
+                retryable=True,
+            ),
+        )
+    if isinstance(exc, RemoteAccessPausedError):
+        return AgentResult(
+            ok=False,
+            error=AgentError(
+                code="REMOTE_ACCESS_PAUSED",
+                message=str(exc),
+                agent_hint="Resolve the anti-bot block first, then clear the remote pause state and retry archive/search/access tools.",
+                retryable=False,
+            ),
+        )
+    if isinstance(exc, ThreadPermissionRequiredError):
+        required_permission = getattr(exc, "required_permission", None)
+        return AgentResult(
+            ok=False,
+            error=AgentError(
+                code="REMOTE_THREAD_PERMISSION_REQUIRED",
+                message=str(exc),
+                agent_hint=(
+                    "Retry with a higher-permission Yamibo account"
+                    if required_permission is None
+                    else f"Retry with an account that has read permission above {required_permission}."
+                ),
                 retryable=True,
             ),
         )

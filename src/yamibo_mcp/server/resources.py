@@ -6,7 +6,7 @@ from pathlib import Path
 
 from yamibo_mcp.config import load_settings
 from yamibo_mcp.db.connection import connect
-from yamibo_mcp.db.migrations import migrate
+from yamibo_mcp.db.repositories.forums import ForumsRepository
 from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.db.repositories.series import SeriesRepository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
@@ -155,7 +155,6 @@ def _build_tools_schema_resource(uri: str) -> dict[str, object]:
 def _build_job_status_resource(uri: str, job_id: str, settings) -> dict[str, object]:
     conn = connect(settings.db_path)
     try:
-        migrate(conn)
         job = JobsRepository(conn).get(job_id)
     finally:
         conn.close()
@@ -184,7 +183,6 @@ def generate_series_index_markdown(*, limit: int = 100, write_path: Path | None 
     settings = load_settings()
     conn = connect(settings.db_path)
     try:
-        migrate(conn)
         repo = SeriesRepository(conn)
         rows = repo.list_series(limit=limit)
         lines = ["# Series Index", ""]
@@ -221,7 +219,6 @@ def generate_series_chapters_json(*, series_id: int, write_path: Path | None = N
     settings = load_settings()
     conn = connect(settings.db_path)
     try:
-        migrate(conn)
         repo = SeriesRepository(conn)
         series = repo.get_series(series_id)
         if series is None:
@@ -259,7 +256,6 @@ def generate_series_chapters_json(*, series_id: int, write_path: Path | None = N
 def _resolve_thread_export_path(settings, paths: StoragePaths, tid: int) -> Path:
     conn = connect(settings.db_path)
     try:
-        migrate(conn)
         row = ThreadsRepository(conn).get_thread(tid)
     finally:
         conn.close()
@@ -273,8 +269,7 @@ def _resolve_thread_export_path(settings, paths: StoragePaths, tid: int) -> Path
 def _build_forums_index_resource(uri: str, settings) -> dict[str, object]:
     conn = connect(settings.db_path)
     try:
-        migrate(conn)
-        rows = conn.execute("SELECT * FROM forums ORDER BY forum_id").fetchall()
+        rows = ForumsRepository(conn).list_profiles()
     finally:
         conn.close()
     forums = [
@@ -293,8 +288,7 @@ def _build_forums_index_resource(uri: str, settings) -> dict[str, object]:
 def _build_forum_summary_resource(uri: str, forum_id: int, settings) -> dict[str, object]:
     conn = connect(settings.db_path)
     try:
-        migrate(conn)
-        row = conn.execute("SELECT * FROM forums WHERE forum_id = ?", (forum_id,)).fetchone()
+        row = ForumsRepository(conn).get_forum(forum_id)
     finally:
         conn.close()
     if row is None:
@@ -312,7 +306,6 @@ def _build_forum_summary_resource(uri: str, forum_id: int, settings) -> dict[str
 def _build_thread_summary_resource(uri: str, tid: int, settings) -> dict[str, object]:
     conn = connect(settings.db_path)
     try:
-        migrate(conn)
         repo = ThreadsRepository(conn)
         thread = repo.get_thread(tid)
         if thread is None:
@@ -349,7 +342,6 @@ def _build_thread_summary_resource(uri: str, tid: int, settings) -> dict[str, ob
 def _build_thread_diagnostics_resource(uri: str, tid: int, settings) -> dict[str, object]:
     conn = connect(settings.db_path)
     try:
-        migrate(conn)
         repo = ThreadsRepository(conn)
         thread = repo.get_thread(tid)
         if thread is None:
@@ -392,7 +384,6 @@ def _build_thread_diagnostics_resource(uri: str, tid: int, settings) -> dict[str
 def _build_thread_posts_resource(uri: str, tid: int, settings) -> dict[str, object]:
     conn = connect(settings.db_path)
     try:
-        migrate(conn)
         from yamibo_mcp.db.repositories.content_blocks import ContentBlocksRepository
         thread = ThreadsRepository(conn).get_thread(tid)
         if thread is None:
@@ -419,7 +410,6 @@ def _build_thread_posts_resource(uri: str, tid: int, settings) -> dict[str, obje
 def _build_thread_assets_resource(uri: str, tid: int, settings) -> dict[str, object]:
     conn = connect(settings.db_path)
     try:
-        migrate(conn)
         from yamibo_mcp.db.repositories.assets import AssetsRepository
         thread = ThreadsRepository(conn).get_thread(tid)
         if thread is None:
@@ -456,7 +446,6 @@ def _build_thread_update_check_resource(uri: str, tid: int) -> dict[str, object]
 def _build_job_events_resource(uri: str, job_id: str, settings) -> dict[str, object]:
     conn = connect(settings.db_path)
     try:
-        migrate(conn)
         from yamibo_mcp.db.repositories.job_events import JobEventsRepository
         events = JobEventsRepository(conn).list(job_id=job_id)
     finally:

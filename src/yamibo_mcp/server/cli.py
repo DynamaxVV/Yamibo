@@ -28,7 +28,6 @@ from yamibo_mcp.application.update_commands import create_update_thread_job
 from yamibo_mcp.application.update_queries import check_thread_updates
 from yamibo_mcp.config import load_settings
 from yamibo_mcp.db.connection import connect
-from yamibo_mcp.db.migrations import migrate
 from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.domain.enums import JobType
 
@@ -41,7 +40,6 @@ def create_noop_job() -> str:
     settings = load_settings()
     conn = connect(settings.db_path)
     try:
-        migrate(conn)
         job = JobsRepository(conn).create(JobType.NOOP.value)
         return job.job_id
     finally:
@@ -52,7 +50,6 @@ def cleanup_job(*, job_id: str | None = None, mode: str = "job_staging", older_t
     settings = load_settings()
     conn = connect(settings.db_path)
     try:
-        migrate(conn)
         payload = {"mode": mode}
         if job_id is not None:
             payload["job_id"] = job_id
@@ -68,7 +65,6 @@ def cleanup_orphan_threads(*, dry_run: bool = False) -> dict[str, object]:
     settings = load_settings()
     conn = connect(settings.db_path)
     try:
-        migrate(conn)
         removed = cleanup_orphan_thread_dirs(data_dir=settings.data_dir, conn=conn, dry_run=dry_run)
         return {"removed_count": len(removed), "paths": [str(path) for path in removed], "dry_run": dry_run}
     finally:
@@ -79,7 +75,6 @@ def export_thread(*, tid: int, strategy: str | None = None) -> dict[str, object]
     settings = load_settings()
     conn = connect(settings.db_path)
     try:
-        migrate(conn)
         payload = {"tid": tid}
         if strategy:
             payload["strategy"] = strategy

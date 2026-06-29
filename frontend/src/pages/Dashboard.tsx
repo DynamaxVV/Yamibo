@@ -64,6 +64,7 @@ export function Dashboard() {
   const [primaryLimit, setPrimaryLimit] = useState(10)
   const [otherLimit, setOtherLimit] = useState(10)
   const [dashboardTick, setDashboardTick] = useState(0)
+  const [resumeBusy, setResumeBusy] = useState(false)
 
   useEffect(() => {
     api.forums().then(fs => {
@@ -109,6 +110,37 @@ export function Dashboard() {
 
   return (
     <>
+      {data.remote_access_pause?.active && (
+        <div className="alert-banner" role="alert">
+          <div className="alert-banner-copy">
+            <strong>{t('remote_access_paused_title')}</strong>
+            <p>{t('remote_access_paused_desc')}</p>
+            <p className="alert-banner-meta">
+              {t('remote_access_paused_meta', {
+                time: formatDateTime(data.remote_access_pause.triggered_at),
+                source: data.remote_access_pause.source,
+                count: data.remote_access_pause.paused_job_count,
+              })}
+            </p>
+          </div>
+          <button
+            className="btn-danger"
+            disabled={resumeBusy}
+            onClick={() => {
+              setResumeBusy(true)
+              api.resumeRemoteAccess()
+                .then(() => {
+                  setError(null)
+                  setDashboardTick(tick => tick + 1)
+                })
+                .catch(e => setError(e.message))
+                .finally(() => setResumeBusy(false))
+            }}
+          >
+            {t('remote_access_resume')}
+          </button>
+        </div>
+      )}
       <div className="stat-row">
         <div className="stat-cell">
           <div className="label">{t('thread_count')}</div>

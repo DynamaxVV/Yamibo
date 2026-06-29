@@ -120,3 +120,28 @@ class TestRenderThreadMetadata:
         assert data["non_export_images"]["1001"] == ["images/non_export.jpg"]
         floor_data = data["floors"][0]
         assert "images/non_export.jpg" in floor_data["non_export_image_urls"]
+
+    def test_floor_image_slots_preserve_missing_url_positions(self):
+        floor = FloorSnapshot(
+            pid=1001,
+            tid=999,
+            floor_no=1,
+            publisher="u",
+            content="内容",
+            pub_time=None,
+            has_images=True,
+            image_urls=["http://img/a.jpg", "http://img/missing.jpg", "http://img/b.jpg"],
+        )
+        result = render_thread_metadata(
+            _make_snapshot(floors=[floor]),
+            "ctx.md",
+            archived_images={1001: ["images/a.jpg", "images/b.jpg"]},
+            missing_image_urls=["http://img/missing.jpg"],
+        )
+        data = json.loads(result)
+        slots = data["floors"][0]["image_slots"]
+        assert slots[0]["local_path"] == "images/a.jpg"
+        assert slots[1]["remote_url"] == "http://img/missing.jpg"
+        assert slots[1]["local_path"] is None
+        assert slots[1]["status"] == "missing"
+        assert slots[2]["local_path"] == "images/b.jpg"

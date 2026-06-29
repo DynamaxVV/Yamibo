@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import argparse
 import sqlite3
+from typing import Any
 
 from yamibo_mcp.config import load_settings
-from yamibo_mcp.db.connection import connect
+from yamibo_mcp.db.alembic_runner import upgrade_postgres_schema
 
 
 SCHEMA_SQL = """
@@ -219,6 +220,12 @@ CREATE TABLE IF NOT EXISTS rag_index_meta (
   value TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS system_state (
+  key TEXT PRIMARY KEY,
+  value_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS rag_chunks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   chunk_id TEXT NOT NULL UNIQUE,
@@ -272,7 +279,13 @@ CREATE VIRTUAL TABLE IF NOT EXISTS rag_chunks_fts USING fts5(
 """
 
 
-def migrate(conn: sqlite3.Connection) -> None:
+def migrate(conn: Any, *, schema: str | None = None) -> None:
+    backend = getattr(conn, "backend", None)
+    if backend is None and hasattr(conn, "dialect"):
+        backend = getattr(getattr(conn, "dialect", None), "name", None)
+    if backend in {"postgres", "postgresql"}:
+        upgrade_postgres_schema(conn, schema=schema or "public")
+        return
     conn.executescript(SCHEMA_SQL)
     conn.executescript(FTS_SQL)
     _ensure_column(conn, "title_parse", "chapter_title", "TEXT")
@@ -340,6 +353,8 @@ def _seed_default_forums(conn: sqlite3.Connection) -> None:
 
 
 def main() -> None:
+    from yamibo_mcp.db.connection import connect
+
     parser = argparse.ArgumentParser(description="Initialize YamiboMCP database.")
     parser.add_argument("--db", help="Override SQLite database path.")
     args = parser.parse_args()
@@ -347,10 +362,10 @@ def main() -> None:
     db_path = settings.db_path if args.db is None else settings.project_root / args.db
     conn = connect(db_path)
     try:
-        migrate(conn)
+        migrate(conn, schema=settings.db_schema)
     finally:
         conn.close()
-    print(f"Initialized database: {db_path}")
+    print(f"Initialized database backend: {settings.db_backend}")
 
 
 if __name__ == "__main__":

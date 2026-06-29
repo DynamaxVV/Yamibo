@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import threading
 from collections import defaultdict
 from pathlib import Path
@@ -9,7 +8,6 @@ from typing import Any
 
 from yamibo_mcp.config import Settings
 from yamibo_mcp.db.connection import connect
-from yamibo_mcp.db.migrations import migrate
 from yamibo_mcp.storage.atomic import atomic_write_text
 from yamibo_mcp.storage.paths import StoragePaths
 from yamibo_mcp.time_utils import utc_now_iso
@@ -52,12 +50,11 @@ def _thread_dir_size(thread_dir: Path) -> int:
     return total
 
 
-def refresh_forum_size_cache(settings: Settings, conn: sqlite3.Connection | None = None) -> dict[str, Any]:
+def refresh_forum_size_cache(settings: Settings, conn: Any | None = None) -> dict[str, Any]:
     with _CACHE_LOCK:
         own_conn = conn is None
         if conn is None:
-            conn = connect(settings.db_path)
-            migrate(conn)
+            conn = connect(settings)
         try:
             rows = conn.execute(
                 "SELECT forum_id, tid FROM threads WHERE forum_id IS NOT NULL ORDER BY forum_id, tid"

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import AbstractContextManager
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
 
+from yamibo_mcp.errors import RemoteFetchError, ThreadPermissionRequiredError
 from yamibo_mcp.yamibo.parsers.forum_list import ForumThreadItem
 
 
@@ -144,6 +146,78 @@ class TestSearchThreadsForumId:
         # Assert
         _, kwargs = mock_remote.call_args
         assert kwargs["forum_id"] == 55
+
+    def test_http_444_pauses_remote_access(self, tmp_path):
+        settings = _fake_settings(tmp_path)
+
+        from yamibo_mcp.application.remote_queries import search_threads
+        from yamibo_mcp.db.migrations import migrate
+        from yamibo_mcp.db.repositories.jobs import JobsRepository
+
+        conn = sqlite3.connect(settings.db_path)
+        conn.row_factory = sqlite3.Row
+        migrate(conn)
+        repo = JobsRepository(conn)
+        sync_job = repo.create("sync_thread", tid=123)
+        rag_job = repo.create("rag_index", tid=123)
+
+        with patch("yamibo_mcp.application.remote_queries.load_settings", return_value=settings), \
+             patch(
+                 "yamibo_mcp.application.remote_queries._remote_search_items",
+                 side_effect=RemoteFetchError("HTTP Error 444", details={"status_code": 444}),
+             ), \
+             patch("yamibo_mcp.application.remote_queries.connect", return_value=conn):
+            with pytest.raises(RemoteFetchError):
+                search_threads(query="test", forum_id=55)
+
+        verify_conn = sqlite3.connect(settings.db_path)
+        verify_conn.row_factory = sqlite3.Row
+        try:
+            paused_sync = verify_conn.execute("SELECT status FROM jobs WHERE job_id = ?", (sync_job.job_id,)).fetchone()
+            queued_rag = verify_conn.execute("SELECT status FROM jobs WHERE job_id = ?", (rag_job.job_id,)).fetchone()
+            state = verify_conn.execute("SELECT value_json FROM system_state WHERE key = 'remote_access_pause'").fetchone()
+
+            assert paused_sync["status"] == "paused"
+            assert queued_rag["status"] == "queued"
+            assert state is not None
+        finally:
+            verify_conn.close()
+
+    def test_permission_required_retries_with_higher_min_permission(self, tmp_path, db):
+        settings = _fake_settings(tmp_path)
+        calls: list[int | None] = []
+
+        class _BorrowContext(AbstractContextManager):
+            def __init__(self, fail: bool) -> None:
+                self.fail = fail
+
+            def __enter__(self):
+                if self.fail:
+                    raise ThreadPermissionRequiredError(
+                        "thread requires read permission above 5 for https://bbs.yamibo.com/forum.php?mod=viewthread&tid=1",
+                        required_permission=5,
+                    )
+                return (
+                    object(),
+                    MagicMock(fetch_search_results_all=lambda **kwargs: ([], [], 0)),
+                )
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        def fake_borrow(settings_arg, *, cookie_file=None, min_permission=None, prefer_high_permission=False):
+            calls.append(min_permission)
+            return _BorrowContext(fail=len(calls) == 1)
+
+        from yamibo_mcp.application.remote_queries import search_threads
+        with patch("yamibo_mcp.application.remote_queries.load_settings", return_value=settings), \
+             patch("yamibo_mcp.application.remote_queries.connect", return_value=db), \
+             patch("yamibo_mcp.application.remote_queries.has_configured_account_pool", lambda settings: True), \
+             patch("yamibo_mcp.application.remote_queries.borrow_yamibo_client", fake_borrow):
+            result = search_threads(query="test", forum_id=55)
+
+        assert result["source"] == "forum"
+        assert calls == [None, 6]
 
 
 class TestSyncForumRangeForumId:

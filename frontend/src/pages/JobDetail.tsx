@@ -5,6 +5,7 @@ import { Badge } from '../components/Badge'
 import { useI18n } from '../context/I18nContext'
 import { formatDateTime } from '../utils/time'
 import { getArchiveBreakdown, getPartialArchiveReason, hasPartialArchiveBreakdown } from '../utils/archiveSummary'
+import { formatJobErrorMessage, formatJobFailureKind, getJobFailureKind, renderBbsLinks } from '../utils/jobMessages'
 
 export function JobDetail() {
   const { t, lang } = useI18n()
@@ -56,10 +57,24 @@ export function JobDetail() {
     [t('status'), <Badge status={job.status} />],
     [t('stage'), job.stage || '-'],
     [t('paused_at'), formatDateTime(job.paused_at)],
+    [t('original_url'), job.url ? <a href={job.url} target="_blank" rel="noreferrer">{job.url}</a> : '-'],
     [t('tid'), job.tid ? <Link to={`/threads/${job.tid}`}>{job.tid}</Link> : '-'],
+    [t('rerun_status'), job.rerun_job_id ? (
+      <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+        <Link to={`/jobs/${job.rerun_job_id}`}>{job.rerun_job_id}</Link>
+        <Badge status={job.rerun_job_status} />
+      </span>
+    ) : '-'],
+    [lang === 'en' ? 'Failure type' : '失败类型', (() => {
+      const kind = job.failure_kind || getJobFailureKind(job)
+      return kind ? <span className="badge badge-muted">{formatJobFailureKind(kind, lang)}</span> : '-'
+    })()],
     [t('progress'), `${job.progress_current}/${job.progress_total ?? '?'}`],
     [t('worker'), job.worker_id || '-'],
-    [t('error'), `${job.error_code || ''} ${job.error_message || ''}`.trim() || '-'],
+    [t('error'), (() => {
+      const text = formatJobErrorMessage(job.error_code, job.error_message, lang)
+      return text === '-' ? '-' : <span style={{ textAlign: 'left' }}>{renderBbsLinks(text)}</span>
+    })()],
     [t('created_at'), formatDateTime(job.created_at)],
     [t('updated'), formatDateTime(job.updated_at)],
     [t('finished_at'), formatDateTime(job.finished_at)],
@@ -67,6 +82,9 @@ export function JobDetail() {
 
   const payloadEntries = Object.entries(job.payload || {})
   const artifactEntries = Object.entries(job.artifacts || {})
+  const failureContext = (job.artifacts?.failure_context as Record<string, unknown> | undefined) || null
+  const remoteFetch = (failureContext?.remote_fetch as Record<string, unknown> | undefined) || null
+  const failureKind = job.failure_kind || getJobFailureKind(job)
   const archiveBreakdown = getArchiveBreakdown(null, job.artifacts)
   const showPartialSummary = (job.status === 'partial' || job.artifacts?.archive_status === 'partial')
     && hasPartialArchiveBreakdown(archiveBreakdown)
@@ -76,7 +94,20 @@ export function JobDetail() {
   const skippedCount = Number(job.artifacts?.skipped_image_count || 0)
   const missingCount = Number(job.artifacts?.missing_image_count || 0)
   const missingSharedCount = Number(job.artifacts?.missing_shared_image_count || 0)
-  const canRerun = job.status === 'partial' || job.status === 'failed'
+  const canRerun = job.status === 'partial' || job.status === 'failed' || job.status === 'interrupted'
+  const failureTitle = lang === 'en' ? 'Failure diagnostics' : '失败诊断'
+  const eventPayloadTitle = lang === 'en' ? 'Event payload' : '事件负载'
+
+  const renderValue = (value: unknown) => {
+    if (value == null || value === '') return '-'
+    if (typeof value === 'object') {
+      return <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 12 }}>{renderBbsLinks(JSON.stringify(value, null, 2))}</pre>
+    }
+    if (typeof value === 'string') {
+      return renderBbsLinks(formatJobErrorMessage(null, value, lang))
+    }
+    return String(value)
+  }
 
   const handleRerun = async () => {
     setActionError(null)
@@ -98,37 +129,56 @@ export function JobDetail() {
     <>
       <div className="threads-filter-row" style={{ marginBottom: 12 }}>
         <h2 style={{ margin: 0 }}>{t('job_detail')}</h2>
-        {(canRerun || job.status === 'queued' || job.status === 'running' || job.status === 'retrying' || job.status === 'paused') && (
-          <div className="threads-filter-actions">
-            {canRerun && (
-              <button className="btn-subtle" onClick={() => void handleRerun()} disabled={rerunSubmitting}>
-                {rerunSubmitting ? t('running') : t('rerun')}
-              </button>
-            )}
-            <button className="btn-subtle" onClick={async () => {
-              setActionError(null)
-              try {
-                if (job.status === 'paused') {
-                  await api.resumeJob(job.job_id)
-                } else {
-                  await api.pauseJob(job.job_id)
+        <div className="threads-filter-actions">
+          <Link to="/jobs" className="btn-subtle">← {t('job_list')}</Link>
+          {(canRerun || job.status === 'queued' || job.status === 'running' || job.status === 'retrying' || job.status === 'paused') && (
+            <>
+              {canRerun && (
+                <button className="btn-subtle" onClick={() => void handleRerun()} disabled={rerunSubmitting}>
+                  {rerunSubmitting ? t('running') : t('rerun')}
+                </button>
+              )}
+              <button className="btn-subtle" onClick={async () => {
+                setActionError(null)
+                try {
+                  if (job.status === 'paused') {
+                    await api.resumeJob(job.job_id)
+                  } else {
+                    await api.pauseJob(job.job_id)
+                  }
+                  const next = await api.job(id)
+                  setJob(next)
+                  jobRef.current = next
+                } catch (e: any) {
+                  setActionError(e.message || String(e))
                 }
-                const next = await api.job(id)
-                setJob(next)
-                jobRef.current = next
-              } catch (e: any) {
-                setActionError(e.message || String(e))
-              }
-            }}>
-              {job.status === 'paused' ? t('resume') : t('pause')}
-            </button>
-          </div>
-        )}
+              }}>
+                {job.status === 'paused' ? t('resume') : t('pause')}
+              </button>
+            </>
+          )}
+        </div>
       </div>
       {actionError && <div className="panel" style={{ marginBottom: 12, color: 'var(--status-error)' }}>{actionError}</div>}
       <div className="table-wrap"><table>
         <tbody>{rows.map(([k, v], i) => <tr key={i}><th style={{ width: 120 }}>{k}</th><td style={{ textAlign: 'left' }}>{v}</td></tr>)}</tbody>
       </table></div>
+
+      {failureContext && (
+        <>
+          <h2>{failureTitle}</h2>
+          <div className="table-wrap"><table>
+            <tbody>
+              <tr><th style={{ width: 160 }}>{lang === 'en' ? 'failure_kind' : '失败类型'}</th><td style={{ textAlign: 'left' }}>{failureKind ? <span className="badge badge-muted">{formatJobFailureKind(failureKind, lang)}</span> : '-'}</td></tr>
+              <tr><th style={{ width: 160 }}>exception_type</th><td style={{ textAlign: 'left' }}>{renderValue(failureContext.exception_type)}</td></tr>
+              <tr><th style={{ width: 160 }}>message</th><td style={{ textAlign: 'left' }}>{renderValue(failureContext.message)}</td></tr>
+              {remoteFetch && Object.entries(remoteFetch).map(([k, v]) => (
+                <tr key={k}><th style={{ width: 160 }}>{k}</th><td style={{ textAlign: 'left' }}>{renderValue(v)}</td></tr>
+              ))}
+            </tbody>
+          </table></div>
+        </>
+      )}
 
       {refreshNotice && (
         <div className="panel notice-panel">
@@ -217,7 +267,7 @@ export function JobDetail() {
         <>
           <h2>{t('event_timeline')}</h2>
           <div className="table-wrap"><table>
-            <thead><tr><th>{t('id')}</th><th>{t('time')}</th><th>{t('event_type')}</th><th>{t('status')}</th><th>{t('stage')}</th></tr></thead>
+            <thead><tr><th>{t('id')}</th><th>{t('time')}</th><th>{t('event_type')}</th><th>{t('status')}</th><th>{t('stage')}</th><th>{eventPayloadTitle}</th></tr></thead>
             <tbody>
               {events.map(e => (
                 <tr key={e.event_id}>
@@ -226,6 +276,7 @@ export function JobDetail() {
                   <td className="nowrap">{e.event_type}</td>
                   <td><Badge status={e.status} /></td>
                   <td className="nowrap">{e.stage || '-'}</td>
+                  <td style={{ textAlign: 'left' }}>{renderValue(e.payload)}</td>
                 </tr>
               ))}
             </tbody>

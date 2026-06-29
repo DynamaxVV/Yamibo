@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 import logging
+from decimal import Decimal
 from unittest.mock import patch
 
 from yamibo_mcp.db.repositories.rag_chunks import RagChunksRepository
@@ -16,7 +17,9 @@ from yamibo_mcp.web.api import (
     _archive_threads_batch,
     _batch_delete_threads,
     _delete_thread,
+    _debug_info,
     _forums_list,
+    _jobs_list,
     _refresh_forum_size_cache,
     _rag_index_batch,
     _rag_index,
@@ -25,6 +28,8 @@ from yamibo_mcp.web.api import (
     _rag_threads,
     _retry_job,
     _resync_threads_batch,
+    _settings_get,
+    _settings_update,
     _threads_list,
     _thread_detail,
     _thread_update_check,
@@ -124,6 +129,17 @@ def test_thread_detail_exposes_archive_summary_from_metadata(db, tmp_path: Path)
                 "skipped_image_urls": {"1001": ["https://img.example.com/skip.jpg"]},
                 "missing_image_urls": ["https://img.example.com/a.jpg"],
                 "missing_shared_image_urls": ["https://img.example.com/shared-missing.jpg"],
+                "floors": [
+                    {
+                        "pid": 42001,
+                        "remote_image_urls": ["https://img.example.com/a.jpg", "https://img.example.com/b.jpg"],
+                        "missing_image_urls": ["https://img.example.com/a.jpg"],
+                        "image_slots": [
+                            {"remote_url": "https://img.example.com/a.jpg", "local_path": None, "status": "missing"},
+                            {"remote_url": "https://img.example.com/b.jpg", "local_path": "images/b.jpg", "status": "content"},
+                        ],
+                    }
+                ],
             },
             ensure_ascii=False,
         ),
@@ -137,6 +153,9 @@ def test_thread_detail_exposes_archive_summary_from_metadata(db, tmp_path: Path)
     assert payload["archive_summary"]["archived_images"]["1001"] == ["images/a.jpg"]
     assert payload["archive_summary"]["missing_image_urls"] == ["https://img.example.com/a.jpg"]
     assert payload["archive_summary"]["missing_shared_image_urls"] == ["https://img.example.com/shared-missing.jpg"]
+    assert payload["floors"][0]["remote_image_urls"] == ["https://img.example.com/a.jpg", "https://img.example.com/b.jpg"]
+    assert payload["floors"][0]["missing_image_urls"] == ["https://img.example.com/a.jpg"]
+    assert payload["floors"][0]["image_slots"][0]["status"] == "missing"
 
 
 def test_thread_detail_exposes_rag_summary(db, tmp_path: Path):
@@ -184,7 +203,7 @@ def test_thread_detail_merges_rich_body_html_from_metadata(db, tmp_path: Path):
                         "floor_no": 1,
                         "publisher": "u1",
                         "content": "正文",
-                        "rich_body_html": "<div><strong>富文本</strong><a href=\"https://example.com\">链接</a></div>",
+                        "rich_body_html": "<div><strong>富文本</strong><a href=\"https://example.com\" target=\"_blank\" rel=\"noreferrer\">链接</a></div>",
                     }
                 ],
             },
@@ -197,7 +216,70 @@ def test_thread_detail_merges_rich_body_html_from_metadata(db, tmp_path: Path):
     _thread_detail(handler, 42, db, {"preview_page": ["1"], "preview_page_size": ["10"]}, settings)
 
     payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
-    assert payload["floors"][0]["rich_body_html"] == "<div><strong>富文本</strong>链接</div>"
+    assert payload["floors"][0]["rich_body_html"] == "<div><strong>富文本</strong><a href=\"https://example.com\" target=\"_blank\" rel=\"noreferrer\">链接</a></div>"
+
+
+def test_thread_detail_accepts_jsonb_array_fields(db, tmp_path: Path, monkeypatch):
+    settings = SimpleNamespace(data_dir=tmp_path / "data")
+    settings.data_dir.mkdir()
+
+    thread_row = {
+        "tid": 66566,
+        "raw_title": "测试帖子",
+        "display_title": "测试帖子",
+        "publisher": "u1",
+        "pub_time": "2025-01-01 00:00",
+        "sync_time": "2025-01-02 00:00",
+        "archive_status": "partial",
+        "validation_status": "valid",
+        "context_path": None,
+        "series_id": None,
+        "export_path": None,
+        "forum_id": 55,
+        "content_kind": "novel",
+        "category": None,
+        "publisher_uid": "100",
+        "missing_images_json": ["https://img.example.com/a.jpg"],
+        "image_count": 1,
+        "primary_media_type": "text",
+    }
+    floor_row = {
+        "pid": 66566001,
+        "tid": 66566,
+        "floor_no": 1,
+        "publisher": "u1",
+        "publisher_uid": "100",
+        "content": "正文",
+        "pub_time": "2025-01-01 00:00",
+        "has_images": False,
+        "quote_text": None,
+        "reply_text": None,
+        "rich_body_html": None,
+    }
+
+    class FakeRepo:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def get_thread(self, tid):
+            return thread_row if tid == 66566 else None
+
+        def count_floors(self, tid):
+            return 1
+
+        def list_floors(self, tid):
+            return [floor_row]
+
+        def get_title_parse(self, tid):
+            return None
+
+    monkeypatch.setattr("yamibo_mcp.web.api.ThreadsRepository", FakeRepo)
+
+    handler = _CaptureHandler()
+    _thread_detail(handler, 66566, db, {}, settings)
+
+    payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
+    assert payload["missing_image_urls"] == ["https://img.example.com/a.jpg"]
 
 
 def test_threads_list_returns_paginated_payload(db):
@@ -244,6 +326,496 @@ def test_thread_update_check_endpoint_returns_json(db):
         _thread_update_check(handler, 42, settings)
     payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
     assert payload["status"] == "up_to_date"
+
+
+def test_debug_info_redacts_db_url_and_exposes_pool_status(db):
+    handler = _CaptureHandler()
+    settings = SimpleNamespace(
+        data_dir=Path("/tmp/yamibo-data"),
+        db_path=Path("/tmp/yamibo-data/forum.db"),
+        db_backend="postgres",
+        db_url="postgresql://yamibo:secret@db.example.com:5432/yamibo",
+        db_ssl_mode="require",
+    )
+
+    _debug_info(handler, db, settings)
+
+    payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
+    assert payload["db_backend"] == "postgres"
+    assert payload["db_host"] == "db.example.com"
+    assert payload["db_name"] == "yamibo"
+    assert "postgresql://yamibo:secret@" not in json.dumps(payload)
+    assert "status" in payload["db_pool"]
+    assert "checked_out_connections" in payload["db_pool"]
+
+
+def test_settings_get_exposes_field_effects(tmp_path: Path):
+    config_path = tmp_path / "yamibo.local.json"
+    config_path.write_text("{}", encoding="utf-8")
+    settings = SimpleNamespace(
+        config_path=config_path,
+        request_timeout_seconds=30.0,
+        request_interval_seconds=1.0,
+        request_interval_jitter_seconds=0.5,
+        use_system_proxy=False,
+        image_download_timeout_seconds=45.0,
+        image_download_retries=2,
+        archive_thread_max_pages=50,
+        novel_author_only_max_pages=50,
+        novel_author_only_page_delay_seconds=0.5,
+        db_backend="sqlite",
+        db_url=None,
+        db_pool_min=1,
+        db_pool_max=5,
+        db_pool_timeout=30.0,
+        db_connect_timeout=10.0,
+        db_schema="public",
+        db_ssl_mode="prefer",
+        db_ssl_root_cert=None,
+        llm_base_url="https://api.openai.com/v1",
+        llm_api_key=None,
+        llm_model="gpt-4.1-mini",
+        rag_enabled=True,
+        rag_base_url="https://api.openai.com/v1",
+        rag_api_key=None,
+        rag_embedding_model="text-embedding-3-small",
+        rag_embedding_dimensions=512,
+        rag_chunker_version="rag-chunker-v1",
+        rag_min_chunk_chars=20,
+        rag_max_chunk_chars=900,
+        rag_hybrid_fts_candidates=50,
+        rag_hybrid_vector_candidates=50,
+        rag_debug_indexing=False,
+        title_parse_use_llm=True,
+        common_scanlation_groups=(),
+        common_authors=(),
+        export_default_strategy="cache_only",
+        export_stale_after_hours=24,
+        novel_txt_include_filtered_notes=False,
+        novel_txt_debug_markers=False,
+        backup_keep_count=20,
+        cleanup_staging_older_than_hours=48,
+        worker_poll_seconds=2.0,
+        worker_lease_seconds=60,
+        worker_heartbeat_seconds=15,
+        worker_parallelism=2,
+    )
+
+    handler = _CaptureHandler()
+    _settings_get(handler, settings)
+
+    payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
+    assert payload["effects"]["db_backend"] == "restart_daemon_web"
+    assert payload["effects"]["db_url"] == "restart_daemon_web"
+    assert payload["effects"]["request_timeout_seconds"] == "immediate"
+    assert payload["effects"]["worker_parallelism"] == "restart_daemon"
+    assert payload["effects"]["llm_base_url"] == "restart_daemon_web"
+
+
+def test_settings_update_reports_immediate_effect_only(tmp_path: Path):
+    config_path = tmp_path / "yamibo.local.json"
+    config_path.write_text(json.dumps({"yamibo": {"request_timeout_seconds": 30}}), encoding="utf-8")
+    current = SimpleNamespace(
+        config_path=config_path,
+        request_timeout_seconds=30.0,
+        request_interval_seconds=1.0,
+        request_interval_jitter_seconds=0.5,
+        use_system_proxy=False,
+        image_download_timeout_seconds=45.0,
+        image_download_retries=2,
+        archive_thread_max_pages=50,
+        novel_author_only_max_pages=50,
+        novel_author_only_page_delay_seconds=0.5,
+        db_backend="sqlite",
+        db_url=None,
+        db_pool_min=1,
+        db_pool_max=5,
+        db_pool_timeout=30.0,
+        db_connect_timeout=10.0,
+        db_schema="public",
+        db_ssl_mode="prefer",
+        db_ssl_root_cert=None,
+        llm_base_url="https://api.openai.com/v1",
+        llm_api_key=None,
+        llm_model="gpt-4.1-mini",
+        rag_enabled=True,
+        rag_base_url="https://api.openai.com/v1",
+        rag_api_key=None,
+        rag_embedding_model="text-embedding-3-small",
+        rag_embedding_dimensions=512,
+        rag_chunker_version="rag-chunker-v1",
+        rag_min_chunk_chars=20,
+        rag_max_chunk_chars=900,
+        rag_hybrid_fts_candidates=50,
+        rag_hybrid_vector_candidates=50,
+        rag_debug_indexing=False,
+        title_parse_use_llm=True,
+        common_scanlation_groups=(),
+        common_authors=(),
+        export_default_strategy="cache_only",
+        export_stale_after_hours=24,
+        novel_txt_include_filtered_notes=False,
+        novel_txt_debug_markers=False,
+        backup_keep_count=20,
+        cleanup_staging_older_than_hours=48,
+        worker_poll_seconds=2.0,
+        worker_lease_seconds=60,
+        worker_heartbeat_seconds=15,
+        worker_parallelism=2,
+    )
+    refreshed = SimpleNamespace(
+        config_path=config_path,
+        request_timeout_seconds=35.0,
+        request_interval_seconds=1.0,
+        request_interval_jitter_seconds=0.5,
+        use_system_proxy=False,
+        image_download_timeout_seconds=45.0,
+        image_download_retries=2,
+        archive_thread_max_pages=50,
+        novel_author_only_max_pages=50,
+        novel_author_only_page_delay_seconds=0.5,
+        db_backend="sqlite",
+        db_url=None,
+        db_pool_min=1,
+        db_pool_max=5,
+        db_pool_timeout=30.0,
+        db_connect_timeout=10.0,
+        db_schema="public",
+        db_ssl_mode="prefer",
+        db_ssl_root_cert=None,
+        llm_base_url="https://api.openai.com/v1",
+        llm_api_key=None,
+        llm_model="gpt-4.1-mini",
+        rag_enabled=True,
+        rag_base_url="https://api.openai.com/v1",
+        rag_api_key=None,
+        rag_embedding_model="text-embedding-3-small",
+        rag_embedding_dimensions=512,
+        rag_chunker_version="rag-chunker-v1",
+        rag_min_chunk_chars=20,
+        rag_max_chunk_chars=900,
+        rag_hybrid_fts_candidates=50,
+        rag_hybrid_vector_candidates=50,
+        rag_debug_indexing=False,
+        title_parse_use_llm=True,
+        common_scanlation_groups=(),
+        common_authors=(),
+        export_default_strategy="cache_only",
+        export_stale_after_hours=24,
+        novel_txt_include_filtered_notes=False,
+        novel_txt_debug_markers=False,
+        backup_keep_count=20,
+        cleanup_staging_older_than_hours=48,
+        worker_poll_seconds=2.0,
+        worker_lease_seconds=60,
+        worker_heartbeat_seconds=15,
+        worker_parallelism=2,
+    )
+    body = {"values": {"request_timeout_seconds": 35}}
+    handler = _CaptureHandler()
+    handler.command = "POST"
+    handler.headers["Content-Length"] = str(len(json.dumps(body)))
+    handler.rfile = io.BytesIO(json.dumps(body).encode("utf-8"))
+
+    with patch("yamibo_mcp.web.api.load_settings", return_value=refreshed):
+        _settings_update(handler, current)
+
+    payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
+    assert payload["restart_required"] is False
+    assert payload["restart_targets"] == []
+    assert payload["effect_mode_summary"] == "immediate"
+
+
+def test_settings_update_reports_daemon_restart_target(tmp_path: Path):
+    config_path = tmp_path / "yamibo.local.json"
+    config_path.write_text(json.dumps({"worker": {"parallelism": 2}}), encoding="utf-8")
+    current = SimpleNamespace(
+        config_path=config_path,
+        request_timeout_seconds=30.0,
+        request_interval_seconds=1.0,
+        request_interval_jitter_seconds=0.5,
+        use_system_proxy=False,
+        image_download_timeout_seconds=45.0,
+        image_download_retries=2,
+        archive_thread_max_pages=50,
+        novel_author_only_max_pages=50,
+        novel_author_only_page_delay_seconds=0.5,
+        db_backend="sqlite",
+        db_url=None,
+        db_pool_min=1,
+        db_pool_max=5,
+        db_pool_timeout=30.0,
+        db_connect_timeout=10.0,
+        db_schema="public",
+        db_ssl_mode="prefer",
+        db_ssl_root_cert=None,
+        llm_base_url="https://api.openai.com/v1",
+        llm_api_key=None,
+        llm_model="gpt-4.1-mini",
+        rag_enabled=True,
+        rag_base_url="https://api.openai.com/v1",
+        rag_api_key=None,
+        rag_embedding_model="text-embedding-3-small",
+        rag_embedding_dimensions=512,
+        rag_chunker_version="rag-chunker-v1",
+        rag_min_chunk_chars=20,
+        rag_max_chunk_chars=900,
+        rag_hybrid_fts_candidates=50,
+        rag_hybrid_vector_candidates=50,
+        rag_debug_indexing=False,
+        title_parse_use_llm=True,
+        common_scanlation_groups=(),
+        common_authors=(),
+        export_default_strategy="cache_only",
+        export_stale_after_hours=24,
+        novel_txt_include_filtered_notes=False,
+        novel_txt_debug_markers=False,
+        backup_keep_count=20,
+        cleanup_staging_older_than_hours=48,
+        worker_poll_seconds=2.0,
+        worker_lease_seconds=60,
+        worker_heartbeat_seconds=15,
+        worker_parallelism=2,
+    )
+    refreshed = SimpleNamespace(
+        config_path=config_path,
+        request_timeout_seconds=30.0,
+        request_interval_seconds=1.0,
+        request_interval_jitter_seconds=0.5,
+        use_system_proxy=False,
+        image_download_timeout_seconds=45.0,
+        image_download_retries=2,
+        archive_thread_max_pages=50,
+        novel_author_only_max_pages=50,
+        novel_author_only_page_delay_seconds=0.5,
+        db_backend="sqlite",
+        db_url=None,
+        db_pool_min=1,
+        db_pool_max=5,
+        db_pool_timeout=30.0,
+        db_connect_timeout=10.0,
+        db_schema="public",
+        db_ssl_mode="prefer",
+        db_ssl_root_cert=None,
+        llm_base_url="https://api.openai.com/v1",
+        llm_api_key=None,
+        llm_model="gpt-4.1-mini",
+        rag_enabled=True,
+        rag_base_url="https://api.openai.com/v1",
+        rag_api_key=None,
+        rag_embedding_model="text-embedding-3-small",
+        rag_embedding_dimensions=512,
+        rag_chunker_version="rag-chunker-v1",
+        rag_min_chunk_chars=20,
+        rag_max_chunk_chars=900,
+        rag_hybrid_fts_candidates=50,
+        rag_hybrid_vector_candidates=50,
+        rag_debug_indexing=False,
+        title_parse_use_llm=True,
+        common_scanlation_groups=(),
+        common_authors=(),
+        export_default_strategy="cache_only",
+        export_stale_after_hours=24,
+        novel_txt_include_filtered_notes=False,
+        novel_txt_debug_markers=False,
+        backup_keep_count=20,
+        cleanup_staging_older_than_hours=48,
+        worker_poll_seconds=2.0,
+        worker_lease_seconds=60,
+        worker_heartbeat_seconds=15,
+        worker_parallelism=4,
+    )
+    body = {"values": {"worker_parallelism": 4}}
+    handler = _CaptureHandler()
+    handler.command = "POST"
+    handler.headers["Content-Length"] = str(len(json.dumps(body)))
+    handler.rfile = io.BytesIO(json.dumps(body).encode("utf-8"))
+
+    with patch("yamibo_mcp.web.api.load_settings", return_value=refreshed):
+        _settings_update(handler, current)
+
+    payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
+    assert payload["restart_required"] is True
+    assert payload["restart_targets"] == ["daemon"]
+    assert payload["effect_mode_summary"] == "restart_daemon"
+
+
+def test_settings_update_reports_daemon_and_web_restart_targets(tmp_path: Path):
+    config_path = tmp_path / "yamibo.local.json"
+    config_path.write_text(json.dumps({"llm": {"base_url": "https://old.example.com/v1"}}), encoding="utf-8")
+    current = SimpleNamespace(
+        config_path=config_path,
+        request_timeout_seconds=30.0,
+        request_interval_seconds=1.0,
+        request_interval_jitter_seconds=0.5,
+        use_system_proxy=False,
+        image_download_timeout_seconds=45.0,
+        image_download_retries=2,
+        archive_thread_max_pages=50,
+        novel_author_only_max_pages=50,
+        novel_author_only_page_delay_seconds=0.5,
+        db_backend="sqlite",
+        db_url=None,
+        db_pool_min=1,
+        db_pool_max=5,
+        db_pool_timeout=30.0,
+        db_connect_timeout=10.0,
+        db_schema="public",
+        db_ssl_mode="prefer",
+        db_ssl_root_cert=None,
+        llm_base_url="https://old.example.com/v1",
+        llm_api_key=None,
+        llm_model="gpt-4.1-mini",
+        rag_enabled=True,
+        rag_base_url="https://old.example.com/v1",
+        rag_api_key=None,
+        rag_embedding_model="text-embedding-3-small",
+        rag_embedding_dimensions=512,
+        rag_chunker_version="rag-chunker-v1",
+        rag_min_chunk_chars=20,
+        rag_max_chunk_chars=900,
+        rag_hybrid_fts_candidates=50,
+        rag_hybrid_vector_candidates=50,
+        rag_debug_indexing=False,
+        title_parse_use_llm=True,
+        common_scanlation_groups=(),
+        common_authors=(),
+        export_default_strategy="cache_only",
+        export_stale_after_hours=24,
+        novel_txt_include_filtered_notes=False,
+        novel_txt_debug_markers=False,
+        backup_keep_count=20,
+        cleanup_staging_older_than_hours=48,
+        worker_poll_seconds=2.0,
+        worker_lease_seconds=60,
+        worker_heartbeat_seconds=15,
+        worker_parallelism=2,
+    )
+    refreshed = SimpleNamespace(
+        config_path=config_path,
+        request_timeout_seconds=30.0,
+        request_interval_seconds=1.0,
+        request_interval_jitter_seconds=0.5,
+        use_system_proxy=False,
+        image_download_timeout_seconds=45.0,
+        image_download_retries=2,
+        archive_thread_max_pages=50,
+        novel_author_only_max_pages=50,
+        novel_author_only_page_delay_seconds=0.5,
+        db_backend="sqlite",
+        db_url=None,
+        db_pool_min=1,
+        db_pool_max=5,
+        db_pool_timeout=30.0,
+        db_connect_timeout=10.0,
+        db_schema="public",
+        db_ssl_mode="prefer",
+        db_ssl_root_cert=None,
+        llm_base_url="https://new.example.com/v1",
+        llm_api_key=None,
+        llm_model="gpt-4.1-mini",
+        rag_enabled=True,
+        rag_base_url="https://new.example.com/v1",
+        rag_api_key=None,
+        rag_embedding_model="text-embedding-3-small",
+        rag_embedding_dimensions=512,
+        rag_chunker_version="rag-chunker-v1",
+        rag_min_chunk_chars=20,
+        rag_max_chunk_chars=900,
+        rag_hybrid_fts_candidates=50,
+        rag_hybrid_vector_candidates=50,
+        rag_debug_indexing=False,
+        title_parse_use_llm=True,
+        common_scanlation_groups=(),
+        common_authors=(),
+        export_default_strategy="cache_only",
+        export_stale_after_hours=24,
+        novel_txt_include_filtered_notes=False,
+        novel_txt_debug_markers=False,
+        backup_keep_count=20,
+        cleanup_staging_older_than_hours=48,
+        worker_poll_seconds=2.0,
+        worker_lease_seconds=60,
+        worker_heartbeat_seconds=15,
+        worker_parallelism=2,
+    )
+    body = {"values": {"llm_base_url": "https://new.example.com/v1"}}
+    handler = _CaptureHandler()
+    handler.command = "POST"
+    handler.headers["Content-Length"] = str(len(json.dumps(body)))
+    handler.rfile = io.BytesIO(json.dumps(body).encode("utf-8"))
+
+    with patch("yamibo_mcp.web.api.load_settings", return_value=refreshed):
+        _settings_update(handler, current)
+
+    payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
+    assert payload["restart_required"] is True
+    assert payload["restart_targets"] == ["daemon", "web"]
+    assert payload["effect_mode_summary"] == "restart_daemon_web"
+
+
+def test_settings_update_rejects_locked_fields(tmp_path: Path, monkeypatch):
+    config_path = tmp_path / "yamibo.local.json"
+    config_path.write_text("{}", encoding="utf-8")
+    settings = SimpleNamespace(
+        config_path=config_path,
+        request_timeout_seconds=30.0,
+        request_interval_seconds=1.0,
+        request_interval_jitter_seconds=0.5,
+        use_system_proxy=False,
+        image_download_timeout_seconds=45.0,
+        image_download_retries=2,
+        archive_thread_max_pages=50,
+        novel_author_only_max_pages=50,
+        novel_author_only_page_delay_seconds=0.5,
+        db_backend="sqlite",
+        db_url=None,
+        db_pool_min=1,
+        db_pool_max=5,
+        db_pool_timeout=30.0,
+        db_connect_timeout=10.0,
+        db_schema="public",
+        db_ssl_mode="prefer",
+        db_ssl_root_cert=None,
+        llm_base_url="https://api.openai.com/v1",
+        llm_api_key="env-key",
+        llm_model="gpt-4.1-mini",
+        rag_enabled=True,
+        rag_base_url="https://api.openai.com/v1",
+        rag_api_key=None,
+        rag_embedding_model="text-embedding-3-small",
+        rag_embedding_dimensions=512,
+        rag_chunker_version="rag-chunker-v1",
+        rag_min_chunk_chars=20,
+        rag_max_chunk_chars=900,
+        rag_hybrid_fts_candidates=50,
+        rag_hybrid_vector_candidates=50,
+        rag_debug_indexing=False,
+        title_parse_use_llm=True,
+        common_scanlation_groups=(),
+        common_authors=(),
+        export_default_strategy="cache_only",
+        export_stale_after_hours=24,
+        novel_txt_include_filtered_notes=False,
+        novel_txt_debug_markers=False,
+        backup_keep_count=20,
+        cleanup_staging_older_than_hours=48,
+        worker_poll_seconds=2.0,
+        worker_lease_seconds=60,
+        worker_heartbeat_seconds=15,
+        worker_parallelism=2,
+    )
+    body = {"values": {"llm_api_key": "new-key"}}
+    handler = _CaptureHandler()
+    handler.command = "POST"
+    handler.headers["Content-Length"] = str(len(json.dumps(body)))
+    handler.rfile = io.BytesIO(json.dumps(body).encode("utf-8"))
+    monkeypatch.setenv("YAMIBO_LLM_API_KEY", "env-key")
+
+    _settings_update(handler, settings)
+
+    payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
+    assert payload["error"] == "llm_api_key is overridden by environment variable"
 
 
 def test_thread_update_endpoint_creates_update_job(db):
@@ -441,6 +1013,44 @@ def test_rag_overview_exposes_counts_and_meta(db):
     assert payload["index_meta"]["embedding_model"] == "text-embedding-3-small"
 
 
+def test_rag_overview_serializes_decimal_counts(db, monkeypatch):
+    _seed_rag_thread(db)
+    RagChunksRepository(db).write_index_meta({"embedding_model": "text-embedding-3-small", "embedding_dimensions": "512"})
+
+    def _fake_counts(self):
+        return {
+            "total_threads": Decimal("1"),
+            "indexed_threads": Decimal("1"),
+            "unindexed_threads": Decimal("0"),
+            "total_chunks": Decimal("2"),
+            "indexed_chunks": Decimal("1"),
+            "pending_chunks": Decimal("0"),
+            "failed_chunks": Decimal("1"),
+        }
+
+    monkeypatch.setattr(RagChunksRepository, "count_rag_overview", _fake_counts)
+
+    handler = _CaptureHandler()
+    settings = SimpleNamespace(
+        rag_enabled=True,
+        rag_embedding_provider="openai",
+        rag_embedding_model="text-embedding-3-small",
+        rag_embedding_dimensions=512,
+        rag_chunker_version="rag-chunker-v1",
+        rag_min_chunk_chars=20,
+        rag_max_chunk_chars=900,
+        rag_hybrid_fts_candidates=50,
+        rag_hybrid_vector_candidates=50,
+    )
+
+    _rag_overview(handler, db, settings)
+
+    payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
+    assert payload["counts"]["thread_total"] == 1
+    assert payload["counts"]["total_chunks"] == 2
+    assert payload["counts"]["failed_chunks"] == 1
+
+
 def test_rag_threads_returns_per_thread_index_status(db):
     _seed_rag_thread(db)
     handler = _CaptureHandler()
@@ -590,6 +1200,71 @@ def test_retry_job_endpoint_requeues_failed_job(db):
     assert next_job.tid == 43
     source_row = db.execute("SELECT status FROM jobs WHERE job_id = ?", (job.job_id,)).fetchone()
     assert source_row["status"] == "superseded"
+
+
+def test_retry_job_endpoint_requeues_interrupted_job(db):
+    repo = JobsRepository(db)
+    job = repo.create("rag_index", tid=44, payload={"tid": 44})
+    db.execute(
+        "UPDATE jobs SET status = ?, error_code = ?, error_message = ? WHERE job_id = ?",
+        ("interrupted", "worker_lost", "lease expired", job.job_id),
+    )
+    db.commit()
+
+    handler = _CaptureHandler()
+    handler.command = "POST"
+    body = {"job_id": job.job_id}
+    handler.headers["Content-Length"] = str(len(json.dumps(body)))
+    handler.rfile = io.BytesIO(json.dumps(body).encode("utf-8"))
+
+    _retry_job(handler, db)
+
+    payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
+    assert payload["ok"] is True
+    assert payload["source_job_id"] == job.job_id
+    assert payload["status"] == "queued"
+    next_job = repo.get(payload["job_id"])
+    assert next_job.job_type == "rag_index"
+    assert next_job.tid == 44
+    source_row = db.execute("SELECT status FROM jobs WHERE job_id = ?", (job.job_id,)).fetchone()
+    assert source_row["status"] == "superseded"
+
+
+def test_jobs_list_omits_payload_and_artifacts(db):
+    repo = JobsRepository(db)
+    job = repo.create("rag_index", tid=45, payload={"tid": 45, "force": True})
+    repo.fail(job.job_id, "HTTP_500", "boom", artifacts={"large": "blob"})
+
+    handler = _CaptureHandler()
+    _jobs_list(handler, {"status": ["failed"], "page": ["1"], "page_size": ["25"]}, db)
+
+    payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
+    assert payload["total_count"] == 1
+    assert payload["page"] == 1
+    assert payload["page_size"] == 25
+    assert len(payload["items"]) == 1
+    row = payload["items"][0]
+    assert row["job_id"] == job.job_id
+    assert "payload" not in row
+    assert "artifacts" not in row
+
+
+def test_jobs_list_supports_pagination_and_failure_kind_filter(db):
+    repo = JobsRepository(db)
+    cancelled = repo.create("sync_thread", tid=50, payload={"tid": 50})
+    validation = repo.create("sync_thread", tid=51, payload={"tid": 51})
+    queued = repo.create("sync_thread", tid=52, payload={"tid": 52})
+    repo.fail(cancelled.job_id, "cancelled", "was cancelled by user")
+    repo.fail(validation.job_id, "ValueError", "bad input")
+
+    handler = _CaptureHandler()
+    _jobs_list(handler, {"status": ["failed"], "failure_kind": ["cancelled"], "page": ["1"], "page_size": ["10"]}, db)
+
+    payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
+    assert payload["total_count"] == 1
+    assert payload["total_pages"] == 1
+    assert [row["job_id"] for row in payload["items"]] == [cancelled.job_id]
+    assert payload["items"][0]["failure_kind"] == "cancelled"
 
 
 def test_archive_threads_batch_endpoint_creates_jobs(db):

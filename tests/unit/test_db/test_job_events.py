@@ -22,6 +22,19 @@ class TestCreateAppendsEvent:
         assert events[0].job_id == job.job_id
 
 
+def test_job_events_jsonb_dict_round_trip(db):
+    events_repo = JobEventsRepository(db)
+    job_id = "job_1"
+    db.execute(
+        "INSERT INTO jobs (job_id, job_type, status, payload_json, artifacts_json) VALUES (?, ?, ?, ?, ?)",
+        (job_id, "noop", "queued", '{"key":"value"}', "{}"),
+    )
+    db.commit()
+    events_repo.append(job_id=job_id, event_type="job.created", payload={"worker_id": "worker-1"})
+    event = events_repo.list(job_id=job_id)[0]
+    assert event.payload["worker_id"] == "worker-1"
+
+
 class TestUpdateStageAppendsEvent:
     def test_acquire_appends_started_event(self, db):
         # Arrange
@@ -101,6 +114,39 @@ class TestFailAppendsEvent:
         assert failed[0].status == JobStatus.FAILED.value
         assert failed[0].payload["error_code"] == "HTTP_403"
         assert failed[0].payload["error_message"] == "Forbidden"
+
+    def test_fail_appends_failed_event_with_artifacts(self, db):
+        jobs_repo = JobsRepository(db)
+        events_repo = JobEventsRepository(db)
+        job = jobs_repo.create("noop")
+
+        jobs_repo.fail(job.job_id, "RemoteFetchError", "boom", artifacts={"failure_context": {"attempts": 3}})
+
+        events = events_repo.list(job_id=job.job_id)
+        failed = [e for e in events if e.event_type == "job.failed"]
+        assert len(failed) == 1
+        assert failed[0].payload["artifacts"]["failure_context"]["attempts"] == 3
+
+
+class TestRetryLaterAppendsEvent:
+    def test_retry_later_appends_retrying_event(self, db):
+        jobs_repo = JobsRepository(db)
+        events_repo = JobEventsRepository(db)
+        job = jobs_repo.create("sync_thread", tid=42)
+        jobs_repo.acquire(job.job_id, "worker-1", 300)
+
+        jobs_repo.retry_later(
+            job.job_id,
+            error_code="RemoteFetchError",
+            error_message="temporary disconnect",
+            artifacts={"failure_context": {"remote_fetch": {"retryable": True}}},
+        )
+
+        events = events_repo.list(job_id=job.job_id)
+        retrying = [e for e in events if e.event_type == "job.retrying"]
+        assert len(retrying) == 1
+        assert retrying[0].status == JobStatus.RETRYING.value
+        assert retrying[0].payload["retry_count"] == 1
 
 
 class TestPartialAppendsEvent:

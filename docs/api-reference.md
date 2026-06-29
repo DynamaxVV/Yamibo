@@ -1,6 +1,6 @@
 # API 接口文档
 
-> 版本：0.9.3 | 更新日期：2026-06-26
+> 版本：0.9.3 | 更新日期：2026-06-28
 
 ## 1. MCP 工具 (Tools)
 
@@ -13,6 +13,8 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
 - 公共工具统一返回 `ok/data/error/resources/next_actions/warnings/side_effects`
 - 公共 Agent 工具不再暴露 `limit`
 - `llm_transform_text` 与 `parse_thread_title` 不再属于公共 Agent 接口
+
+配置了 `yamibo.account_pool` 时，远端工具会按场景自动挑选账号：列表/搜索/预览优先使用更高 `permission_level` 的账号，归档和更新则先用低权限账号，遇到“阅读权限高于 xx 才能浏览”时再切到更高权限账号重试。
 
 ### 1.1 search_forum_threads
 

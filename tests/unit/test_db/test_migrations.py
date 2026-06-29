@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
+import time
 
 import pytest
 
@@ -146,3 +148,70 @@ class TestOldSchemaMigration:
         forums = conn.execute("SELECT COUNT(*) FROM forums").fetchone()[0]
         assert forums >= 4
         conn.close()
+
+
+def test_postgres_migration_dispatches_to_alembic(monkeypatch):
+    from yamibo_mcp.db import migrations as migrations_module
+
+    called = {}
+
+    def fake_upgrade(connection, *, schema="public"):
+        called["connection"] = connection
+        called["schema"] = schema
+
+    monkeypatch.setattr(migrations_module, "upgrade_postgres_schema", fake_upgrade)
+
+    class FakePostgresConnection:
+        backend = "postgres"
+
+        def __init__(self):
+            self.raw_connection = object()
+
+    migrate(FakePostgresConnection(), schema="yamibo_test")
+
+    assert called["schema"] == "yamibo_test"
+    assert called["connection"] is not None
+
+
+def test_postgres_schema_bootstrap_is_serialized(monkeypatch):
+    from yamibo_mcp.db import alembic_runner
+
+    alembic_runner._BOOTSTRAPPED_POSTGRES_DATABASES.clear()
+    calls: list[float] = []
+    active = {"count": 0, "max": 0}
+    lock = threading.Lock()
+
+    def fake_upgrade(config, revision):
+        with lock:
+            active["count"] += 1
+            active["max"] = max(active["max"], active["count"])
+        time.sleep(0.05)
+        with lock:
+            active["count"] -= 1
+        calls.append(time.monotonic())
+
+    monkeypatch.setattr(alembic_runner.command, "upgrade", fake_upgrade)
+
+    class FakeRawConnection:
+        def __init__(self):
+            self.engine = type("Engine", (), {"url": type("URL", (), {"render_as_string": lambda self, hide_password=True: "postgresql://test"})()})()
+
+        def execute(self, *args, **kwargs):
+            return self
+
+        def commit(self):
+            return None
+
+    raw = FakeRawConnection()
+
+    def worker():
+        alembic_runner.upgrade_postgres_schema(raw, schema="public")
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert len(calls) == 1
+    assert active["max"] == 1

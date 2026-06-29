@@ -4,7 +4,7 @@ import sqlite3
 
 import pytest
 
-from yamibo_mcp.db.repositories.rag_vectors import RagVectorsRepository
+from yamibo_mcp.db.repositories.rag_vectors import get_vector_repository
 
 
 pytest.importorskip("sqlite_vec")
@@ -42,7 +42,7 @@ def test_vector_search_uses_k_constraint_required_by_sqlite_vec():
         """
     )
 
-    repo = RagVectorsRepository(conn)
+    repo = get_vector_repository(conn)
     repo.ensure_schema(dimensions=3)
     repo.replace_embeddings([(1, [0.1, 0.2, 0.3])])
 

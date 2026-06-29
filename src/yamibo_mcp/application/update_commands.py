@@ -5,18 +5,18 @@ from typing import Any
 from yamibo_mcp.application.contracts import AgentAction, AgentError, AgentResult
 from yamibo_mcp.config import load_settings
 from yamibo_mcp.db.connection import connect
-from yamibo_mcp.db.migrations import migrate
 from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
 from yamibo_mcp.domain.forums import resolve_forum
 from yamibo_mcp.domain.enums import JobType
+from yamibo_mcp.yamibo.anti_bot import ensure_remote_access_allowed
 
 
 def create_update_thread_job(*, tid: int, base_url: str | None = None) -> dict[str, Any]:
     settings = load_settings()
     conn = connect(settings.db_path)
     try:
-        migrate(conn)
+        ensure_remote_access_allowed(conn)
         repo = JobsRepository(conn)
         payload = {"tid": tid}
         if base_url:
@@ -41,7 +41,7 @@ def create_update_thread_batch_jobs(
     settings = load_settings()
     conn = connect(settings.db_path)
     try:
-        migrate(conn)
+        ensure_remote_access_allowed(conn)
         repo = JobsRepository(conn)
         threads_repo = ThreadsRepository(conn)
         created_job_ids: list[str] = []
