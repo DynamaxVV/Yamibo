@@ -306,7 +306,7 @@ def test_handle_update_thread_retries_permission_gate_with_next_threshold(db, tm
         def __exit__(self, exc_type, exc, tb):
             return False
 
-    def fake_borrow(settings_arg, *, min_permission=None, prefer_high_permission=False, cookie_file=None):
+    def fake_borrow(settings_arg, *, min_permission=None, prefer_high_permission=False, cookie_file=None, proxy_url=None):
         calls.append(min_permission)
         return _BorrowContext(fail=len(calls) == 1)
 

@@ -14,6 +14,7 @@ from yamibo_mcp.db.repositories.threads import ThreadsRepository
 from yamibo_mcp.domain.models import FloorSnapshot, ThreadSnapshot, TitleSnapshot
 from yamibo_mcp.storage.images import ImageDownloadResult
 from yamibo_mcp.yamibo.client import FetchResult
+from yamibo_mcp.yamibo.proxy_pool import ProxyBinding
 
 
 def _make_settings(tmp_path: Path) -> SimpleNamespace:
@@ -264,7 +265,7 @@ def test_sync_thread_retries_permission_gate_with_next_threshold(db, tmp_path, m
         def __exit__(self, exc_type, exc, tb):
             return False
 
-    def fake_borrow(settings_arg, *, min_permission=None, prefer_high_permission=False, cookie_file=None):
+    def fake_borrow(settings_arg, *, min_permission=None, prefer_high_permission=False, cookie_file=None, proxy_url=None):
         calls.append(min_permission)
         return _BorrowContext(fail=len(calls) == 1)
 
@@ -672,3 +673,202 @@ def test_sync_thread_respects_archive_thread_max_pages_for_non_novel_threads(db,
     assert finished_job.artifacts["pages_fetched"] == 2
     assert finished_job.artifacts["stopped_reason"] == "max_pages"
     assert finished_job.artifacts["archive_signature"]["floor_count"] == 2
+
+
+def test_sync_thread_propagates_proxy_binding_to_client_and_images(db, tmp_path, monkeypatch):
+    """When select_thread_proxy returns a binding, both YamiboClient and
+    download_images_to_staging receive the same proxy_url."""
+    settings = _make_settings(tmp_path)
+    repo = JobsRepository(db)
+    # No html_path — forces remote fetch path through YamiboClient
+    job = repo.create(
+        "sync_thread",
+        tid=42,
+        payload={"tid": 42, "forum_id": 30},
+    )
+    job = repo.acquire(job.job_id, "worker-1", 300)
+    snapshot = _make_snapshot()
+
+    fake_binding = ProxyBinding(
+        group="test-group",
+        node="test-node",
+        proxy_url="http://127.0.0.1:9999",
+        best_effort=True,
+        diagnostics={"delay_ms": 42},
+    )
+
+    client_proxy_urls: list[str | None] = []
+    image_proxy_urls: list[str | None] = []
+
+    class _FakeClient:
+        def __init__(self, **kwargs):
+            client_proxy_urls.append(kwargs.get("proxy_url"))
+            self.proxy_url = kwargs.get("proxy_url")
+            self.headers = {}
+            self.cookie_jar = None
+            self.use_system_proxy = False
+
+        def fetch_thread(self, **kwargs):
+            return FetchResult(
+                url="https://bbs.yamibo.com/forum.php?mod=viewthread&tid=42",
+                final_url="https://bbs.yamibo.com/forum.php?mod=viewthread&tid=42",
+                status_code=200,
+                html="<html><body><div id='post_1'><td id='postmessage_1'>正文</td></div></body></html>",
+            )
+
+        def fetch_thread_pages(self, **kwargs):
+            return (
+                [
+                    FetchResult(
+                        url="https://bbs.yamibo.com/forum.php?mod=viewthread&tid=42&page=1",
+                        final_url="https://bbs.yamibo.com/forum.php?mod=viewthread&tid=42&page=1",
+                        status_code=200,
+                        html="<html><body><div id='post_1'><td id='postmessage_1'>正文</td></div></body></html>",
+                    )
+                ],
+                1,
+                "done",
+            )
+
+    def _fake_download(*args, **kwargs):
+        image_proxy_urls.append(kwargs.get("proxy_url"))
+        return ImageDownloadResult(
+            downloaded_relpaths={},
+            non_export_relpaths={},
+            shared_relpaths={},
+            skipped_relpaths={},
+            downloaded_count=0,
+            non_export_count=0,
+            shared_downloaded_count=0,
+            missing_urls=[],
+            missing_shared_urls=[],
+        )
+
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.sync_thread.select_thread_proxy",
+        lambda settings, tid, job_id=None: fake_binding,
+    )
+    monkeypatch.setattr("yamibo_mcp.daemon.handlers.sync_thread.YamiboClient", _FakeClient)
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.sync_thread.parse_thread_snapshot",
+        lambda html, url=None, tid=None: snapshot,
+    )
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.sync_thread.refine_title_parse_with_llm",
+        lambda settings, raw_title, parsed: (parsed, None),
+    )
+    monkeypatch.setattr("yamibo_mcp.daemon.handlers.sync_thread.write_staging_title_parse_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr("yamibo_mcp.daemon.handlers.sync_thread.write_staging_snapshot", lambda *args, **kwargs: None)
+    monkeypatch.setattr("yamibo_mcp.daemon.handlers.sync_thread.update_title_hints", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.sync_thread.materialize_thread",
+        lambda *args, **kwargs: (
+            settings.data_dir / "threads/42/context.md",
+            settings.data_dir / "threads/42/metadata.json",
+        ),
+    )
+    monkeypatch.setattr("yamibo_mcp.daemon.handlers.sync_thread.download_images_to_staging", _fake_download)
+
+    handle_sync_thread(repo, job, "worker-1", 300, settings)
+
+    assert client_proxy_urls == ["http://127.0.0.1:9999"]
+    assert image_proxy_urls == ["http://127.0.0.1:9999"]
+
+    finished_job = repo.get(job.job_id)
+    assert finished_job.artifacts["proxy_pool.enabled"] is True
+    assert finished_job.artifacts["proxy_pool.group"] == "test-group"
+    assert finished_job.artifacts["proxy_pool.node"] == "test-node"
+    assert finished_job.artifacts["proxy_pool.best_effort"] is True
+    assert finished_job.artifacts["proxy_pool.diagnostics"] == {"delay_ms": 42}
+
+
+def test_sync_thread_proxy_failure_falls_back_to_direct(db, tmp_path, monkeypatch):
+    """When proxy selection fails, job still runs with direct connection and
+    fallback info is recorded in artifacts."""
+    settings = _make_settings(tmp_path)
+    settings.use_system_proxy = False
+    repo = JobsRepository(db)
+    job = repo.create("sync_thread", tid=42, payload={"tid": 42, "forum_id": 30})
+    job = repo.acquire(job.job_id, "worker-1", 300)
+    snapshot = _make_snapshot()
+
+    client_proxy_urls: list[str | None] = []
+    image_proxy_urls: list[str | None] = []
+
+    class _FakeClient:
+        def __init__(self, **kwargs):
+            client_proxy_urls.append(kwargs.get("proxy_url"))
+            self.proxy_url = kwargs.get("proxy_url")
+            self.headers = {}
+            self.cookie_jar = None
+            self.use_system_proxy = False
+
+        def fetch_thread(self, **kwargs):
+            return FetchResult(
+                url="https://bbs.yamibo.com/forum.php?mod=viewthread&tid=42",
+                final_url="https://bbs.yamibo.com/forum.php?mod=viewthread&tid=42",
+                status_code=200,
+                html="<html></html>",
+            )
+
+        def fetch_thread_pages(self, **kwargs):
+            return (
+                [
+                    FetchResult(
+                        url="https://bbs.yamibo.com/forum.php?mod=viewthread&tid=42&page=1",
+                        final_url="https://bbs.yamibo.com/forum.php?mod=viewthread&tid=42&page=1",
+                        status_code=200,
+                        html="<html></html>",
+                    )
+                ],
+                1,
+                "done",
+            )
+
+    def _fake_download(*args, **kwargs):
+        image_proxy_urls.append(kwargs.get("proxy_url"))
+        return ImageDownloadResult(
+            downloaded_relpaths={}, non_export_relpaths={}, shared_relpaths={},
+            skipped_relpaths={}, downloaded_count=0, non_export_count=0,
+            shared_downloaded_count=0, missing_urls=[], missing_shared_urls=[],
+        )
+
+    # select_thread_proxy returns None (proxy unavailable)
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.sync_thread.select_thread_proxy",
+        lambda settings, tid, job_id=None: None,
+    )
+    # Simulate proxy_pool config being enabled
+    monkeypatch.setattr(settings, "proxy_pool", SimpleNamespace(enabled=True), raising=False)
+
+    monkeypatch.setattr("yamibo_mcp.daemon.handlers.sync_thread.YamiboClient", _FakeClient)
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.sync_thread.parse_thread_snapshot",
+        lambda html, url=None, tid=None: snapshot,
+    )
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.sync_thread.refine_title_parse_with_llm",
+        lambda settings, raw_title, parsed: (parsed, None),
+    )
+    monkeypatch.setattr("yamibo_mcp.daemon.handlers.sync_thread.write_staging_title_parse_log", lambda *a, **kw: None)
+    monkeypatch.setattr("yamibo_mcp.daemon.handlers.sync_thread.write_staging_snapshot", lambda *a, **kw: None)
+    monkeypatch.setattr("yamibo_mcp.daemon.handlers.sync_thread.update_title_hints", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.sync_thread.materialize_thread",
+        lambda *a, **kw: (
+            settings.data_dir / "threads/42/context.md",
+            settings.data_dir / "threads/42/metadata.json",
+        ),
+    )
+    monkeypatch.setattr("yamibo_mcp.daemon.handlers.sync_thread.download_images_to_staging", _fake_download)
+
+    handle_sync_thread(repo, job, "worker-1", 300, settings)
+
+    # Job should still succeed with direct connection
+    assert client_proxy_urls == [None]  # No proxy URL passed
+    assert image_proxy_urls == [None]
+
+    finished_job = repo.get(job.job_id)
+    assert finished_job.artifacts["proxy_pool.enabled"] is True
+    assert finished_job.artifacts["proxy_pool.fallback"] is True
+    assert finished_job.artifacts["proxy_pool.error"] == "no_usable_nodes"

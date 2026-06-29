@@ -7,7 +7,7 @@ import sqlite3
 from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.db.migrations import migrate
 from yamibo_mcp.yamibo.anti_bot import activate_remote_access_pause
-from yamibo_mcp.web.api import _dashboard
+from yamibo_mcp.web.routes.dashboard import handle_dashboard
 
 
 class _CaptureHandler:
@@ -34,7 +34,7 @@ def test_dashboard_exposes_live_sync_status_for_active_jobs(db):
     jobs_repo.create("noop")
 
     handler = _CaptureHandler()
-    _dashboard(handler, db, {"limit": ["10"]})
+    handle_dashboard(handler, db, {"limit": ["10"]})
 
     payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
     assert payload["live_thread_statuses"][str(521519)] == "queued"
@@ -46,7 +46,7 @@ def test_dashboard_ignores_completed_sync_jobs(db):
     jobs_repo.succeed(done.job_id, artifacts={"tid": 540745})
 
     handler = _CaptureHandler()
-    _dashboard(handler, db, {"limit": ["10"]})
+    handle_dashboard(handler, db, {"limit": ["10"]})
 
     payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
     assert str(540745) not in payload["live_thread_statuses"]
@@ -64,7 +64,7 @@ def test_dashboard_exposes_remote_access_pause_state(tmp_path):
     )
     try:
         handler = _CaptureHandler()
-        _dashboard(handler, db, {"limit": ["10"]})
+        handle_dashboard(handler, db, {"limit": ["10"]})
 
         payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
         assert payload["remote_access_pause"]["active"] is True

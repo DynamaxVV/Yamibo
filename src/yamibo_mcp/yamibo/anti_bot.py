@@ -35,6 +35,36 @@ def is_http_444_error(exc: Exception) -> bool:
     return False
 
 
+def is_http_429_error(exc: Exception) -> bool:
+    """Check for HTTP 429 Too Many Requests (rate limiting)."""
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code == 429
+    if isinstance(exc, RemoteFetchError):
+        details = getattr(exc, "details", None)
+        if isinstance(details, dict) and details.get("status_code") == 429:
+            return True
+        text = str(exc).lower()
+        return "http error 429" in text or "status 429" in text
+    return False
+
+
+# Patterns that suggest a soft interception page (Cloudflare, etc.)
+_SOFT_BLOCK_SIGNATURES = [
+    "just a moment",
+    "cf-browser-verification",
+    "checking your browser",
+    "attention required",
+    "captcha",
+    "challenge-platform",
+]
+
+
+def is_soft_block_page(html: str) -> bool:
+    """Detect soft interception pages (Cloudflare challenge, CAPTCHA etc.)."""
+    lower = html.lower()
+    return any(sig in lower for sig in _SOFT_BLOCK_SIGNATURES)
+
+
 def get_remote_access_pause_state(conn) -> dict[str, Any] | None:
     state = SystemStateRepository(conn).get_json(REMOTE_ACCESS_PAUSE_KEY)
     if not isinstance(state, dict) or not state.get("active"):

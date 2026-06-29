@@ -65,6 +65,8 @@ def _postgres_connection_key(connection: Any) -> str:
 
 
 def _relocate_bootstrap_tables(connection: Any, schema: str) -> None:
+    # Widen alembic_version column so long revision IDs fit
+    connection.execute(text("ALTER TABLE alembic_version ALTER COLUMN version_num TYPE VARCHAR(255)"))
     for table_name in _BOOTSTRAP_TABLES:
         in_target = connection.execute(
             text(

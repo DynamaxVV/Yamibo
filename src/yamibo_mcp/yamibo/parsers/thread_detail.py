@@ -1,13 +1,9 @@
 from __future__ import annotations
 
 from html import escape as html_escape
-from html import unescape as html_unescape
-from html.parser import HTMLParser
 import re
 from dataclasses import dataclass
-from pathlib import Path
-from urllib.parse import urlparse
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 from yamibo_mcp.domain.models import FloorSnapshot, ThreadSnapshot, TitleSnapshot
 from yamibo_mcp.yamibo.cleaners.content_cleaner import clean_content
@@ -16,266 +12,26 @@ from yamibo_mcp.yamibo.parsers.common import TextCaptureParser, attrs_dict
 from yamibo_mcp.yamibo.title.parser import parse_title
 from yamibo_mcp.yamibo.title.normalizer import normalize_display_title
 
+from ._html_utils import (
+    _parse_style_map,
+    sanitize_href,
+    format_style,
+    normalize_rich_body_html,
+)
+from ._post_extract import (
+    _extract_post_block,
+    _extract_floor_image_urls_from_post_block,
+    _extract_poll_text_from_post_block,
+    _extract_post_meta,
+    _extract_attachment_download_map,
+    _resolve_image_url_from_attrs,
+)
+
 
 @dataclass(frozen=True)
 class ThreadDetailSummary:
     title: str | None
     floors: list[FloorSnapshot]
-
-
-_FONT_SIZE_SCALE = {
-    1: "0.75em",
-    2: "0.875em",
-    3: "1em",
-    4: "1.125em",
-    5: "1.375em",
-    6: "1.75em",
-    7: "2.25em",
-}
-
-_SAFE_STYLE_KEYS = {"color", "font-weight", "font-style", "text-decoration", "font-size", "text-align"}
-
-
-def _parse_style_map(style_value: str | None) -> dict[str, str]:
-    if not style_value:
-        return {}
-    result: dict[str, str] = {}
-    for part in style_value.split(";"):
-        if ":" not in part:
-            continue
-        key, value = part.split(":", 1)
-        key = key.strip().lower()
-        value = value.strip()
-        if not key or not value or key not in _SAFE_STYLE_KEYS:
-            continue
-        if key == "color":
-            color = _sanitize_color(value)
-            if color:
-                result[key] = color
-            continue
-        if key == "font-weight":
-            weight = _sanitize_font_weight(value)
-            if weight:
-                if weight in {"normal", "400"}:
-                    continue
-                result[key] = weight
-            continue
-        if key == "font-style":
-            style = value.lower()
-            if style in {"italic", "oblique"}:
-                result[key] = style
-            continue
-        if key == "text-decoration":
-            decoration = _sanitize_text_decoration(value)
-            if decoration and decoration != "none":
-                result[key] = decoration
-            continue
-        if key == "text-align":
-            align = value.lower()
-            if align in {"left", "center", "right", "justify"}:
-                result[key] = align
-            continue
-        if key == "font-size":
-            size = _sanitize_font_size(value)
-            if size and size not in {"1em", "16px"}:
-                result[key] = size
-    if result.get("color") in {"#000000", "black"}:
-        result.pop("color", None)
-    return result
-
-
-def _sanitize_color(value: str) -> str | None:
-    value = value.strip()
-    if re.fullmatch(r"#[0-9a-fA-F]{3,8}", value):
-        return value
-    if re.fullmatch(r"[a-zA-Z]+", value):
-        return value.lower()
-    if re.fullmatch(r"rgba?\([0-9.,\s%]+\)", value):
-        return value
-    return None
-
-
-def _sanitize_font_weight(value: str) -> str | None:
-    value = value.strip().lower()
-    if value in {"normal", "bold", "bolder", "lighter"}:
-        return "700" if value == "bold" else value
-    if value.isdigit():
-        return value
-    return None
-
-
-def _sanitize_text_decoration(value: str) -> str | None:
-    parts = [part for part in re.split(r"\s+", value.strip().lower()) if part]
-    if not parts:
-        return None
-    allowed = [part for part in parts if part in {"underline", "line-through", "overline", "none"}]
-    if not allowed:
-        return None
-    if "none" in allowed:
-        return "none"
-    return " ".join(dict.fromkeys(allowed))
-
-
-def _sanitize_font_size(value: str) -> str | None:
-    value = value.strip().lower()
-    if re.fullmatch(r"\d+(?:\.\d+)?(px|em|rem|pt|%)", value):
-        return value
-    if value.isdigit():
-        return _FONT_SIZE_SCALE.get(int(value))
-    return None
-
-
-def _sanitize_href(value: str, *, base_url: str | None = None) -> str | None:
-    href = value.strip()
-    if not href:
-        return None
-    if href.startswith("//"):
-        href = f"https:{href}"
-    lower = href.lower()
-    if lower.startswith(("javascript:", "data:", "vbscript:")):
-        return None
-    try:
-        parsed = urlparse(href)
-    except ValueError:
-        return None
-    if not parsed.scheme and base_url:
-        try:
-            href = urljoin(base_url, href)
-            parsed = urlparse(href)
-        except ValueError:
-            return None
-    if parsed.scheme and parsed.scheme not in {"http", "https", "mailto", "tel"}:
-        return None
-    return href
-
-
-def _format_style(style_map: dict[str, str]) -> str | None:
-    if not style_map:
-        return None
-    return ";".join(f"{key}:{value}" for key, value in style_map.items())
-
-
-_RICH_BLOCK_TAGS = {"div", "p", "blockquote", "ul", "ol", "li", "pre"}
-_RICH_IGNORED_TAGS: set[str] = set()
-
-
-class _RichBodyNormalizer(HTMLParser):
-    def __init__(self):
-        super().__init__(convert_charrefs=True)
-        self._parts: list[str] = []
-        self._top_level_parts: list[str] = []
-        self._block_depth = 0
-        self._tag_stack: list[tuple[str, bool]] = []
-
-    def result(self) -> str:
-        self._flush_top_level()
-        return "".join(self._parts).strip()
-
-    def handle_starttag(self, tag: str, attrs):
-        if tag == "br":
-            if self._block_depth == 0:
-                self._flush_top_level()
-            else:
-                self._parts.append("<br>")
-            self._tag_stack.append((tag, True))
-            return
-        if tag in _RICH_IGNORED_TAGS:
-            self._tag_stack.append((tag, True))
-            return
-        rendered = self._render_starttag(tag, attrs)
-        dropped = rendered == ""
-        self._tag_stack.append((tag, dropped))
-        if tag in _RICH_BLOCK_TAGS:
-            if self._block_depth == 0:
-                self._flush_top_level()
-            if not dropped:
-                self._parts.append(rendered)
-            self._block_depth += 1
-            return
-        if self._block_depth == 0:
-            if not dropped:
-                self._top_level_parts.append(rendered)
-            return
-        if not dropped:
-            self._parts.append(rendered)
-
-    def handle_endtag(self, tag: str):
-        if tag in _RICH_IGNORED_TAGS:
-            self._pop_tag(tag)
-            return
-        dropped = self._pop_tag(tag)
-        rendered = f"</{tag}>"
-        if tag in _RICH_BLOCK_TAGS:
-            if self._block_depth > 0:
-                self._block_depth -= 1
-            if not dropped:
-                self._parts.append(rendered)
-            return
-        if self._block_depth == 0:
-            if not dropped:
-                self._top_level_parts.append(rendered)
-            return
-        if not dropped:
-            self._parts.append(rendered)
-
-    def handle_data(self, data: str):
-        if not data:
-            return
-        escaped = html_escape(data)
-        if self._block_depth == 0:
-            if data.strip():
-                self._top_level_parts.append(escaped)
-            return
-        self._parts.append(escaped)
-
-    def _flush_top_level(self):
-        text = "".join(self._top_level_parts).strip()
-        if text:
-            self._parts.append(f"<p>{text}</p>")
-        self._top_level_parts = []
-
-    def _pop_tag(self, tag: str) -> bool:
-        for index in range(len(self._tag_stack) - 1, -1, -1):
-            stack_tag, dropped = self._tag_stack[index]
-            del self._tag_stack[index]
-            if stack_tag == tag:
-                return dropped
-        return False
-
-    def _render_starttag(self, tag: str, attrs) -> str:
-        if tag == "a":
-            href = None
-            for key, value in attrs:
-                if key.lower() == "href" and value is not None:
-                    href = _sanitize_href(value)
-                    break
-            if not href:
-                return ""
-            return f'<a href="{html_escape(href, quote=True)}" target="_blank" rel="noreferrer">'
-        rendered_attrs: list[str] = []
-        for key, value in attrs:
-            if value is None:
-                continue
-            if key.lower() == "style":
-                style_map = _parse_style_map(value)
-                style = _format_style(style_map)
-                if style:
-                    rendered_attrs.append(f'style="{html_escape(style, quote=True)}"')
-                continue
-            rendered_attrs.append(f'{key}="{html_escape(value, quote=True)}"')
-        if tag == "span" and not rendered_attrs:
-            return ""
-        if not rendered_attrs:
-            return f"<{tag}>"
-        return f"<{tag}{(' ' + ' '.join(rendered_attrs)) if rendered_attrs else ''}>"
-
-
-def normalize_rich_body_html(html: str | None) -> str | None:
-    if not html:
-        return None
-    parser = _RichBodyNormalizer()
-    parser.feed(html)
-    return parser.result() or None
 
 
 class _ThreadSubjectParser(TextCaptureParser):
@@ -466,6 +222,8 @@ class _ThreadSubjectParser(TextCaptureParser):
         return tag == "ignore_js_op" or "ignore_js_op" in classes or (tag == "i" and "pstatus" in classes)
 
     def _render_rich_start(self, tag: str, data: dict[str, str]) -> tuple[str | None, str | None]:
+        from ._html_utils import _sanitize_color, _sanitize_font_size
+
         classes = set(data.get("class", "").split())
         if "quote" in classes and tag in {"div", "blockquote"}:
             return "<blockquote>", "</blockquote>"
@@ -484,7 +242,7 @@ class _ThreadSubjectParser(TextCaptureParser):
         if tag == "blockquote":
             return "<blockquote>", "</blockquote>"
         if tag == "a":
-            href = _sanitize_href(data.get("href", ""), base_url=self._base_url)
+            href = sanitize_href(data.get("href", ""), base_url=self._base_url)
             if not href:
                 return None, None
             return (
@@ -502,13 +260,13 @@ class _ThreadSubjectParser(TextCaptureParser):
             inline_style = _parse_style_map(data.get("style"))
             style_map.update(inline_style)
             if style_map:
-                style = _format_style(style_map)
+                style = format_style(style_map)
                 return f'<span style="{html_escape(style, quote=True)}">', "</span>"
             return "<span>", "</span>"
         if tag == "span":
             style_map = _parse_style_map(data.get("style"))
             if style_map:
-                style = _format_style(style_map)
+                style = format_style(style_map)
                 return f'<span style="{html_escape(style, quote=True)}">', "</span>"
             return None, None
         if tag == "div":
@@ -517,13 +275,13 @@ class _ThreadSubjectParser(TextCaptureParser):
             if align in {"left", "center", "right", "justify"}:
                 style_map.setdefault("text-align", align)
             if style_map:
-                style = _format_style(style_map)
+                style = format_style(style_map)
                 return f'<div style="{html_escape(style, quote=True)}">', "</div>"
             return "<div>", "</div>"
         if tag == "p":
             style_map = _parse_style_map(data.get("style"))
             if style_map:
-                style = _format_style(style_map)
+                style = format_style(style_map)
                 return f'<p style="{html_escape(style, quote=True)}">', "</p>"
             return "<p>", "</p>"
         if tag == "center":
@@ -603,7 +361,6 @@ def parse_thread_detail(html: str, *, base_url: str | None = None) -> ThreadDeta
 
 def parse_thread_snapshot(html: str, *, url: str | None = None, tid: int | None = None) -> ThreadSnapshot:
     classification = classify_html(html)
-    # 解析快照前先做页面级护栏，非详情页直接拒绝进入归档链路。
     if classification.page_type != PageType.THREAD_DETAIL:
         raise ValueError(f"expected thread_detail page, got {classification.page_type.value}")
     summary = parse_thread_detail(html, base_url=url)
@@ -748,7 +505,6 @@ def extract_forum_id_from_html(html: str) -> int | None:
             return fid
     subject_marker = 'id="thread_subject"'
     if subject_marker in html:
-        # 面包屑导航通常位于帖子标题前面，优先在标题之前的区域取最后一个已知版块。
         breadcrumb_html = html[:html.find(subject_marker)]
         forum_id = _extract_forum_id_from_links(breadcrumb_html)
         if forum_id is not None:
@@ -783,190 +539,3 @@ def extract_author_only_total_pages(html: str, *, tid: int, author_uid: str) -> 
     if span_match is not None:
         pages.append(int(span_match.group(1)))
     return max(pages) if pages else None
-
-
-def _extract_post_meta(html: str) -> dict[int, dict[str, str | None]]:
-    meta: dict[int, dict[str, str | None]] = {}
-    block_pattern = re.compile(r'<div id="post_(?P<pid>\d+)"[^>]*>(?P<body>.*?)(?=<div id="post_\d+"|$)', re.S)
-    publisher_pattern = re.compile(
-        r'<div class="authi"><a href="[^"]*space-uid-(?P<uid>\d+)\.html"[^>]*>(?P<publisher>.*?)</a>',
-        re.S,
-    )
-    pub_time_pattern = re.compile(r'<em id="authorposton(?P<pid>\d+)">发表于 (?P<pub_time>\d{4}-\d{1,2}-\d{1,2}\s+\d{1,2}:\d{2})</em>')
-    for match in block_pattern.finditer(html):
-        pid = int(match.group("pid"))
-        body = match.group("body")
-        publisher_match = publisher_pattern.search(body)
-        pub_time_match = pub_time_pattern.search(body)
-        if not publisher_match and not pub_time_match:
-            continue
-        meta[pid] = {
-            "publisher": None if publisher_match is None else normalize_display_title(publisher_match.group("publisher")),
-            "publisher_uid": None if publisher_match is None else publisher_match.group("uid"),
-            "pub_time": None if pub_time_match is None else pub_time_match.group("pub_time"),
-        }
-    return meta
-
-
-def _extract_attachment_download_map(html: str, *, base_url: str | None) -> dict[str, str]:
-    if not base_url:
-        return {}
-    try:
-        urlparse(base_url)
-    except ValueError:
-        return {}
-    aid_to_file: dict[str, str] = {}
-    for tag in re.findall(r"<img\b[^>]*>", html, flags=re.IGNORECASE):
-        aid_match = re.search(r'\baid="(?P<aid>\d+)"', tag)
-        file_match = re.search(r'\b(?:zoomfile|file)="(?P<file>[^"]+)"', tag)
-        if aid_match is None or file_match is None:
-            continue
-        try:
-            aid_to_file[aid_match.group("aid")] = urljoin(base_url, file_match.group("file"))
-        except ValueError:
-            continue
-
-    result: dict[str, str] = {}
-    tip_pattern = re.compile(
-        r'<div[^>]+id="aimg_(?P<aid>\d+)_menu"[^>]*>.*?<a href="(?P<href>[^"]*forum\.php\?mod=attachment[^"]*nothumb=yes[^"]*)"',
-        re.S | re.IGNORECASE,
-    )
-    for match in tip_pattern.finditer(html):
-        aid = match.group("aid")
-        source_url = aid_to_file.get(aid)
-        if not source_url:
-            continue
-        try:
-            result[source_url] = urljoin(base_url, match.group("href").replace("&amp;", "&"))
-        except ValueError:
-            continue
-    return result
-
-
-def _extract_floor_image_urls_from_post_block(html: str, *, pid: int, base_url: str | None) -> list[str]:
-    block = _extract_post_block(html, pid=pid)
-    if not block:
-        return []
-    image_urls: list[str] = []
-    for tag in re.findall(r"<img\b[^>]*>", block, flags=re.IGNORECASE):
-        image_url = _resolve_image_url_from_tag(tag, base_url=base_url)
-        if image_url:
-            image_urls.append(image_url)
-    return image_urls
-
-
-def _extract_poll_text_from_post_block(html: str, *, pid: int) -> str | None:
-    block = _extract_post_block(html, pid=pid)
-    if not block:
-        return None
-    match = re.search(r'<form\b[^>]*\bid="poll"[^>]*>(?P<body>.*?)</form>', block, re.S | re.IGNORECASE)
-    if match is None:
-        return None
-    body = match.group("body")
-    lines: list[str] = []
-    header_match = re.search(r'<div class="pinf">(.*?)</div>', body, re.S | re.IGNORECASE)
-    if header_match is not None:
-        header_text = _html_fragment_to_text(header_match.group(1))
-        if header_text:
-            lines.extend(header_text.splitlines())
-    option_matches = re.findall(r'<label[^>]*>(.*?)</label>', body, re.S | re.IGNORECASE)
-    for option in option_matches:
-        option_text = _html_fragment_to_text(option)
-        if option_text:
-            lines.append(option_text)
-    closing_text = _html_fragment_to_text(body)
-    if "该投票已经关闭或者过期，不能投票" in closing_text and "该投票已经关闭或者过期，不能投票" not in lines:
-        lines.append("该投票已经关闭或者过期，不能投票")
-    cleaned = "\n".join(line.strip() for line in lines if line.strip())
-    return cleaned or None
-
-
-def _extract_post_block(html: str, *, pid: int) -> str | None:
-    start_marker = f'id="postmessage_{pid}"'
-    start = html.find(start_marker)
-    if start < 0:
-        return None
-    end_marker = f'id="comment_{pid}"'
-    end = html.find(end_marker, start)
-    if end < 0:
-        next_post = re.search(r'<div id="post_\d+"', html[start:], re.S)
-        end = start + next_post.start() if next_post and next_post.start() > 0 else len(html)
-    return html[start:end]
-
-
-def _html_fragment_to_text(fragment: str) -> str:
-    text = fragment
-    replacements = (
-        ("<br>", "\n"),
-        ("<br/>", "\n"),
-        ("<br />", "\n"),
-        ("</tr>", "\n"),
-        ("</table>", "\n"),
-        ("</div>", "\n"),
-        ("</p>", "\n"),
-        ("</label>", "\n"),
-        ("</li>", "\n"),
-        ("</td>", "\t"),
-    )
-    for old, new in replacements:
-        text = re.sub(old, new, text, flags=re.IGNORECASE)
-    text = re.sub(r"<[^>]+>", "", text)
-    text = html_unescape(text)
-    lines = [re.sub(r"\s+", " ", line).strip() for line in text.splitlines()]
-    return "\n".join(line for line in lines if line)
-
-
-def _resolve_image_url_from_tag(tag: str, *, base_url: str | None) -> str | None:
-    attrs = dict(re.findall(r'([a-zA-Z0-9_:-]+)="([^"]*)"', tag))
-    return _resolve_image_url_from_attrs(attrs, base_url=base_url)
-
-
-def _resolve_image_url_from_attrs(attrs: dict[str, str], *, base_url: str | None) -> str | None:
-    preferred_local = _resolve_local_saved_image(attrs, base_url=base_url)
-    if preferred_local is not None:
-        return preferred_local
-    raw = attrs.get("file") or attrs.get("zoomfile") or attrs.get("src") or attrs.get("data-src") or ""
-    raw = raw.strip()
-    if not raw or raw.lstrip("/").startswith(("data:", "javascript:")):
-        return None
-    try:
-        resolved = urljoin(base_url, raw) if base_url else raw
-        parsed = urlparse(resolved)
-    except ValueError:
-        return None
-    if _is_embedded_image_url(resolved, parsed=parsed):
-        return None
-    return resolved
-
-
-def _is_embedded_image_url(image_url: str, *, parsed=None) -> bool:
-    parsed = parsed or urlparse(image_url)
-    lower = image_url.strip().lower()
-    if lower.startswith("data:"):
-        return True
-    if parsed.scheme in {"http", "https"} and parsed.netloc.lower().startswith("data:"):
-        return True
-    return False
-
-
-def _resolve_local_saved_image(attrs: dict[str, str], *, base_url: str | None) -> str | None:
-    if not base_url:
-        return None
-    try:
-        parsed = urlparse(base_url)
-    except ValueError:
-        return None
-    if parsed.scheme != "file":
-        return None
-    src = (attrs.get("src") or attrs.get("data-src") or "").strip()
-    if not src or src.startswith(("data:", "javascript:")):
-        return None
-    try:
-        resolved = urljoin(base_url, src)
-        resolved_parsed = urlparse(resolved)
-    except ValueError:
-        return None
-    if resolved_parsed.scheme != "file":
-        return None
-    local_path = Path(resolved_parsed.path)
-    return resolved if local_path.exists() else None

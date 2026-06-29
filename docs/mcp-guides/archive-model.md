@@ -1,22 +1,55 @@
-# Yamibo Archive Model
+# Archive Model
 
-The MCP interface separates remote reads, local archives, and background jobs.
+> 远端只读 / 本地只读 / 后台任务 三层边界。
 
-## State model
-- `browse_forum_page`, `search_forum_threads`, `inspect_remote_thread`, and `check_thread_updates` are remote read-only tools.
-- `probe_archived_threads` is a local read-only probe for archive presence and last local floor timestamp; it does not fetch remote data.
-- `create_thread_archive_job`, `create_thread_update_job`, and `create_thread_export_job` create SQLite jobs.
-- The daemon consumes queued jobs and materializes local files/resources.
+## 三层模型
 
-## Local content model
-- `read_archived_thread(view="summary")` returns compact metadata and resource URIs.
-- `read_archived_thread(view="content")` returns a bounded chunk of floors and content blocks.
-- Follow `next_cursor` while `has_more` is true.
-- Full materialized text is exposed through `yamibo://threads/{tid}/context`.
-- Structured posts are exposed through `yamibo://threads/{tid}/posts`.
+### 第一层：远端只读（Remote Read-Only）
 
-## Job model
-- Job status is read through `read_job`.
-- Blocking waits should prefer `wait_for_job`.
-- Job event history is read through `read_job_events` or `yamibo://jobs/{job_id}/events`.
-- Status resources are exposed through `yamibo://jobs/{job_id}/status`.
+读取论坛实时数据，不修改本地状态。
+
+**CLI**：
+```bash
+uv run yamibo-mcp-server browse-forum-page --page 1
+uv run yamibo-mcp-server search-threads --query "..."
+uv run yamibo-mcp-server check-thread-updates --tid <tid>
+```
+
+**约束**：可读取本地 SQLite 补充"是否已归档"提示。不写 thread/floor/content_blocks/assets。不下载图片。
+
+### 第二层：本地只读（Local Read-Only）
+
+读取已归档的本地数据，绝不抓远端。
+
+**CLI**：
+```bash
+uv run yamibo-mcp-server search-archived-content --query "..." --mode hybrid
+uv run yamibo-mcp-server read-resource "yamibo://threads/<tid>/summary"
+uv run yamibo-mcp-server read-resource "yamibo://threads/<tid>/diagnostics"
+uv run yamibo-mcp-server job-status <job_id>
+```
+
+**MCP**：调用 `read_archived_thread` 工具，`content` 视图支持 `has_more` / `next_cursor` 分页。任务状态通过 `read_job` / `read_job_events` 读取。
+
+### 第三层：后台任务（Background Job）
+
+创建任务 → daemon 消费 → 读取结果。
+
+**CLI**：
+```bash
+uv run yamibo-mcp-server create-thread-archive-job --tid <tid>
+uv run yamibo-mcp-server create-export-thread-job --tid <tid>
+uv run yamibo-mcp-server create-rag-index-job --tid <tid>
+```
+
+**约束**：命令层只创建 job，执行由 daemon 负责。结果通过 `job-status` 或资源 URI 读取。
+
+## 批量操作
+
+批量归档前先用探测工具判断是否需要补跑：
+
+```bash
+uv run yamibo-mcp-server probe-archived-threads --tid <tid1> --tid <tid2>
+```
+
+探测只读本地归档状态，不创建 job，不抓远端。

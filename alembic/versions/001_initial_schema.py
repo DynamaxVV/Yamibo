@@ -274,6 +274,7 @@ def upgrade() -> None:
     op.create_index("idx_jobs_status_lease", "jobs", ["status", "lease_until"], schema=schema)
     op.create_index("idx_jobs_tid_type", "jobs", ["tid", "job_type"], schema=schema)
     op.create_index("idx_jobs_updated_at", "jobs", ["updated_at"], schema=schema)
+    op.create_index("idx_jobs_parent_created", "jobs", ["parent_job_id", "created_at"], schema=schema)
     op.create_index("idx_threads_series_id", "threads", ["series_id"], schema=schema)
     op.create_index("idx_threads_archive_status", "threads", ["archive_status"], schema=schema)
     op.create_index("idx_threads_sync_time", "threads", ["sync_time"], schema=schema)

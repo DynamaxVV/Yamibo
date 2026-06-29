@@ -183,6 +183,21 @@ def test_load_settings_reads_worker_parallelism(monkeypatch, tmp_path):
     assert settings.worker_parallelism == 3
 
 
+def test_load_settings_reads_persistent_jobs_enabled(monkeypatch, tmp_path):
+    config_path = tmp_path / "yamibo.local.json"
+    data_dir = tmp_path / "data"
+    config_path.write_text(
+        json.dumps({"worker": {"jobs_enabled": False}}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("YAMIBO_CONFIG_PATH", str(config_path))
+    monkeypatch.setenv("YAMIBO_DATA_DIR", str(data_dir))
+
+    settings = load_settings()
+
+    assert settings.jobs_enabled is False
+
+
 def test_load_settings_reads_database_configuration(monkeypatch, tmp_path):
     config_path = tmp_path / "yamibo.local.json"
     data_dir = tmp_path / "data"
@@ -231,6 +246,56 @@ def test_load_settings_rejects_invalid_database_backend(monkeypatch, tmp_path):
 
     with pytest.raises(ValueError, match="unsupported database backend"):
         load_settings()
+
+
+def test_load_settings_proxy_pool_default_disabled(monkeypatch, tmp_path):
+    config_path = tmp_path / "yamibo.local.json"
+    data_dir = tmp_path / "data"
+    config_path.write_text(json.dumps({}), encoding="utf-8")
+    monkeypatch.setenv("YAMIBO_CONFIG_PATH", str(config_path))
+    monkeypatch.setenv("YAMIBO_DATA_DIR", str(data_dir))
+
+    settings = load_settings()
+
+    assert settings.proxy_pool.enabled is False
+
+
+def test_load_settings_parses_proxy_pool(monkeypatch, tmp_path):
+    config_path = tmp_path / "yamibo.local.json"
+    data_dir = tmp_path / "data"
+    config_path.write_text(
+        json.dumps(
+            {
+                "yamibo": {
+                    "proxy_pool": {
+                        "enabled": True,
+                        "controller_url": "http://127.0.0.1:9090",
+                        "secret": "test-secret",
+                        "proxy_url": "http://127.0.0.1:7890",
+                        "selector_group": "yamibo",
+                        "test_url": "https://www.gstatic.com/generate_204",
+                        "test_timeout_ms": 3000,
+                        "failure_policy": "fail_open",
+                    }
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("YAMIBO_CONFIG_PATH", str(config_path))
+    monkeypatch.setenv("YAMIBO_DATA_DIR", str(data_dir))
+
+    settings = load_settings()
+
+    assert settings.proxy_pool.enabled is True
+    assert settings.proxy_pool.controller_url == "http://127.0.0.1:9090"
+    assert settings.proxy_pool.secret == "test-secret"
+    assert settings.proxy_pool.proxy_url == "http://127.0.0.1:7890"
+    assert settings.proxy_pool.selector_group == "yamibo"
+    assert settings.proxy_pool.test_url == "https://www.gstatic.com/generate_204"
+    assert settings.proxy_pool.test_timeout_ms == 3000
+    assert settings.proxy_pool.failure_policy == "fail_open"
 
 
 def test_load_settings_rag_endpoint_falls_back_to_llm(monkeypatch, tmp_path):

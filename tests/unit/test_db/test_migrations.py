@@ -116,6 +116,10 @@ class TestMigrationIdempotency:
         columns_after = {row[1] for row in db.execute("PRAGMA table_info(threads)").fetchall()}
         assert columns_before == columns_after
 
+    def test_jobs_parent_created_index_exists(self, db):
+        indexes = {row["name"] for row in db.execute("PRAGMA index_list(jobs)").fetchall()}
+        assert "idx_jobs_parent_created" in indexes
+
 
 class TestOldSchemaMigration:
     def test_old_db_without_new_columns_migrates_cleanly(self):

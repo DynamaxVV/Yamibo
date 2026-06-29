@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 from tests.fixtures.loader import load_thread, load_edge_case
-from yamibo_mcp.web.api import _clean_rich_body_html
+from yamibo_mcp.web.routes._converters import clean_rich_body_html
 from yamibo_mcp.yamibo.parsers.thread_detail import _extract_post_meta, extract_author_only_total_pages, extract_forum_id_from_html, parse_thread_detail
 
 
@@ -452,7 +452,7 @@ class TestThreadDetailParser:
 
     def test_archived_rich_body_html_is_paragraphized(self):
         """旧归档的富文本也应在读取时被归一化"""
-        cleaned = _clean_rich_body_html(LEGACY_RICH_BODY_HTML) or ""
+        cleaned = clean_rich_body_html(LEGACY_RICH_BODY_HTML) or ""
 
         assert cleaned
         assert "font-size:1em" not in cleaned

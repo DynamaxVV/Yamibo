@@ -134,3 +134,33 @@ def _build_floor_image_slots(
             continue
         slots.append({"remote_url": remote_url, "local_path": None, "status": "missing"})
     return slots
+
+
+def render_context_by_profile(
+    snapshot: ThreadSnapshot,
+    *,
+    content_kind: str,
+    archived_images: dict[int, list[str]] | None = None,
+) -> str:
+    lines: list[str] = []
+    lines.append(f"# {snapshot.display_title}")
+    lines.append("")
+    for floor in snapshot.floors:
+        publisher = floor.publisher or "unknown"
+        pub_time = floor.pub_time or ""
+        heading = f"## {floor.floor_no}F · {publisher}"
+        if pub_time:
+            heading += f" · {pub_time}"
+        lines.extend([heading, ""])
+        if floor.content:
+            lines.append(floor.content)
+        elif content_kind == "comic":
+            lines.append("[image-only floor]")
+        else:
+            lines.append("[empty floor]")
+        lines.append("")
+        for image_path in (archived_images or {}).get(floor.pid, []):
+            lines.append(f"![image]({image_path})")
+        if (archived_images or {}).get(floor.pid):
+            lines.append("")
+    return "\n".join(lines).rstrip() + "\n"

@@ -72,36 +72,6 @@ def validate_by_profile(
     return _validate_mixed(content, archived_image_pids=archived_image_pids)
 
 
-def render_context_by_profile(
-    snapshot: ThreadSnapshot,
-    *,
-    content_kind: str,
-    archived_images: dict[int, list[str]] | None = None,
-) -> str:
-    lines: list[str] = []
-    lines.append(f"# {snapshot.display_title}")
-    lines.append("")
-    for floor in snapshot.floors:
-        publisher = floor.publisher or "unknown"
-        pub_time = floor.pub_time or ""
-        heading = f"## {floor.floor_no}F · {publisher}"
-        if pub_time:
-            heading += f" · {pub_time}"
-        lines.extend([heading, ""])
-        if floor.content:
-            lines.append(floor.content)
-        elif content_kind == "comic":
-            lines.append("[image-only floor]")
-        else:
-            lines.append("[empty floor]")
-        lines.append("")
-        for image_path in (archived_images or {}).get(floor.pid, []):
-            lines.append(f"![image]({image_path})")
-        if (archived_images or {}).get(floor.pid):
-            lines.append("")
-    return "\n".join(lines).rstrip() + "\n"
-
-
 def _build_posts(snapshot: ThreadSnapshot, *, asset_ids_by_url: dict[str, str]) -> list[PostSnapshot]:
     posts: list[PostSnapshot] = []
     for floor in snapshot.floors:

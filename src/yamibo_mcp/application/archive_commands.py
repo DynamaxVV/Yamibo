@@ -12,6 +12,7 @@ from yamibo_mcp.domain.enums import JobType
 from yamibo_mcp.server.resource_uris import job_events_uri, thread_summary_uri
 from yamibo_mcp.yamibo.anti_bot import activate_remote_access_pause, ensure_remote_access_allowed, is_http_444_error
 from yamibo_mcp.yamibo.client import YamiboClient
+from yamibo_mcp.yamibo.proxy_pool import select_random_proxy
 from yamibo_mcp.yamibo.urls import thread_url_from_tid
 
 
@@ -237,10 +238,13 @@ def sync_forum_range(
     conn = connect(settings.db_path)
     try:
         ensure_remote_access_allowed(conn)
+        binding = select_random_proxy(settings)
+        proxy_url = binding.proxy_url if binding else None
         client = YamiboClient(
             timeout=getattr(settings, "request_timeout_seconds", 15.0),
             cookie_file=cookie_file or str(settings.cookie_file),
             use_system_proxy=settings.use_system_proxy,
+            proxy_url=proxy_url,
             login_username=settings.login_username,
             login_password=settings.login_password,
             request_interval=settings.request_interval_seconds,

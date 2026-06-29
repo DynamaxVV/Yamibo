@@ -28,6 +28,7 @@ from yamibo_mcp.yamibo.account_pool import borrow_yamibo_client, has_configured_
 from yamibo_mcp.errors import ThreadPermissionRequiredError
 from yamibo_mcp.yamibo.client import YamiboClient
 from yamibo_mcp.yamibo.parsers.thread_detail import parse_thread_snapshot
+from yamibo_mcp.yamibo.proxy_pool import select_thread_proxy
 from yamibo_mcp.yamibo.urls import thread_page_url_from_tid
 from yamibo_mcp.yamibo.urls import extract_tid_from_input
 
@@ -70,6 +71,25 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
     fetch_artifacts: dict[str, object] = {"archive_mode": "default"}
     client_stack = ExitStack()
 
+    # Select proxy binding (no-op when disabled or not configured)
+    proxy_binding = select_thread_proxy(settings, tid=tid, job_id=job.job_id)
+    proxy_url = proxy_binding.proxy_url if proxy_binding else None
+    proxy_pool_artifacts: dict[str, object] = {}
+    if proxy_binding:
+        proxy_pool_artifacts = {
+            "proxy_pool.enabled": True,
+            "proxy_pool.group": proxy_binding.group,
+            "proxy_pool.node": proxy_binding.node,
+            "proxy_pool.best_effort": proxy_binding.best_effort,
+            "proxy_pool.diagnostics": proxy_binding.diagnostics,
+        }
+    elif getattr(settings, "proxy_pool", None) and settings.proxy_pool.enabled:
+        proxy_pool_artifacts = {
+            "proxy_pool.enabled": True,
+            "proxy_pool.fallback": True,
+            "proxy_pool.error": "no_usable_nodes",
+        }
+
     try:
         stack = client_stack
         with stack:
@@ -98,7 +118,7 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
                     while True:
                         try:
                             identity, client = stack.enter_context(
-                                borrow_yamibo_client(settings, min_permission=min_permission)
+                                borrow_yamibo_client(settings, min_permission=min_permission, proxy_url=proxy_url)
                             )
                             LOG.info(
                                 "sync_thread job=%s fetching with account_id=%s permission_level=%s cookie_file=%s min_permission=%s",
@@ -152,6 +172,7 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
                         timeout=getattr(settings, "request_timeout_seconds", 15.0),
                         cookie_file=str(cookie_path),
                         use_system_proxy=settings.use_system_proxy,
+                        proxy_url=proxy_url,
                         login_username=settings.login_username,
                         login_password=settings.login_password,
                         request_interval=settings.request_interval_seconds,
@@ -179,6 +200,8 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
                         )
                     html = fetched.html
                     source_url = fetched.final_url
+
+            fetch_artifacts.update(proxy_pool_artifacts)
 
             repo.update_stage(job.job_id, "parse", progress_current=1, progress_total=6)
             _check_paused(repo, job.job_id)
@@ -227,6 +250,7 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
                         "last_floor_hash": floor_content_hash(snapshot.floors[-1].content),
                         "author_only_total_pages": total_pages,
                     }
+                fetch_artifacts.update(proxy_pool_artifacts)
             elif client is not None:
                 if tid is None:
                     raise ValueError("thread sync requires tid")
@@ -260,6 +284,7 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
                         "last_floor_hash": floor_content_hash(snapshot.floors[-1].content),
                         "total_pages_detected": total_pages,
                     }
+                fetch_artifacts.update(proxy_pool_artifacts)
 
             COMIC_NOVEL_FORUMS = {30, 55}
             if forum_id is not None and forum_id not in COMIC_NOVEL_FORUMS:
@@ -427,6 +452,7 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
                 cookie_jar=None if client is None else client.cookie_jar,
                 cookie_file=None if client is None else getattr(client, "cookie_file", None),
                 use_system_proxy=False if client is None else client.use_system_proxy,
+                proxy_url=None if client is None else getattr(client, "proxy_url", None),
                 referer=source_url,
                 on_progress=_progress,
                 cancel_check=_cancel_check,

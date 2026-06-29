@@ -85,6 +85,26 @@ def test_run_once_moves_retryable_remote_fetch_error_to_retrying(tmp_path, monke
     assert calls["artifacts"]["failure_context"]["exception_type"] == "RemoteFetchError"
 
 
+def test_run_once_does_not_acquire_jobs_when_jobs_disabled(tmp_path, monkeypatch):
+    settings = SimpleNamespace(
+        db_path=tmp_path / "test.db",
+        worker_id="daemon-test",
+        jobs_enabled=False,
+        worker_poll_seconds=0.0,
+        worker_lease_seconds=300,
+    )
+    runner = DaemonRunner(settings, worker_id="daemon-test-1")
+
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.runner.JobsRepository.acquire_next",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("disabled daemon should not acquire jobs")),
+    )
+
+    result = runner.run_once()
+
+    assert result.processed == 0
+
+
 def test_run_once_rolls_back_handler_transaction_before_marking_failed(tmp_path, monkeypatch):
     db_path = tmp_path / "test.db"
     conn = sqlite3.connect(str(db_path))
@@ -163,3 +183,69 @@ def test_run_once_logs_permission_error_without_traceback(tmp_path, monkeypatch,
     assert calls["job_id"] == job.job_id
     assert calls["error_code"] == "ThreadPermissionRequiredError"
     assert "requires higher read permission" in caplog.text
+
+
+def test_run_once_pauses_on_http_444(tmp_path, monkeypatch):
+    """HTTP 444 single occurrence fails the job; 3 consecutive 444s escalate to global pause."""
+    import yamibo_mcp.daemon.runner as runner_mod
+
+    db_path = tmp_path / "test.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    migrate(conn)
+    job = JobsRepository(conn).create("sync_thread", tid=42)
+    conn.close()
+
+    settings = SimpleNamespace(
+        db_path=db_path,
+        worker_id="daemon-test",
+        worker_poll_seconds=0.0,
+        worker_lease_seconds=300,
+    )
+    runner = DaemonRunner(settings, worker_id="daemon-test-1")
+    pause_calls: list[dict] = []
+    fail_calls: list[str] = []
+
+    def _handler(repo, current_job, worker_id, lease_seconds, handler_settings):
+        raise RemoteFetchError(
+            "HTTP Error 444: ...",
+            details={"url": "https://bbs.yamibo.com/forum.php", "status_code": 444, "retryable": False},
+        )
+
+    monkeypatch.setattr("yamibo_mcp.daemon.runner.get_handler", lambda _job: _handler)
+    monkeypatch.setattr("yamibo_mcp.daemon.runner.recover_expired_jobs", lambda repo: None)
+    monkeypatch.setattr("yamibo_mcp.daemon.runner.JobsRepository.acquire_next", lambda self, worker_id, lease_seconds: job)
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.runner.activate_remote_access_pause",
+        lambda conn, source, message, context=None: pause_calls.append({"source": source, "message": message}),
+    )
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.runner.JobsRepository.finalize_pause",
+        lambda self, job_id: None,
+    )
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.runner.JobsRepository.fail",
+        lambda self, job_id, error_code, error_message, artifacts=None: fail_calls.append(job_id),
+    )
+
+    # Clear 444 counter before test
+    with runner_mod._444_LOCK:
+        runner_mod._444_EVENTS.clear()
+
+    # First 444 — should fail single job, NOT escalate
+    result1 = runner.run_once()
+    assert result1.processed == 1
+    assert len(pause_calls) == 0  # no global pause
+    assert len(fail_calls) == 1   # single job failed
+
+    # Second 444
+    result2 = runner.run_once()
+    assert len(pause_calls) == 0
+
+    # Third 444 — should escalate to global pause
+    result3 = runner.run_once()
+    assert result3.processed == 1
+    assert len(pause_calls) == 1
+    assert "3 times within" in pause_calls[0]["message"]
+    assert len(fail_calls) == 2  # first two failed, third paused

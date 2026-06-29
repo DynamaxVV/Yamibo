@@ -124,6 +124,15 @@ class JobsRepository:
         except Exception:
             LOG.warning("Failed to append job event %s for job %s", event_type, job_id, exc_info=True)
 
+    def _append_events(self, events: list[dict[str, Any]]) -> None:
+        if not events:
+            return
+        try:
+            from yamibo_mcp.db.repositories.job_events import JobEventsRepository
+            JobEventsRepository(self.conn).append_many(events)
+        except Exception:
+            LOG.warning("Failed to append %s job events", len(events), exc_info=True)
+
     def create(
         self,
         job_type: str,
@@ -349,6 +358,27 @@ class JobsRepository:
         if row is None:
             return None
         return _job_from_row(row)
+
+    def get_latest_child_jobs(self, parent_job_ids: list[str]) -> dict[str, Job]:
+        unique_parent_ids = sorted({job_id for job_id in parent_job_ids if job_id})
+        if not unique_parent_ids:
+            return {}
+        placeholders = ",".join("?" for _ in unique_parent_ids)
+        rows = self.conn.execute(
+            f"""
+            SELECT *
+            FROM jobs
+            WHERE parent_job_id IN ({placeholders})
+            ORDER BY parent_job_id ASC, created_at DESC, job_id DESC
+            """,
+            unique_parent_ids,
+        ).fetchall()
+        latest: dict[str, Job] = {}
+        for row in rows:
+            parent_job_id = str(row["parent_job_id"])
+            if parent_job_id not in latest:
+                latest[parent_job_id] = _job_from_row(row)
+        return latest
 
     def acquire_next(self, worker_id: str, lease_seconds: int) -> Job | None:
         # Worker 只抢还没被占用、或者租约已经过期的任务。
@@ -865,6 +895,95 @@ class JobsRepository:
     def list_ids_by_status(self, status: str) -> list[str]:
         rows = self.conn.execute("SELECT job_id FROM jobs WHERE status = ? ORDER BY created_at DESC, job_id DESC", (status,)).fetchall()
         return [str(row["job_id"]) for row in rows]
+
+    def job_control_summary(self) -> dict[str, int]:
+        counts = self.count_by_status()
+        return {
+            "queued": counts.get(JobStatus.QUEUED.value, 0),
+            "running": counts.get(JobStatus.RUNNING.value, 0),
+            "retrying": counts.get(JobStatus.RETRYING.value, 0),
+            "interrupted": counts.get(JobStatus.INTERRUPTED.value, 0),
+            "paused": counts.get(JobStatus.PAUSED.value, 0),
+        }
+
+    def pause_active_jobs(self) -> list[str]:
+        statuses = (
+            JobStatus.QUEUED.value,
+            JobStatus.RUNNING.value,
+            JobStatus.RETRYING.value,
+            JobStatus.INTERRUPTED.value,
+        )
+        status_placeholders = ",".join("?" for _ in statuses)
+        now = utc_now_iso()
+
+        def _pause_active() -> list[str]:
+            rows = self.conn.execute(
+                f"""
+                SELECT job_id FROM jobs
+                WHERE status IN ({status_placeholders})
+                ORDER BY created_at DESC, job_id DESC
+                """,
+                statuses,
+            ).fetchall()
+            job_ids = [str(row["job_id"]) for row in rows]
+            if not job_ids:
+                return []
+            job_placeholders = ",".join("?" for _ in job_ids)
+            self.conn.execute(
+                f"""
+                UPDATE jobs
+                SET status = ?, paused_at = COALESCE(paused_at, ?), updated_at = ?
+                WHERE job_id IN ({job_placeholders})
+                  AND status IN ({status_placeholders})
+                """,
+                (JobStatus.PAUSED.value, now, now, *job_ids, *statuses),
+            )
+            self.conn.commit()
+            return job_ids
+
+        job_ids = self._with_locked_retry(_pause_active)
+        self._append_events([
+            {"job_id": job_id, "event_type": "job.paused", "status": JobStatus.PAUSED.value}
+            for job_id in job_ids
+        ])
+        return job_ids
+
+    def resume_paused_jobs(self) -> list[str]:
+        now = utc_now_iso()
+
+        def _resume_paused() -> list[str]:
+            rows = self.conn.execute(
+                """
+                SELECT job_id FROM jobs
+                WHERE status = ?
+                  AND (worker_id IS NULL OR lease_until IS NULL OR lease_until < ?)
+                ORDER BY created_at DESC, job_id DESC
+                """,
+                (JobStatus.PAUSED.value, now),
+            ).fetchall()
+            job_ids = [str(row["job_id"]) for row in rows]
+            if not job_ids:
+                return []
+            job_placeholders = ",".join("?" for _ in job_ids)
+            self.conn.execute(
+                f"""
+                UPDATE jobs
+                SET status = ?, paused_at = NULL, worker_id = NULL, heartbeat_at = NULL, lease_until = NULL, updated_at = ?
+                WHERE job_id IN ({job_placeholders})
+                  AND status = ?
+                  AND (worker_id IS NULL OR lease_until IS NULL OR lease_until < ?)
+                """,
+                (JobStatus.QUEUED.value, now, *job_ids, JobStatus.PAUSED.value, now),
+            )
+            self.conn.commit()
+            return job_ids
+
+        job_ids = self._with_locked_retry(_resume_paused)
+        self._append_events([
+            {"job_id": job_id, "event_type": "job.resumed", "status": JobStatus.QUEUED.value}
+            for job_id in job_ids
+        ])
+        return job_ids
 
     def list_recent(self, *, limit: int = 10):
         return self.list(limit=limit)

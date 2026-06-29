@@ -30,6 +30,7 @@ from yamibo_mcp.config import load_settings
 from yamibo_mcp.db.connection import connect
 from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.domain.enums import JobType
+from yamibo_mcp.yamibo.proxy_pool import check_proxy_pool_health
 
 
 def dump_json(data: dict[str, object]) -> str:
@@ -168,6 +169,7 @@ def build_parser() -> argparse.ArgumentParser:
     orphan_cleanup_parser.add_argument("--dry-run", action="store_true")
     status_parser = sub.add_parser("job-status")
     status_parser.add_argument("job_id")
+    sub.add_parser("check-proxy-pool")
     return parser
 
 
@@ -290,5 +292,7 @@ def main() -> None:
         print(dump_json(cleanup_orphan_threads(dry_run=args.dry_run)))
     elif command == "job-status":
         print(dump_json(get_job_status_payload(args.job_id)))
+    elif command == "check-proxy-pool":
+        print(dump_json(check_proxy_pool_health(load_settings())))
     else:
         parser.print_help()

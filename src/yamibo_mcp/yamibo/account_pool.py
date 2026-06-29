@@ -1,16 +1,21 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from threading import Lock
 from pathlib import Path
+from threading import Lock
 
 from yamibo_mcp.config import AccountConfig, Settings
 from yamibo_mcp.yamibo.client import YamiboClient
 
 LOG = logging.getLogger(__name__)
+
+# Per-cookie-file last refresh timestamp (UTC epoch seconds).
+_REFRESH_REGISTRY: dict[str, float] = {}
+_REFRESH_LOCK = Lock()
 
 
 @dataclass(frozen=True)
@@ -160,6 +165,32 @@ def has_configured_account_pool(settings: Settings) -> bool:
     return any(item.enabled for item in raw_pool)
 
 
+def _refresh_cookie_if_stale(identity: AccountIdentity, settings: Settings) -> None:
+    """Delete cookie file if older than the configured refresh interval, forcing re-login."""
+    interval_hours = getattr(settings, "cookie_refresh_interval_hours", 12.0)
+    if interval_hours <= 0:
+        return
+    if not identity.username or not identity.password:
+        return  # can't login without credentials
+
+    cookie_path = Path(identity.cookie_file)
+    with _REFRESH_LOCK:
+        last = _REFRESH_REGISTRY.get(identity.cookie_file, 0.0)
+        now = time.monotonic()
+        if now - last < interval_hours * 3600:
+            return
+        _REFRESH_REGISTRY[identity.cookie_file] = now
+
+    if cookie_path.exists():
+        LOG.info(
+            "cookie_refresh: deleting stale cookie for account_id=%s age_hours=%.1f interval_hours=%.0f",
+            identity.account_id,
+            (now - last) / 3600,
+            interval_hours,
+        )
+        cookie_path.unlink()
+
+
 @contextmanager
 def borrow_yamibo_client(
     settings: Settings,
@@ -167,6 +198,7 @@ def borrow_yamibo_client(
     cookie_file: str | None = None,
     min_permission: int | None = None,
     prefer_high_permission: bool = False,
+    proxy_url: str | None = None,
 ) -> Iterator[tuple[AccountIdentity, YamiboClient]]:
     if cookie_file is not None:
         identity = AccountIdentity(
@@ -182,11 +214,13 @@ def borrow_yamibo_client(
             max_concurrent_leases=5,
             login_mode="refresh_on_login_required",
         )
+        _refresh_cookie_if_stale(identity, settings)
         yield identity, YamiboClient(
             timeout=getattr(settings, "request_timeout_seconds", 15.0),
             cookie_file=identity.cookie_file,
             persist_cookies=True,
             use_system_proxy=settings.use_system_proxy,
+            proxy_url=proxy_url,
             login_username=identity.username,
             login_password=identity.password,
             request_interval=identity.request_interval_seconds,
@@ -196,6 +230,7 @@ def borrow_yamibo_client(
 
     pool = get_account_pool(settings)
     identity = pool.acquire(min_permission=min_permission, prefer_high_permission=prefer_high_permission)
+    _refresh_cookie_if_stale(identity, settings)
     if min_permission is not None or prefer_high_permission:
         LOG.info(
             "Borrowed Yamibo account account_id=%s permission_level=%s min_permission=%s prefer_high_permission=%s",
@@ -210,6 +245,7 @@ def borrow_yamibo_client(
             cookie_file=identity.cookie_file,
             persist_cookies=True,
             use_system_proxy=settings.use_system_proxy,
+            proxy_url=proxy_url,
             login_username=identity.username,
             login_password=identity.password,
             request_interval=identity.request_interval_seconds,

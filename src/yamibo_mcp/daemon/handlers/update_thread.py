@@ -27,6 +27,7 @@ from yamibo_mcp.errors import ThreadPermissionRequiredError
 from yamibo_mcp.yamibo.account_pool import borrow_yamibo_client, has_configured_account_pool, next_permission_threshold
 from yamibo_mcp.yamibo.client import YamiboClient
 from yamibo_mcp.yamibo.parsers.thread_detail import extract_author_only_total_pages, parse_thread_snapshot
+from yamibo_mcp.yamibo.proxy_pool import select_thread_proxy
 
 LOG = logging.getLogger(__name__)
 
@@ -75,6 +76,25 @@ def handle_update_thread(repo: JobsRepository, job: Job, worker_id: str, lease_s
     forum_id = int(thread["forum_id"]) if "forum_id" in thread.keys() and thread["forum_id"] is not None else None
     resolved_base_url = str(base_url) if base_url else _base_url_for_thread(thread)
     client_stack = ExitStack()
+
+    proxy_binding = select_thread_proxy(settings, tid=tid, job_id=job.job_id)
+    proxy_url = proxy_binding.proxy_url if proxy_binding else None
+    proxy_pool_artifacts: dict[str, object] = {}
+    if proxy_binding:
+        proxy_pool_artifacts = {
+            "proxy_pool.enabled": True,
+            "proxy_pool.group": proxy_binding.group,
+            "proxy_pool.node": proxy_binding.node,
+            "proxy_pool.best_effort": proxy_binding.best_effort,
+            "proxy_pool.diagnostics": proxy_binding.diagnostics,
+        }
+    elif getattr(settings, "proxy_pool", None) and settings.proxy_pool.enabled:
+        proxy_pool_artifacts = {
+            "proxy_pool.enabled": True,
+            "proxy_pool.fallback": True,
+            "proxy_pool.error": "no_usable_nodes",
+        }
+
     try:
         stack = client_stack
         if has_configured_account_pool(settings):
@@ -82,7 +102,7 @@ def handle_update_thread(repo: JobsRepository, job: Job, worker_id: str, lease_s
             identity = None
             while True:
                 try:
-                    identity, client = stack.enter_context(borrow_yamibo_client(settings, min_permission=min_permission))
+                    identity, client = stack.enter_context(borrow_yamibo_client(settings, min_permission=min_permission, proxy_url=proxy_url))
                     LOG.info(
                         "update_thread job=%s fetching with account_id=%s permission_level=%s cookie_file=%s min_permission=%s",
                         job.job_id,
@@ -131,6 +151,7 @@ def handle_update_thread(repo: JobsRepository, job: Job, worker_id: str, lease_s
                 timeout=getattr(settings, "request_timeout_seconds", 15.0),
                 cookie_file=str(cookie_path),
                 use_system_proxy=settings.use_system_proxy,
+                proxy_url=proxy_url,
                 login_username=settings.login_username,
                 login_password=settings.login_password,
                 request_interval=settings.request_interval_seconds,
@@ -259,6 +280,7 @@ def handle_update_thread(repo: JobsRepository, job: Job, worker_id: str, lease_s
             cookie_jar=client.cookie_jar,
             cookie_file=getattr(client, "cookie_file", None),
             use_system_proxy=client.use_system_proxy,
+            proxy_url=getattr(client, "proxy_url", None),
             referer=tail_page.final_url,
             on_progress=_progress,
             cancel_check=_cancel_check,
@@ -355,6 +377,7 @@ def handle_update_thread(repo: JobsRepository, job: Job, worker_id: str, lease_s
             "download_stopped_reason": image_result.stopped_reason,
             "stopped_reason": image_result.stopped_reason,
         }
+        artifacts.update(proxy_pool_artifacts)
         if image_result.missing_urls or image_result.missing_shared_urls or image_result.stopped_reason or archive_status == "partial":
             repo.partial(job.job_id, artifacts)
         else:

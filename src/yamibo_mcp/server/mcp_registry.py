@@ -46,7 +46,7 @@ def build_mcp_server():
     FastMCP = _fastmcp_imports()
     notifier = JobResourceNotifier()
     server = FastMCP(
-        name="yamibo-mcp",
+        name="yamibo-archive",
         instructions=(
             "Yamibo 本地归档 MCP Server。长操作只返回 job_id；"
             "大文本和二进制内容请通过 resources 读取。"

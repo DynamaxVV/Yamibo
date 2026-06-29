@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import replace
 import time
+import urllib.request
 
 import yamibo_mcp.storage.images as images
 from yamibo_mcp.domain.models import FloorSnapshot, ThreadSnapshot, TitleSnapshot
@@ -222,3 +223,108 @@ def test_download_images_to_staging_returns_partial_on_stage_timeout_with_comple
 
     assert result.stopped_reason == "stage_timeout"
     assert result.downloaded_relpaths[1001] == ["images/floor_001_01.jpg"]
+
+
+def test_download_task_explicit_proxy_url_constructs_proxy_handler(monkeypatch, tmp_path):
+    """When proxy_url is passed to _download_task, opener uses explicit ProxyHandler."""
+    staging_dir = tmp_path / "staging"
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    build_opener_calls = []
+
+    original_build_opener = urllib.request.build_opener
+
+    def _fake_build_opener(*handlers):
+        build_opener_calls.append(handlers)
+        return original_build_opener(*handlers)
+
+    monkeypatch.setattr(urllib.request, "build_opener", _fake_build_opener)
+
+    task = images._DownloadTask(
+        task_index=0,
+        floor_pid=1,
+        image_url="https://img.example.com/a.jpg",
+        kind="content",
+        stem="test",
+    )
+
+    # patch _fetch_to_path to avoid actual network
+    monkeypatch.setattr(images, "_fetch_to_path", lambda **kwargs: staging_dir / "dummy.jpg")
+
+    images._download_task(
+        task,
+        paths=StoragePaths(tmp_path / "data", export_dir=tmp_path / "exports", novel_txt_export_dir=tmp_path / "novel_exports"),
+        staging_dir=staging_dir,
+        timeout=1.0,
+        retries=0,
+        cookie_jar=None,
+        use_system_proxy=False,
+        proxy_url="http://127.0.0.1:7890",
+        headers=None,
+        referer=None,
+        cancel_check=None,
+    )
+
+    proxy_handlers = [h for h in build_opener_calls[0] if isinstance(h, urllib.request.ProxyHandler)]
+    assert len(proxy_handlers) == 1
+    assert proxy_handlers[0].proxies == {"http": "http://127.0.0.1:7890", "https": "http://127.0.0.1:7890"}
+
+
+def test_download_task_no_proxy_url_uses_system_proxy_logic(monkeypatch, tmp_path):
+    """Without proxy_url, behavior is unchanged."""
+    staging_dir = tmp_path / "staging"
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    build_opener_calls: list[tuple] = []
+
+    def _fake_build_opener(*handlers):
+        build_opener_calls.append(handlers)
+        return object()
+
+    monkeypatch.setattr(urllib.request, "build_opener", _fake_build_opener)
+    monkeypatch.setattr(images, "_fetch_to_path", lambda **kwargs: staging_dir / "dummy.jpg")
+
+    task = images._DownloadTask(
+        task_index=0,
+        floor_pid=1,
+        image_url="https://img.example.com/a.jpg",
+        kind="content",
+        stem="test",
+    )
+
+    # use_system_proxy=False, no proxy_url
+    images._download_task(
+        task,
+        paths=StoragePaths(tmp_path / "data", export_dir=tmp_path / "exports", novel_txt_export_dir=tmp_path / "novel_exports"),
+        staging_dir=staging_dir,
+        timeout=1.0,
+        retries=0,
+        cookie_jar=None,
+        use_system_proxy=False,
+        headers=None,
+        referer=None,
+        cancel_check=None,
+    )
+
+    handlers = build_opener_calls[0]
+    proxy_handlers = [h for h in handlers if isinstance(h, urllib.request.ProxyHandler)]
+    assert len(proxy_handlers) == 1
+    assert proxy_handlers[0].proxies == {}
+
+    build_opener_calls.clear()
+
+    # use_system_proxy=True, no proxy_url
+    images._download_task(
+        task,
+        paths=StoragePaths(tmp_path / "data", export_dir=tmp_path / "exports", novel_txt_export_dir=tmp_path / "novel_exports"),
+        staging_dir=staging_dir,
+        timeout=1.0,
+        retries=0,
+        cookie_jar=None,
+        use_system_proxy=True,
+        headers=None,
+        referer=None,
+        cancel_check=None,
+    )
+
+    handlers2 = build_opener_calls[0]
+    proxy_handlers2 = [h for h in handlers2 if isinstance(h, urllib.request.ProxyHandler)]
+    assert len(proxy_handlers2) == 0

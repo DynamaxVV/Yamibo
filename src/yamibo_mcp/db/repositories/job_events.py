@@ -66,6 +66,33 @@ class JobEventsRepository:
             created_at=now,
         )
 
+    def append_many(
+        self,
+        events: list[dict[str, Any]],
+    ) -> None:
+        if not events:
+            return
+        now = utc_now_iso()
+        rows = [
+            (
+                str(event["job_id"]),
+                str(event["event_type"]),
+                event.get("status"),
+                event.get("stage"),
+                json.dumps(event.get("payload") or {}, ensure_ascii=False),
+                now,
+            )
+            for event in events
+        ]
+        self.conn.executemany(
+            """
+            INSERT INTO job_events (job_id, event_type, status, stage, payload_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+        self.conn.commit()
+
     def list(
         self,
         *,

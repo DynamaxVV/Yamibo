@@ -1,29 +1,54 @@
-# Yamibo Agent Evaluation
+# Agent Evaluation Guide
 
-Use this guide when validating whether an agent client can operate Yamibo end to end.
+> Agent 能力验收场景与评分维度。
 
-## Passing goals
-- The agent should distinguish remote read-only tools from local archive reads and job-creation tools.
-- The agent should avoid creating duplicate live jobs for the same thread and payload.
-- The agent should poll `read_job` as the primary status surface and only read `read_job_events` for diagnostics.
-- The agent should use `read_archived_thread(view="summary")` or paged `view="content"` before reading full materialized files.
+完整评估标准见 [docs/agent-evaluation.md](../agent-evaluation.md)。
 
-## Required scenarios
-1. Search or inspect a remote thread without causing local writes.
-2. Create an archive job, poll it through `read_job`, then inspect `read_job_events`.
-3. Read a missing local archive, recover through job creation, then read `summary` and paged `content`.
-4. Observe `failed`, `partial`, and `interrupted` job states and follow the returned hints instead of blindly retrying.
-5. Create an export or update job and verify that payload-compatible live jobs are reused, while different payloads create new jobs.
+## 核心验收场景
 
-## Recommended scoring
-- `discoverability`: can the agent find the workflow from guides and tool descriptions.
-- `state_discipline`: does the agent keep remote, local, and async job states separate.
-- `recovery`: does the agent react correctly to `JOB_NOT_FOUND`, `LOCAL_ARCHIVE_NOT_FOUND`, `REMOTE_LOGIN_REQUIRED`, `REMOTE_MAINTENANCE`, `partial`, and `interrupted`.
-- `token_efficiency`: does the agent prefer compact views and cursor pagination over full-file reads.
+### 1. 论坛浏览与搜索
 
-## Evidence to capture
-- tool call order
-- final job status and event timeline
-- whether duplicate jobs were created
-- whether content pagination followed `next_cursor`
-- whether the run completed without human correction
+```bash
+uv run yamibo-mcp-server browse-forum-page --page 1
+uv run yamibo-mcp-server search-threads --query "星灵感应"
+```
+
+验证点：正确解析论坛列表、搜索结果，识别帖子元数据。
+
+### 2. 归档创建与状态跟踪
+
+```bash
+uv run yamibo-mcp-server create-thread-archive-job --tid <tid>
+uv run yamibo-mcp-server job-status <job_id>
+```
+
+验证点：任务正确入库，daemon 消费执行，状态转换正确。
+
+### 3. 本地归档读取
+
+```bash
+uv run yamibo-mcp-server read-resource "yamibo://threads/<tid>/summary"
+```
+
+验证点：返回结构化数据，包含楼层、图片、元数据。
+
+### 4. RAG 检索
+
+```bash
+uv run yamibo-mcp-server search-archived-content --query "..." --mode hybrid
+```
+
+验证点：返回相关片段，含溯源信息。
+
+### 5. 错误处理
+
+验证点：无效参数返回清晰错误；网络故障时正确处理；反爬触发时自动暂停。
+
+## 评分维度
+
+| 维度 | 权重 | 说明 |
+|---|---|---|
+| 功能正确性 | 40% | 各场景输出符合预期 |
+| 错误恢复 | 25% | 异常状态下行为正确，不创建 duplicate live jobs |
+| 性能 | 15% | 响应时间、并发处理 |
+| 可诊断性 | 20% | partial/interrupted 状态可追踪 |

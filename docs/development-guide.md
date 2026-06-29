@@ -1,6 +1,6 @@
 # 核心模块开发说明
 
-> 版本：0.9.3 | 更新日期：2026-06-28
+> 版本：0.11.0 | 更新日期：2026-06-29
 
 ## 1. 标题解析引擎
 
@@ -370,6 +370,25 @@ class AgentResult:
 | rag.embedding_dimensions | YAMIBO_RAG_EMBEDDING_DIMENSIONS | 512 | 向量维度；变更后应重建索引 |
 | rag.min_chunk_chars | YAMIBO_RAG_MIN_CHUNK_CHARS | 20 | 最小 chunk 字数 |
 | rag.max_chunk_chars | YAMIBO_RAG_MAX_CHUNK_CHARS | 900 | 最大 chunk 字数 |
+
+### 6.4 代理池配置项
+
+| 配置项 | 环境变量 | 默认值 | 说明 |
+|--------|---------|--------|------|
+| yamibo.proxy_pool.enabled | — | false | 代理池开关，默认关闭 |
+| yamibo.proxy_pool.controller_url | — | "" | mihomo controller REST API 地址 |
+| yamibo.proxy_pool.secret | — | "" | controller auth secret |
+| yamibo.proxy_pool.selector_group | — | "" | mihomo Selector 代理组名 |
+| yamibo.proxy_pool.proxy_url | — | "" | 代理地址 |
+| yamibo.proxy_pool.test_url | — | gstatic.com/generate_204 | 节点延迟测试 URL |
+| yamibo.proxy_pool.test_timeout_ms | — | 3000 | 延迟测试超时（毫秒） |
+| yamibo.proxy_pool.allowed_patterns | — | [] | 节点正则白名单 |
+| yamibo.proxy_pool.denied_patterns | — | [] | 节点正则黑名单 |
+| yamibo.proxy_pool.max_delay_ms | — | 0 | 节点最大延迟（0 = 不限制） |
+| yamibo.proxy_pool.failure_policy | — | fail_open | mihomo 故障策略 |
+| yamibo.cookie_refresh_interval_hours | YAMIBO_COOKIE_REFRESH_INTERVAL_HOURS | 12 | cookie 定时刷新周期（小时），0 关闭 |
+
+核心模块：`src/yamibo_mcp/yamibo/proxy_pool.py`，入口函数 `select_thread_proxy()`。健康检查 CLI：`uv run yamibo-mcp-server check-proxy-pool`。
 
 ---
 

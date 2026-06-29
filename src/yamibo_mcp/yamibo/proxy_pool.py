@@ -1,0 +1,503 @@
+from __future__ import annotations
+
+import json
+import logging
+import re
+import threading
+import time
+import urllib.error
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
+
+from yamibo_mcp.config import Settings
+
+
+@dataclass(frozen=True)
+class MihomoProxyPoolConfig:
+    enabled: bool
+    controller_url: str
+    secret: str
+    proxy_url: str
+    selector_group: str
+    test_url: str
+    test_timeout_ms: int
+    failure_policy: str
+    allowed_patterns: tuple[str, ...] = field(default=())
+    denied_patterns: tuple[str, ...] = field(default=())
+    max_delay_ms: int = 0
+
+    @classmethod
+    def from_config_section(cls, section: dict | None) -> MihomoProxyPoolConfig:
+        if isinstance(section, dict):
+            return cls(
+                enabled=str(section.get("enabled", False)).lower() in {"1", "true", "yes", "on"},
+                controller_url=str(section.get("controller_url", "")),
+                secret=str(section.get("secret", "")),
+                proxy_url=str(section.get("proxy_url", "")),
+                selector_group=str(section.get("selector_group", "")),
+                test_url=str(section.get("test_url", "https://www.gstatic.com/generate_204")),
+                test_timeout_ms=int(section.get("test_timeout_ms", 3000)),
+                failure_policy=str(section.get("failure_policy", "fail_open")),
+                allowed_patterns=tuple(str(p) for p in section.get("allowed_patterns", []) if isinstance(p, str) and p.strip()),
+                denied_patterns=tuple(str(p) for p in section.get("denied_patterns", []) if isinstance(p, str) and p.strip()),
+                max_delay_ms=int(section.get("max_delay_ms", 0)),
+            )
+        return cls(
+            enabled=False,
+            controller_url="",
+            secret="",
+            proxy_url="",
+            selector_group="",
+            test_url="https://www.gstatic.com/generate_204",
+            test_timeout_ms=3000,
+            failure_policy="fail_open",
+        )
+
+LOG = logging.getLogger(__name__)
+
+# --- cache ---
+
+_CACHE_TTL_SECONDS = 30.0
+_cache: dict[tuple[str, str], tuple[list[tuple[str, int]], float]] = {}
+_cache_lock = threading.Lock()
+
+
+def _cache_key(controller_url: str, selector_group: str) -> tuple[str, str]:
+    return (controller_url.rstrip("/"), selector_group)
+
+
+def _cache_get(key: tuple[str, str]) -> list[tuple[str, int]] | None:
+    with _cache_lock:
+        entry = _cache.get(key)
+        if entry is None:
+            return None
+        nodes, ts = entry
+        if time.monotonic() - ts > _CACHE_TTL_SECONDS:
+            del _cache[key]
+            return None
+        return list(nodes)
+
+
+def _cache_set(key: tuple[str, str], nodes: list[tuple[str, int]]) -> None:
+    with _cache_lock:
+        _cache[key] = (list(nodes), time.monotonic())
+
+
+def clear_proxy_cache() -> int:
+    """Clear the proxy pool delay cache. Returns count of entries removed."""
+    with _cache_lock:
+        count = len(_cache)
+        _cache.clear()
+        return count
+
+
+def _filter_nodes(
+    nodes: list[tuple[str, int]],
+    *,
+    allowed_patterns: tuple[str, ...] = (),
+    denied_patterns: tuple[str, ...] = (),
+    max_delay_ms: int = 0,
+) -> list[tuple[str, int]]:
+    """Filter node list by allow/deny patterns and max delay.
+
+    Rules are applied in order:
+    1. allowed_patterns: if non-empty, node must match at least one (regex)
+    2. denied_patterns: node matching any is excluded (regex)
+    3. max_delay_ms: nodes slower than this are excluded (0 = no limit)
+    """
+    if allowed_patterns:
+        allowed_re = [re.compile(p) for p in allowed_patterns]
+        nodes = [(name, d) for name, d in nodes if any(r.search(name) for r in allowed_re)]
+        if not nodes:
+            LOG.warning("mihomo: no nodes match allowed_patterns=%s", allowed_patterns)
+
+    if denied_patterns:
+        denied_re = [re.compile(p) for p in denied_patterns]
+        before = len(nodes)
+        nodes = [(name, d) for name, d in nodes if not any(r.search(name) for r in denied_re)]
+        if len(nodes) < before:
+            LOG.info("mihomo: denied %d nodes matching denied_patterns=%s", before - len(nodes), denied_patterns)
+
+    if max_delay_ms > 0:
+        before = len(nodes)
+        nodes = [(name, d) for name, d in nodes if d <= max_delay_ms]
+        if len(nodes) < before:
+            LOG.info("mihomo: filtered %d nodes exceeding max_delay_ms=%d", before - len(nodes), max_delay_ms)
+
+    return nodes
+
+
+# --- dataclasses ---
+
+
+@dataclass(frozen=True)
+class ProxyBinding:
+    group: str
+    node: str
+    proxy_url: str
+    best_effort: bool
+    diagnostics: dict
+
+
+# --- controller client ---
+
+
+class MihomoControllerClient:
+    def __init__(
+        self,
+        *,
+        controller_url: str,
+        secret: str,
+        selector_group: str,
+        test_url: str,
+        test_timeout_ms: int,
+    ) -> None:
+        self._controller_url = controller_url.rstrip("/")
+        self._secret = secret
+        self._selector_group = selector_group
+        self._test_url = test_url
+        self._test_timeout_ms = test_timeout_ms
+        self._opener = urllib.request.build_opener()
+
+    def _request(self, path: str, method: str = "GET", body: bytes | None = None) -> dict:
+        url = f"{self._controller_url}{path}"
+        req = urllib.request.Request(url, data=body, method=method)
+        if self._secret:
+            req.add_header("Authorization", f"Bearer {self._secret}")
+        if body is not None:
+            req.add_header("Content-Type", "application/json")
+        # Give mihomo extra headroom beyond test_timeout_ms for its own internal request
+        timeout = max(10, (self._test_timeout_ms / 1000) + 3)
+        with self._opener.open(req, timeout=timeout) as resp:
+            raw = resp.read()
+            if not raw:
+                return {}
+            return json.loads(raw.decode("utf-8"))
+
+    def discover_nodes(self) -> list[str]:
+        try:
+            data = self._request("/proxies")
+        except Exception:
+            LOG.warning("mihomo: failed to fetch /proxies", exc_info=True)
+            return []
+        group_data = data.get("proxies", {}).get(self._selector_group)
+        if not group_data:
+            return []
+        return list(group_data.get("all", []))
+
+    def test_node_delay(self, node: str) -> int | None:
+        import urllib.parse as _up
+
+        params = _up.urlencode(
+            {"url": self._test_url, "timeout": str(self._test_timeout_ms)}
+        )
+        path = f"/proxies/{_up.quote(node)}/delay?{params}"
+        try:
+            data = self._request(path)
+        except Exception:
+            LOG.warning("mihomo: delay test failed for node %s", node, exc_info=True)
+            return None
+        delay = data.get("delay")
+        if isinstance(delay, (int, float)):
+            return int(delay)
+        return None
+
+    def test_all_nodes_parallel(self, nodes: list[str], max_workers: int = 8) -> list[tuple[str, int]]:
+        """Test delay of all nodes in parallel, returning (node, delay_ms) for usable nodes."""
+        if not nodes:
+            return []
+
+        results: list[tuple[str, int]] = []
+        with ThreadPoolExecutor(max_workers=min(max_workers, len(nodes))) as executor:
+            future_to_node = {
+                executor.submit(self.test_node_delay, node): node
+                for node in nodes
+            }
+            for future in as_completed(future_to_node):
+                node = future_to_node[future]
+                try:
+                    delay = future.result()
+                    if delay is not None:
+                        results.append((node, delay))
+                except Exception:
+                    LOG.warning("mihomo: parallel delay test failed for node %s", node, exc_info=True)
+
+        return sorted(results, key=lambda x: x[1])
+
+    def select_node(self, node: str) -> None:
+        body = json.dumps({"name": node}).encode("utf-8")
+        self._request(f"/proxies/{self._selector_group}", method="PUT", body=body)
+
+
+# --- public API ---
+
+
+def _check_enabled(settings) -> bool:
+    """Safely check proxy_pool.enabled — resilient to MagicMock."""
+    cfg = getattr(settings, "proxy_pool", None)
+    if cfg is None:
+        return False
+    if not isinstance(cfg, MihomoProxyPoolConfig):
+        return False
+    return cfg.enabled
+
+
+def select_thread_proxy(
+    settings: Settings,
+    tid: int,
+    job_id: str | None = None,
+) -> ProxyBinding | None:
+    if not _check_enabled(settings):
+        return None
+
+    cfg = settings.proxy_pool
+    key = _cache_key(cfg.controller_url, cfg.selector_group)
+    cached = _cache_get(key)
+    if cached is not None:
+        usable = cached
+        from_cache = True
+    else:
+        client = MihomoControllerClient(
+            controller_url=cfg.controller_url,
+            secret=cfg.secret,
+            selector_group=cfg.selector_group,
+            test_url=cfg.test_url,
+            test_timeout_ms=cfg.test_timeout_ms,
+        )
+
+        nodes = client.discover_nodes()
+        if not nodes:
+            LOG.warning("mihomo: no nodes discovered for group %s", cfg.selector_group)
+            return None
+
+        usable = client.test_all_nodes_parallel(nodes)
+        if not usable:
+            LOG.warning("mihomo: no usable nodes after delay tests")
+            return None
+
+        usable = _filter_nodes(
+            usable,
+            allowed_patterns=cfg.allowed_patterns,
+            denied_patterns=cfg.denied_patterns,
+            max_delay_ms=cfg.max_delay_ms,
+        )
+        if not usable:
+            LOG.warning("mihomo: no usable nodes after filters")
+            return None
+
+        _cache_set(key, usable)
+        from_cache = False
+
+    idx = hash(tid) % len(usable)
+    selected_node, selected_delay = usable[idx]
+
+    # Only call select_node if cache was stale (avoid unnecessary PUTs)
+    if not from_cache:
+        client = MihomoControllerClient(
+            controller_url=cfg.controller_url,
+            secret=cfg.secret,
+            selector_group=cfg.selector_group,
+            test_url=cfg.test_url,
+            test_timeout_ms=cfg.test_timeout_ms,
+        )
+        try:
+            client.select_node(selected_node)
+        except Exception:
+            LOG.warning("mihomo: failed to select node %s", selected_node, exc_info=True)
+            # Still return binding — proxy may already be on this node
+
+    return ProxyBinding(
+        group=cfg.selector_group,
+        node=selected_node,
+        proxy_url=cfg.proxy_url,
+        best_effort=True,
+        diagnostics={
+            "delay_ms": selected_delay,
+            "candidates": len(usable),
+            "from_cache": from_cache,
+        },
+    )
+
+
+def check_proxy_pool_health(settings: Settings) -> dict:
+    """Diagnostic check for mihomo proxy pool connectivity.
+
+    Always performs fresh discovery + delay tests (bypasses cache).
+    """
+    cfg = getattr(settings, "proxy_pool", None)
+    if cfg is None:
+        return {"ok": False, "error": "proxy_pool not configured in settings"}
+
+    report: dict = {
+        "ok": True,
+        "config": {
+            "enabled": cfg.enabled,
+            "controller_url": cfg.controller_url,
+            "selector_group": cfg.selector_group,
+            "proxy_url": cfg.proxy_url,
+            "test_url": cfg.test_url,
+            "test_timeout_ms": cfg.test_timeout_ms,
+            "failure_policy": cfg.failure_policy,
+        },
+        "controller": {"reachable": False, "error": None},
+        "selector_group": {"exists": False, "current_node": None, "node_count": 0},
+        "nodes": [],
+        "cache": _cache_info(),
+    }
+
+    if not cfg.enabled:
+        report["ok"] = False
+        report["error"] = "proxy_pool is disabled"
+        return report
+
+    client = MihomoControllerClient(
+        controller_url=cfg.controller_url,
+        secret=cfg.secret,
+        selector_group=cfg.selector_group,
+        test_url=cfg.test_url,
+        test_timeout_ms=cfg.test_timeout_ms,
+    )
+
+    # Step 1: controller reachable?
+    try:
+        data = client._request("/proxies")
+        report["controller"]["reachable"] = True
+    except Exception as exc:
+        report["controller"]["error"] = str(exc)
+        report["ok"] = False
+        report["error"] = f"controller unreachable: {exc}"
+        return report
+
+    # Step 2: selector group exists?
+    proxies = data.get("proxies", {})
+    group_data = proxies.get(cfg.selector_group)
+    if group_data is None:
+        report["ok"] = False
+        report["error"] = (
+            f"selector group '{cfg.selector_group}' not found. "
+            f"Available groups: {list(proxies.keys())}"
+        )
+        return report
+
+    report["selector_group"]["exists"] = True
+    report["selector_group"]["current_node"] = group_data.get("now")
+    all_nodes = list(group_data.get("all", []))
+    report["selector_group"]["node_count"] = len(all_nodes)
+
+    report["filters"] = {
+        "allowed_patterns": list(cfg.allowed_patterns) if cfg.allowed_patterns else None,
+        "denied_patterns": list(cfg.denied_patterns) if cfg.denied_patterns else None,
+        "max_delay_ms": cfg.max_delay_ms if cfg.max_delay_ms > 0 else None,
+    }
+
+    # Step 3: test all nodes in parallel
+    if all_nodes:
+        usable_pairs = client.test_all_nodes_parallel(all_nodes)
+        filtered_pairs = _filter_nodes(
+            usable_pairs,
+            allowed_patterns=cfg.allowed_patterns,
+            denied_patterns=cfg.denied_patterns,
+            max_delay_ms=cfg.max_delay_ms,
+        )
+        filtered_names = {name for name, _ in filtered_pairs}
+        usable_map = {node: delay for node, delay in usable_pairs}
+        for node in all_nodes:
+            delay = usable_map.get(node)
+            node_info: dict = {
+                "name": node,
+                "delay_ms": delay,
+                "error": None if delay is not None else "no delay data returned",
+            }
+            if delay is not None and node not in filtered_names:
+                node_info["filtered"] = True
+            report["nodes"].append(node_info)
+    else:
+        usable_pairs = []
+        filtered_pairs = []
+
+    report["usable_count"] = len(usable_pairs)
+    report["filtered_count"] = len(filtered_pairs)
+    if filtered_pairs:
+        delays = [d for _, d in filtered_pairs]
+        report["min_delay_ms"] = min(delays)
+        report["max_delay_ms"] = max(delays)
+
+    if not filtered_pairs:
+        report["ok"] = False
+        report["error"] = "no usable nodes (all delay tests failed)"
+
+    return report
+
+
+def _cache_info() -> dict:
+    with _cache_lock:
+        entries = {
+            f"{key[0]}/{key[1]}": {
+                "node_count": len(nodes),
+                "age_seconds": round(time.monotonic() - ts, 1),
+            }
+            for key, (nodes, ts) in _cache.items()
+        }
+        return {"entries": len(_cache), "ttl_seconds": _CACHE_TTL_SECONDS, "groups": entries}
+
+
+def select_random_proxy(settings: Settings) -> ProxyBinding | None:
+    """Select a random proxy node for non-thread actions (search, forum browse).
+
+    Uses the same cached node list as select_thread_proxy but picks randomly.
+    """
+    import random
+
+    if not _check_enabled(settings):
+        return None
+
+    cfg = settings.proxy_pool
+
+    key = _cache_key(cfg.controller_url, cfg.selector_group)
+    cached = _cache_get(key)
+    if cached is not None:
+        usable = cached
+    else:
+        client = MihomoControllerClient(
+            controller_url=cfg.controller_url,
+            secret=cfg.secret,
+            selector_group=cfg.selector_group,
+            test_url=cfg.test_url,
+            test_timeout_ms=cfg.test_timeout_ms,
+        )
+        nodes = client.discover_nodes()
+        if not nodes:
+            return None
+        usable = client.test_all_nodes_parallel(nodes)
+        usable = _filter_nodes(
+            usable,
+            allowed_patterns=cfg.allowed_patterns,
+            denied_patterns=cfg.denied_patterns,
+            max_delay_ms=cfg.max_delay_ms,
+        )
+        if not usable:
+            return None
+        _cache_set(key, usable)
+
+    selected_node = random.choice(usable)[0]
+
+    client = MihomoControllerClient(
+        controller_url=cfg.controller_url,
+        secret=cfg.secret,
+        selector_group=cfg.selector_group,
+        test_url=cfg.test_url,
+        test_timeout_ms=cfg.test_timeout_ms,
+    )
+    try:
+        client.select_node(selected_node)
+    except Exception:
+        LOG.warning("mihomo: failed to select node for random proxy %s", selected_node, exc_info=True)
+
+    return ProxyBinding(
+        group=cfg.selector_group,
+        node=selected_node,
+        proxy_url=cfg.proxy_url,
+        best_effort=True,
+        diagnostics={"candidates": len(usable)},
+    )

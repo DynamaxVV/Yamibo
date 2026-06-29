@@ -3,6 +3,7 @@ import sqlite3
 import pytest
 
 import yamibo_mcp.db.repositories.jobs as jobs_module
+from yamibo_mcp.db.repositories.job_events import JobEventsRepository
 from yamibo_mcp.db.repositories.jobs import JobsRepository, _loads
 from yamibo_mcp.domain.enums import JobStatus
 from yamibo_mcp.domain.models import Job
@@ -555,6 +556,67 @@ class TestMarkExpiredRunningInterrupted:
 
 
 class TestPausedRecovery:
+    def test_pause_active_jobs_pauses_queued_running_retrying_and_interrupted(self, db):
+        # Arrange
+        repo = JobsRepository(db)
+        queued = repo.create("noop")
+        running = repo.create("noop")
+        repo.acquire(running.job_id, "worker-1", 300)
+        retrying = repo.create("noop")
+        repo.retry_later(retrying.job_id, error_code="HTTP_500", error_message="temporary")
+        interrupted = repo.create("noop")
+        db.execute("UPDATE jobs SET status = ? WHERE job_id = ?", (JobStatus.INTERRUPTED.value, interrupted.job_id))
+        succeeded = repo.create("noop")
+        repo.succeed(succeeded.job_id)
+        db.commit()
+
+        # Act
+        changed = repo.pause_active_jobs()
+
+        # Assert
+        assert set(changed) == {queued.job_id, running.job_id, retrying.job_id, interrupted.job_id}
+        assert repo.get(queued.job_id).status == JobStatus.PAUSED
+        assert repo.get(running.job_id).status == JobStatus.PAUSED
+        assert repo.get(retrying.job_id).status == JobStatus.PAUSED
+        assert repo.get(interrupted.job_id).status == JobStatus.PAUSED
+        assert repo.get(succeeded.job_id).status == JobStatus.SUCCEEDED
+        for job_id in changed:
+            events = JobEventsRepository(db).list(job_id=job_id)
+            assert any(event.event_type == "job.paused" for event in events)
+
+    def test_resume_paused_jobs_skips_jobs_still_owned_by_workers(self, db):
+        # Arrange
+        repo = JobsRepository(db)
+        released = repo.create("noop")
+        repo.pause(released.job_id)
+        owned = repo.create("noop")
+        repo.acquire(owned.job_id, "worker-1", 300)
+        repo.pause(owned.job_id)
+
+        # Act
+        changed = repo.resume_paused_jobs()
+
+        # Assert
+        assert changed == [released.job_id]
+        assert repo.get(released.job_id).status == JobStatus.QUEUED
+        assert repo.get(owned.job_id).status == JobStatus.PAUSED
+        events = JobEventsRepository(db).list(job_id=released.job_id)
+        assert any(event.event_type == "job.resumed" for event in events)
+
+    def test_pause_active_jobs_does_not_call_single_job_pause(self, db, monkeypatch):
+        repo = JobsRepository(db)
+        job = repo.create("noop")
+
+        def _unexpected_pause(_job_id: str) -> bool:
+            raise AssertionError("pause_active_jobs must use bulk update")
+
+        monkeypatch.setattr(repo, "pause", _unexpected_pause)
+
+        changed = repo.pause_active_jobs()
+
+        assert changed == [job.job_id]
+        assert repo.get(job.job_id).status == JobStatus.PAUSED
+
     def test_release_expired_paused_jobs_clears_worker_ownership(self, db):
         # Arrange
         repo = JobsRepository(db)

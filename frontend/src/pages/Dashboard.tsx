@@ -65,6 +65,7 @@ export function Dashboard() {
   const [otherLimit, setOtherLimit] = useState(10)
   const [dashboardTick, setDashboardTick] = useState(0)
   const [resumeBusy, setResumeBusy] = useState(false)
+  const [jobControlBusy, setJobControlBusy] = useState(false)
 
   useEffect(() => {
     api.forums().then(fs => {
@@ -104,6 +105,23 @@ export function Dashboard() {
   }, [primaryLimit, otherLimit, dashboardTick])
 
   const liveStatuses = data?.live_thread_statuses ?? {}
+  const jobControl = data?.job_control ?? { jobs_enabled: true, queued: 0, running: 0, retrying: 0, interrupted: 0, paused: 0 }
+  const activeJobCount = jobControl.queued + jobControl.running + jobControl.retrying + jobControl.interrupted
+  const canPauseJobs = jobControl.jobs_enabled && activeJobCount > 0
+  const canResumeJobs = !jobControl.jobs_enabled || (!canPauseJobs && jobControl.paused > 0)
+  const jobControlAction = canPauseJobs ? 'pause' : 'resume'
+  const runJobControl = () => {
+    if (!canPauseJobs && !canResumeJobs) return
+    setJobControlBusy(true)
+    api.controlJobs(jobControlAction)
+      .then(result => {
+        setError(null)
+        setData(prev => prev ? { ...prev, job_control: result.job_control } : prev)
+        setDashboardTick(tick => tick + 1)
+      })
+      .catch(e => setError(e.message))
+      .finally(() => setJobControlBusy(false))
+  }
 
   if (error) return <div className="panel" style={{ color: 'var(--status-error)' }}>{error}</div>
   if (!data) return <div className="panel" style={{ color: 'var(--text-tertiary)' }}>{t('loading')}</div>
@@ -157,6 +175,23 @@ export function Dashboard() {
         </div>
         <div className="stat-cell"><div className="label">{t('series_count')}</div><div className="value">{data.series_count}</div></div>
         <div className="stat-cell"><div className="label">{t('export_count')}</div><div className="value">{data.export_count}</div></div>
+        <div className="stat-cell">
+          <div className="label">{t('job_control')}</div>
+          <div className="job-control-cell">
+            <div className="job-control-counts">
+              <span>{t('queued')} <b>{jobControl.queued}</b></span>
+              <span>{t('running')} <b>{jobControl.running + jobControl.retrying}</b></span>
+              <span>{t('paused')} <b>{jobControl.paused}</b></span>
+            </div>
+            <button
+              className={canPauseJobs ? 'btn-danger' : 'btn-subtle'}
+              disabled={jobControlBusy || (!canPauseJobs && !canResumeJobs)}
+              onClick={runJobControl}
+            >
+              {jobControlBusy ? t('running') : (canPauseJobs ? t('pause_active_jobs') : t('resume_paused_jobs'))}
+            </button>
+          </div>
+        </div>
       </div>
 
       <h2 style={{ margin: '16px 0 8px' }}>{t('recent_threads')}</h2>

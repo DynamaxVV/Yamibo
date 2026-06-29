@@ -11,6 +11,7 @@ from yamibo_mcp.server.schemas import build_series_summary, thread_summary_paylo
 from yamibo_mcp.yamibo.anti_bot import activate_remote_access_pause, ensure_remote_access_allowed, is_http_444_error
 from yamibo_mcp.yamibo.account_pool import borrow_yamibo_client, has_configured_account_pool, next_permission_threshold
 from yamibo_mcp.yamibo.client import YamiboClient
+from yamibo_mcp.yamibo.proxy_pool import select_random_proxy
 from yamibo_mcp.errors import ThreadPermissionRequiredError
 from yamibo_mcp.yamibo.parsers.forum_list import ForumThreadItem
 from yamibo_mcp.yamibo.parsers.search_results import SearchResultItem
@@ -33,6 +34,9 @@ def _open_remote_client(
     prefer_high_permission: bool = False,
     min_permission: int | None = None,
 ):
+    binding = select_random_proxy(settings)
+    proxy_url = binding.proxy_url if binding else None
+
     if cookie_file is None and not has_configured_account_pool(settings):
         resolved_cookie_file = str(settings.cookie_file)
         if not settings.cookie_file.exists():
@@ -43,6 +47,7 @@ def _open_remote_client(
             timeout=getattr(settings, "request_timeout_seconds", 15.0),
             cookie_file=resolved_cookie_file,
             use_system_proxy=settings.use_system_proxy,
+            proxy_url=proxy_url,
             login_username=settings.login_username,
             login_password=settings.login_password,
             request_interval=settings.request_interval_seconds,
@@ -56,6 +61,7 @@ def _open_remote_client(
         cookie_file=cookie_file,
         min_permission=min_permission,
         prefer_high_permission=prefer_high_permission,
+        proxy_url=proxy_url,
     ) as borrowed:
         yield borrowed
 

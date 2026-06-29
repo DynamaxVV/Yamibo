@@ -263,6 +263,14 @@ export interface DashboardData {
     job_types: string[]
     context: Record<string, unknown>
   } | null
+  job_control: {
+    jobs_enabled: boolean
+    queued: number
+    running: number
+    retrying: number
+    interrupted: number
+    paused: number
+  }
 }
 
 export interface FontAsset {
@@ -451,6 +459,7 @@ export const api = {
   job: (id: string) => fetchJson<JobSummary>(`/jobs/${id}`),
   jobEvents: (id: string) => fetchJson<JobEvent[]>(`/jobs/${id}/events`),
   resumeRemoteAccess: () => postJson<{ ok: boolean; resumed_job_ids: string[]; resumed_job_count: number }>('/remote-access/resume', {}),
+  controlJobs: (action: 'pause' | 'resume') => postJson<{ ok: boolean; action: string; changed_job_ids: string[]; changed_count: number; job_control: DashboardData['job_control'] }>('/jobs/control', { action }),
   threads: (params?: { q?: string; forum_id?: number; days?: number; archive_status?: string; sort_key?: string; sort_dir?: string; page?: number; page_size?: number }) => {
     const qs = new URLSearchParams()
     if (params?.q) qs.set('q', params.q)

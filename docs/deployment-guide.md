@@ -1,6 +1,6 @@
 # 部署指南 & 运维手册
 
-> 版本：0.9.3 | 更新日期：2026-06-28
+> 版本：0.11.0 | 更新日期：2026-06-29
 
 ## 1. 环境要求
 
@@ -57,6 +57,58 @@ uv sync --extra dev
 ```
 
 如需多账号池，可在 `yamibo.account_pool` 里补充多个账号。每个账号建议使用独立的 `cookie_file`，并用 `permission_level` 标记阅读权限；推荐按 `0/10/20/...` 这种梯队配置，`0` 是最低权限。系统会优先用低权限账号做普通抓取，只有在权限不足或列表/搜索场景下才切换到更高权限账号。
+
+#### Mihomo 代理池（可选）
+
+如需为每个 thread 归档任务绑定独立代理 IP，需自行运行 mihomo 代理（如 Clash Verge），然后在 `yamibo.proxy_pool` 中配置：
+
+```json
+{
+  "yamibo": {
+    "proxy_pool": {
+      "enabled": true,
+      "controller_url": "http://127.0.0.1:9090",
+      "secret": "",
+      "proxy_url": "http://127.0.0.1:7890",
+      "selector_group": "yamibo",
+      "test_url": "https://www.gstatic.com/generate_204",
+      "test_timeout_ms": 3000,
+      "failure_policy": "fail_open",
+      "allowed_patterns": [],
+      "denied_patterns": [],
+      "max_delay_ms": 0
+    }
+  }
+}
+```
+
+| 字段 | 默认值 | 说明 |
+|------|--------|------|
+| `enabled` | `false` | 开关，默认关闭不影响现有行为 |
+| `controller_url` | `""` | mihomo controller REST API 地址 |
+| `secret` | `""` | controller auth secret（空则不加 Authorization header） |
+| `proxy_url` | `""` | 代理地址，传给 HTTP 请求和图片下载 |
+| `selector_group` | `""` | mihomo 中类型为 Selector 的代理组名 |
+| `test_url` | `gstatic.com/generate_204` | 节点延迟测试 URL |
+| `test_timeout_ms` | `3000` | 延迟测试超时（毫秒） |
+| `failure_policy` | `"fail_open"` | mihomo 故障时直连；HTTP 444 反爬始终 fail-closed |
+| `allowed_patterns` | `[]` | 正则白名单，非空时节点必须匹配至少一项 |
+| `denied_patterns` | `[]` | 正则黑名单，匹配任意一项即排除 |
+| `max_delay_ms` | `0` | 延迟上限（毫秒），超过的排除（0 = 不限制） |
+
+验证配置：`uv run yamibo-mcp-server check-proxy-pool`
+
+#### Cookie 定时刷新
+
+`yamibo.cookie_refresh_interval_hours`（默认 `12`）控制 cookie 文件的定时刷新周期。设为 `0` 关闭。刷新时机：`borrow_yamibo_client()` 创建客户端前检查，到期则删除 cookie 文件，`YamiboClient` 构造时会自动重新登录。
+
+```json
+{
+  "yamibo": {
+    "cookie_refresh_interval_hours": 12
+  }
+}
+```
 
 #### 方式二：环境变量
 
@@ -239,7 +291,7 @@ uv run yamibo-backup-db --keep-count 10
 
 ### 5.2 SQLite -> PostgreSQL 迁移
 
-完整切换步骤见 [docs/postgres-migration-runbook.md](postgres-migration-runbook.md)。常用 ETL 命令：
+ETL 命令：
 
 ```bash
 uv run python scripts/migrate_sqlite_to_postgres.py \

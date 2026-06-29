@@ -1,6 +1,6 @@
 # 用户操作手册
 
-> 版本：0.9.3 | 更新日期：2026-06-26
+> 版本：0.11.0 | 更新日期：2026-06-29
 
 ## 1. 快速开始
 
@@ -35,89 +35,70 @@ uv run yamibo-mcp-server read-resource "yamibo://forums/index"
 
 ---
 
-## 2. 通过 MCP 客户端使用
+## 2. CLI 使用（推荐）
 
-### 2.1 浏览论坛
+CLI 是主要操作方式，所有命令返回 JSON 格式结果，方便脚本处理。
 
-在 LLM 客户端中，可以直接要求：
+### 2.1 浏览与搜索
 
-> "帮我看一下百合会漫画区第 1 页有什么帖子"
+```bash
+# 浏览论坛
+uv run yamibo-mcp-server browse-forum-page --page 1
+uv run yamibo-mcp-server browse-forum-page --page 1 --forum-id 55
+uv run yamibo-mcp-server browse-forum-page --page 1 --order dateline
 
-MCP Server 会调用 `browse_forum_page` 工具返回帖子列表。
+# 搜索帖子
+uv run yamibo-mcp-server search-threads --query "星灵感应"
+```
 
-### 2.2 搜索帖子
+### 2.2 归档与更新
 
-> "搜索一下有没有 '星灵感应' 相关的帖子"
+```bash
+# 创建归档任务
+uv run yamibo-mcp-server create-thread-archive-job --tid 572313
 
-MCP Server 会调用 `search_forum_threads` 工具，优先从论坛搜索，失败时降级到本地搜索。
+# 批量归档
+uv run yamibo-mcp-server create-sync-thread-batch-jobs --tid 572313 --tid 572314
+uv run yamibo-mcp-server create-sync-forum-range-jobs --start-page 1 --end-page 5
 
-### 2.3 归档帖子
+# 批量探测（先查本地状态再决定是否补跑）
+uv run yamibo-mcp-server probe-archived-threads --tid 572313 --tid 572314
 
-> "帮我归档帖子 572313"
+# 检查轻小说更新
+uv run yamibo-mcp-server check-thread-updates --tid 544422
+uv run yamibo-mcp-server update-thread --tid 544422
+```
 
-MCP Server 会调用 `create_thread_archive_job` 创建后台任务。返回 job_id 后，可以通过 `read_job` 轮询进度。
+### 2.3 导出
 
-如果需要先确认本地是否已有归档，可调用 `ensure_thread_archived`；读取内容则使用 `read_archived_thread`。
+```bash
+uv run yamibo-mcp-server create-export-thread-job --tid 572313
+```
 
-### 2.4 导出帖子
+### 2.4 任务监控
 
-> "把帖子 572313 导出成 ZIP"
+```bash
+uv run yamibo-mcp-server job-status <job_id>
+```
 
-MCP Server 会调用 `create_thread_export_job` 创建导出任务。支持三种策略：
-- **cache_only**（默认）：仅使用本地已有数据
-- **sync_if_stale**：本地数据过旧时先同步
-- **force_resync**：强制重新同步
+### 2.5 本地检索
 
-轻小说帖子会导出为独立 TXT 文件，默认输出到 `data/novel_exports`，可通过 `YAMIBO_NOVEL_TXT_EXPORT_DIR` 修改。
+```bash
+# 构建 RAG 索引
+uv run yamibo-mcp-server create-rag-index-job --tid 572313
+uv run yamibo-mcp-server create-rag-index-batch-jobs --tid 572313 --tid 572314
 
-### 2.5 检查轻小说更新
+# 搜索归档内容
+uv run yamibo-mcp-server search-archived-content --query "星空 告白" --mode hybrid --top-k 5
+```
 
-> "检查一下帖子 544422 是否有更新"
+### 2.6 读取资源
 
-MCP Server 会调用 `check_thread_updates` 只读接口，先比较本地归档快照和远端只看楼主页面。
-
-如果结果显示有更新，再调用 `create_thread_update_job` 创建追加更新任务。
-
-### 2.6 批量归档
-
-> "帮我把漫画区前 5 页的帖子都归档"
-
-MCP Server 会调用 `sync_forum_range` 创建批量同步任务。
-
-### 2.7 读取归档内容
-
-MCP 资源可以通过 URI 访问：
-
-**帖子资源**：
-- `yamibo://threads/{tid}/summary` — 帖子紧凑摘要（推荐 Agent 首选）
-- `yamibo://threads/{tid}/diagnostics` — 诊断信息（缺失资产、建议操作）
-- `yamibo://threads/{tid}/posts` — 内容块列表
-- `yamibo://threads/{tid}/assets` — 资产列表
-- `yamibo://threads/{tid}/update-check` — 轻小说更新检测结果
-- `yamibo://threads/{tid}/context` — 帖子正文 Markdown
-- `yamibo://threads/{tid}/metadata` — 完整元数据 JSON
-- `yamibo://threads/{tid}/export` — 导出 ZIP 包
-
-**论坛资源**：
-- `yamibo://forums/index` — 论坛分区列表
-- `yamibo://forums/{forum_id}/summary` — 分区摘要
-
-**任务资源**：
-- `yamibo://jobs/{job_id}/events` — 任务事件时间线
-
-**系列资源**：
-- `yamibo://series/index` — 系列索引
-- `yamibo://series/{series_id}/chapters` — 系列章节列表
-
-### 2.7 多论坛分区
-
-支持浏览和搜索不同论坛分区：
-
-> "帮我看一下轻小说区第 1 页有什么帖子"
-
-MCP Server 会调用 `browse_forum_page(page=1, forum_id=55)`。
-
-支持的分区：漫画区(30)、轻小说区(55)、动漫区(5)、水区(33)。
+```bash
+uv run yamibo-mcp-server read-resource "yamibo://threads/572313/summary"
+uv run yamibo-mcp-server read-resource "yamibo://threads/572313/diagnostics"
+uv run yamibo-mcp-server read-resource "yamibo://forums/index"
+```
 
 ---
 
@@ -209,55 +190,42 @@ MCP Server 会调用 `browse_forum_page(page=1, forum_id=55)`。
 
 ---
 
-## 4. 通过 CLI 使用
+## 4. 通过 MCP 客户端使用
 
-所有 CLI 命令返回 JSON 格式结果，方便脚本处理。
+MCP 是为 LLM 客户端提供的辅助通道。在 Claude Desktop 或 Cursor 中配置后，可直接用自然语言操作。
 
-```bash
-# 浏览论坛
-uv run yamibo-mcp-server browse-forum-page --page 1
+### 4.1 浏览与搜索
 
-# 按发帖时间排序浏览
-uv run yamibo-mcp-server browse-forum-page --page 1 --order dateline
+> "帮我看一下百合会漫画区第 1 页有什么帖子"
+> "搜索一下有没有 '星灵感应' 相关的帖子"
 
-# 浏览轻小说区
-uv run yamibo-mcp-server browse-forum-page --page 1 --forum-id 55
+### 4.2 归档
 
-# 搜索
-uv run yamibo-mcp-server search-threads --query "关键词"
+> "帮我归档帖子 572313"
 
-# 创建归档任务
-uv run yamibo-mcp-server create-sync-thread-job --tid 572313
+### 4.3 导出
 
-# 批量创建归档任务
-uv run yamibo-mcp-server create-sync-thread-batch-jobs --tid 572313 --tid 572314
+> "把帖子 572313 导出成 ZIP"
 
-# 创建导出任务
-uv run yamibo-mcp-server create-export-thread-job --tid 572313
+支持三种策略：**cache_only**（默认，仅用本地数据）、**sync_if_stale**（本地过旧时先同步）、**force_resync**（强制重同步）。
 
-# 创建单贴 RAG 索引任务
-uv run yamibo-mcp-server create-rag-index-job --tid 572313
+### 4.4 检查更新
 
-# 批量创建 RAG 索引任务
-uv run yamibo-mcp-server create-rag-index-batch-jobs --tid 572313 --tid 572314
+> "检查一下帖子 544422 是否有更新"
 
-# 调试本地归档检索
-uv run yamibo-mcp-server search-archived-content --query "星空 告白" --mode hybrid --top-k 5
+### 4.5 读取归档
 
-# 批量同步
-uv run yamibo-mcp-server create-sync-forum-range-jobs --start-page 1 --end-page 5
+MCP 资源 URI：
+- `yamibo://threads/{tid}/summary` — 帖子摘要
+- `yamibo://threads/{tid}/diagnostics` — 诊断信息
+- `yamibo://threads/{tid}/posts` — 内容块
+- `yamibo://threads/{tid}/assets` — 资产列表
+- `yamibo://forums/index` — 分区列表
+- `yamibo://jobs/{job_id}/events` — 任务事件
 
-# 查看任务状态
-uv run yamibo-mcp-server job-status <job_id>
+### 4.6 多分区
 
-# 列出导出包
-uv run yamibo-mcp-server list-exports
-
-# 读取资源
-uv run yamibo-mcp-server read-resource "yamibo://threads/572313/summary"
-uv run yamibo-mcp-server read-resource "yamibo://threads/572313/diagnostics"
-uv run yamibo-mcp-server read-resource "yamibo://forums/index"
-```
+支持的分区：漫画区(30)、轻小说区(55)、动漫区(5)、水区(33)。
 
 ---
 

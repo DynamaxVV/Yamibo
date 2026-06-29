@@ -98,6 +98,7 @@ const SECTIONS: SectionSpec[] = [
     titleKey: 'settings_section_maintenance',
     descKey: 'settings_section_maintenance_desc',
     fields: [
+      { key: 'jobs_enabled', labelKey: 'settings_jobs_enabled', helpKey: 'settings_jobs_enabled_help', kind: 'checkbox', section: 'maintenance' },
       { key: 'backup_keep_count', labelKey: 'settings_backup_keep_count', helpKey: 'settings_backup_keep_count_help', kind: 'number', section: 'maintenance', min: 1, step: 1 },
       { key: 'cleanup_staging_older_than_hours', labelKey: 'settings_cleanup_staging_older_than_hours', helpKey: 'settings_cleanup_staging_older_than_hours_help', kind: 'number', section: 'maintenance', min: 1, step: 1 },
       { key: 'worker_parallelism', labelKey: 'settings_worker_parallelism', helpKey: 'settings_worker_parallelism_help', kind: 'number', section: 'maintenance', min: 1, step: 1 },

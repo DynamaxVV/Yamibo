@@ -1441,8 +1441,8 @@ wheels = [
 ]
 
 [[package]]
-name = "yamibo-mcp"
-version = "0.10.0"
+name = "yamibo-archive"
+version = "0.11.0"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },

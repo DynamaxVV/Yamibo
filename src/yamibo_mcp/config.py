@@ -4,7 +4,10 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from yamibo_mcp.yamibo.proxy_pool import MihomoProxyPoolConfig
 
 from yamibo_mcp.storage.atomic import atomic_write_text
 
@@ -46,6 +49,7 @@ class Settings:
     web_host: str
     web_port: int
     worker_id: str | None
+    jobs_enabled: bool
     worker_poll_seconds: float
     worker_parallelism: int
     worker_lease_seconds: int
@@ -90,6 +94,8 @@ class Settings:
     request_interval_seconds: float
     request_interval_jitter_seconds: float
     account_pool: tuple[AccountConfig, ...]
+    proxy_pool: MihomoProxyPoolConfig
+    cookie_refresh_interval_hours: float
 
 
 def _read_local_config(path: Path) -> dict[str, object]:
@@ -245,6 +251,10 @@ def load_settings() -> Settings:
         )
     ).expanduser()
     account_pool = _cfg_account_pool(config, config_dir=config_path.parent, data_dir=data_dir)
+
+    proxy_pool_section = _cfg_value(config, "yamibo", "proxy_pool", None)
+    from yamibo_mcp.yamibo.proxy_pool import MihomoProxyPoolConfig
+    proxy_pool = MihomoProxyPoolConfig.from_config_section(proxy_pool_section if isinstance(proxy_pool_section, dict) else None)
     llm_base_url = str(
         os.environ.get(
             "YAMIBO_LLM_BASE_URL",
@@ -274,6 +284,8 @@ def load_settings() -> Settings:
         web_host=os.environ.get("YAMIBO_WEB_HOST", str(_cfg_value(config, "web", "host", "0.0.0.0"))),
         web_port=int(os.environ.get("YAMIBO_WEB_PORT", str(_cfg_value(config, "web", "port", 8765)))),
         worker_id=os.environ.get("YAMIBO_WORKER_ID") or None,
+        jobs_enabled=str(os.environ.get("YAMIBO_JOBS_ENABLED", str(_cfg_value(config, "worker", "jobs_enabled", True)))).lower()
+        in {"1", "true", "yes", "on"},
         worker_poll_seconds=float(
             os.environ.get("YAMIBO_WORKER_POLL_SECONDS", str(_cfg_value(config, "worker", "poll_seconds", 2)))
         ),
@@ -483,4 +495,11 @@ def load_settings() -> Settings:
             )
         ),
         account_pool=account_pool,
+        proxy_pool=proxy_pool,
+        cookie_refresh_interval_hours=float(
+            os.environ.get(
+                "YAMIBO_COOKIE_REFRESH_INTERVAL_HOURS",
+                str(_cfg_value(config, "yamibo", "cookie_refresh_interval_hours", 12)),
+            )
+        ),
     )

@@ -2,7 +2,7 @@
 
 百合会 (yamibo.com) 论坛本地归档系统。通过 MCP 协议让 LLM 客户端浏览、搜索、归档、检查更新和导出论坛贴子；内嵌 React WebUI 控制台，支持多主题切换。
 
-> 当前版本：`0.10.0`
+> 当前版本：`0.11.0`
 
 ## 功能特性
 
@@ -89,7 +89,7 @@ uv sync --extra dev
 
 所有配置项均可通过 `YAMIBO_*` 环境变量覆盖。详见 [`.env.example`](.env.example)。
 
-数据库后端预留了 `database` 配置段和 `YAMIBO_DB_*` 环境变量，当前默认仍是 SQLite；后续切到 PostgreSQL 时会复用这组开关。
+数据库后端默认使用 PostgreSQL（`pgvector`），同时保留 SQLite 支持用于本地开发和单机部署。通过 `database.backend` 配置切换。
 
 其中轻小说 TXT 导出目录对应 `YAMIBO_NOVEL_TXT_EXPORT_DIR`，轻小说只看楼主更新检测阈值对应 `YAMIBO_NOVEL_AUTHOR_ONLY_MAX_PAGES` 和 `YAMIBO_NOVEL_AUTHOR_ONLY_PAGE_DELAY_SECONDS`。
 
@@ -114,7 +114,7 @@ MCP Server 无需手动启动，由 LLM 客户端自动调用。
 LLM Client (Claude Desktop / Cursor)
     │ MCP Protocol (stdio)
     ▼
-yamibo-mcp-server ──创建任务──▶ SQLite (jobs + job_events)
+yamibo-mcp-server ──创建任务──▶ PostgreSQL / SQLite (jobs + job_events)
     │                               ▲
     │ application layer             │ 轮询 + 抢占
     │ (archive, update_thread)      │
@@ -276,7 +276,8 @@ scripts/run_hermes_benchmark.sh
 | [API 接口文档](docs/api-reference.md) | MCP 工具/资源、CLI、Web 路由 |
 | [Agent 接口说明](docs/agent-interface.md) | Agent-facing 工具、错误契约、推荐工作流 |
 | [Agent 能力验收标准](docs/agent-evaluation.md) | OpenClaw/Hermes 类 Agent 的验收场景、评分维度与证据要求 |
-| [数据库设计](docs/database-design.md) | 表结构、文件存储格式 |
+| [数据库设计](docs/database-design.md) | 表结构、文件存储格式、PostgreSQL JSONB 决策 |
+| [账号池设计](docs/account-pool-design.md) | 多账号权限分配与 Cookie 管理 |
 | [SQLite-Vec RAG 设计](docs/rag-sqlite-vec-design.md) | 本地归档检索、chunk、embedding 与 `sqlite-vec` 方案 |
 | [核心模块开发说明](docs/development-guide.md) | 标题解析、Job 系统、配置 |
 | [部署指南 & 运维手册](docs/deployment-guide.md) | 安装、配置、运维操作 |

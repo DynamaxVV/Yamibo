@@ -1,13 +1,10 @@
 # Agent 接口说明
 
-> 版本：0.9.3 | 更新日期：2026-06-26
+> 版本：0.11.0 | 更新日期：2026-06-29
 
 ## 概览
 
-新的 Agent-facing MCP 接口分成两类：
-
-- 远端只读：发现、搜索、预览、更新检查
-- 本地只读：读取 SQLite 和已物化归档
+CLI 是主要操作方式，所有功能均可通过 `uv run yamibo-mcp-server <command>` 直接调用。MCP 工具是为 LLM 客户端提供的辅助通道，底层与 CLI 共享同一 application 层。
 
 所有公共工具统一返回结构：
 
@@ -38,24 +35,25 @@
 
 ## 公共工具
 
-- `browse_forum_page`
-- `search_forum_threads`
-- `inspect_remote_thread`
-- `create_thread_archive_job`
-- `create_thread_archive_batch_jobs`
-- `ensure_thread_archived`
-- `read_archived_thread`
-- `probe_archived_threads`
-- `check_thread_updates`
-- `create_thread_update_job`
-- `create_thread_export_job`
-- `create_rag_index_job`
-- `create_rag_index_batch_jobs`
-- `search_archived_content`
-- `read_job`
-- `wait_for_job`
-- `read_job_events`
-- `read_forum_profiles`
+所有工具均有对应的 CLI 命令。**推荐优先使用 CLI**。
+
+| MCP 工具 | CLI 命令 |
+|---|---|
+| `browse_forum_page` | `uv run yamibo-mcp-server browse-forum-page --page 1` |
+| `search_forum_threads` | `uv run yamibo-mcp-server search-threads --query "..."` |
+| `inspect_remote_thread` | `uv run yamibo-mcp-server inspect-remote-thread --tid <tid>` |
+| `create_thread_archive_job` | `uv run yamibo-mcp-server create-thread-archive-job --tid <tid>` |
+| `create_thread_archive_batch_jobs` | `uv run yamibo-mcp-server create-sync-thread-batch-jobs --tid ... --tid ...` |
+| `check_thread_updates` | `uv run yamibo-mcp-server check-thread-updates --tid <tid>` |
+| `create_thread_update_job` | `uv run yamibo-mcp-server update-thread --tid <tid>` |
+| `create_thread_export_job` | `uv run yamibo-mcp-server create-export-thread-job --tid <tid>` |
+| `create_rag_index_job` | `uv run yamibo-mcp-server create-rag-index-job --tid <tid>` |
+| `create_rag_index_batch_jobs` | `uv run yamibo-mcp-server create-rag-index-batch-jobs --tid ... --tid ...` |
+| `search_archived_content` | `uv run yamibo-mcp-server search-archived-content --query "..." --mode hybrid` |
+| `read_job` / `wait_for_job` | `uv run yamibo-mcp-server job-status <job_id>` |
+| `read_job_events` | (通过 Web 控制台或 API) |
+| `read_archived_thread` | `uv run yamibo-mcp-server read-resource "yamibo://threads/<tid>/summary"` |
+| `probe_archived_threads` | `uv run yamibo-mcp-server probe-archived-threads --tid ... --tid ...` |
 
 ## 导航资源
 
@@ -104,30 +102,40 @@
 
 ## 推荐工作流
 
+所有操作优先使用 CLI。MCP 工具在 LLM 客户端中作为自动化通道使用。
+
 ### 搜索并归档
 
-1. `search_forum_threads`
-2. `inspect_remote_thread`
-3. `create_thread_archive_job`
-4. `read_job`
-5. `read_archived_thread`
+**CLI（推荐）**：
+```bash
+uv run yamibo-mcp-server search-threads --query "星灵感应"
+uv run yamibo-mcp-server create-thread-archive-job --tid <tid>
+uv run yamibo-mcp-server job-status <job_id>
+uv run yamibo-mcp-server read-resource "yamibo://threads/<tid>/summary"
+```
+
+**MCP**：`search_forum_threads` → `create_thread_archive_job` → `read_job` → `read_archived_thread`
 
 ### 已知 tid 读取
 
-1. `ensure_thread_archived`
-2. `read_archived_thread`
+```bash
+uv run yamibo-mcp-server read-resource "yamibo://threads/<tid>/summary"
+```
 
 ### 大批量归档前探测
 
-1. `probe_archived_threads`
-2. 结合远端 `browse_forum_page` / `search_forum_threads` 返回的 `last_reply_at` 和 `reply_count`
-3. 仅对明显需要更新的 tid 创建归档任务
+```bash
+uv run yamibo-mcp-server probe-archived-threads --tid <tid1> --tid <tid2>
+# 结合 browse-forum-page 返回的 last_reply_at 判断是否需要补跑
+```
 
 ### 轻小说更新
 
-1. `check_thread_updates`
-2. `create_thread_update_job`
-3. `read_job`
+```bash
+uv run yamibo-mcp-server check-thread-updates --tid <tid>
+uv run yamibo-mcp-server update-thread --tid <tid>
+uv run yamibo-mcp-server job-status <job_id>
+```
 
 ## 任务状态机
 
@@ -168,18 +176,12 @@
 
 推荐顺序：
 
-1. 创建任务：`create_thread_archive_job` / `create_thread_update_job` / `create_thread_export_job`
-2. 轮询主状态：`read_job(job_id)` 或阻塞等待：`wait_for_job(job_id)`
-3. 出现 `failed`、`partial`、`execution_state in {attention, stalled}` 或 `interrupted` 时，再读 `read_job_events(job_id)`
-4. 状态进入 `succeeded` 或 `partial` 后，切到 `read_archived_thread`
+1. 创建任务：CLI 命令或 MCP 工具
+2. 轮询主状态：`uv run yamibo-mcp-server job-status <job_id>`
+3. 出现 `failed`、`partial`、`execution_state in {attention, stalled}` 或 `interrupted` 时，查看 Web 控制台 Job Detail 页或事件日志
+4. 状态进入 `succeeded` 或 `partial` 后，切到本地读取
 
-约定：
-
-- `read_job` 是主入口，适合低成本轮询
-- `wait_for_job` 适合脚本、benchmark 或一次性等待结果的 Agent 流程
-- `read_job_events` 是排障入口，适合阅读事件时间线、阶段切换、错误上下文
-- 不要在 `queued` 或 `retrying` 时盲目重复创建同一帖子的新任务
-- `partial` 不等于不可读；它表示主归档通常已经落地，但部分资产或附加步骤不完整
+MCP 侧 `read_job` 是主入口，适合低成本轮询。`wait_for_job` 适合脚本和 benchmark。`read_job_events` 是排障入口。
 
 ## 工作流资源如何配合任务
 

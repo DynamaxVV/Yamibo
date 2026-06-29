@@ -424,7 +424,26 @@ parser_version: "title-v1+llm"
   "archived_images": { "12345": ["images/floor_001_01.jpg"] },
   "non_export_images": {},
   "shared_images": {},
-  "missing_image_urls": [],
   "missing_shared_image_urls": []
 }
 ```
+
+## PostgreSQL JSONB 列决策
+
+> 记录日期：2026-06-27 | 状态：Phase 0 baseline
+
+| 表 | 列 | 决策 | 原因 |
+|------|------|------|------|
+| jobs | `payload_json` | `JSONB` | 任务生命周期代码中解析和合并 |
+| jobs | `artifacts_json` | `JSONB` | Web/API 和 job event payload 消费 |
+| job_events | `payload_json` | `JSONB` | 事件 payload 按结构化数据回读 |
+| audit_events | `before_json` / `after_json` | `JSONB` | 审计 diff 在 Python 中渲染过滤 |
+| series | `alias_keys_json` / `aliases_json` | `JSONB` | 系列元数据以列表合并 |
+| threads | `validation_errors_json` / `missing_images_json` | `JSONB` | 校验状态按结构化列表消费 |
+| content_blocks | `metadata_json` | `JSONB` | 块级元数据为结构化内容 |
+| title_parse | `title_aliases_json` / `tags_json` / `warnings_json` | `JSONB` | 按结构化数据消费 |
+| sync_runs | `warnings_json` / `errors_json` | `JSONB` | 运行诊断为结构化 payload |
+| rag_chunks | `metadata_text` | `TEXT` | 自由文本搜索元数据 |
+| rag_index_meta | `value` | `TEXT` | 透明 key/value 元数据 |
+
+Alembic 基线：从当前 SQLite schema 生成第一版 PostgreSQL revision，后续由 Alembic 接管。过渡期内两套迁移历史独立。`schema_migrations` 继续作为 SQLite 版本表，PostgreSQL 使用 `alembic_version`。仅存储、不按结构化查询的列保留 `TEXT`。

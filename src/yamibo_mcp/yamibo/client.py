@@ -3,6 +3,7 @@ from __future__ import annotations
 import html as html_lib
 import http.client
 import logging
+import random
 import re
 import time
 import urllib.parse
@@ -21,6 +22,7 @@ from yamibo_mcp.errors import (
     ThreadPermissionRequiredError,
     UnexpectedPageError,
 )
+from yamibo_mcp.yamibo.anti_bot import is_soft_block_page
 from yamibo_mcp.yamibo.parsers.forum_list import ForumThreadItem, extract_total_pages, parse_forum_list
 from yamibo_mcp.yamibo.parsers.thread_detail import extract_author_only_total_pages
 from yamibo_mcp.yamibo.parsers.search_results import SearchResultItem, parse_search_results
@@ -36,10 +38,26 @@ from yamibo_mcp.yamibo.urls import (
     thread_url_from_tid,
 )
 
+# Browser-like UA pool — common Chrome/Safari/Firefox on macOS/Windows.
+_USER_AGENTS = [
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:133.0) Gecko/20100101 Firefox/133.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+]
 
-DEFAULT_HEADERS = {
-    "User-Agent": "YamiboMCP/0.1 (+https://bbs.yamibo.com)",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+
+def _random_ua() -> str:
+    return random.choice(_USER_AGENTS)
+
+
+DEFAULT_HEADERS: dict[str, str | Callable[[], str]] = {
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.5",
+    "Cache-Control": "max-age=0",
+    "Connection": "keep-alive",
 }
 
 LOG = logging.getLogger(__name__)
@@ -54,6 +72,7 @@ class FetchResult:
 
 
 class YamiboClient:
+    # PONETAIL: proxy_binding is not validated; caller ensures thread-level binding
     def __init__(
         self,
         *,
@@ -64,6 +83,7 @@ class YamiboClient:
         cookie_file: str | None = None,
         persist_cookies: bool = False,
         use_system_proxy: bool = False,
+        proxy_url: str | None = None,
         login_username: str | None = None,
         login_password: str | None = None,
         request_interval: float = 1.0,
@@ -71,32 +91,59 @@ class YamiboClient:
     ) -> None:
         self.timeout = timeout
         self.retries = retries
-        self.headers = {**DEFAULT_HEADERS, **(headers or {})}
+        self.headers = self._resolve_headers(headers)
         self.cookie_jar = cookie_jar or CookieJar()
         self.cookie_file = Path(cookie_file).expanduser() if cookie_file else None
         self.persist_cookies = persist_cookies or self.cookie_file is not None
         self.use_system_proxy = use_system_proxy
+        self.proxy_url = proxy_url
         self.login_username = login_username
         self.login_password = login_password
         self._request_interval = request_interval
         self._request_interval_jitter = request_interval_jitter
         handlers = [urllib.request.HTTPCookieProcessor(self.cookie_jar)]
-        if not use_system_proxy:
+        if proxy_url:
+            handlers.insert(0, urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url}))
+        elif not use_system_proxy:
             handlers.insert(0, urllib.request.ProxyHandler({}))
         self.opener = urllib.request.build_opener(*handlers)
         self._load_cookies()
         self._bootstrap_login_if_needed()
 
-    def fetch_url(self, url: str) -> FetchResult:
-        return self._fetch_with_validation(url, self._validate_thread_page)
+    def _resolve_headers(self, overrides: dict[str, str] | None) -> dict[str, str]:
+        """Resolve headers, evaluating callables (e.g. UA rotation) at call time."""
+        resolved: dict[str, str] = {}
+        for key, value in DEFAULT_HEADERS.items():
+            resolved[key] = value() if callable(value) else value
+        # Ensure a User-Agent is always present (callers may read client.headers directly)
+        resolved["User-Agent"] = _random_ua()
+        if overrides:
+            resolved.update(overrides)
+        return resolved
 
-    def _fetch_with_validation(self, url: str, validator, *, allow_login_retry: bool = True) -> FetchResult:
+    def _request_headers(self, *, referer: str | None = None) -> dict[str, str]:
+        """Build headers for a single request, with fresh UA and optional Referer."""
+        h = dict(self.headers)
+        h["User-Agent"] = _random_ua()
+        if referer:
+            h["Referer"] = referer
+        return h
+
+    def fetch_url(self, url: str, *, referer: str | None = None) -> FetchResult:
+        return self._fetch_with_validation(url, self._validate_thread_page, referer=referer)
+
+    def _retry_delay(self, attempt: int) -> float:
+        """Exponential backoff with jitter: 2s, 4s, 8s, ... capped at 60s."""
+        base = min(2.0 * (2.0 ** attempt), 60.0)
+        return base * random.uniform(0.5, 1.5)
+
+    def _fetch_with_validation(self, url: str, validator, *, allow_login_retry: bool = True, referer: str | None = None) -> FetchResult:
         self._throttle()
         last_error: Exception | None = None
         last_error_details: dict[str, object] = {}
         for attempt in range(self.retries + 1):
             try:
-                result = self._open_html(url)
+                result = self._open_html(url, referer=referer)
                 validator(result)
                 self._save_cookies()
                 return result
@@ -105,12 +152,12 @@ class YamiboClient:
                 if allow_login_retry and self._can_login():
                     try:
                         self._login(base_url=self._base_url_for(url), referer=url)
-                        return self._fetch_with_validation(url, validator, allow_login_retry=False)
+                        return self._fetch_with_validation(url, validator, allow_login_retry=False, referer=referer)
                     except TimeoutError as login_exc:
                         last_error = login_exc
                         if attempt >= self.retries:
                             break
-                        time.sleep(min(0.25 * (attempt + 1), 1.0))
+                        time.sleep(self._retry_delay(attempt))
                         continue
                 break
             except TimeoutError as exc:
@@ -122,7 +169,7 @@ class YamiboClient:
                 }
                 if attempt >= self.retries:
                     break
-                time.sleep(min(0.25 * (attempt + 1), 1.0))
+                time.sleep(self._retry_delay(attempt))
             except urllib.error.HTTPError as exc:
                 last_error = exc
                 last_error_details = {
@@ -133,7 +180,7 @@ class YamiboClient:
                 }
                 if attempt >= self.retries or exc.code < 500:
                     break
-                time.sleep(min(0.25 * (attempt + 1), 1.0))
+                time.sleep(self._retry_delay(attempt))
             except urllib.error.URLError as exc:
                 last_error = exc
                 last_error_details = {
@@ -144,7 +191,7 @@ class YamiboClient:
                 }
                 if attempt >= self.retries:
                     break
-                time.sleep(min(0.25 * (attempt + 1), 1.0))
+                time.sleep(self._retry_delay(attempt))
             except http.client.RemoteDisconnected as exc:
                 last_error = exc
                 last_error_details = {
@@ -161,7 +208,7 @@ class YamiboClient:
                 )
                 if attempt >= self.retries:
                     break
-                time.sleep(min(0.25 * (attempt + 1), 1.0))
+                time.sleep(self._retry_delay(attempt))
         if isinstance(last_error, LoginRequiredError):
             raise last_error
         raise RemoteFetchError(
@@ -184,15 +231,17 @@ class YamiboClient:
         )
 
     def fetch_thread_by_tid(self, tid: int, *, base_url: str | None = None) -> FetchResult:
-        return self.fetch_url(thread_url_from_tid(tid, base_url=base_url or "https://bbs.yamibo.com"))
+        resolved_base = base_url or "https://bbs.yamibo.com"
+        return self.fetch_url(thread_url_from_tid(tid, base_url=resolved_base), referer=f"{resolved_base}/")
 
     def fetch_thread(self, *, tid: int | None = None, url: str | None = None, base_url: str | None = None) -> FetchResult:
+        resolved_base = base_url or "https://bbs.yamibo.com"
         if url:
-            normalized = normalize_thread_url(url, base_url=base_url or "https://bbs.yamibo.com")
-            return self.fetch_url(normalized)
+            normalized = normalize_thread_url(url, base_url=resolved_base)
+            return self.fetch_url(normalized, referer=f"{resolved_base}/")
         if tid is None:
             raise ValueError("fetch_thread requires tid or url")
-        return self.fetch_thread_by_tid(tid, base_url=base_url)
+        return self.fetch_thread_by_tid(tid, base_url=resolved_base)
 
     def fetch_thread_page(
         self,
@@ -202,13 +251,15 @@ class YamiboClient:
         author_uid: str | None = None,
         base_url: str | None = None,
     ) -> FetchResult:
+        resolved_base = base_url or "https://bbs.yamibo.com"
         return self.fetch_url(
             thread_page_url_from_tid(
                 tid,
                 page=page,
                 author_uid=author_uid,
-                base_url=base_url or "https://bbs.yamibo.com",
-            )
+                base_url=resolved_base,
+            ),
+            referer=thread_page_url_from_tid(tid, page=1, base_url=resolved_base),
         )
 
     def fetch_author_only_thread_pages(
@@ -277,13 +328,14 @@ class YamiboClient:
         return results, total_pages, stopped_reason
 
     def fetch_forum_page(self, *, page: int | None = None, url: str | None = None, base_url: str | None = None, forum_id: int = DEFAULT_FORUM_ID) -> FetchResult:
+        resolved_base = base_url or "https://bbs.yamibo.com"
         if url:
-            normalized = normalize_forum_page_url(url, base_url=base_url or "https://bbs.yamibo.com")
+            normalized = normalize_forum_page_url(url, base_url=resolved_base)
         else:
             if page is None:
                 raise ValueError("fetch_forum_page requires page or url")
-            normalized = forum_page_url(page, forum_id=forum_id, base_url=base_url or "https://bbs.yamibo.com")
-        result = self.fetch_url_allowing_forum_list(normalized)
+            normalized = forum_page_url(page, forum_id=forum_id, base_url=resolved_base)
+        result = self.fetch_url_allowing_forum_list(normalized, referer=f"{resolved_base}/")
         return result
 
     def fetch_forum_threads(self, *, page: int | None = None, url: str | None = None, base_url: str | None = None, forum_id: int = DEFAULT_FORUM_ID) -> tuple[FetchResult, list[ForumThreadItem]]:
@@ -293,7 +345,7 @@ class YamiboClient:
     def fetch_forum_threads_dateline(self, *, page: int, base_url: str | None = None, forum_id: int = DEFAULT_FORUM_ID) -> tuple[FetchResult, list[ForumThreadItem], int]:
         resolved_base = base_url or "https://bbs.yamibo.com"
         url = dateline_forum_page_url(page, forum_id=forum_id, base_url=resolved_base)
-        result = self.fetch_url_allowing_forum_list(url)
+        result = self.fetch_url_allowing_forum_list(url, referer=f"{resolved_base}/")
         return result, parse_forum_list(result.html), extract_total_pages(result.html)
 
     def fetch_search_results(
@@ -322,9 +374,8 @@ class YamiboClient:
             search_url,
             data=payload,
             headers={
-                **self.headers,
+                **self._request_headers(referer=forum_result.final_url),
                 "Content-Type": "application/x-www-form-urlencoded",
-                "Referer": forum_result.final_url,
             },
             method="POST",
         )
@@ -377,13 +428,19 @@ class YamiboClient:
 
         for page in range(max(start_page, 2), final_end_page + 1):
             page_url = search_urls.get(page) or _search_page_url_from_first_result(first_result.final_url, page=page)
-            result = self.fetch_url_allowing_search(page_url)
+            result = self.fetch_url_allowing_search(page_url, referer=first_result.final_url)
             scanned_pages.append(result.final_url)
             add_items(parse_search_results(result.html))
 
         return collected, scanned_pages, total_pages
 
     def _validate_thread_page(self, result: FetchResult) -> None:
+        # Soft interception guard — detect CF challenges before classification
+        if is_soft_block_page(result.html):
+            raise RemoteFetchError(
+                f"soft block (CF challenge / CAPTCHA) detected for {result.final_url}",
+                details={"url": result.final_url, "status_code": result.status_code, "retryable": False},
+            )
         # 这里只做最关键的页面级护栏，避免把登录页/维护页误当成帖子详情继续落库。
         classification = classify_html(result.html)
         if classification.page_type == PageType.LOGIN_REQUIRED:
@@ -417,13 +474,18 @@ class YamiboClient:
                 f"expected thread detail page but got {classification.page_type.value} for {result.final_url}"
             )
 
-    def fetch_url_allowing_forum_list(self, url: str) -> FetchResult:
-        return self._fetch_with_validation(url, self._validate_forum_page)
+    def fetch_url_allowing_forum_list(self, url: str, *, referer: str | None = None) -> FetchResult:
+        return self._fetch_with_validation(url, self._validate_forum_page, referer=referer)
 
-    def fetch_url_allowing_search(self, url: str) -> FetchResult:
-        return self._fetch_with_validation(url, self._validate_search_page)
+    def fetch_url_allowing_search(self, url: str, *, referer: str | None = None) -> FetchResult:
+        return self._fetch_with_validation(url, self._validate_search_page, referer=referer)
 
     def _validate_forum_page(self, result: FetchResult) -> None:
+        if is_soft_block_page(result.html):
+            raise RemoteFetchError(
+                f"soft block detected for {result.final_url}",
+                details={"url": result.final_url, "status_code": result.status_code, "retryable": False},
+            )
         classification = classify_html(result.html)
         if classification.page_type == PageType.LOGIN_REQUIRED:
             raise LoginRequiredError(f"login required for {result.final_url}")
@@ -435,6 +497,11 @@ class YamiboClient:
             )
 
     def _validate_search_page(self, result: FetchResult) -> None:
+        if is_soft_block_page(result.html):
+            raise RemoteFetchError(
+                f"soft block detected for {result.final_url}",
+                details={"url": result.final_url, "status_code": result.status_code, "retryable": False},
+            )
         classification = classify_html(result.html)
         if classification.page_type == PageType.LOGIN_REQUIRED:
             raise LoginRequiredError(f"login required for {result.final_url}")
@@ -445,8 +512,8 @@ class YamiboClient:
                 f"expected search result page but got {classification.page_type.value} for {result.final_url}"
             )
 
-    def _open_html(self, url: str) -> FetchResult:
-        request = urllib.request.Request(url, headers=self.headers)
+    def _open_html(self, url: str, *, referer: str | None = None) -> FetchResult:
+        request = urllib.request.Request(url, headers=self._request_headers(referer=referer))
         with self.opener.open(request, timeout=self.timeout) as response:
             try:
                 html = response.read().decode("utf-8", errors="ignore")
@@ -469,8 +536,9 @@ class YamiboClient:
         return bool(self.login_username and self.login_password)
 
     def _login(self, *, base_url: str, referer: str | None = None) -> None:
+        self._throttle()  # login requests must respect rate limits too
         login_page_url = f"{base_url.rstrip('/')}/member.php?mod=logging&action=login"
-        login_page = self._open_html(login_page_url)
+        login_page = self._open_html(login_page_url, referer=referer)
         if classify_html(login_page.html).page_type == PageType.REMOTE_MAINTENANCE:
             raise RemoteMaintenanceError(f"remote maintenance for {login_page.final_url}")
 
@@ -491,9 +559,8 @@ class YamiboClient:
             action_url,
             data=payload,
             headers={
-                **self.headers,
+                **self._request_headers(referer=login_page.final_url),
                 "Content-Type": "application/x-www-form-urlencoded",
-                "Referer": login_page.final_url,
             },
             method="POST",
         )

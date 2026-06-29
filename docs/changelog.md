@@ -1,5 +1,42 @@
 # 百合会归档助手 — 版本更新日志
 
+## v0.11.0 (2026-06-29)
+
+### 架构重构
+- **Web API 路由拆分**：`web/api.py` (2166 行 → 184 行) 拆为 `web/routes/` 下 10 个路由模块，每模块单一职责
+- **解析器模块化**：`parsers/thread_detail.py` (972 行) 拆分为 `_html_utils.py` + `_post_extract.py` 辅助模块
+- **前端 CSS 拆分**：`styles.css` (1738 行) 按页面拆为 `reading.css` + `confirm.css` + `settings.css`
+- **配置去中心化**：`MihomoProxyPoolConfig` 移至 `yamibo/proxy_pool.py`，含 `from_config_section()` 工厂方法
+- **Domain 净化**：`render_context_by_profile` 从 `domain/content.py` 移至 `storage/markdown.py`
+- **py.typed**：添加 PEP 561 类型标记
+
+### 文档
+- **CLI 优先**：所有文档以 CLI 命令为主要推荐方式，MCP 为辅助通道
+- **PostgreSQL 优先**：数据库描述统一为 PostgreSQL-primary，SQLite-secondary
+- **MCP 指南补全**：创建 `docs/mcp-guides/` 下 4 个指南文件（agent-workflows / archive-model / error-codes / agent-evaluation）
+- 合并 `postgres-schema-decisions.md` 到 `database-design.md`
+- 删除失效文档引用（pg-shadow-validation-report / phase6-7-status-summary / postgres-migration-runbook）
+- README、user-manual、agent-interface 等全面更新至 v0.11.0
+
+## v0.10.1 (2026-06-29)
+
+### 新增
+- **Mihomo 代理池**：支持 thread 级 best-effort 代理绑定，通过 mihomo controller API 自动发现节点、并行测延迟、按 tid 哈希稳定选择
+- **Cookie 定时刷新**：`yamibo.cookie_refresh_interval_hours`（默认 12h），到期自动删除 cookie 文件触发重新登录
+- **代理池健康检查**：`uv run yamibo-mcp-server check-proxy-pool` 一键诊断 controller 连通性、节点延迟、过滤规则效果
+- **节点过滤规则**：`allowed_patterns` / `denied_patterns` / `max_delay_ms` 正则过滤和延迟上限
+
+### 改进
+- `test_node_delay` 修复：从传 group 名改为传节点名，使每个节点的延迟测试独立
+- 节点延迟测试从串行改为 `ThreadPoolExecutor` 并行（最多 8 线程）
+- 添加 30 秒内存缓存减少重复 discover + delay 测试
+
+### 约束
+- 默认关闭，不改变现有行为
+- stdlib only，无新依赖
+- 不改公开 MCP/CLI 契约
+- 不持久化代理状态到数据库
+
 ## v0.9.3 (2026-06-26)
 
 ### 调整

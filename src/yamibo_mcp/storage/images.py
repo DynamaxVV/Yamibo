@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import random
 import shutil
 import time
 import urllib.parse
@@ -15,10 +16,17 @@ from urllib.parse import urlparse
 
 from yamibo_mcp.domain.models import ThreadSnapshot
 from yamibo_mcp.storage.paths import StoragePaths
-from yamibo_mcp.yamibo.runtime_limits import CookieDownloadSlotTimeoutError, acquire_cookie_download_slot
+from yamibo_mcp.yamibo.anti_bot import is_http_429_error, is_http_444_error
+from yamibo_mcp.yamibo.runtime_limits import CookieDownloadSlotTimeoutError, acquire_cookie_download_slot, throttle_cookie_request
 
 
 LOG = logging.getLogger(__name__)
+
+
+class _ImageHTTPError(Exception):
+    """Raised internally when an image download gets 444 or 429."""
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
 
 
 @dataclass(frozen=True)
@@ -64,7 +72,9 @@ def _download_task(
     timeout: float,
     retries: int,
     cookie_jar: CookieJar | None,
+    cookie_file: str | None = None,
     use_system_proxy: bool,
+    proxy_url: str | None = None,
     headers: Mapping[str, str] | None,
     referer: str | None,
     cancel_check: Callable[[], None] | None,
@@ -74,9 +84,14 @@ def _download_task(
         for cookie in cookie_jar:
             local_cookie_jar.set_cookie(cookie)
     handlers = [urllib.request.HTTPCookieProcessor(local_cookie_jar)]
-    if not use_system_proxy:
+    if proxy_url:
+        handlers.insert(0, urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url}))
+    elif not use_system_proxy:
         handlers.insert(0, urllib.request.ProxyHandler({}))
     opener = urllib.request.build_opener(*handlers)
+
+    # Respect per-cookie rate limits for image fetches too
+    throttle_cookie_request(cookie_file, request_interval=0.3, request_interval_jitter=0.2)
     if task.kind == "shared":
         assert task.target is not None
         try:
@@ -138,6 +153,7 @@ def download_images_to_staging(
     cookie_jar: CookieJar | None = None,
     cookie_file: str | Path | None = None,
     use_system_proxy: bool = False,
+    proxy_url: str | None = None,
     referer: str | None = None,
     on_progress: Callable[[], None] | None = None,
     cancel_check: Callable[[], None] | None = None,
@@ -238,7 +254,9 @@ def download_images_to_staging(
                             timeout=timeout,
                             retries=retries,
                             cookie_jar=cookie_jar,
+                            cookie_file=str(cookie_file) if cookie_file else None,
                             use_system_proxy=use_system_proxy,
+                            proxy_url=proxy_url,
                             headers=headers,
                             referer=referer,
                             cancel_check=cancel_check,
@@ -355,6 +373,8 @@ def _download_with_retries(
                 referer=referer,
                 cancel_check=cancel_check,
             )
+        except _ImageHTTPError:
+            raise  # 444/429 — don't retry, propagate immediately
         except Exception as exc:  # noqa: BLE001 - 上层只关心最终是否成功
             last_error = exc
             if attempt + 1 >= attempts:
@@ -389,6 +409,8 @@ def _download_to_explicit_target_with_retries(
                 cancel_check=cancel_check,
             )
             return
+        except _ImageHTTPError:
+            raise  # 444/429 — don't retry
         except Exception as exc:  # noqa: BLE001
             last_error = exc
             if attempt + 1 >= attempts:
@@ -422,11 +444,16 @@ def _fetch_to_path(
             cancel_check()
         return target
     if parsed.scheme in {"http", "https"}:
+        time.sleep(random.uniform(0.1, 0.5))
         request_headers = dict(headers or {})
         if referer:
             request_headers.setdefault("Referer", referer)
         request = urllib.request.Request(image_url, headers=request_headers)
         with opener.open(request, timeout=timeout) as response:
+            status = getattr(response, "status", 200)
+            if status in {444, 429}:
+                LOG.warning("Image download returned HTTP %d for %s", status, image_url)
+                raise _ImageHTTPError(status)
             first_bytes = response.read(64)
             if cancel_check is not None:
                 cancel_check()
@@ -476,11 +503,16 @@ def _fetch_to_explicit_target(
             cancel_check()
         return
     if parsed.scheme in {"http", "https"}:
+        time.sleep(random.uniform(0.1, 0.5))
         request_headers = dict(headers or {})
         if referer:
             request_headers.setdefault("Referer", referer)
         request = urllib.request.Request(image_url, headers=request_headers)
         with opener.open(request, timeout=timeout) as response, target.open("wb") as fp:
+            status = getattr(response, "status", 200)
+            if status in {444, 429}:
+                LOG.warning("Image download returned HTTP %d for %s", status, image_url)
+                raise _ImageHTTPError(status)
             while True:
                 if cancel_check is not None:
                     cancel_check()

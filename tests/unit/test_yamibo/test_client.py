@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import http.client
+import urllib.request
 from http.cookiejar import Cookie
 from unittest.mock import MagicMock
 
@@ -126,7 +127,7 @@ def test_fetch_retries_remote_disconnected(monkeypatch):
     client = YamiboClient(timeout=0.1, retries=2)
     calls = {"count": 0}
 
-    def _fake_open(_url: str):
+    def _fake_open(_url: str, *, referer: str | None = None):
         calls["count"] += 1
         if calls["count"] < 3:
             raise http.client.RemoteDisconnected("Remote end closed connection without response")
@@ -154,7 +155,7 @@ def test_fetch_remote_disconnected_error_contains_details(monkeypatch):
     monkeypatch.setattr(
         client,
         "_open_html",
-        lambda _url: (_ for _ in ()).throw(http.client.RemoteDisconnected("Remote end closed connection without response")),
+        lambda _url, *, referer=None: (_ for _ in ()).throw(http.client.RemoteDisconnected("Remote end closed connection without response")),
     )
 
     with pytest.raises(RemoteFetchError) as excinfo:
@@ -229,3 +230,76 @@ def test_validate_thread_page_reports_permission_required_prompt():
     assert excinfo.value.required_permission == 30
     assert excinfo.value.details["page_type"] == "prompt_thread_permission_required"
     assert excinfo.value.details["prompt_text"] == "抱歉，本帖要求阅读权限高于 30 才能浏览"
+
+
+def test_client_explicit_proxy_url_constructs_proxy_handler(monkeypatch):
+    """When proxy_url is passed, opener uses explicit ProxyHandler."""
+    build_opener_calls = []
+
+    original_build_opener = urllib.request.build_opener
+
+    def _fake_build_opener(*handlers):
+        build_opener_calls.append(handlers)
+        return original_build_opener(*handlers)
+
+    monkeypatch.setattr(urllib.request, "build_opener", _fake_build_opener)
+
+    YamiboClient(proxy_url="http://127.0.0.1:7890")
+
+    proxy_handlers = [h for h in build_opener_calls[0] if isinstance(h, urllib.request.ProxyHandler)]
+    assert len(proxy_handlers) == 1
+    assert proxy_handlers[0].proxies == {"http": "http://127.0.0.1:7890", "https": "http://127.0.0.1:7890"}
+
+
+def test_client_no_proxy_url_uses_system_proxy_logic(monkeypatch):
+    """Without proxy_url, behavior is unchanged: ProxyHandler({}) only when not use_system_proxy."""
+    build_opener_calls = []
+
+    def _fake_build_opener(*handlers):
+        build_opener_calls.append(handlers)
+        return MagicMock()
+
+    monkeypatch.setattr(urllib.request, "build_opener", _fake_build_opener)
+
+    # default: use_system_proxy=False
+    YamiboClient()
+    handlers1 = build_opener_calls[0]
+    # should have ProxyHandler({}) to bypass system proxy
+    proxy_handlers = [h for h in handlers1 if isinstance(h, urllib.request.ProxyHandler)]
+    assert len(proxy_handlers) == 1
+    assert proxy_handlers[0].proxies == {}
+
+    build_opener_calls.clear()
+
+    # use_system_proxy=True
+    YamiboClient(use_system_proxy=True)
+    handlers2 = build_opener_calls[0]
+    # should NOT have ProxyHandler({}) — lets system proxy through
+    proxy_handlers2 = [h for h in handlers2 if isinstance(h, urllib.request.ProxyHandler)]
+    assert len(proxy_handlers2) == 0
+
+
+def test_client_explicit_proxy_overrides_system_proxy(monkeypatch):
+    """Explicit proxy_url overrides use_system_proxy."""
+    build_opener_calls = []
+
+    def _fake_build_opener(*handlers):
+        build_opener_calls.append(handlers)
+        return MagicMock()
+
+    monkeypatch.setattr(urllib.request, "build_opener", _fake_build_opener)
+
+    YamiboClient(proxy_url="http://127.0.0.1:7890", use_system_proxy=True)
+    proxy_handlers = [h for h in build_opener_calls[0] if isinstance(h, urllib.request.ProxyHandler)]
+    assert len(proxy_handlers) == 1
+    assert proxy_handlers[0].proxies == {"http": "http://127.0.0.1:7890", "https": "http://127.0.0.1:7890"}
+
+
+def test_client_exposes_proxy_url():
+    client = YamiboClient(proxy_url="http://127.0.0.1:7890")
+    assert client.proxy_url == "http://127.0.0.1:7890"
+
+
+def test_client_proxy_url_defaults_to_none():
+    client = YamiboClient()
+    assert client.proxy_url is None

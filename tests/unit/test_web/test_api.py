@@ -9,33 +9,40 @@ from decimal import Decimal
 from unittest.mock import patch
 
 from yamibo_mcp.db.repositories.rag_chunks import RagChunksRepository
+from yamibo_mcp.domain.enums import JobStatus
 from yamibo_mcp.domain.models import FloorSnapshot, ThreadSnapshot, TitleSnapshot
 from yamibo_mcp.rag.chunker import RagChunk
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
 from yamibo_mcp.db.repositories.jobs import JobsRepository
-from yamibo_mcp.web.api import (
-    _archive_threads_batch,
-    _batch_delete_threads,
-    _delete_thread,
-    _debug_info,
-    _forums_list,
-    _jobs_list,
-    _refresh_forum_size_cache,
-    _rag_index_batch,
-    _rag_index,
-    _rag_overview,
-    _rag_search,
-    _rag_threads,
-    _retry_job,
-    _resync_threads_batch,
-    _settings_get,
-    _settings_update,
-    _threads_list,
-    _thread_detail,
-    _thread_update_check,
-    _update_thread,
-    _update_title,
+from yamibo_mcp.web.routes.threads import (
+    handle_archive_threads_batch,
+    handle_batch_delete_threads,
+    handle_delete_thread,
+    handle_resync_threads_batch,
+    handle_threads_list,
+    handle_thread_detail,
+    handle_thread_update_check,
+    handle_update_thread,
 )
+from yamibo_mcp.web.routes.jobs import (
+    handle_jobs_list,
+    handle_job_control,
+    handle_retry_job,
+)
+from yamibo_mcp.web.routes.forums import (
+    handle_forums_list,
+    handle_refresh_forum_size_cache,
+)
+from yamibo_mcp.web.routes.rag import (
+    handle_rag_index_batch,
+    handle_rag_index,
+    handle_rag_overview,
+    handle_rag_search,
+    handle_rag_threads,
+)
+from yamibo_mcp.web.routes.review import handle_update_title
+from yamibo_mcp.web.routes.settings import handle_settings_get, handle_settings_update
+from yamibo_mcp.web.routes.debug import handle_debug_info
 from yamibo_mcp.logging import configure_logging
 from yamibo_mcp.web.log_buffer import get_log_buffer
 
@@ -147,7 +154,7 @@ def test_thread_detail_exposes_archive_summary_from_metadata(db, tmp_path: Path)
     )
 
     handler = _CaptureHandler()
-    _thread_detail(handler, 42, db, {"preview_page": ["1"], "preview_page_size": ["10"]}, settings)
+    handle_thread_detail(handler, 42, db, {"preview_page": ["1"], "preview_page_size": ["10"]}, settings)
 
     payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
     assert payload["archive_summary"]["archived_images"]["1001"] == ["images/a.jpg"]
@@ -165,7 +172,7 @@ def test_thread_detail_exposes_rag_summary(db, tmp_path: Path):
     _seed_rag_thread(db)
 
     handler = _CaptureHandler()
-    _thread_detail(handler, 42, db, {"preview_page": ["1"], "preview_page_size": ["10"]}, settings)
+    handle_thread_detail(handler, 42, db, {"preview_page": ["1"], "preview_page_size": ["10"]}, settings)
 
     payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
     assert payload["rag_summary"]["chunk_count"] == 2
@@ -213,7 +220,7 @@ def test_thread_detail_merges_rich_body_html_from_metadata(db, tmp_path: Path):
     )
 
     handler = _CaptureHandler()
-    _thread_detail(handler, 42, db, {"preview_page": ["1"], "preview_page_size": ["10"]}, settings)
+    handle_thread_detail(handler, 42, db, {"preview_page": ["1"], "preview_page_size": ["10"]}, settings)
 
     payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
     assert payload["floors"][0]["rich_body_html"] == "<div><strong>富文本</strong><a href=\"https://example.com\" target=\"_blank\" rel=\"noreferrer\">链接</a></div>"
@@ -273,10 +280,10 @@ def test_thread_detail_accepts_jsonb_array_fields(db, tmp_path: Path, monkeypatc
         def get_title_parse(self, tid):
             return None
 
-    monkeypatch.setattr("yamibo_mcp.web.api.ThreadsRepository", FakeRepo)
+    monkeypatch.setattr("yamibo_mcp.web.routes.threads.ThreadsRepository", FakeRepo)
 
     handler = _CaptureHandler()
-    _thread_detail(handler, 66566, db, {}, settings)
+    handle_thread_detail(handler, 66566, db, {}, settings)
 
     payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
     assert payload["missing_image_urls"] == ["https://img.example.com/a.jpg"]
@@ -299,7 +306,7 @@ def test_threads_list_returns_paginated_payload(db):
     db.commit()
 
     handler = _CaptureHandler()
-    _threads_list(
+    handle_threads_list(
         handler,
         {
             "forum_id": ["55"],
@@ -322,8 +329,8 @@ def test_threads_list_returns_paginated_payload(db):
 def test_thread_update_check_endpoint_returns_json(db):
     handler = _CaptureHandler()
     settings = SimpleNamespace()
-    with patch("yamibo_mcp.web.api.check_thread_updates", return_value={"tid": 42, "status": "up_to_date"}):
-        _thread_update_check(handler, 42, settings)
+    with patch("yamibo_mcp.web.routes.threads.check_thread_updates", return_value={"tid": 42, "status": "up_to_date"}):
+        handle_thread_update_check(handler, 42, settings)
     payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
     assert payload["status"] == "up_to_date"
 
@@ -338,7 +345,7 @@ def test_debug_info_redacts_db_url_and_exposes_pool_status(db):
         db_ssl_mode="require",
     )
 
-    _debug_info(handler, db, settings)
+    handle_debug_info(handler, db, settings)
 
     payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
     assert payload["db_backend"] == "postgres"
@@ -402,7 +409,7 @@ def test_settings_get_exposes_field_effects(tmp_path: Path):
     )
 
     handler = _CaptureHandler()
-    _settings_get(handler, settings)
+    handle_settings_get(handler, settings)
 
     payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
     assert payload["effects"]["db_backend"] == "restart_daemon_web"
@@ -517,8 +524,8 @@ def test_settings_update_reports_immediate_effect_only(tmp_path: Path):
     handler.headers["Content-Length"] = str(len(json.dumps(body)))
     handler.rfile = io.BytesIO(json.dumps(body).encode("utf-8"))
 
-    with patch("yamibo_mcp.web.api.load_settings", return_value=refreshed):
-        _settings_update(handler, current)
+    with patch("yamibo_mcp.web.routes.settings.load_settings", return_value=refreshed):
+        handle_settings_update(handler, current)
 
     payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
     assert payload["restart_required"] is False
@@ -631,8 +638,8 @@ def test_settings_update_reports_daemon_restart_target(tmp_path: Path):
     handler.headers["Content-Length"] = str(len(json.dumps(body)))
     handler.rfile = io.BytesIO(json.dumps(body).encode("utf-8"))
 
-    with patch("yamibo_mcp.web.api.load_settings", return_value=refreshed):
-        _settings_update(handler, current)
+    with patch("yamibo_mcp.web.routes.settings.load_settings", return_value=refreshed):
+        handle_settings_update(handler, current)
 
     payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
     assert payload["restart_required"] is True
@@ -745,8 +752,8 @@ def test_settings_update_reports_daemon_and_web_restart_targets(tmp_path: Path):
     handler.headers["Content-Length"] = str(len(json.dumps(body)))
     handler.rfile = io.BytesIO(json.dumps(body).encode("utf-8"))
 
-    with patch("yamibo_mcp.web.api.load_settings", return_value=refreshed):
-        _settings_update(handler, current)
+    with patch("yamibo_mcp.web.routes.settings.load_settings", return_value=refreshed):
+        handle_settings_update(handler, current)
 
     payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
     assert payload["restart_required"] is True
@@ -812,7 +819,7 @@ def test_settings_update_rejects_locked_fields(tmp_path: Path, monkeypatch):
     handler.rfile = io.BytesIO(json.dumps(body).encode("utf-8"))
     monkeypatch.setenv("YAMIBO_LLM_API_KEY", "env-key")
 
-    _settings_update(handler, settings)
+    handle_settings_update(handler, settings)
 
     payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
     assert payload["error"] == "llm_api_key is overridden by environment variable"
@@ -823,7 +830,7 @@ def test_thread_update_endpoint_creates_update_job(db):
     body = {"tid": 42, "base_url": "https://bbs.yamibo.com"}
     handler.headers["Content-Length"] = str(len(json.dumps(body)))
     handler.rfile = io.BytesIO(json.dumps(body).encode("utf-8"))
-    _update_thread(handler, db)
+    handle_update_thread(handler, db)
     payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
     assert payload["ok"] is True
     job = JobsRepository(db).get(payload["job_id"])
@@ -839,8 +846,8 @@ def test_update_title_defaults_missing_fields_from_existing_title(db):
     body = {"tid": 42, "display_title": "新的标题"}
     handler.headers["Content-Length"] = str(len(json.dumps(body)))
     handler.rfile = io.BytesIO(json.dumps(body).encode("utf-8"))
-    with patch("yamibo_mcp.web.api.update_title_hints", return_value=None):
-        _update_title(handler, db, settings)
+    with patch("yamibo_mcp.web.routes.review.update_title_hints", return_value=None):
+        handle_update_title(handler, db, settings)
 
     payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
     assert payload["ok"] is True
@@ -859,7 +866,7 @@ def test_batch_delete_threads_endpoint_deletes_requested_threads(db):
     handler.headers["Content-Length"] = str(len(json.dumps(body)))
     handler.rfile = io.BytesIO(json.dumps(body).encode("utf-8"))
 
-    _batch_delete_threads(handler, db, SimpleNamespace())
+    handle_batch_delete_threads(handler, db, SimpleNamespace())
 
     payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
     assert payload["ok"] is True
@@ -884,7 +891,7 @@ def test_delete_thread_endpoint_removes_thread_directory(db, tmp_path: Path):
     handler.headers["Content-Length"] = str(len(json.dumps(body)))
     handler.rfile = io.BytesIO(json.dumps(body).encode("utf-8"))
 
-    _delete_thread(handler, db, settings)
+    handle_delete_thread(handler, db, settings)
 
     payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
     assert payload["ok"] is True
@@ -899,7 +906,7 @@ def test_batch_resync_threads_endpoint_creates_jobs(db):
     handler.headers["Content-Length"] = str(len(json.dumps(body)))
     handler.rfile = io.BytesIO(json.dumps(body).encode("utf-8"))
 
-    with patch("yamibo_mcp.web.api.create_thread_archive_batch_jobs") as mock_create:
+    with patch("yamibo_mcp.web.routes.threads.create_thread_archive_batch_jobs") as mock_create:
         from yamibo_mcp.application.contracts import AgentResult
 
         mock_create.return_value = AgentResult(
@@ -914,7 +921,7 @@ def test_batch_resync_threads_endpoint_creates_jobs(db):
                 "tids": [42, 43],
             },
         )
-        _resync_threads_batch(handler, db)
+        handle_resync_threads_batch(handler, db)
 
     payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
     assert payload["ok"] is True
@@ -1001,7 +1008,7 @@ def test_rag_overview_exposes_counts_and_meta(db):
         rag_hybrid_vector_candidates=50,
     )
 
-    _rag_overview(handler, db, settings)
+    handle_rag_overview(handler, db, settings)
 
     payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
     assert payload["counts"]["thread_total"] >= 1
@@ -1043,7 +1050,7 @@ def test_rag_overview_serializes_decimal_counts(db, monkeypatch):
         rag_hybrid_vector_candidates=50,
     )
 
-    _rag_overview(handler, db, settings)
+    handle_rag_overview(handler, db, settings)
 
     payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
     assert payload["counts"]["thread_total"] == 1
@@ -1055,7 +1062,7 @@ def test_rag_threads_returns_per_thread_index_status(db):
     _seed_rag_thread(db)
     handler = _CaptureHandler()
 
-    _rag_threads(handler, {"index_state": ["indexed"], "page": ["1"], "page_size": ["20"]}, db)
+    handle_rag_threads(handler, {"index_state": ["indexed"], "page": ["1"], "page_size": ["20"]}, db)
 
     payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
     assert payload["index_state"] == "indexed"
@@ -1074,7 +1081,7 @@ def test_rag_threads_orders_indexing_threads_after_unindexed_threads(db):
     JobsRepository(db).create("rag_index", tid=42, payload={"tid": 42})
 
     handler = _CaptureHandler()
-    _rag_threads(handler, {"index_state": ["unindexed"], "page": ["1"], "page_size": ["20"]}, db)
+    handle_rag_threads(handler, {"index_state": ["unindexed"], "page": ["1"], "page_size": ["20"]}, db)
 
     payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
     assert payload["total_count"] == 2
@@ -1089,11 +1096,11 @@ def test_rag_index_endpoint_returns_job_payload(db):
     handler.headers["Content-Length"] = str(len(json.dumps(body)))
     handler.rfile = io.BytesIO(json.dumps(body).encode("utf-8"))
 
-    with patch("yamibo_mcp.web.api.create_rag_index_job") as mock_create:
+    with patch("yamibo_mcp.web.routes.rag.create_rag_index_job") as mock_create:
         from yamibo_mcp.application.contracts import AgentResult
 
         mock_create.return_value = AgentResult(ok=True, data={"job_id": "rag_index_123", "tid": 42, "created": True})
-        _rag_index(handler)
+        handle_rag_index(handler)
 
     payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
     assert payload["ok"] is True
@@ -1111,7 +1118,7 @@ def test_rag_index_batch_endpoint_creates_jobs(db):
     handler.rfile = io.BytesIO(json.dumps(body).encode("utf-8"))
 
     with patch("yamibo_mcp.application.rag_commands.load_settings", return_value=settings):
-        _rag_index_batch(handler, db)
+        handle_rag_index_batch(handler, db)
 
     payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
     assert payload["ok"] is True
@@ -1135,14 +1142,14 @@ def test_forums_list_includes_cached_archive_size(db, tmp_path: Path):
 
     refresh_handler = _CaptureHandler()
     refresh_handler.command = "POST"
-    _refresh_forum_size_cache(refresh_handler, db, settings)
+    handle_refresh_forum_size_cache(refresh_handler, db, settings)
 
     refresh_payload = json.loads(refresh_handler.wfile.getvalue().decode("utf-8"))
     assert refresh_payload["ok"] is True
     assert refresh_payload["forum_count"] >= 1
 
     handler = _CaptureHandler()
-    _forums_list(handler, db, settings)
+    handle_forums_list(handler, db, settings)
 
     payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
     forum_30 = next(row for row in payload if row["forum_id"] == 30)
@@ -1161,7 +1168,7 @@ def test_retry_job_endpoint_requeues_partial_job(db):
     handler.headers["Content-Length"] = str(len(json.dumps(body)))
     handler.rfile = io.BytesIO(json.dumps(body).encode("utf-8"))
 
-    _retry_job(handler, db)
+    handle_retry_job(handler, db)
 
     payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
     assert payload["ok"] is True
@@ -1189,7 +1196,7 @@ def test_retry_job_endpoint_requeues_failed_job(db):
     handler.headers["Content-Length"] = str(len(json.dumps(body)))
     handler.rfile = io.BytesIO(json.dumps(body).encode("utf-8"))
 
-    _retry_job(handler, db)
+    handle_retry_job(handler, db)
 
     payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
     assert payload["ok"] is True
@@ -1217,7 +1224,7 @@ def test_retry_job_endpoint_requeues_interrupted_job(db):
     handler.headers["Content-Length"] = str(len(json.dumps(body)))
     handler.rfile = io.BytesIO(json.dumps(body).encode("utf-8"))
 
-    _retry_job(handler, db)
+    handle_retry_job(handler, db)
 
     payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
     assert payload["ok"] is True
@@ -1230,13 +1237,97 @@ def test_retry_job_endpoint_requeues_interrupted_job(db):
     assert source_row["status"] == "superseded"
 
 
+def test_job_control_endpoint_pauses_active_jobs(db):
+    repo = JobsRepository(db)
+    queued = repo.create("sync_thread", tid=45)
+    running = repo.create("sync_thread", tid=46)
+    repo.acquire(running.job_id, "worker-1", 300)
+    done = repo.create("noop")
+    repo.succeed(done.job_id)
+
+    handler = _CaptureHandler()
+    handler.command = "POST"
+    body = {"action": "pause"}
+    handler.headers["Content-Length"] = str(len(json.dumps(body)))
+    handler.rfile = io.BytesIO(json.dumps(body).encode("utf-8"))
+
+    handle_job_control(handler, db)
+
+    payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
+    assert payload["ok"] is True
+    assert payload["action"] == "pause"
+    assert set(payload["changed_job_ids"]) == {queued.job_id, running.job_id}
+    assert repo.get(queued.job_id).status == JobStatus.PAUSED
+    assert repo.get(running.job_id).status == JobStatus.PAUSED
+    assert repo.get(done.job_id).status == JobStatus.SUCCEEDED
+    assert payload["job_control"]["paused"] == 2
+
+
+def test_job_control_endpoint_resumes_released_paused_jobs(db):
+    repo = JobsRepository(db)
+    paused = repo.create("sync_thread", tid=47)
+    repo.pause(paused.job_id)
+    owned = repo.create("sync_thread", tid=48)
+    repo.acquire(owned.job_id, "worker-1", 300)
+    repo.pause(owned.job_id)
+
+    handler = _CaptureHandler()
+    handler.command = "POST"
+    body = {"action": "resume"}
+    handler.headers["Content-Length"] = str(len(json.dumps(body)))
+    handler.rfile = io.BytesIO(json.dumps(body).encode("utf-8"))
+
+    handle_job_control(handler, db)
+
+    payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
+    assert payload["ok"] is True
+    assert payload["action"] == "resume"
+    assert payload["changed_job_ids"] == [paused.job_id]
+    assert repo.get(paused.job_id).status == JobStatus.QUEUED
+    assert repo.get(owned.job_id).status == JobStatus.PAUSED
+    assert payload["job_control"]["queued"] == 1
+    assert payload["job_control"]["paused"] == 1
+
+
+def test_job_control_endpoint_persists_jobs_enabled(tmp_path: Path, db):
+    config_path = tmp_path / "yamibo.local.json"
+    config_path.write_text("{}", encoding="utf-8")
+    settings = SimpleNamespace(config_path=config_path)
+
+    handler = _CaptureHandler()
+    handler.command = "POST"
+    body = {"action": "pause"}
+    handler.headers["Content-Length"] = str(len(json.dumps(body)))
+    handler.rfile = io.BytesIO(json.dumps(body).encode("utf-8"))
+
+    handle_job_control(handler, db, settings)
+
+    raw = json.loads(config_path.read_text(encoding="utf-8"))
+    payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
+    assert raw["worker"]["jobs_enabled"] is False
+    assert payload["job_control"]["jobs_enabled"] is False
+
+    handler = _CaptureHandler()
+    handler.command = "POST"
+    body = {"action": "resume"}
+    handler.headers["Content-Length"] = str(len(json.dumps(body)))
+    handler.rfile = io.BytesIO(json.dumps(body).encode("utf-8"))
+
+    handle_job_control(handler, db, settings)
+
+    raw = json.loads(config_path.read_text(encoding="utf-8"))
+    payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
+    assert raw["worker"]["jobs_enabled"] is True
+    assert payload["job_control"]["jobs_enabled"] is True
+
+
 def test_jobs_list_omits_payload_and_artifacts(db):
     repo = JobsRepository(db)
     job = repo.create("rag_index", tid=45, payload={"tid": 45, "force": True})
     repo.fail(job.job_id, "HTTP_500", "boom", artifacts={"large": "blob"})
 
     handler = _CaptureHandler()
-    _jobs_list(handler, {"status": ["failed"], "page": ["1"], "page_size": ["25"]}, db)
+    handle_jobs_list(handler, {"status": ["failed"], "page": ["1"], "page_size": ["25"]}, db)
 
     payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
     assert payload["total_count"] == 1
@@ -1258,7 +1349,7 @@ def test_jobs_list_supports_pagination_and_failure_kind_filter(db):
     repo.fail(validation.job_id, "ValueError", "bad input")
 
     handler = _CaptureHandler()
-    _jobs_list(handler, {"status": ["failed"], "failure_kind": ["cancelled"], "page": ["1"], "page_size": ["10"]}, db)
+    handle_jobs_list(handler, {"status": ["failed"], "failure_kind": ["cancelled"], "page": ["1"], "page_size": ["10"]}, db)
 
     payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
     assert payload["total_count"] == 1
@@ -1274,7 +1365,7 @@ def test_archive_threads_batch_endpoint_creates_jobs(db):
     handler.headers["Content-Length"] = str(len(json.dumps(body)))
     handler.rfile = io.BytesIO(json.dumps(body).encode("utf-8"))
 
-    with patch("yamibo_mcp.web.api.create_thread_archive_batch_jobs") as mock_create:
+    with patch("yamibo_mcp.web.routes.threads.create_thread_archive_batch_jobs") as mock_create:
         from yamibo_mcp.application.contracts import AgentResult
 
         mock_create.return_value = AgentResult(
@@ -1289,7 +1380,7 @@ def test_archive_threads_batch_endpoint_creates_jobs(db):
                 "tids": [42, 43],
             },
         )
-        _archive_threads_batch(handler)
+        handle_archive_threads_batch(handler)
 
     payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
     assert payload["ok"] is True
@@ -1304,14 +1395,14 @@ def test_rag_search_endpoint_returns_search_payload(db):
     handler.headers["Content-Length"] = str(len(json.dumps(body)))
     handler.rfile = io.BytesIO(json.dumps(body).encode("utf-8"))
 
-    with patch("yamibo_mcp.web.api.search_archived_content") as mock_search:
+    with patch("yamibo_mcp.web.routes.rag.search_archived_content") as mock_search:
         from yamibo_mcp.application.contracts import AgentResult
 
         mock_search.return_value = AgentResult(
             ok=True,
             data={"query": "星空 告白", "mode": "keyword", "top_k": 5, "count": 1, "items": [{"chunk_id": "c1"}]},
         )
-        _rag_search(handler)
+        handle_rag_search(handler)
 
     payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
     assert payload["ok"] is True

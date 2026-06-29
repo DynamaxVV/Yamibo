@@ -5,9 +5,9 @@ import pytest
 from yamibo_mcp.domain.content import (
     build_content_snapshot,
     classify_content_kind,
-    render_context_by_profile,
     validate_by_profile,
 )
+from yamibo_mcp.storage.markdown import render_context_by_profile
 from yamibo_mcp.domain.models import (
     AssetSnapshot,
     ContentBlock,
