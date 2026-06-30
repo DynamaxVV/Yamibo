@@ -1,9 +1,10 @@
 import { NavLink, Outlet } from 'react-router-dom'
 import { useTheme } from '../context/ThemeContext'
 import { useI18n } from '../context/I18nContext'
+import { ThemePicker } from './ThemePicker'
 
 export function Layout() {
-  const { theme, themes, setTheme, dark, toggleDark } = useTheme()
+  const { dark, toggleDark } = useTheme()
   const { lang, setLang, t } = useI18n()
 
   const NAV_ITEMS = [
@@ -13,6 +14,7 @@ export function Layout() {
     { to: '/series', key: 'series' },
     { to: '/review', key: 'review' },
     { to: '/exports', key: 'exports' },
+    { to: '/forum', key: 'remoteForum' },
     { to: '/forums', key: 'forums' },
     { to: '/rag', key: 'rag' },
     { to: '/settings', key: 'settings' },
@@ -44,11 +46,7 @@ export function Layout() {
               <button className={`lang-btn ${lang === 'en' ? 'lang-active' : ''}`} onClick={() => setLang('en')}>En</button>
             </div>
             <div className="theme-switcher">
-              <select value={theme.name} onChange={e => setTheme(e.target.value)}>
-                {themes.map(th => (
-                  <option key={th.name} value={th.name}>{lang === 'en' ? th.labelEn : th.label}</option>
-                ))}
-              </select>
+              <ThemePicker />
             </div>
           </div>
         </div>

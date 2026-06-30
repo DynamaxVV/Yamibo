@@ -160,15 +160,15 @@ class MihomoControllerClient:
         self._test_timeout_ms = test_timeout_ms
         self._opener = urllib.request.build_opener()
 
-    def _request(self, path: str, method: str = "GET", body: bytes | None = None) -> dict:
+    def _request(self, path: str, method: str = "GET", body: bytes | None = None, timeout: float | None = None) -> dict:
         url = f"{self._controller_url}{path}"
         req = urllib.request.Request(url, data=body, method=method)
         if self._secret:
             req.add_header("Authorization", f"Bearer {self._secret}")
         if body is not None:
             req.add_header("Content-Type", "application/json")
-        # Give mihomo extra headroom beyond test_timeout_ms for its own internal request
-        timeout = max(10, (self._test_timeout_ms / 1000) + 3)
+        # 默认时间 = 发现/选择用充裕时间，delay test 由调用方传短超时。
+        timeout = timeout if timeout is not None else max(10, (self._test_timeout_ms / 1000) + 3)
         with self._opener.open(req, timeout=timeout) as resp:
             raw = resp.read()
             if not raw:
@@ -193,10 +193,19 @@ class MihomoControllerClient:
             {"url": self._test_url, "timeout": str(self._test_timeout_ms)}
         )
         path = f"/proxies/{_up.quote(node)}/delay?{params}"
+        # delay test 用短超时：test_timeout_ms 加 2s 缓冲，至少 3s 而不是 10s。
+        delay_timeout = max(3.0, (self._test_timeout_ms / 1000) + 2.0)
         try:
-            data = self._request(path)
+            data = self._request(path, timeout=delay_timeout)
+        except urllib.error.HTTPError as exc:
+            # 5xx = 控制器透过该节点代理失败（正常，节点不可达）
+            if exc.code is not None and exc.code >= 500:
+                LOG.debug("mihomo: node %s delay test returned %d — skipping", node, exc.code)
+            else:
+                LOG.info("mihomo: node %s delay test HTTP %s", node, exc.code)
+            return None
         except Exception:
-            LOG.warning("mihomo: delay test failed for node %s", node, exc_info=True)
+            LOG.info("mihomo: delay test failed for node %s", node)
             return None
         delay = data.get("delay")
         if isinstance(delay, (int, float)):
@@ -204,9 +213,15 @@ class MihomoControllerClient:
         return None
 
     def test_all_nodes_parallel(self, nodes: list[str], max_workers: int = 8) -> list[tuple[str, int]]:
-        """Test delay of all nodes in parallel, returning (node, delay_ms) for usable nodes."""
+        """Test delay of all nodes in parallel, returning (node, delay_ms) for usable nodes.
+
+        Stops waiting once at least one node passes AND deadline is reached,
+        so a few bad nodes don't stall callers for the full per-node timeout.
+        """
         if not nodes:
             return []
+
+        deadline = time.monotonic() + max(5.0, min(15.0, len(nodes) * 0.8))
 
         results: list[tuple[str, int]] = []
         with ThreadPoolExecutor(max_workers=min(max_workers, len(nodes))) as executor:
@@ -217,11 +232,16 @@ class MihomoControllerClient:
             for future in as_completed(future_to_node):
                 node = future_to_node[future]
                 try:
-                    delay = future.result()
+                    delay = future.result(timeout=1.0)
                     if delay is not None:
                         results.append((node, delay))
                 except Exception:
-                    LOG.warning("mihomo: parallel delay test failed for node %s", node, exc_info=True)
+                    pass
+                # 有结果且已过截止时间 → 不等剩余慢节点
+                if results and time.monotonic() > deadline:
+                    for f in future_to_node:
+                        f.cancel()
+                    break
 
         return sorted(results, key=lambda x: x[1])
 

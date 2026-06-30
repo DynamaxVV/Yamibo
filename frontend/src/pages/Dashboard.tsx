@@ -8,8 +8,8 @@ import { formatDateTime } from '../utils/time'
 function RecentTable({ threads, forumNames, t, liveStatuses }: { threads: ThreadSummary[]; forumNames: Record<number, string>; t: (k: string) => string; liveStatuses: Record<number, string> }) {
   if (threads.length === 0) return <div className="panel" style={{ color: 'var(--text-tertiary)', padding: '8px 12px', fontSize: 12 }}>{t('no_data')}</div>
   return (
-      <div className="table-wrap"><table>
-        <thead><tr><th style={{ width: 75 }}>{t('tid')}</th><th>{t('title')}</th><th>{t('forum')}</th><th>{t('archive_status')}</th><th>{t('pub_time')}</th><th>{t('sync_time')}</th></tr></thead>
+      <div className="table-wrap"><table className="dashboard-recent-table">
+        <thead><tr><th className="col-tid">{t('tid')}</th><th className="col-title">{t('title')}</th><th className="col-forum">{t('forum')}</th><th className="col-status">{t('archive_status')}</th><th className="col-pub-time">{t('pub_time')}</th><th className="col-sync-time">{t('sync_time')}</th></tr></thead>
         <tbody>
           {threads.map(t_ => (
             (() => {
@@ -17,12 +17,12 @@ function RecentTable({ threads, forumNames, t, liveStatuses }: { threads: Thread
               const status = liveStatus || t_.archive_status
               return (
             <tr key={t_.tid}>
-              <td className="mono"><Link to={`/threads/${t_.tid}`}>{t_.tid}</Link></td>
-              <td className="truncate" title={t_.display_title || t_.raw_title}><Link to={`/threads/${t_.tid}`}>{t_.display_title || t_.raw_title}</Link></td>
-              <td>{forumNames[t_.forum_id ?? 0] || '-'}</td>
-              <td><Badge status={status} /></td>
-              <td className="nowrap col-time">{formatDateTime(t_.pub_time)}</td>
-              <td className="nowrap col-time">{formatDateTime(t_.sync_time)}</td>
+              <td className="mono col-tid"><Link to={`/threads/${t_.tid}`}>{t_.tid}</Link></td>
+              <td className="truncate col-title" title={t_.display_title || t_.raw_title}><Link to={`/threads/${t_.tid}`}>{t_.display_title || t_.raw_title}</Link></td>
+              <td className="col-forum">{forumNames[t_.forum_id ?? 0] || '-'}</td>
+              <td className="col-status"><Badge status={status} /></td>
+              <td className="dashboard-time col-pub-time">{formatDateTime(t_.pub_time)}</td>
+              <td className="dashboard-time col-sync-time">{formatDateTime(t_.sync_time)}</td>
             </tr>
               )
             })()
@@ -106,9 +106,9 @@ export function Dashboard() {
 
   const liveStatuses = data?.live_thread_statuses ?? {}
   const jobControl = data?.job_control ?? { jobs_enabled: true, queued: 0, running: 0, retrying: 0, interrupted: 0, paused: 0 }
-  const activeJobCount = jobControl.queued + jobControl.running + jobControl.retrying + jobControl.interrupted
-  const canPauseJobs = jobControl.jobs_enabled && activeJobCount > 0
-  const canResumeJobs = !jobControl.jobs_enabled || (!canPauseJobs && jobControl.paused > 0)
+  const daemonRunning = jobControl.jobs_enabled
+  const canPauseJobs = daemonRunning
+  const canResumeJobs = !daemonRunning
   const jobControlAction = canPauseJobs ? 'pause' : 'resume'
   const runJobControl = () => {
     if (!canPauseJobs && !canResumeJobs) return
@@ -212,7 +212,7 @@ export function Dashboard() {
               <td className="truncate" title={desc(j)}><Link to={`/jobs/${j.job_id}`}>{desc(j)}</Link></td>
               <td><Badge status={j.status} /></td>
               <td className="nowrap">{j.progress_current}/{j.progress_total ?? '?'}</td>
-              <td className="nowrap col-time">{formatDateTime(j.updated_at)}</td>
+              <td className="nowrap">{formatDateTime(j.updated_at)}</td>
             </tr>
           ))}
         </tbody>

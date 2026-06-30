@@ -5,7 +5,10 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
     headers: { 'Content-Type': 'application/json' },
     ...init,
   })
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }))
+    throw new Error(err.error || `${res.status} ${res.statusText}`)
+  }
   return res.json()
 }
 
@@ -442,6 +445,67 @@ export interface ThreadBatchResyncResult {
   tids: number[]
 }
 
+// ── Remote Forum Types ────────────────────────────────────────────────
+
+export interface RemoteForum {
+  forum_id: number
+  name: string
+  name_en: string | null
+  content_kind: string
+  enabled: boolean
+}
+
+export interface RemoteForumThreadLocal {
+  archived: boolean
+  sync_time: string | null
+  series_id: number | null
+  export_path: string | null
+  content_kind: string | null
+}
+
+export interface RemoteForumThread {
+  tid: number
+  title: string
+  display_title: string
+  category: string | null
+  row_kind: string
+  publisher: string | null
+  posted_at: string | null
+  last_reply_at: string | null
+  reply_count: number | null
+  url: string
+  archive_status: string | null
+  local_thread: RemoteForumThreadLocal | null
+}
+
+export interface RemoteForumListResponse {
+  source: string
+  forum_id: number
+  page: number
+  order: string
+  total_pages: number
+  final_url: string
+  items: RemoteForumThread[]
+}
+
+export interface RemoteThreadDetail {
+  source: string
+  tid: number
+  forum_id: number | null
+  page: number
+  total_pages: number | null
+  url: string
+  raw_title: string
+  display_title: string
+  publisher: string | null
+  publisher_uid: string | null
+  pub_time: string | null
+  content_kind: string | null
+  archive_status: string | null
+  local_thread: RemoteForumThreadLocal | null
+  floors: FloorSummary[]
+}
+
 // API methods
 export const api = {
   dashboard: (limit?: number) => fetchJson<DashboardData>(`/dashboard${limit ? `?limit=${limit}` : ''}`),
@@ -551,4 +615,20 @@ export const api = {
   pauseJob: (jobId: string) => postJson<{ ok: boolean; job_id: string; status: string }>('/jobs/pause', { job_id: jobId }),
   resumeJob: (jobId: string) => postJson<{ ok: boolean; job_id: string; status: string }>('/jobs/resume', { job_id: jobId }),
   updateChapter: (tid: number, chapter_name: string | null, chapter_index: number | null, author_guess?: string | null, group_name?: string | null) => postJson<{ ok: boolean }>('/threads/update-chapter', { tid, chapter_name, chapter_index, author_guess, group_name }),
+  remoteForums: () => fetchJson<RemoteForum[]>('/remote/forums'),
+  remoteForum: (params: { forum_id?: number; page?: number; order?: string }) => {
+    const qs = new URLSearchParams()
+    if (params.forum_id) qs.set('forum_id', String(params.forum_id))
+    if (params.page) qs.set('page', String(params.page))
+    if (params.order) qs.set('order', params.order)
+    const s = qs.toString()
+    return fetchJson<RemoteForumListResponse>(`/remote/forum${s ? `?${s}` : ''}`)
+  },
+  remoteThread: (tid: number, params?: { forum_id?: number; page?: number }) => {
+    const qs = new URLSearchParams()
+    if (params?.forum_id) qs.set('forum_id', String(params.forum_id))
+    if (params?.page) qs.set('page', String(params.page))
+    const s = qs.toString()
+    return fetchJson<RemoteThreadDetail>(`/remote/threads/${tid}${s ? `?${s}` : ''}`)
+  },
 }

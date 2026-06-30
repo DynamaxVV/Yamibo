@@ -603,11 +603,12 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
                         snapshot.tid,
                         ", ".join(image_result.missing_shared_urls[:20]),
                     )
-                update_title_hints(
-                    settings,
-                    group_name=snapshot.title.group_name,
-                    author_guess=snapshot.title.author_guess,
-                )
+                if forum_id in (30, 55):
+                    update_title_hints(
+                        settings,
+                        group_name=snapshot.title.group_name,
+                        author_guess=snapshot.title.author_guess,
+                    )
                 repo.partial(job.job_id, artifacts)
             else:
                 LOG.info(
@@ -618,11 +619,12 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
                     image_result.shared_downloaded_count,
                     sum(len(paths) for paths in image_result.skipped_relpaths.values()),
                 )
-                update_title_hints(
-                    settings,
-                    group_name=snapshot.title.group_name,
-                    author_guess=snapshot.title.author_guess,
-                )
+                if forum_id in (30, 55):
+                    update_title_hints(
+                        settings,
+                        group_name=snapshot.title.group_name,
+                        author_guess=snapshot.title.author_guess,
+                    )
                 repo.succeed(job.job_id, artifacts)
     except Exception as exc:
         write_staging_failure(

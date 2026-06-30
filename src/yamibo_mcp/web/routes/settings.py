@@ -119,6 +119,20 @@ def _settings_payload(settings: Settings) -> dict[str, object]:
             sources[name] = "default"
         stored[name] = _setting_value_from_raw(raw_config, spec)
         values[name] = _setting_effective_value(settings, name)
+
+    # Override common_scanlation_groups / common_authors from title_hints.json
+    try:
+        from yamibo_mcp.services.title_hints import load_title_hints
+        hints = load_title_hints(settings)
+        values["common_scanlation_groups"] = hints["scanlation_groups"]
+        values["common_authors"] = hints["authors"]
+        stored["common_scanlation_groups"] = hints["scanlation_groups"]
+        stored["common_authors"] = hints["authors"]
+        sources["common_scanlation_groups"] = "file"
+        sources["common_authors"] = "file"
+    except Exception:
+        pass
+
     return {
         "config_path": str(settings.config_path),
         "values": values,
@@ -217,6 +231,14 @@ def handle_settings_update(handler, settings: Settings) -> None:
     raw_config = read_local_config(settings.config_path)
     next_raw_config = deepcopy(raw_config)
     changed_fields: list[str] = []
+
+    # Route common_scanlation_groups / common_authors to title_hints.json
+    HINTS_FIELDS = {"common_scanlation_groups", "common_authors"}
+    hints_updates: dict[str, list[str]] = {}
+    for name in list(values.keys()):
+        if name in HINTS_FIELDS:
+            hints_updates[name] = _normalize_setting_input(name, values.pop(name))
+
     for name, value in values.items():
         if name not in SETTINGS_FIELD_SPECS:
             continue
@@ -233,6 +255,19 @@ def handle_settings_update(handler, settings: Settings) -> None:
         if before != after and name not in changed_fields:
             changed_fields.append(name)
     write_local_config(settings.config_path, next_raw_config)
+
+    # Persist hints updates to title_hints.json
+    if hints_updates:
+        from yamibo_mcp.services.title_hints import load_title_hints, write_title_hints
+        current = load_title_hints(settings)
+        scanlation_groups = hints_updates.get("common_scanlation_groups")
+        authors = hints_updates.get("common_authors")
+        write_title_hints(settings, {
+            "scanlation_groups": scanlation_groups if scanlation_groups is not None else current["scanlation_groups"],
+            "authors": authors if authors is not None else current["authors"],
+        })
+        changed_fields.extend(hints_updates.keys())
+
     refreshed = load_settings()
     payload = _settings_payload(refreshed)
     payload.update(summarize_setting_effects(changed_fields))

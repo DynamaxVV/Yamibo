@@ -55,9 +55,9 @@ uv run pytest -k "test_name"           # by name
 - `maintenance/` — backup, cleanup, reset CLI commands
 - `benchmark/` — Performance benchmarking (Hermes)
 
-**Web layer**: `web/api.py` is a thin dispatcher (~180 lines). Route handlers live in `web/routes/` — one module per resource (`jobs.py`, `threads.py`, `series.py`, `forums.py`, `rag.py`, `review.py`, `settings.py`, `dashboard.py`, `debug.py`). Shared JSON helpers in `web/routes/_helpers.py`, dict converters and i18n labels in `web/routes/_converters.py`.
+**Web layer**: `web/api.py` is a thin dispatcher (~200 lines). Route handlers live in `web/routes/` — one module per resource (`jobs.py`, `threads.py`, `series.py`, `forums.py`, `rag.py`, `review.py`, `settings.py`, `dashboard.py`, `debug.py`, `remote_forum.py`). Shared JSON helpers in `web/routes/_helpers.py`, dict converters and i18n labels in `web/routes/_converters.py`.
 
-**Frontend**: React 18 + Vite + React Router. CSS split across `styles.css` (global resets, layout, shared components) and `styles/` (per-page: `reading.css`, `confirm.css`, `settings.css`). Build output → `src/yamibo_mcp/web/static/`, served by daemon at `http://127.0.0.1:8765`.
+**Frontend**: React 18 + Vite + React Router. Pages: Dashboard, Jobs, JobDetail, Threads, ThreadDetail, RemoteForum, RemoteThreadDetail, Series, SeriesDetail, Review, Exports, Forums, Rag, Settings, Logs. Shared components in `components/` (ThreadReader, LazyImage, PaginationControls, etc.). CSS split across `styles.css` (global resets, layout, shared components) and `styles/` (per-page: `reading.css`, `confirm.css`, `settings.css`). Build output → `src/yamibo_mcp/web/static/`, served by daemon at `http://127.0.0.1:8765`.
 
 ## Agent Tool Contract
 

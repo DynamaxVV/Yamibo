@@ -1,6 +1,6 @@
 # API 接口文档
 
-> 版本：0.9.3 | 更新日期：2026-06-28
+> 版本：0.11.1 | 更新日期：2026-07-01
 
 ## 1. MCP 工具 (Tools)
 
@@ -596,25 +596,40 @@ yamibo-mcp-server read-resource "yamibo://jobs/sync_thread_xxxx/events"
 
 ## 5. Web API
 
-Web 控制台基于 HTTP，提供 HTML 页面和表单操作。
+Web 控制台基于 HTTP，提供 JSON API 和页面路由。
 
-### 4.1 页面路由
+### 5.1 页面路由
+
+| 路径 | 说明 |
+|------|------|
+| `/` | Dashboard（控制台） |
+| `/jobs` | 任务列表 |
+| `/jobs/:id` | 任务详情 |
+| `/threads` | 帖子归档列表 |
+| `/threads/:tid` | 帖子详情（本地归档） |
+| `/forum` | **远程论坛浏览（新增）** |
+| `/forum/:tid` | **远程贴子详情（新增）** |
+| `/series` | 系列列表 |
+| `/series/:id` | 系列详情 |
+| `/review` | 标题复核 |
+| `/exports` | 导出列表 |
+| `/forums` | 版块统计 |
+| `/rag` | 知识库 |
+| `/settings` | 设置 |
+| `/logs` | 日志 |
+
+### 5.2 JSON API — 远程论坛
 
 | 路径 | 方法 | 说明 |
 |------|------|------|
-| `/` | GET | Dashboard |
-| `/jobs` | GET | 任务列表 |
-| `/jobs/{job_id}` | GET | 任务详情 |
-| `/threads` | GET | 帖子列表 |
-| `/threads/{tid}` | GET | 帖子详情 |
-| `/series` | GET | 系列列表 |
-| `/series/{series_id}` | GET | 系列详情 |
-| `/title-review` | GET | 标题复核 |
-| `/exports` | GET | 导出列表 |
-| `/media/{path}` | GET | 本地图片文件 |
-| `/artifacts/jobs/{job_id}/{file}` | GET | Staging 文件 |
+| `/api/remote/forums` | GET | 获取启用的论坛分区列表 |
+| `/api/remote/forum?forum_id=&page=&order=` | GET | 浏览远程论坛页面（支持 default/dateline 排序） |
+| `/api/remote/threads/{tid}?page=` | GET | 读取远程贴子详情（单页） |
+| `/api/remote/image?url=` | GET | 代理获取远程图片（服务端带 cookie） |
 
-### 4.2 表单操作
+错误映射：`LoginRequiredError`→401, `ThreadPermissionRequiredError`→403, `RemoteMaintenanceError`→503, `RemoteFetchError`/`UnexpectedPageError`→502
+
+### 5.3 JSON API — 管理操作
 
 | 路径 | 方法 | 说明 |
 |------|------|------|

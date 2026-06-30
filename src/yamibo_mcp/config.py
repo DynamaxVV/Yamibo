@@ -196,8 +196,8 @@ def load_settings() -> Settings:
         db_url = None if db_url_config in {None, ""} else str(db_url_config)
     else:
         db_url = db_url_value
-    db_pool_min = max(int(os.environ.get("YAMIBO_DB_POOL_MIN", str(_cfg_value(config, "database", "pool_min", 1)))), 1)
-    db_pool_max = max(int(os.environ.get("YAMIBO_DB_POOL_MAX", str(_cfg_value(config, "database", "pool_max", 5)))), db_pool_min)
+    db_pool_min = max(int(os.environ.get("YAMIBO_DB_POOL_MIN", str(_cfg_value(config, "database", "pool_min", 5)))), 1)
+    db_pool_max = max(int(os.environ.get("YAMIBO_DB_POOL_MAX", str(_cfg_value(config, "database", "pool_max", 20)))), db_pool_min)
     db_pool_timeout = float(
         os.environ.get("YAMIBO_DB_POOL_TIMEOUT", str(_cfg_value(config, "database", "pool_timeout", 30.0)))
     )

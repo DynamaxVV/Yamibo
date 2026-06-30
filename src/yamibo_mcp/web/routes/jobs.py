@@ -6,9 +6,17 @@ from yamibo_mcp.config import Settings
 from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.domain.enums import JobStatus
 from yamibo_mcp.yamibo.anti_bot import clear_remote_access_pause
-from ._helpers import json_response, error_response, read_json_body
+from ._helpers import json_response, error_response, read_json_body, TTLCache
 from ._converters import job_rows_to_dicts, job_to_dict, event_to_dict, job_failure_kind
 from .settings import persist_jobs_enabled
+
+# 短 TTL 缓存：任务列表查询频繁轮询但数据变化不频繁。
+# 写入操作（删除、重试、暂停、恢复、批量操作）清除缓存。
+_jobs_cache = TTLCache(ttl_seconds=3.0)
+
+
+def clear_jobs_cache() -> None:
+    _jobs_cache.clear()
 
 
 def handle_jobs_list(handler, params, conn):
@@ -23,6 +31,12 @@ def handle_jobs_list(handler, params, conn):
     except ValueError:
         page_size = 25
     page_size = min(max(page_size, 1), 100)
+
+    cache_key = f"list:{status}:{failure_kind}:{page}:{page_size}"
+    cached = _jobs_cache.get(cache_key)
+    if cached is not None:
+        json_response(handler, cached)
+        return
 
     repo = JobsRepository(conn)
     if failure_kind:
@@ -44,7 +58,7 @@ def handle_jobs_list(handler, params, conn):
         offset = (page - 1) * page_size
         jobs = filtered_jobs[offset:offset + page_size] if failure_kind else repo.list(limit=page_size, offset=offset, status=status)
 
-    json_response(handler, {
+    result = {
         "page": page,
         "page_size": page_size,
         "total_count": total_count,
@@ -52,19 +66,33 @@ def handle_jobs_list(handler, params, conn):
         "status": status,
         "failure_kind": failure_kind,
         "items": job_rows_to_dicts(jobs, conn, include_details=False),
-    })
+    }
+    _jobs_cache.set(cache_key, result)
+    json_response(handler, result)
 
 
 def handle_jobs_counts(handler, conn):
-    json_response(handler, JobsRepository(conn).count_by_status())
+    cached = _jobs_cache.get("counts")
+    if cached is not None:
+        json_response(handler, cached)
+        return
+    result = JobsRepository(conn).count_by_status()
+    _jobs_cache.set("counts", result)
+    json_response(handler, result)
 
 
 def handle_jobs_failure_counts(handler, params, conn):
     status = params.get("status", [None])[0]
+    cache_key = f"failure_counts:{status}"
+    cached = _jobs_cache.get(cache_key)
+    if cached is not None:
+        json_response(handler, cached)
+        return
     counts: dict[str, int] = {}
     for job in JobsRepository(conn).list(limit=None, status=status):
         kind = job_failure_kind(job, artifacts=job.artifacts if isinstance(job.artifacts, dict) else {}) or "other"
         counts[kind] = counts.get(kind, 0) + 1
+    _jobs_cache.set(cache_key, counts)
     json_response(handler, counts)
 
 
@@ -80,6 +108,7 @@ def handle_job_events(handler, job_id, conn):
 
 
 def handle_delete_job(handler, conn):
+    _jobs_cache.clear()
     body = read_json_body(handler)
     job_id = body.get("job_id")
     if not job_id:
@@ -98,6 +127,7 @@ def handle_delete_job(handler, conn):
 
 
 def handle_retry_job(handler, conn):
+    _jobs_cache.clear()
     body = read_json_body(handler)
     job_id = body.get("job_id")
     if not job_id:
@@ -122,6 +152,7 @@ def handle_retry_job(handler, conn):
 
 
 def handle_pause_job(handler, conn):
+    _jobs_cache.clear()
     body = read_json_body(handler)
     job_id = body.get("job_id")
     if not job_id:
@@ -139,6 +170,7 @@ def handle_pause_job(handler, conn):
 
 
 def handle_resume_job(handler, conn):
+    _jobs_cache.clear()
     body = read_json_body(handler)
     job_id = body.get("job_id")
     if not job_id:
@@ -156,6 +188,7 @@ def handle_resume_job(handler, conn):
 
 
 def handle_job_control(handler, conn, settings: Settings | None = None):
+    _jobs_cache.clear()
     body = read_json_body(handler)
     action = body.get("action")
     repo = JobsRepository(conn)
@@ -187,10 +220,12 @@ def handle_job_control(handler, conn, settings: Settings | None = None):
 
 
 def handle_resume_remote_access(handler, conn):
+    _jobs_cache.clear()
     json_response(handler, clear_remote_access_pause(conn))
 
 
 def handle_batch_delete_jobs(handler, conn):
+    _jobs_cache.clear()
     body = read_json_body(handler)
     status_filter = body.get("status")
     if not status_filter:
@@ -208,6 +243,7 @@ def handle_batch_delete_jobs(handler, conn):
 
 
 def handle_batch_delete_jobs_by_ids(handler, conn):
+    _jobs_cache.clear()
     body = read_json_body(handler)
     job_ids = body.get("job_ids", [])
     if not job_ids:
@@ -222,6 +258,7 @@ def handle_batch_delete_jobs_by_ids(handler, conn):
 
 
 def handle_safe_delete_job(handler, conn):
+    _jobs_cache.clear()
     body = read_json_body(handler)
     job_id = body.get("job_id")
     if not job_id:

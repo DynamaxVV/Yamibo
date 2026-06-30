@@ -219,7 +219,7 @@ class _ThreadSubjectParser(TextCaptureParser):
     def _should_skip_tag(self, tag: str, data: dict[str, str]) -> bool:
         class_name = data.get("class", "")
         classes = set(class_name.split())
-        return tag == "ignore_js_op" or "ignore_js_op" in classes or (tag == "i" and "pstatus" in classes)
+        return tag in ("script", "style") or (tag == "i" and "pstatus" in classes)
 
     def _render_rich_start(self, tag: str, data: dict[str, str]) -> tuple[str | None, str | None]:
         from ._html_utils import _sanitize_color, _sanitize_font_size

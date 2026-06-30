@@ -1,0 +1,15 @@
+export const THEME_FONTS: Record<string, string[]> = {
+  'flat-design': ['Open+Sans:400,600,700'],
+  'organic-biophilic': ['Cormorant+Garamond:400,500,600,700', 'Nunito:400,500,600,700'],
+  'e-ink-paper': ['Newsreader:400,500,600', 'JetBrains+Mono:400,500'],
+  'retro-futurism': ['Orbitron:400,500,600,700,800,900'],
+  'y2k-revival': ['Orbitron:400,500,600,700,800,900'],
+  'memphis-revival': ['Archivo+Black', 'Poppins:400,500,600,700'],
+  'neubrutalism': ['Space+Grotesk:400,500,600,700'],
+  'vaporwave': ['Press+Start+2P', 'VT323'],
+  'pixel-art': ['Press+Start+2P'],
+  'cyberpunk': ['Orbitron:400,500,600,700,800,900', 'Share+Tech+Mono'],
+  'hud-scifi': ['Orbitron:400,500,600,700', 'Share+Tech+Mono'],
+  'gen-z-chaos': ['Anton', 'Inter:400,600,700,900'],
+  'inclusive-design': ['Atkinson+Hyperlegible:400,700'],
+}

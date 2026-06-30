@@ -40,6 +40,10 @@ from .routes.review import (
     handle_update_title, handle_update_series,
 )
 from .routes.debug import handle_debug_info, handle_logs
+from .routes.remote_forum import (
+    handle_remote_forums_list, handle_remote_forum_browse, handle_remote_thread_detail,
+    handle_remote_image_proxy,
+)
 
 
 def handle_api(handler, path: str, query: str, settings: Settings) -> bool:
@@ -180,5 +184,14 @@ def _route(handler, route: str, params, conn, settings):
         handle_debug_info(handler, conn, settings)
     elif route == "/logs" and handler.command == "GET":
         handle_logs(handler, params)
+    elif route == "/remote/forums" and handler.command == "GET":
+        handle_remote_forums_list(handler, conn, settings)
+    elif route == "/remote/forum" and handler.command == "GET":
+        handle_remote_forum_browse(handler, params, conn, settings)
+    elif route == "/remote/image" and handler.command == "GET":
+        handle_remote_image_proxy(handler, params, settings)
+    elif route.startswith("/remote/threads/") and handler.command == "GET":
+        tid = int(route[16:])
+        handle_remote_thread_detail(handler, tid, params, conn, settings)
     else:
         error_response(handler, f"Not found: {route}", HTTPStatus.NOT_FOUND)

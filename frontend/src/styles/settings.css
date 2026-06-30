@@ -9,7 +9,7 @@
   display: grid;
   gap: 8px;
   padding: 10px 12px;
-  border: 1px solid var(--border-light);
+  border: var(--border-width, 1px) solid var(--border-light);
   border-radius: var(--radius-sm);
   background: var(--bg-muted);
 }
@@ -69,7 +69,7 @@
   flex-direction: column;
   gap: 6px;
   padding: 12px;
-  border: 1px solid var(--border-light);
+  border: var(--border-width, 1px) solid var(--border-light);
   border-radius: var(--radius-sm);
   background: var(--bg-muted);
 }
@@ -99,6 +99,68 @@
   box-sizing: border-box;
 }
 .settings-field textarea { min-height: 96px; }
+.tag-editor {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+  padding: 4px 0;
+  border: none;
+  background: transparent;
+  min-height: 0;
+}
+.tag-editor-disabled {
+  opacity: 0.6;
+}
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 6px;
+  border: var(--border-width, 1px) solid var(--border-light);
+  border-radius: var(--radius-full);
+  background: var(--bg-surface);
+  font-size: 11px;
+  color: var(--text-primary);
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.tag-chip-x {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.tag-chip-x:hover {
+  background: var(--status-error);
+  color: white;
+}
+.tag-editor-input {
+  flex: 1;
+  min-width: 80px;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--text-primary);
+  padding: 2px 0;
+  line-height: 1.6;
+}
+.tag-editor-input::placeholder {
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
 .settings-help,
 .settings-source {
   font-size: 11px;
@@ -155,7 +217,7 @@
 .rag-snippet-box {
   margin-top: 10px;
   padding: 10px 12px;
-  border: 1px solid var(--border-light);
+  border: var(--border-width, 1px) solid var(--border-light);
   border-radius: var(--radius-sm);
   background: var(--bg-muted);
 }
@@ -176,7 +238,7 @@
 .rag-preview-links a {
   color: var(--accent);
   text-decoration: none;
-  border-bottom: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  border-bottom: var(--border-width, 1px) solid color-mix(in srgb, var(--accent) 40%, transparent);
 }
 .rag-preview-links a:hover {
   border-bottom-color: currentColor;

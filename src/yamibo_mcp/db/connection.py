@@ -198,7 +198,13 @@ def row_to_dict(row: Any | None) -> dict[str, Any] | None:
 
 def connect(db_path: Path | str | Settings | None = None) -> DatabaseConnection:
     settings = db_path if isinstance(db_path, Settings) else load_settings()
-    explicit_sqlite_path = db_path is not None and not isinstance(db_path, Settings)
+    # A Path that matches settings.db_path is NOT an explicit SQLite choice —
+    # it's the caller passing along the default path. Respect db_backend.
+    explicit_sqlite_path = (
+        db_path is not None
+        and not isinstance(db_path, Settings)
+        and str(db_path) != str(settings.db_path)
+    )
     if not explicit_sqlite_path and settings.db_backend == "postgres":
         if not settings.db_url:
             raise ValueError("db_url is required when db_backend=postgres")

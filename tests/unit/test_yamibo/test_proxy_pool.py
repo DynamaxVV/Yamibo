@@ -370,7 +370,7 @@ def test_check_proxy_pool_health_controller_unreachable(monkeypatch):
 def test_check_proxy_pool_health_missing_selector_group(monkeypatch):
     settings = _make_settings(enabled=True)
 
-    def _fake_request(self, path, method="GET", body=None):
+    def _fake_request(self, path, method="GET", body=None, timeout=None):
         return {"proxies": {"GLOBAL": {"type": "Selector", "now": "DIRECT", "all": ["DIRECT"]}}}
 
     monkeypatch.setattr(
@@ -386,7 +386,7 @@ def test_check_proxy_pool_health_missing_selector_group(monkeypatch):
 def test_check_proxy_pool_health_all_nodes_tested(monkeypatch):
     settings = _make_settings(enabled=True)
 
-    def _fake_request(self, path, method="GET", body=None):
+    def _fake_request(self, path, method="GET", body=None, timeout=None):
         if path == "/proxies":
             return {
                 "proxies": {

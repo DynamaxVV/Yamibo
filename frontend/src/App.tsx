@@ -11,6 +11,8 @@ import { SeriesDetail, Exports } from './pages/Exports'
 import { Series } from './pages/Series'
 import { Review } from './pages/Review'
 import { Forums } from './pages/Forums'
+import { RemoteForum } from './pages/RemoteForum'
+import { RemoteThreadDetail } from './pages/RemoteThreadDetail'
 import { Logs } from './pages/Logs'
 import { Rag } from './pages/Rag'
 import { Settings } from './pages/Settings'
@@ -32,6 +34,8 @@ export default function App() {
             <Route path="/review" element={<Review />} />
             <Route path="/exports" element={<Exports />} />
             <Route path="/forums" element={<Forums />} />
+            <Route path="/forum" element={<RemoteForum />} />
+            <Route path="/forum/:tid" element={<RemoteThreadDetail />} />
             <Route path="/rag" element={<Rag />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/logs" element={<Logs />} />

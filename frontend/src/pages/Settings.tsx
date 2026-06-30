@@ -3,7 +3,7 @@ import { Badge } from '../components/Badge'
 import { api, type SettingsResponse, type SettingsUpdateResponse } from '../api/client'
 import { useI18n } from '../context/I18nContext'
 
-type FieldKind = 'text' | 'password' | 'number' | 'checkbox' | 'textarea' | 'select'
+type FieldKind = 'text' | 'password' | 'number' | 'checkbox' | 'textarea' | 'select' | 'tags'
 type EffectMode = SettingsResponse['effects'][string]
 type Option = { value: string; labelKey: string }
 
@@ -20,6 +20,7 @@ type FieldSpec = {
   step?: number
   rows?: number
   inheritable?: boolean
+  fullWidth?: boolean
 }
 
 type SectionSpec = {
@@ -51,9 +52,9 @@ const SECTIONS: SectionSpec[] = [
     titleKey: 'settings_section_title',
     descKey: 'settings_section_title_desc',
     fields: [
-      { key: 'title_parse_use_llm', labelKey: 'settings_title_parse_use_llm', helpKey: 'settings_title_parse_use_llm_help', kind: 'checkbox', section: 'title' },
-      { key: 'common_scanlation_groups', labelKey: 'settings_common_scanlation_groups', helpKey: 'settings_common_scanlation_groups_help', kind: 'textarea', section: 'title', rows: 4 },
-      { key: 'common_authors', labelKey: 'settings_common_authors', helpKey: 'settings_common_authors_help', kind: 'textarea', section: 'title', rows: 4 },
+      { key: 'title_parse_use_llm', labelKey: 'settings_title_parse_use_llm', helpKey: 'settings_title_parse_use_llm_help', kind: 'checkbox', section: 'title', fullWidth: true },
+      { key: 'common_scanlation_groups', labelKey: 'settings_common_scanlation_groups', helpKey: 'settings_common_scanlation_groups_help', kind: 'tags', section: 'title' },
+      { key: 'common_authors', labelKey: 'settings_common_authors', helpKey: 'settings_common_authors_help', kind: 'tags', section: 'title' },
     ],
   },
   {
@@ -134,7 +135,7 @@ function valueToInput(field: FieldSpec, payload: SettingsResponse | null) {
   const effective = payload.values[field.key]
   const raw = field.inheritable && source === 'derived' && !locked ? stored : (stored ?? effective)
   if (field.kind === 'checkbox') return raw ? '1' : '0'
-  if (field.kind === 'textarea') return Array.isArray(raw) ? raw.join('\n') : String(raw ?? '')
+  if (field.kind === 'textarea' || field.kind === 'tags') return Array.isArray(raw) ? raw.join('\n') : String(raw ?? '')
   return raw == null ? '' : String(raw)
 }
 
@@ -153,6 +154,49 @@ function sourceLabel(t: (key: string, vars?: Record<string, string | number>) =>
 
 function formatListInput(value: string) {
   return value.split('\n').map(line => line.trim()).filter(Boolean)
+}
+
+function TagEditor({ value, disabled, onChange }: { value: string; disabled: boolean; onChange: (v: string) => void }) {
+  const [draft, setDraft] = useState('')
+  const tags = formatListInput(value)
+
+  const add = (raw: string) => {
+    const name = raw.trim()
+    if (!name) return
+    if (tags.includes(name)) { setDraft(''); return }
+    onChange([...tags, name].join('\n'))
+    setDraft('')
+  }
+
+  const remove = (name: string) => {
+    onChange(tags.filter(t => t !== name).join('\n'))
+  }
+
+  const handleKey = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') { e.preventDefault(); add(draft) }
+    if (e.key === 'Backspace' && !draft && tags.length) remove(tags[tags.length - 1])
+  }
+
+  return (
+    <div className={`tag-editor ${disabled ? 'tag-editor-disabled' : ''}`}>
+      {tags.map(tag => (
+        <span key={tag} className="tag-chip">
+          {tag}
+          {!disabled && <button type="button" className="tag-chip-x" onClick={() => remove(tag)} aria-label={`Remove ${tag}`}>&times;</button>}
+        </span>
+      ))}
+      {!disabled && (
+        <input
+          className="tag-editor-input"
+          value={draft}
+          placeholder={tags.length ? '' : '输入后回车添加...'}
+          onChange={e => { setDraft(e.target.value) }}
+          onKeyDown={handleKey}
+          onBlur={() => { if (draft.trim()) add(draft) }}
+        />
+      )}
+    </div>
+  )
 }
 
 function effectLabelKey(mode: EffectMode) {
@@ -195,7 +239,7 @@ function parseFieldValue(
   t: (key: string, vars?: Record<string, string | number>) => string,
 ) {
   if (field.kind === 'checkbox') return raw === '1'
-  if (field.kind === 'textarea') return formatListInput(raw)
+  if (field.kind === 'textarea' || field.kind === 'tags') return formatListInput(raw)
   if (field.kind === 'number') {
     if (!raw.trim()) throw new Error(t('settings_required_value', { label: t(field.labelKey) }))
     const parsed = field.step && field.step < 1 ? Number.parseFloat(raw) : Number.parseInt(raw, 10)
@@ -284,7 +328,7 @@ function SettingsSection({
           const source = payload.sources[field.key] || 'default'
           const effect = payload.effects[field.key] || 'immediate'
           return (
-            <div key={field.key} className={`settings-field settings-field-${field.kind}`}>
+            <div key={field.key} className={`settings-field settings-field-${field.kind}`} style={field.fullWidth ? { gridColumn: '1 / -1' } : undefined}>
               <div className="settings-field-head">
                 <span className="settings-field-label">{t(field.labelKey)}</span>
                 <div className="settings-field-badges">
@@ -292,7 +336,13 @@ function SettingsSection({
                   {locked && <Badge status="warn">{t('settings_locked')}</Badge>}
                 </div>
               </div>
-              {field.kind === 'textarea' ? (
+              {field.kind === 'tags' ? (
+                <TagEditor
+                  value={formValues[field.key] || ''}
+                  disabled={locked}
+                  onChange={v => setFormValues(prev => ({ ...prev, [field.key]: v }))}
+                />
+              ) : field.kind === 'textarea' ? (
                 <textarea
                   rows={field.rows || 4}
                   value={formValues[field.key] || ''}
@@ -578,7 +628,7 @@ export function Settings() {
               const source = payload.sources[field.key] || 'default'
               const effect = payload.effects[field.key] || 'immediate'
               return (
-                <div key={field.key} className={`settings-field settings-field-${field.kind}`}>
+                <div key={field.key} className={`settings-field settings-field-${field.kind}`} style={field.fullWidth ? { gridColumn: '1 / -1' } : undefined}>
                   <div className="settings-field-head">
                     <span className="settings-field-label">{t(field.labelKey)}</span>
                     <div className="settings-field-badges">
