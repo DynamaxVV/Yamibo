@@ -274,7 +274,7 @@ def test_sync_thread_retries_permission_gate_with_next_threshold(db, tmp_path, m
 
     handle_sync_thread(repo, job, "worker-1", 300, settings)
 
-    assert calls == [None, 11]
+    assert calls == [None, 10]
 
 
 def test_sync_thread_fails_empty_primary_floor_without_images(db, tmp_path, monkeypatch):

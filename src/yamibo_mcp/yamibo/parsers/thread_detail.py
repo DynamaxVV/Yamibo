@@ -136,14 +136,17 @@ class _ThreadSubjectParser(TextCaptureParser):
             return
         if self._capture_floor and tag in self._BLOCK_BREAK_END_TAGS:
             self._append_floor_break()
-        if self._capture_floor:
-            for index in range(len(self._rich_tag_stack) - 1, -1, -1):
-                source_tag, close_tag = self._rich_tag_stack[index]
-                if source_tag != tag:
-                    continue
-                self._rich_parts.append(close_tag or "")
-                del self._rich_tag_stack[index]
-                break
+        if self._capture_floor and tag == "td":
+            self._floor_td_depth -= 1
+        else:
+            if self._capture_floor:
+                for index in range(len(self._rich_tag_stack) - 1, -1, -1):
+                    source_tag, close_tag = self._rich_tag_stack[index]
+                    if source_tag != tag:
+                        continue
+                    self._rich_parts.append(close_tag or "")
+                    del self._rich_tag_stack[index]
+                    break
         if tag == "td" and self._capture_floor:
             self._floor_td_depth -= 1
             if self._floor_td_depth <= 0:
@@ -219,7 +222,13 @@ class _ThreadSubjectParser(TextCaptureParser):
     def _should_skip_tag(self, tag: str, data: dict[str, str]) -> bool:
         class_name = data.get("class", "")
         classes = set(class_name.split())
-        return tag in ("script", "style") or (tag == "i" and "pstatus" in classes)
+        if tag in ("script", "style"):
+            return True
+        if tag == "i" and "pstatus" in classes:
+            return True
+        if "locked-tip" in classes:
+            return True
+        return False
 
     def _render_rich_start(self, tag: str, data: dict[str, str]) -> tuple[str | None, str | None]:
         from ._html_utils import _sanitize_color, _sanitize_font_size

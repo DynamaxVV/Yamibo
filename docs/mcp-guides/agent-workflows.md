@@ -4,7 +4,7 @@
 
 ## 核心原则
 
-CLI 是主要操作方式。所有操作均可通过 `uv run yamibo-mcp-server <command>` 完成，无需启动 MCP 服务或 daemon。MCP 工具是为 LLM 客户端提供的辅助通道。
+CLI 是主要操作方式。所有操作均可通过 `uv run yamibo-archiver <command>` 完成，无需启动 MCP 服务或 daemon。MCP 工具是为 LLM 客户端提供的辅助通道。
 
 ## 典型工作流
 
@@ -12,9 +12,9 @@ CLI 是主要操作方式。所有操作均可通过 `uv run yamibo-mcp-server <
 
 **CLI（推荐）**：
 ```bash
-uv run yamibo-mcp-server browse-forum-page --page 1
-uv run yamibo-mcp-server browse-forum-page --page 1 --forum-id 55
-uv run yamibo-mcp-server search-threads --query "星灵感应"
+uv run yamibo-archiver browse-forum-page --page 1
+uv run yamibo-archiver browse-forum-page --page 1 --forum-id 55
+uv run yamibo-archiver search-threads --query "星灵感应"
 ```
 
 **MCP**：调用 `browse_forum_page` / `search_forum_threads` 工具。大结果集通过 `next_cursor` 分页。
@@ -23,7 +23,7 @@ uv run yamibo-mcp-server search-threads --query "星灵感应"
 
 **CLI（推荐）**：
 ```bash
-uv run yamibo-mcp-server check-thread-updates --tid 544422
+uv run yamibo-archiver check-thread-updates --tid 544422
 ```
 
 **MCP**：调用 `check_thread_updates` 工具。
@@ -32,23 +32,23 @@ uv run yamibo-mcp-server check-thread-updates --tid 544422
 
 **CLI（推荐）**：
 ```bash
-uv run yamibo-mcp-server create-thread-archive-job --tid 572313
-uv run yamibo-mcp-server create-sync-thread-batch-jobs --tid 572313 --tid 572314
+uv run yamibo-archiver create-thread-archive-job --tid 572313
+uv run yamibo-archiver create-sync-thread-batch-jobs --tid 572313 --tid 572314
 ```
 
 **MCP**：调用 `create_thread_archive_job` 工具。
 
 任务创建后由 daemon 异步消费，通过 `job-status` 查看进度：
 ```bash
-uv run yamibo-mcp-server job-status <job_id>
+uv run yamibo-archiver job-status <job_id>
 ```
 
 ### 4. 读取本地归档
 
 **CLI（推荐）**：
 ```bash
-uv run yamibo-mcp-server read-resource "yamibo://threads/572313/summary"
-uv run yamibo-mcp-server read-resource "yamibo://threads/572313/diagnostics"
+uv run yamibo-archiver read-resource "yamibo://threads/572313/summary"
+uv run yamibo-archiver read-resource "yamibo://threads/572313/diagnostics"
 ```
 
 **MCP**：调用 `read_archived_thread` 工具或读取资源 URI。`content` 视图支持 `next_cursor` 分页。
@@ -57,7 +57,7 @@ uv run yamibo-mcp-server read-resource "yamibo://threads/572313/diagnostics"
 
 **CLI（推荐）**：
 ```bash
-uv run yamibo-mcp-server search-archived-content --query "星空 告白" --mode hybrid --top-k 5
+uv run yamibo-archiver search-archived-content --query "星空 告白" --mode hybrid --top-k 5
 ```
 
 **MCP**：调用 `search_archived_content` 工具。
@@ -66,7 +66,7 @@ uv run yamibo-mcp-server search-archived-content --query "星空 告白" --mode 
 
 **CLI（推荐）**：
 ```bash
-uv run yamibo-mcp-server create-export-thread-job --tid 572313
+uv run yamibo-archiver create-export-thread-job --tid 572313
 ```
 
 ## 任务状态机

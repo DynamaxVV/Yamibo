@@ -257,12 +257,31 @@ def job_failure_kind(job, *, artifacts: dict[str, object] | None = None) -> str 
         return "empty_content"
     if page_type == "prompt_forum_closed" or any(marker in combined for marker in ("查无此区", "此区已关闭", "版块已关闭")):
         return "forum_closed"
-    if page_type == "prompt_thread_missing_or_removed_or_review" or any(marker in combined for marker in ("指定的主题不存在", "已被删除", "正在被审核")):
+    if page_type == "prompt_thread_missing_or_removed_or_review" or any(marker in combined for marker in ("指定的主题不存在", "正在被审核")):
         return "thread_missing"
+    # "已被删除" + thread_deleted = 真删除（错误权限代码 255）
+    if any(marker in combined for marker in ("已被删除",)) or error_code == "thread_deleted":
+        return "thread_deleted"
+    # 权限不足（非 255 的删除码 / 群组限制 / 用户组升级）
+    if error_code in {"remote_thread_permission_required", "group_access_denied", "user_group_upgrade_required"}:
+        return "thread_permission"
     if error_code in {"loginrequirederror", "remote_login_required"} or "login required" in combined or "login_required" in combined:
         return "login_required"
-    if error_code in {"remotemaintenanceerror", "remote_maintenance"} or "maintenance" in combined:
+    # 维护 / 反爬暂停
+    if error_code in {"remotemaintenanceerror", "remote_maintenance", "remote_access_paused"} or "maintenance" in combined:
         return "maintenance"
+    # 远程抓取类 — 细分
+    if error_code in {"remote_http_404"}:
+        return "remote_http_404"
+    if error_code in {"remote_http_403", "remote_http_5xx", "remote_http_xxx"}:
+        return "remote_http_error"
+    if error_code in {"remote_timeout"}:
+        return "remote_timeout"
+    if error_code in {"remote_connection_error"}:
+        return "remote_connection"
+    if error_code in {"remote_soft_block"}:
+        return "remote_blocked"
+    # 远程抓取兜底
     if error_code in {"remotefetcherror", "remote_fetch_failed"} or "failed to read" in combined or "remote fetch" in combined:
         return "remote_fetch"
     if error_code in {"unexpectedpageerror", "unexpected_remote_page"} or "unexpected page" in combined or "expected thread detail page" in combined:

@@ -936,7 +936,7 @@ def test_configure_logging_attaches_web_log_buffer():
     logger.info(marker)
 
     entries = get_log_buffer().get_recent(limit=20)
-    assert any(marker in entry["msg"] for entry in entries)
+    assert any(marker in entry["message"] for entry in entries)
 
 
 def _seed_rag_thread(db):

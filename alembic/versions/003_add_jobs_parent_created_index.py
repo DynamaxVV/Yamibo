@@ -13,7 +13,16 @@ def _schema() -> str:
 
 
 def upgrade() -> None:
-    op.create_index("idx_jobs_parent_created", "jobs", ["parent_job_id", "created_at"], schema=_schema())
+    # PONETAIL: migration 001 already creates this index on a fresh DB. This
+    # 003 migration exists for older databases that pre-date the index in 001;
+    # use IF NOT EXISTS so the same revision can run safely on both.
+    op.create_index(
+        "idx_jobs_parent_created",
+        "jobs",
+        ["parent_job_id", "created_at"],
+        schema=_schema(),
+        if_not_exists=True,
+    )
 
 
 def downgrade() -> None:

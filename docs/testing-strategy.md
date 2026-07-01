@@ -311,9 +311,9 @@ def load_edge_case(name: str) -> dict[str, Any]:
 
 ```bash
 # 使用 CLI 命令获取数据（需要论坛 cookie）
-uv run yamibo-mcp-server browse-forum-page --page 1 > tests/fixtures/forum_pages/page_1.json
-uv run yamibo-mcp-server read-resource "yamibo://threads/572627/metadata" > /tmp/thread_572627.json
-uv run yamibo-mcp-server parse-thread-title "【超时空辉夜姬】[ポテトルス] ray" > tests/fixtures/title_parses/simple.json
+uv run yamibo-archiver browse-forum-page --page 1 > tests/fixtures/forum_pages/page_1.json
+uv run yamibo-archiver read-resource "yamibo://threads/572627/metadata" > /tmp/thread_572627.json
+uv run yamibo-archiver parse-thread-title "【超时空辉夜姬】[ポテトルス] ray" > tests/fixtures/title_parses/simple.json
 
 # 或使用批量脚本
 uv run python scripts/fetch_fixtures.py

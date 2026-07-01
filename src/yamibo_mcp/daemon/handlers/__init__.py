@@ -3,6 +3,8 @@ from __future__ import annotations
 from yamibo_mcp.domain.enums import JobType
 from yamibo_mcp.domain.models import Job
 from yamibo_mcp.daemon.handlers.cleanup_job import handle_cleanup_job
+from yamibo_mcp.daemon.handlers.discussion_trend_index import handle_discussion_trend_index
+from yamibo_mcp.daemon.handlers.discussion_trend_report import handle_discussion_trend_report
 from yamibo_mcp.daemon.handlers.export_thread import handle_export_thread
 from yamibo_mcp.daemon.handlers.noop import handle_noop
 from yamibo_mcp.daemon.handlers.rag_index import handle_rag_index
@@ -26,4 +28,8 @@ def get_handler(job: Job):
         return handle_title_refine
     if job.job_type == JobType.RAG_INDEX.value:
         return handle_rag_index
+    if job.job_type == JobType.DISCUSSION_TREND_INDEX.value:
+        return handle_discussion_trend_index
+    if job.job_type == JobType.DISCUSSION_TREND_REPORT.value:
+        return handle_discussion_trend_report
     return None

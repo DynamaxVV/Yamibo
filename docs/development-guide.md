@@ -1,6 +1,6 @@
 # 核心模块开发说明
 
-> 版本：0.11.1 | 更新日期：2026-07-01
+> 版本：0.12.0 | 更新日期：2026-07-02
 
 ## 1. 标题解析引擎
 
@@ -388,7 +388,7 @@ class AgentResult:
 | yamibo.proxy_pool.failure_policy | — | fail_open | mihomo 故障策略 |
 | yamibo.cookie_refresh_interval_hours | YAMIBO_COOKIE_REFRESH_INTERVAL_HOURS | 12 | cookie 定时刷新周期（小时），0 关闭 |
 
-核心模块：`src/yamibo_mcp/yamibo/proxy_pool.py`，入口函数 `select_thread_proxy()`。健康检查 CLI：`uv run yamibo-mcp-server check-proxy-pool`。
+核心模块：`src/yamibo_mcp/yamibo/proxy_pool.py`，入口函数 `select_thread_proxy()`。健康检查 CLI：`uv run yamibo-archiver check-proxy-pool`。
 
 ---
 

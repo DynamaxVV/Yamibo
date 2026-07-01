@@ -198,7 +198,7 @@ def run(settings: Settings) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run YamiboMCP local web console.")
+    parser = argparse.ArgumentParser(description="Run YamiboArchiver local web console.")
     parser.add_argument("--host")
     parser.add_argument("--port", type=int)
     args = parser.parse_args()

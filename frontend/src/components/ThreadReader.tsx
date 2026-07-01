@@ -334,6 +334,9 @@ export function ThreadReader({ tid, source, contentKind, floors: floorSource, im
     ? floorGroups.slice((effectivePreviewPage - 1) * pageSize, effectivePreviewPage * pageSize)
     : floorGroups
 
+  // 只要帖子有图片就在阅读预览下显示图片宽度调节
+  const showImageWidthToolbar = floorGroups.some(fg => fg.imageSlots.length > 0 || fg.contentImages.length > 0)
+
   // Sync readingConfig when theme/platform changes
   useEffect(() => {
     readingConfigRef.current = readingConfig
@@ -624,7 +627,7 @@ export function ThreadReader({ tid, source, contentKind, floors: floorSource, im
         scrollTargetId="thread-reading-top" suppressScrollRef={previewScrollSuppressed}
         className="reading-pagination pagination-controls" />
 
-      {isComic && (
+      {showImageWidthToolbar && (
         <div className="reading-toolbar">
           <span className="toolbar-label">{t('image_width')}</span>
           {[50, 75, 100].map(w => (

@@ -136,3 +136,73 @@ class JobEvent:
     stage: str | None
     payload: dict[str, object]
     created_at: str
+
+
+@dataclass(frozen=True)
+class DiscussionIndexRun:
+    run_id: str
+    forum_id: int
+    start_date: str
+    end_date: str
+    status: str
+    trend_index_version: str
+    topic_assignment_version: str
+    rag_chunker_version: str | None
+    input_fingerprint: str | None
+    warnings: list[str]
+    started_at: str
+    completed_at: str | None
+
+
+@dataclass(frozen=True)
+class DiscussionTrendDaily:
+    forum_id: int
+    event_date: str
+    run_id: str
+    is_current: bool
+    floor_count: int
+    active_thread_count: int
+    active_user_count: int
+    reply_count: int
+    quote_count: int
+    coverage: dict[str, object]
+    warnings: list[str]
+
+
+@dataclass(frozen=True)
+class DiscussionTrendTopicDaily:
+    forum_id: int
+    event_date: str
+    topic_id: str
+    run_id: str
+    is_current: bool
+    floor_count: int
+    active_thread_count: int
+    active_user_count: int
+    reply_count: int
+    quote_count: int
+    growth_rate: float | None
+    ewma_floor_count: float | None
+    zscore_floor_count: float | None
+    burst_score: float | None
+    decayed_heat_score: float | None
+    controversy_score: float | None
+    sample_tids: list[int]
+    quality_warnings: list[str]
+
+
+@dataclass(frozen=True)
+class DiscussionTrendUserDaily:
+    forum_id: int
+    event_date: str
+    user_key: str
+    run_id: str
+    is_current: bool
+    floor_count: int
+    thread_count: int
+    active_thread_count: int
+    topic_count: int
+    quote_count: int
+    reply_count: int
+    first_seen_at: str | None
+    last_seen_at: str | None

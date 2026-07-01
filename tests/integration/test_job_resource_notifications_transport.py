@@ -71,6 +71,8 @@ def _run_server(settings, *, transport: str):
                 {
                     "YAMIBO_DATA_DIR": str(settings.data_dir),
                     "YAMIBO_DB_PATH": str(settings.db_path),
+                    "YAMIBO_DB_BACKEND": "sqlite",
+                    "YAMIBO_DB_URL": "",
                     "YAMIBO_EXPORT_DIR": str(settings.export_dir),
                     "YAMIBO_NOVEL_TXT_EXPORT_DIR": str(settings.novel_txt_export_dir),
                 },

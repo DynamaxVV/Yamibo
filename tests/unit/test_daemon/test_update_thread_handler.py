@@ -315,4 +315,4 @@ def test_handle_update_thread_retries_permission_gate_with_next_threshold(db, tm
 
     handle_update_thread(repo, job, "worker-1", 300, settings)
 
-    assert calls == [None, 11]
+    assert calls == [None, 10]

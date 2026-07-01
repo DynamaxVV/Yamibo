@@ -2,7 +2,7 @@
 
 百合会 (yamibo.com) 论坛本地归档系统。通过 MCP 协议让 LLM 客户端浏览、搜索、归档、检查更新和导出论坛贴子；内嵌 React WebUI 控制台，支持多主题切换。
 
-> 当前版本：`0.11.1`
+> 当前版本：`0.12.0`
 
 ## 功能特性
 
@@ -18,6 +18,7 @@
 - **批量归档探测** — `probe_archived_threads` 可先读取本地归档尾部状态，再配合远端 `last_reply_at` 决定是否补跑
 - **Job Event Outbox** — 任务状态变更追加耐久化事件，支持诊断和未来通知
 - **本地 RAG 检索** — 基于 FTS5 / PostgreSQL `tsvector` + `pgvector` 的归档内容混合检索，返回可追溯证据片段
+- **Discussion Trend V1** — PostgreSQL-only 的分区趋势查询、topic/user 排名、topic/forum evidence 检索，以及 trend / research report artifact
 - **Agent-Friendly Interface** — 区分远端预览/任务创建与本地归档读取，统一结构化错误和紧凑输出
 - **Web 控制台** — React+Vite SPA，中英文双语，多套可切换主题 + 暗黑模式，支持远程论坛实时浏览（`/forum`）
 - **CLI** — 所有工具均可通过命令行直接调用
@@ -114,7 +115,7 @@ MCP Server 无需手动启动，由 LLM 客户端自动调用。
 LLM Client (Claude Desktop / Cursor)
     │ MCP Protocol (stdio)
     ▼
-yamibo-mcp-server ──创建任务──▶ PostgreSQL / SQLite (jobs + job_events)
+yamibo-archiver ──创建任务──▶ PostgreSQL / SQLite (jobs + job_events)
     │                               ▲
     │ application layer             │ 轮询 + 抢占
     │ (archive, update_thread)      │
@@ -135,7 +136,7 @@ yamibo-daemon ──────────────────────
 如果你的 LLM 客户端支持 URL 形式的 MCP 连接，可以把服务端改为 SSE：
 
 ```bash
-uv run yamibo-mcp-server stdio --transport sse
+uv run yamibo-archiver stdio --transport sse
 ```
 
 客户端一般需要配置为指向 SSE 入口，例如：
@@ -160,7 +161,7 @@ SSE 模式适合需要保持一个常驻 MCP 服务进程的场景；如果客�
   "mcpServers": {
     "yamibo": {
       "command": "uv",
-      "args": ["run", "yamibo-mcp-server", "stdio"],
+      "args": ["run", "yamibo-archiver", "stdio"],
       "cwd": "/path/to/yamibo"
     }
   }
@@ -174,7 +175,7 @@ SSE 模式适合需要保持一个常驻 MCP 服务进程的场景；如果客�
   "servers": {
     "yamibo": {
       "command": "uv",
-      "args": ["run", "yamibo-mcp-server", "stdio"],
+      "args": ["run", "yamibo-archiver", "stdio"],
       "cwd": "/path/to/yamibo"
     }
   }
@@ -185,52 +186,63 @@ SSE 模式适合需要保持一个常驻 MCP 服务进程的场景；如果客�
 
 ```bash
 # 浏览论坛
-uv run yamibo-mcp-server browse-forum-page --page 1
+uv run yamibo-archiver browse-forum-page --page 1
 
 # 按发帖时间排序浏览
-uv run yamibo-mcp-server browse-forum-page --page 1 --order dateline
+uv run yamibo-archiver browse-forum-page --page 1 --order dateline
 
 # 浏览轻小说区
-uv run yamibo-mcp-server browse-forum-page --page 1 --forum-id 55
+uv run yamibo-archiver browse-forum-page --page 1 --forum-id 55
 
 # 搜索帖子
-uv run yamibo-mcp-server search-threads --query "星灵感应"
+uv run yamibo-archiver search-threads --query "星灵感应"
 
 # 检查轻小说更新
-uv run yamibo-mcp-server check-thread-updates --tid 544422
+uv run yamibo-archiver check-thread-updates --tid 544422
 
 # 创建轻小说追加更新任务
-uv run yamibo-mcp-server update-thread --tid 544422
+uv run yamibo-archiver update-thread --tid 544422
 
 # 批量创建归档任务
-uv run yamibo-mcp-server create-sync-thread-batch-jobs --tid 572313 --tid 572314
+uv run yamibo-archiver create-sync-thread-batch-jobs --tid 572313 --tid 572314
 
 # 批量同步
-uv run yamibo-mcp-server create-sync-forum-range-jobs --start-page 1 --end-page 5
+uv run yamibo-archiver create-sync-forum-range-jobs --start-page 1 --end-page 5
 
 # 创建导出任务
-uv run yamibo-mcp-server create-export-thread-job --tid 572313
+uv run yamibo-archiver create-export-thread-job --tid 572313
 
 # 为本地归档构建 RAG 索引
-uv run yamibo-mcp-server create-rag-index-job --tid 572313
+uv run yamibo-archiver create-rag-index-job --tid 572313
 
 # 批量创建 RAG 索引任务
-uv run yamibo-mcp-server create-rag-index-batch-jobs --tid 572313 --tid 572314
+uv run yamibo-archiver create-rag-index-batch-jobs --tid 572313 --tid 572314
 
 # 搜索本地归档内容（只读，不抓远端）
-uv run yamibo-mcp-server search-archived-content --query "星空 告白" --mode hybrid --top-k 5
+uv run yamibo-archiver search-archived-content --query "星空 告白" --mode hybrid --top-k 5
+
+# 构建分区讨论趋势索引（PostgreSQL-only）
+uv run yamibo-archiver create-discussion-trend-index-job --forum-id 5 --start-date 2014-11-01 --end-date 2014-11-30
+
+# 查询 topic 证据和 forum 证据包
+uv run yamibo-archiver discussion-topic-evidence --forum-id 5 --start-date 2014-11-01 --end-date 2014-11-30 --topic-label 百合动画 --mode auto
+uv run yamibo-archiver forum-evidence-pack --forum-id 33 --query 黑话 --intent slang_usage --mode auto
+
+# 创建趋势报告和论坛研究报告
+uv run yamibo-archiver create-discussion-trend-report-job --forum-id 5 --start-date 2014-11-01 --end-date 2014-11-30 --period monthly
+uv run yamibo-archiver create-forum-research-report-job --forum-id 33 --start-date 2014-11-01 --end-date 2014-11-30 --question "海域区这个时期的讨论氛围如何？" --intent community_atmosphere
 
 # 查看任务状态
-uv run yamibo-mcp-server job-status <job_id>
+uv run yamibo-archiver job-status <job_id>
 
 # 读取帖子摘要（紧凑 JSON，适合 Agent）
-uv run yamibo-mcp-server read-resource "yamibo://threads/572313/summary"
+uv run yamibo-archiver read-resource "yamibo://threads/572313/summary"
 
 # 读取帖子诊断（缺失资产、建议操作）
-uv run yamibo-mcp-server read-resource "yamibo://threads/572313/diagnostics"
+uv run yamibo-archiver read-resource "yamibo://threads/572313/diagnostics"
 
 # 读取轻小说更新检测结果
-uv run yamibo-mcp-server read-resource "yamibo://threads/544422/update-check"
+uv run yamibo-archiver read-resource "yamibo://threads/544422/update-check"
 
 # 数据库备份
 uv run yamibo-backup-db
@@ -275,6 +287,7 @@ scripts/run_hermes_benchmark.sh
 | [Agent 架构导航](docs/architecture-for-agents.md) | 给 AI 编码代理的目录职责、修改路径、简化约束和测试矩阵 |
 | [API 接口文档](docs/api-reference.md) | MCP 工具/资源、CLI、Web 路由 |
 | [Agent 接口说明](docs/agent-interface.md) | Agent-facing 工具、错误契约、推荐工作流 |
+| [Discussion Trend V1](docs/discussion-trend-v1.md) | PostgreSQL-only 趋势索引、evidence 检索、trend/report artifact 与已知约束 |
 | [Agent 能力验收标准](docs/agent-evaluation.md) | OpenClaw/Hermes 类 Agent 的验收场景、评分维度与证据要求 |
 | [数据库设计](docs/database-design.md) | 表结构、文件存储格式、PostgreSQL JSONB 决策 |
 | [账号池设计](docs/account-pool-design.md) | 多账号权限分配与 Cookie 管理 |

@@ -22,6 +22,7 @@ from yamibo_mcp.errors import (
     ThreadPermissionRequiredError,
     UnexpectedPageError,
 )
+from yamibo_mcp.structured_logging import emit
 from yamibo_mcp.yamibo.anti_bot import is_soft_block_page
 from yamibo_mcp.yamibo.parsers.forum_list import ForumThreadItem, extract_total_pages, parse_forum_list
 from yamibo_mcp.yamibo.parsers.thread_detail import extract_author_only_total_pages
@@ -437,6 +438,11 @@ class YamiboClient:
     def _validate_thread_page(self, result: FetchResult) -> None:
         # Soft interception guard — detect CF challenges before classification
         if is_soft_block_page(result.html):
+            emit(LOG, logging.WARNING, "remote.soft_block",
+                 f"Soft block detected for {result.final_url}",
+                 result="failure", status="blocked",
+                 error_code="REMOTE_SOFT_BLOCK",
+                 tags=["remote", "anti_bot"])
             raise RemoteFetchError(
                 f"soft block (CF challenge / CAPTCHA) detected for {result.final_url}",
                 details={"url": result.final_url, "status_code": result.status_code, "retryable": False},
@@ -444,8 +450,18 @@ class YamiboClient:
         # 这里只做最关键的页面级护栏，避免把登录页/维护页误当成帖子详情继续落库。
         classification = classify_html(result.html)
         if classification.page_type == PageType.LOGIN_REQUIRED:
+            emit(LOG, logging.WARNING, "remote.login_required",
+                 f"Login required for {result.final_url}",
+                 result="failure", status="unauthenticated",
+                 error_code="REMOTE_LOGIN_REQUIRED",
+                 tags=["remote", "auth"])
             raise LoginRequiredError(f"login required for {result.final_url}")
         if classification.page_type == PageType.REMOTE_MAINTENANCE:
+            emit(LOG, logging.WARNING, "remote.maintenance",
+                 f"Remote maintenance for {result.final_url}",
+                 result="failure", status="unavailable",
+                 error_code="REMOTE_MAINTENANCE",
+                 tags=["remote"])
             raise RemoteMaintenanceError(f"remote maintenance for {result.final_url}")
         if classification.page_type == PageType.PROMPT_THREAD_PERMISSION_REQUIRED:
             prompt_text = _extract_discuz_prompt_text(result.html)
@@ -453,6 +469,16 @@ class YamiboClient:
             raise ThreadPermissionRequiredError(
                 f"thread requires read permission above {required_permission if required_permission is not None else 'unknown'} for {result.final_url}",
                 required_permission=required_permission,
+                details={
+                    "url": result.final_url,
+                    "page_type": classification.page_type.value,
+                    "prompt_text": prompt_text,
+                },
+            )
+        if classification.page_type == PageType.PROMPT_USER_GROUP_UPGRADE_REQUIRED:
+            prompt_text = _extract_discuz_prompt_text(result.html)
+            raise ThreadPermissionRequiredError(
+                f"user group upgrade required for {result.final_url}: {prompt_text}",
                 details={
                     "url": result.final_url,
                     "page_type": classification.page_type.value,
@@ -482,14 +508,29 @@ class YamiboClient:
 
     def _validate_forum_page(self, result: FetchResult) -> None:
         if is_soft_block_page(result.html):
+            emit(LOG, logging.WARNING, "remote.soft_block",
+                 f"Soft block detected for {result.final_url}",
+                 result="failure", status="blocked",
+                 error_code="REMOTE_SOFT_BLOCK",
+                 tags=["remote", "anti_bot"])
             raise RemoteFetchError(
                 f"soft block detected for {result.final_url}",
                 details={"url": result.final_url, "status_code": result.status_code, "retryable": False},
             )
         classification = classify_html(result.html)
         if classification.page_type == PageType.LOGIN_REQUIRED:
+            emit(LOG, logging.WARNING, "remote.login_required",
+                 f"Login required for {result.final_url}",
+                 result="failure", status="unauthenticated",
+                 error_code="REMOTE_LOGIN_REQUIRED",
+                 tags=["remote", "auth"])
             raise LoginRequiredError(f"login required for {result.final_url}")
         if classification.page_type == PageType.REMOTE_MAINTENANCE:
+            emit(LOG, logging.WARNING, "remote.maintenance",
+                 f"Remote maintenance for {result.final_url}",
+                 result="failure", status="unavailable",
+                 error_code="REMOTE_MAINTENANCE",
+                 tags=["remote"])
             raise RemoteMaintenanceError(f"remote maintenance for {result.final_url}")
         if classification.page_type != PageType.FORUM_LIST:
             raise UnexpectedPageError(
@@ -498,14 +539,29 @@ class YamiboClient:
 
     def _validate_search_page(self, result: FetchResult) -> None:
         if is_soft_block_page(result.html):
+            emit(LOG, logging.WARNING, "remote.soft_block",
+                 f"Soft block detected for {result.final_url}",
+                 result="failure", status="blocked",
+                 error_code="REMOTE_SOFT_BLOCK",
+                 tags=["remote", "anti_bot"])
             raise RemoteFetchError(
                 f"soft block detected for {result.final_url}",
                 details={"url": result.final_url, "status_code": result.status_code, "retryable": False},
             )
         classification = classify_html(result.html)
         if classification.page_type == PageType.LOGIN_REQUIRED:
+            emit(LOG, logging.WARNING, "remote.login_required",
+                 f"Login required for {result.final_url}",
+                 result="failure", status="unauthenticated",
+                 error_code="REMOTE_LOGIN_REQUIRED",
+                 tags=["remote", "auth"])
             raise LoginRequiredError(f"login required for {result.final_url}")
         if classification.page_type == PageType.REMOTE_MAINTENANCE:
+            emit(LOG, logging.WARNING, "remote.maintenance",
+                 f"Remote maintenance for {result.final_url}",
+                 result="failure", status="unavailable",
+                 error_code="REMOTE_MAINTENANCE",
+                 tags=["remote"])
             raise RemoteMaintenanceError(f"remote maintenance for {result.final_url}")
         if classification.page_type != PageType.SEARCH_RESULT:
             raise UnexpectedPageError(

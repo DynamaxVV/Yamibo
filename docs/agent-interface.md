@@ -1,10 +1,10 @@
 # Agent 接口说明
 
-> 版本：0.11.1 | 更新日期：2026-07-01
+> 版本：0.12.0 | 更新日期：2026-07-02
 
 ## 概览
 
-CLI 是主要操作方式，所有功能均可通过 `uv run yamibo-mcp-server <command>` 直接调用。MCP 工具是为 LLM 客户端提供的辅助通道，底层与 CLI 共享同一 application 层。
+CLI 是主要操作方式，所有功能均可通过 `uv run yamibo-archiver <command>` 直接调用。MCP 工具是为 LLM 客户端提供的辅助通道，底层与 CLI 共享同一 application 层。
 
 所有公共工具统一返回结构：
 
@@ -39,21 +39,30 @@ CLI 是主要操作方式，所有功能均可通过 `uv run yamibo-mcp-server <
 
 | MCP 工具 | CLI 命令 |
 |---|---|
-| `browse_forum_page` | `uv run yamibo-mcp-server browse-forum-page --page 1` |
-| `search_forum_threads` | `uv run yamibo-mcp-server search-threads --query "..."` |
-| `inspect_remote_thread` | `uv run yamibo-mcp-server inspect-remote-thread --tid <tid>` |
-| `create_thread_archive_job` | `uv run yamibo-mcp-server create-thread-archive-job --tid <tid>` |
-| `create_thread_archive_batch_jobs` | `uv run yamibo-mcp-server create-sync-thread-batch-jobs --tid ... --tid ...` |
-| `check_thread_updates` | `uv run yamibo-mcp-server check-thread-updates --tid <tid>` |
-| `create_thread_update_job` | `uv run yamibo-mcp-server update-thread --tid <tid>` |
-| `create_thread_export_job` | `uv run yamibo-mcp-server create-export-thread-job --tid <tid>` |
-| `create_rag_index_job` | `uv run yamibo-mcp-server create-rag-index-job --tid <tid>` |
-| `create_rag_index_batch_jobs` | `uv run yamibo-mcp-server create-rag-index-batch-jobs --tid ... --tid ...` |
-| `search_archived_content` | `uv run yamibo-mcp-server search-archived-content --query "..." --mode hybrid` |
-| `read_job` / `wait_for_job` | `uv run yamibo-mcp-server job-status <job_id>` |
+| `browse_forum_page` | `uv run yamibo-archiver browse-forum-page --page 1` |
+| `search_forum_threads` | `uv run yamibo-archiver search-threads --query "..."` |
+| `inspect_remote_thread` | `uv run yamibo-archiver inspect-remote-thread --tid <tid>` |
+| `create_thread_archive_job` | `uv run yamibo-archiver create-thread-archive-job --tid <tid>` |
+| `create_thread_archive_batch_jobs` | `uv run yamibo-archiver create-sync-thread-batch-jobs --tid ... --tid ...` |
+| `check_thread_updates` | `uv run yamibo-archiver check-thread-updates --tid <tid>` |
+| `create_thread_update_job` | `uv run yamibo-archiver update-thread --tid <tid>` |
+| `create_thread_export_job` | `uv run yamibo-archiver create-export-thread-job --tid <tid>` |
+| `create_rag_index_job` | `uv run yamibo-archiver create-rag-index-job --tid <tid>` |
+| `create_rag_index_batch_jobs` | `uv run yamibo-archiver create-rag-index-batch-jobs --tid ... --tid ...` |
+| `search_archived_content` | `uv run yamibo-archiver search-archived-content --query "..." --mode hybrid` |
+| `read_job` / `wait_for_job` | `uv run yamibo-archiver job-status <job_id>` |
 | `read_job_events` | (通过 Web 控制台或 API) |
-| `read_archived_thread` | `uv run yamibo-mcp-server read-resource "yamibo://threads/<tid>/summary"` |
-| `probe_archived_threads` | `uv run yamibo-mcp-server probe-archived-threads --tid ... --tid ...` |
+| `read_archived_thread` | `uv run yamibo-archiver read-resource "yamibo://threads/<tid>/summary"` |
+| `probe_archived_threads` | `uv run yamibo-archiver probe-archived-threads --tid ... --tid ...` |
+| `create_discussion_trend_index_job` | `uv run yamibo-archiver create-discussion-trend-index-job --forum-id 5 --start-date 2014-11-01 --end-date 2014-11-30` |
+| `get_discussion_partition_trends` | `uv run yamibo-archiver discussion-partition-trends --forum-id 5 --start-date 2014-11-01 --end-date 2014-11-30` |
+| `get_discussion_topic_trends` | `uv run yamibo-archiver discussion-topic-trends --forum-id 5 --start-date 2014-11-01 --end-date 2014-11-30` |
+| `get_discussion_user_trends` | `uv run yamibo-archiver discussion-user-trends --forum-id 5 --start-date 2014-11-01 --end-date 2014-11-30` |
+| `get_discussion_topic_evidence` | `uv run yamibo-archiver discussion-topic-evidence --forum-id 5 --start-date 2014-11-01 --end-date 2014-11-30 --topic-label 百合动画 --mode auto` |
+| `get_forum_evidence_pack` | `uv run yamibo-archiver forum-evidence-pack --forum-id 33 --query 黑话 --intent slang_usage --mode auto` |
+| `create_discussion_trend_report_job` | `uv run yamibo-archiver create-discussion-trend-report-job --forum-id 5 --start-date 2014-11-01 --end-date 2014-11-30 --period monthly` |
+| `create_forum_research_report_job` | `uv run yamibo-archiver create-forum-research-report-job --forum-id 33 --start-date 2014-11-01 --end-date 2014-11-30 --question "海域区这个时期的讨论氛围如何？" --intent community_atmosphere` |
+| `get_discussion_report` | `uv run yamibo-archiver discussion-report --forum-id 5 --start-date 2014-11-01 --end-date 2014-11-30` |
 
 ## 导航资源
 
@@ -100,6 +109,25 @@ CLI 是主要操作方式，所有功能均可通过 `uv run yamibo-mcp-server <
 
 大批量归档前，优先用这个接口判断某个 `tid` 是否已经有本地归档，以及本地最后楼层时间是否已经落后于远端列表页的 `last_reply_at`。
 
+## Discussion Trend V1
+
+Discussion Trend V1 为 PostgreSQL-only 能力面，适合历史分区分析、topic 证据抽样和非趋势类论坛研究。建议顺序：
+
+1. `create_discussion_trend_index_job`
+2. `read_job` 或 `wait_for_job`
+3. `get_discussion_partition_trends` / `get_discussion_topic_trends` / `get_discussion_user_trends`
+4. `get_discussion_topic_evidence` 或 `get_forum_evidence_pack`
+5. `create_discussion_trend_report_job` 或 `create_forum_research_report_job`
+6. `get_discussion_report`
+
+当前行为说明：
+
+- 同一 `(forum_id, start_date, end_date, version)` 允许重复重跑，current pointer 由 `discussion_current_indexes` 负责切换
+- `get_discussion_topic_evidence` 的 SQL path 支持 thread-level assignment，不再要求 assignment 必须绑定到单个 `pid`
+- `discussion_user_daily.topic_count` 已修正为按真实 bucket/user 聚合，不再因为中间键缺失而恒为 0
+
+详细契约见 [discussion-trend-v1.md](discussion-trend-v1.md)。
+
 ## 推荐工作流
 
 所有操作优先使用 CLI。MCP 工具在 LLM 客户端中作为自动化通道使用。
@@ -108,10 +136,10 @@ CLI 是主要操作方式，所有功能均可通过 `uv run yamibo-mcp-server <
 
 **CLI（推荐）**：
 ```bash
-uv run yamibo-mcp-server search-threads --query "星灵感应"
-uv run yamibo-mcp-server create-thread-archive-job --tid <tid>
-uv run yamibo-mcp-server job-status <job_id>
-uv run yamibo-mcp-server read-resource "yamibo://threads/<tid>/summary"
+uv run yamibo-archiver search-threads --query "星灵感应"
+uv run yamibo-archiver create-thread-archive-job --tid <tid>
+uv run yamibo-archiver job-status <job_id>
+uv run yamibo-archiver read-resource "yamibo://threads/<tid>/summary"
 ```
 
 **MCP**：`search_forum_threads` → `create_thread_archive_job` → `read_job` → `read_archived_thread`
@@ -119,22 +147,22 @@ uv run yamibo-mcp-server read-resource "yamibo://threads/<tid>/summary"
 ### 已知 tid 读取
 
 ```bash
-uv run yamibo-mcp-server read-resource "yamibo://threads/<tid>/summary"
+uv run yamibo-archiver read-resource "yamibo://threads/<tid>/summary"
 ```
 
 ### 大批量归档前探测
 
 ```bash
-uv run yamibo-mcp-server probe-archived-threads --tid <tid1> --tid <tid2>
+uv run yamibo-archiver probe-archived-threads --tid <tid1> --tid <tid2>
 # 结合 browse-forum-page 返回的 last_reply_at 判断是否需要补跑
 ```
 
 ### 轻小说更新
 
 ```bash
-uv run yamibo-mcp-server check-thread-updates --tid <tid>
-uv run yamibo-mcp-server update-thread --tid <tid>
-uv run yamibo-mcp-server job-status <job_id>
+uv run yamibo-archiver check-thread-updates --tid <tid>
+uv run yamibo-archiver update-thread --tid <tid>
+uv run yamibo-archiver job-status <job_id>
 ```
 
 ## 任务状态机
@@ -177,7 +205,7 @@ uv run yamibo-mcp-server job-status <job_id>
 推荐顺序：
 
 1. 创建任务：CLI 命令或 MCP 工具
-2. 轮询主状态：`uv run yamibo-mcp-server job-status <job_id>`
+2. 轮询主状态：`uv run yamibo-archiver job-status <job_id>`
 3. 出现 `failed`、`partial`、`execution_state in {attention, stalled}` 或 `interrupted` 时，查看 Web 控制台 Job Detail 页或事件日志
 4. 状态进入 `succeeded` 或 `partial` 后，切到本地读取
 

@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import collections
+import json
 import logging
 import threading
-import time
+
+from yamibo_mcp.structured_logging import StructuredJSONFormatter
 
 
 class LogBuffer(logging.Handler):
-    """In-memory ring buffer that captures log records for the web UI."""
+    """In-memory ring buffer that captures structured log records for the web UI."""
 
     def __init__(self, capacity: int = 500):
         super().__init__()
@@ -17,14 +19,11 @@ class LogBuffer(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            entry = {
-                "ts": record.created,
-                "level": record.levelname,
-                "logger": record.name,
-                "msg": self.format(record),
-            }
-            with self._lock:
-                self._buffer.append(entry)
+            message = self.format(record)
+            entry = json.loads(message)
+            if isinstance(entry, dict):
+                with self._lock:
+                    self._buffer.append(entry)
         except Exception:
             pass
 
@@ -32,7 +31,7 @@ class LogBuffer(logging.Handler):
         with self._lock:
             entries = list(self._buffer)
         if since_ts is not None:
-            entries = [e for e in entries if e["ts"] > since_ts]
+            entries = [e for e in entries if isinstance(e.get("ts"), str) and e["ts"] > since_ts]
         return entries[-limit:]
 
 
@@ -43,7 +42,9 @@ def get_log_buffer() -> LogBuffer:
     global _buffer
     if _buffer is None:
         _buffer = LogBuffer(capacity=500)
-        _buffer.setFormatter(logging.Formatter("%(message)s"))
-        logging.getLogger().addHandler(_buffer)
-        logging.getLogger().setLevel(logging.INFO)
+        _buffer.setFormatter(StructuredJSONFormatter())
+        root = logging.getLogger()
+        if not any(getattr(handler, "_yamibo_logging_handler", False) and isinstance(handler, LogBuffer) for handler in root.handlers):
+            _buffer._yamibo_logging_handler = True  # type: ignore[attr-defined]
+            root.addHandler(_buffer)
     return _buffer

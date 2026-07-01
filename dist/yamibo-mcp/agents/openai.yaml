@@ -1,7 +1,0 @@
-interface:
-  display_name: "YamiboMCP 中文助手"
-  short_description: "用于检索、浏览、查看与归档百合会论坛帖子和章节内容，支持多分区"
-  default_prompt: "Use $yamibo-mcp to search, browse, inspect remote previews, read local archives, and manage archive/update/export jobs across Yamibo forum sections. Prefer guide resources (yamibo://guide/agent-workflows, yamibo://guide/archive-model, yamibo://guide/error-codes) and use read_job, yamibo://jobs/{job_id}/status, wait_for_job, and read_job_events for long-running tasks."
-
-policy:
-  allow_implicit_invocation: true

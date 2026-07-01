@@ -1,6 +1,6 @@
 # API 接口文档
 
-> 版本：0.11.1 | 更新日期：2026-07-01
+> 版本：0.12.0 | 更新日期：2026-07-02
 
 ## 1. MCP 工具 (Tools)
 
@@ -15,6 +15,20 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
 - `llm_transform_text` 与 `parse_thread_title` 不再属于公共 Agent 接口
 
 配置了 `yamibo.account_pool` 时，远端工具会按场景自动挑选账号：列表/搜索/预览优先使用更高 `permission_level` 的账号，归档和更新则先用低权限账号，遇到“阅读权限高于 xx 才能浏览”时再切到更高权限账号重试。
+
+Discussion Trend V1 是 PostgreSQL-only 能力面，包含：
+
+- `create_discussion_trend_index_job`
+- `create_discussion_trend_report_job`
+- `create_forum_research_report_job`
+- `get_discussion_partition_trends`
+- `get_discussion_topic_trends`
+- `get_discussion_user_trends`
+- `get_discussion_topic_evidence`
+- `get_forum_evidence_pack`
+- `get_discussion_report`
+
+详细契约、示例与边界见 [discussion-trend-v1.md](discussion-trend-v1.md)。`discussion-report` 的 CLI 当前默认返回 JSON，不额外暴露 `--format` 参数。
 
 ### 1.1 search_forum_threads
 
@@ -548,48 +562,48 @@ create_thread_archive_job
 
 ## 4. CLI 命令
 
-所有 CLI 命令通过 `yamibo-mcp-server` 入口执行，直接返回 JSON 结果。
+所有 CLI 命令通过 `yamibo-archiver` 入口执行，直接返回 JSON 结果。
 
 ```bash
 # 浏览论坛列表页
-yamibo-mcp-server browse-forum-page --page 1
+yamibo-archiver browse-forum-page --page 1
 
 # 浏览轻小说区
-yamibo-mcp-server browse-forum-page --page 1 --forum-id 55
+yamibo-archiver browse-forum-page --page 1 --forum-id 55
 
 # 搜索帖子
-yamibo-mcp-server search-threads --query "星灵感应"
+yamibo-archiver search-threads --query "星灵感应"
 
 # 创建归档任务
-yamibo-mcp-server create-sync-thread-job --tid 572313
+yamibo-archiver create-sync-thread-job --tid 572313
 
 # 创建导出任务
-yamibo-mcp-server create-export-thread-job --tid 572313
+yamibo-archiver create-export-thread-job --tid 572313
 
 # 检查轻小说更新
-yamibo-mcp-server check-thread-updates --tid 544422
+yamibo-archiver check-thread-updates --tid 544422
 
 # 创建轻小说追加更新任务
-yamibo-mcp-server update-thread --tid 544422
+yamibo-archiver update-thread --tid 544422
 
 # 批量同步
-yamibo-mcp-server create-sync-forum-range-jobs --start-page 1 --end-page 5
+yamibo-archiver create-sync-forum-range-jobs --start-page 1 --end-page 5
 
 # 任务状态
-yamibo-mcp-server job-status <job_id>
+yamibo-archiver job-status <job_id>
 
 # 列出导出包
-yamibo-mcp-server list-exports
+yamibo-archiver list-exports
 
 # 读取资源
-yamibo-mcp-server read-resource "yamibo://threads/572313/context"
-yamibo-mcp-server read-resource "yamibo://threads/572313/summary"
-yamibo-mcp-server read-resource "yamibo://threads/572313/diagnostics"
-yamibo-mcp-server read-resource "yamibo://threads/572313/posts"
-yamibo-mcp-server read-resource "yamibo://threads/572313/assets"
-yamibo-mcp-server read-resource "yamibo://threads/544422/update-check"
-yamibo-mcp-server read-resource "yamibo://forums/index"
-yamibo-mcp-server read-resource "yamibo://jobs/sync_thread_xxxx/events"
+yamibo-archiver read-resource "yamibo://threads/572313/context"
+yamibo-archiver read-resource "yamibo://threads/572313/summary"
+yamibo-archiver read-resource "yamibo://threads/572313/diagnostics"
+yamibo-archiver read-resource "yamibo://threads/572313/posts"
+yamibo-archiver read-resource "yamibo://threads/572313/assets"
+yamibo-archiver read-resource "yamibo://threads/544422/update-check"
+yamibo-archiver read-resource "yamibo://forums/index"
+yamibo-archiver read-resource "yamibo://jobs/sync_thread_xxxx/events"
 ```
 
 ---

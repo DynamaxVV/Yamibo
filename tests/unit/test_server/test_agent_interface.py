@@ -40,6 +40,15 @@ RECOMMENDED_AGENT_TOOLS = {
     "read_job_events",
     "wait_for_job",
     "read_forum_profiles",
+    "create_discussion_trend_index_job",
+    "get_discussion_partition_trends",
+    "get_discussion_topic_trends",
+    "get_discussion_user_trends",
+    "get_discussion_report",
+    "get_discussion_topic_evidence",
+    "get_forum_evidence_pack",
+    "create_discussion_trend_report_job",
+    "create_forum_research_report_job",
 }
 
 

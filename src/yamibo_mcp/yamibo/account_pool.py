@@ -33,9 +33,19 @@ class AccountIdentity:
     login_mode: str
 
 
-def next_permission_threshold(required_permission: int | None) -> int:
-    # ponytail: 只提升到“高于当前门槛”的最小值，让账号池自然落到下一档可用账号。
-    return (required_permission or 0) + 1
+def next_permission_threshold(required_permission: int | None, current_min: int | None = None) -> int:
+    """返回能访问该帖子的最低 permission_level.
+
+    required_permission 是论坛返回的「阅读权限高于 X」中的 X,
+    拥有 X 权限的号即可访问. 若算出的值不高于当前已尝试的阈值,
+    则强制 +1 以避免原地循环. 无法提取权限时退化为 current_min + 1.
+    """
+    if required_permission is not None:
+        threshold = required_permission
+        if current_min is not None and threshold <= current_min:
+            threshold = current_min + 1
+        return threshold
+    return (current_min or 0) + 1
 
 
 def _identity_from_config(config: AccountConfig) -> AccountIdentity:

@@ -8,10 +8,11 @@ import { formatDateTime } from '../utils/time'
 import { formatJobFailureKind, getJobFailureKind, type JobFailureKind } from '../utils/jobMessages'
 
 const STATUSES = [null, 'queued', 'running', 'paused', 'succeeded', 'partial', 'failed', 'interrupted', 'superseded'] as const
-const FAILURE_KINDS: Array<JobFailureKind | null> = [null, 'forum_closed', 'thread_missing', 'login_required', 'maintenance', 'remote_fetch', 'unexpected_page', 'empty_content', 'local_missing', 'validation', 'cancelled', 'other']
+const FAILURE_KINDS: Array<JobFailureKind | null> = [null, 'forum_closed', 'thread_deleted', 'thread_permission', 'thread_missing', 'login_required', 'maintenance', 'remote_http_404', 'remote_http_error', 'remote_timeout', 'remote_connection', 'remote_blocked', 'remote_fetch', 'unexpected_page', 'empty_content', 'local_missing', 'validation', 'cancelled', 'other']
 const PAGE_SIZE_OPTIONS = [25, 50, 100] as const
 const STORAGE_KEY = 'yamibo_jobs_status'
 const FAILURE_STORAGE_KEY = 'yamibo_jobs_failure_kind'
+const PAGE_STORAGE_KEY = 'yamibo_jobs_page'
 const PAGE_SIZE_STORAGE_KEY = 'yamibo_jobs_page_size'
 const LOADING_DELAY_MS = 180
 
@@ -26,7 +27,12 @@ export function Jobs() {
   const [failureKind, setFailureKind] = useState<JobFailureKind | null>(() => {
     try { return (localStorage.getItem(FAILURE_STORAGE_KEY) as JobFailureKind | null) || null } catch { return null }
   })
-  const [page, setPage] = useState(1)
+  const [page, setPage] = useState(() => {
+    try {
+      const saved = Number(localStorage.getItem(PAGE_STORAGE_KEY))
+      return saved > 0 ? saved : 1
+    } catch { return 1 }
+  })
   const [pageSize, setPageSize] = useState<number>(() => {
     try {
       const saved = Number(localStorage.getItem(PAGE_SIZE_STORAGE_KEY) || 25)
@@ -51,15 +57,23 @@ export function Jobs() {
   const countsRef = useRef<Record<string, number>>({})
   const refreshTokenRef = useRef(0)
   const loadingTimerRef = useRef<number | null>(null)
+  const prevStatusRef = useRef(status)
 
   const desc = (j: JobSummary) => lang === 'en' ? j.description_en : j.description
 
   useEffect(() => {
+    if (prevStatusRef.current === status) return // 首次渲染跳过，只在 status 真正变化时清空筛选
+    prevStatusRef.current = status
     setPage(1)
     setSelectedIds(new Set())
     setFailureKind(null)
     try { localStorage.removeItem(FAILURE_STORAGE_KEY) } catch {}
+    try { localStorage.removeItem(PAGE_STORAGE_KEY) } catch {}
   }, [status])
+
+  useEffect(() => {
+    try { localStorage.setItem(PAGE_STORAGE_KEY, String(page)) } catch {}
+  }, [page])
 
   useEffect(() => {
     setSelectedIds(new Set())
@@ -276,8 +290,19 @@ export function Jobs() {
   const handleBatchDelete = async () => {
     if (!confirmBatchDelete) return
     try {
-      const result = await api.batchDeleteJobs(confirmBatchDelete)
-      if (result.deleted > 0) {
+      // 当选中失败类型筛选时，只删除当前筛选类型的失败任务
+      let deletedCount = 0
+      if (confirmBatchDelete === 'failed' && failureKind) {
+        const ids = jobs.map(j => j.job_id)
+        if (ids.length > 0) {
+          const result = await api.batchDeleteJobIds(ids)
+          deletedCount = result.deleted
+        }
+      } else {
+        const result = await api.batchDeleteJobs(confirmBatchDelete)
+        deletedCount = result.deleted
+      }
+      if (deletedCount > 0) {
         setJobs(prev => prev.filter(job => job.status !== confirmBatchDelete))
         jobsRef.current = jobsRef.current.filter(job => job.status !== confirmBatchDelete)
       }
@@ -405,7 +430,9 @@ export function Jobs() {
         {batchDeleteKey && totalCount > 0 && (
           <button className="btn-danger-outline toolbar-compact-btn" style={{ marginLeft: 8 }}
             onClick={() => setConfirmBatchDelete(batchDeleteKey)}>
-            {t(`delete_all_${batchDeleteKey}`)}
+            {batchDeleteKey === 'failed' && failureKind
+              ? (lang === 'en' ? `Clear all "${formatJobFailureKind(failureKind, lang)}" failed` : `一键清除当前失败类型`)
+              : t(`delete_all_${batchDeleteKey}`)}
           </button>
         )}
         <div className="jobs-toolbar-end">
@@ -534,9 +561,17 @@ export function Jobs() {
       {confirmBatchDelete && (
         <div className="confirm-overlay" onClick={() => { setConfirmBatchDelete(null); setDeleteError(null) }}>
           <div className="confirm-dialog" onClick={e => e.stopPropagation()}>
-            <h2 style={{ margin: '0 0 16px', fontSize: 15, color: 'var(--text-primary)', textTransform: 'none', letterSpacing: 0 }}>{t(`delete_all_${confirmBatchDelete}`)}</h2>
+            <h2 style={{ margin: '0 0 16px', fontSize: 15, color: 'var(--text-primary)', textTransform: 'none', letterSpacing: 0 }}>
+              {confirmBatchDelete === 'failed' && failureKind
+                ? (lang === 'en' ? `Clear all "${formatJobFailureKind(failureKind, lang)}" failed jobs` : '一键清除当前失败类型')
+                : t(`delete_all_${confirmBatchDelete}`)}
+            </h2>
             <p style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.6, margin: '0 0 16px' }}>
-              {t(`batch_delete_confirm_${confirmBatchDelete}`, { n: String(statusCounts[confirmBatchDelete] ?? jobs.length) })}
+              {confirmBatchDelete === 'failed' && failureKind
+                ? (lang === 'en'
+                  ? `Are you sure you want to delete all ${jobs.length} failed jobs of type "${formatJobFailureKind(failureKind, lang)}"? This action cannot be undone.`
+                  : `确定删除当前类型 (${failureKind ? formatJobFailureKind(failureKind, lang) : ''}) 的全部 ${jobs.length} 条失败任务？此操作不可撤销。`)
+                : t(`batch_delete_confirm_${confirmBatchDelete}`, { n: String(statusCounts[confirmBatchDelete] ?? jobs.length) })}
             </p>
             {deleteError && <p style={{ fontSize: 12, color: 'var(--status-error)', margin: '0 0 12px' }}>{deleteError}</p>}
             <div className="confirm-actions">

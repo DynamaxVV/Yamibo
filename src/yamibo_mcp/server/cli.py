@@ -9,6 +9,21 @@ from yamibo_mcp.application.archive_commands import (
     sync_forum_range,
 )
 from yamibo_mcp.application.archive_queries import list_exports
+from yamibo_mcp.application.discussion_trend_commands import (
+    create_discussion_trend_index_job as _create_discussion_trend_index_job,
+)
+from yamibo_mcp.application.discussion_report import (
+    create_discussion_trend_report_job as _create_discussion_trend_report_job,
+    create_forum_research_report_job as _create_forum_research_report_job,
+)
+from yamibo_mcp.application.discussion_trend_queries import (
+    get_discussion_partition_trends as _get_discussion_partition_trends,
+    get_discussion_topic_trends as _get_discussion_topic_trends,
+    get_discussion_user_trends as _get_discussion_user_trends,
+    get_discussion_report as _get_discussion_report,
+    get_discussion_topic_evidence as _get_discussion_topic_evidence,
+    get_forum_evidence_pack as _get_forum_evidence_pack,
+)
 from yamibo_mcp.application.job_queries import get_job_status_payload
 from yamibo_mcp.logging import configure_logging
 from yamibo_mcp.maintenance.cleanup_data import cleanup_orphan_thread_dirs
@@ -18,6 +33,7 @@ from yamibo_mcp.server.agent_tools import (
     create_thread_archive_batch_jobs,
     search_archived_content,
 )
+from yamibo_mcp.server.agent_adapter import to_wire
 from yamibo_mcp.server.mcp_registry import build_mcp_server
 from yamibo_mcp.server.resources import read_resource
 from yamibo_mcp.application.remote_queries import (
@@ -87,6 +103,114 @@ def export_thread(*, tid: int, strategy: str | None = None) -> dict[str, object]
 
 def update_thread(*, tid: int, base_url: str | None = None) -> dict[str, object]:
     return create_update_thread_job(tid=tid, base_url=base_url)
+
+
+def _add_trend_query_parser(sub, name: str, help_text: str) -> argparse.ArgumentParser:
+    p = sub.add_parser(name, help=help_text)
+    p.add_argument("--forum-id", type=int, required=True)
+    p.add_argument("--start-date", required=True)
+    p.add_argument("--end-date", required=True)
+    p.add_argument("--version", default="trend-v1")
+    return p
+
+
+def _run_discussion_partition_trends(args: argparse.Namespace):
+    return _get_discussion_partition_trends(
+        forum_id=args.forum_id,
+        start_date=args.start_date,
+        end_date=args.end_date,
+        version=args.version,
+    )
+
+
+def _run_discussion_topic_trends(args: argparse.Namespace):
+    return _get_discussion_topic_trends(
+        forum_id=args.forum_id,
+        start_date=args.start_date,
+        end_date=args.end_date,
+        version=args.version,
+    )
+
+
+def _run_discussion_user_trends(args: argparse.Namespace):
+    return _get_discussion_user_trends(
+        forum_id=args.forum_id,
+        start_date=args.start_date,
+        end_date=args.end_date,
+        version=args.version,
+    )
+
+
+def _run_discussion_report(args: argparse.Namespace):
+    return _get_discussion_report(
+        forum_id=args.forum_id,
+        start_date=args.start_date,
+        end_date=args.end_date,
+        version=args.version,
+    )
+
+
+def _run_forum_evidence_pack(args: argparse.Namespace):
+    return _get_forum_evidence_pack(
+        forum_id=args.forum_id,
+        query=args.query,
+        start_date=args.start_date,
+        end_date=args.end_date,
+        top_k=args.top_k,
+        mode=args.mode,
+        intent=args.intent,
+        require_current_run=args.require_current_run,
+    )
+
+
+def _run_discussion_topic_evidence(args: argparse.Namespace):
+    return _get_discussion_topic_evidence(
+        forum_id=args.forum_id,
+        start_date=args.start_date,
+        end_date=args.end_date,
+        version=args.version,
+        topic_id=args.topic_id,
+        topic_label=args.topic_label,
+        top_k=args.top_k,
+        mode=args.mode,
+    )
+
+
+_TREND_QUERY_SPECS = (
+    ("discussion-partition-trends", "Query partition-level daily activity trends", _add_trend_query_parser, _run_discussion_partition_trends),
+    ("discussion-topic-trends", "Query topic-level daily trends", _add_trend_query_parser, _run_discussion_topic_trends),
+    ("discussion-user-trends", "Query user-level daily trends", _add_trend_query_parser, _run_discussion_user_trends),
+    ("discussion-report", "Query generated report artifacts", _add_trend_query_parser, _run_discussion_report),
+)
+
+
+def _build_forum_evidence_pack_parser(sub) -> argparse.ArgumentParser:
+    parser = sub.add_parser("forum-evidence-pack")
+    parser.add_argument("--forum-id", type=int, required=True)
+    parser.add_argument("--query", required=True)
+    parser.add_argument("--start-date")
+    parser.add_argument("--end-date")
+    parser.add_argument("--top-k", type=int, default=10)
+    parser.add_argument("--mode", default="auto", choices=["auto", "sql", "rag"])
+    parser.add_argument("--intent", default="general_research")
+    parser.add_argument("--require-current-run", action="store_true")
+    return parser
+
+
+def _build_discussion_topic_evidence_parser(sub) -> argparse.ArgumentParser:
+    parser = _add_trend_query_parser(sub, "discussion-topic-evidence", "Query topic evidence snippets")
+    parser.add_argument("--topic-id", type=int, default=None)
+    parser.add_argument("--topic-label", default=None)
+    parser.add_argument("--top-k", type=int, default=10)
+    parser.add_argument("--mode", default="auto", choices=["auto", "sql", "rag"])
+    return parser
+
+
+_TREND_QUERY_RUNNERS = {
+    name: runner for name, _, _, runner in _TREND_QUERY_SPECS
+}
+_TREND_QUERY_RUNNERS["forum-evidence-pack"] = _run_forum_evidence_pack
+_TREND_QUERY_RUNNERS["discussion-topic-evidence"] = _run_discussion_topic_evidence
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -170,6 +294,36 @@ def build_parser() -> argparse.ArgumentParser:
     status_parser = sub.add_parser("job-status")
     status_parser.add_argument("job_id")
     sub.add_parser("check-proxy-pool")
+    trend_parser = sub.add_parser("create-discussion-trend-index-job")
+    trend_parser.add_argument("--forum-id", type=int, required=True)
+    trend_parser.add_argument("--start-date", required=True, help="ISO date YYYY-MM-DD (inclusive)")
+    trend_parser.add_argument("--end-date", required=True, help="ISO date YYYY-MM-DD (inclusive)")
+    trend_parser.add_argument("--version", default="trend-v1")
+    trend_parser.add_argument("--retention-success-runs", type=int, default=3)
+    trend_parser.add_argument(
+        "--thresholds-json",
+        default=None,
+        help='Optional JSON object overriding default topic thresholds, e.g. \'{"min_floor_count": 10}\'',
+    )
+    # Step 05 report job subcommands
+    trend_report_parser = sub.add_parser("create-discussion-trend-report-job")
+    trend_report_parser.add_argument("--forum-id", type=int, required=True)
+    trend_report_parser.add_argument("--start-date", required=True, help="ISO date YYYY-MM-DD")
+    trend_report_parser.add_argument("--end-date", required=True, help="ISO date YYYY-MM-DD")
+    trend_report_parser.add_argument("--version", default="trend-v1")
+    trend_report_parser.add_argument("--period", default="monthly", choices=["daily", "monthly", "custom"])
+    research_parser = sub.add_parser("create-forum-research-report-job")
+    research_parser.add_argument("--forum-id", type=int, required=True)
+    research_parser.add_argument("--start-date", required=True, help="ISO date YYYY-MM-DD")
+    research_parser.add_argument("--end-date", required=True, help="ISO date YYYY-MM-DD")
+    research_parser.add_argument("--question", required=True)
+    research_parser.add_argument("--intent", default="general_research")
+    research_parser.add_argument("--query", default="")
+    # Step 04 query subcommands
+    for name, help_text, builder, _ in _TREND_QUERY_SPECS:
+        builder(sub, name, help_text)
+    _build_forum_evidence_pack_parser(sub)
+    _build_discussion_topic_evidence_parser(sub)
     return parser
 
 
@@ -294,5 +448,46 @@ def main() -> None:
         print(dump_json(get_job_status_payload(args.job_id)))
     elif command == "check-proxy-pool":
         print(dump_json(check_proxy_pool_health(load_settings())))
+    elif command == "create-discussion-trend-index-job":
+        thresholds = None
+        if args.thresholds_json:
+            try:
+                thresholds = json.loads(args.thresholds_json)
+            except json.JSONDecodeError as exc:
+                print(dump_json({"ok": False, "error": {"code": "DISCUSSION_TREND_INVALID_PAYLOAD", "message": f"--thresholds-json is not valid JSON: {exc}"}}))
+                return
+            if not isinstance(thresholds, dict):
+                print(dump_json({"ok": False, "error": {"code": "DISCUSSION_TREND_INVALID_PAYLOAD", "message": "--thresholds-json must decode to an object"}}))
+                return
+        result = _create_discussion_trend_index_job(
+            forum_id=args.forum_id,
+            start_date=args.start_date,
+            end_date=args.end_date,
+            version=args.version,
+            thresholds=thresholds,
+            retention_success_runs=args.retention_success_runs,
+        )
+        print(dump_json(to_wire(result)))
+    elif command == "create-discussion-trend-report-job":
+        result = _create_discussion_trend_report_job(
+            forum_id=args.forum_id,
+            start_date=args.start_date,
+            end_date=args.end_date,
+            version=args.version,
+            period=args.period,
+        )
+        print(dump_json(to_wire(result)))
+    elif command == "create-forum-research-report-job":
+        result = _create_forum_research_report_job(
+            forum_id=args.forum_id,
+            start_date=args.start_date,
+            end_date=args.end_date,
+            question=args.question,
+            intent=args.intent,
+            query=args.query,
+        )
+        print(dump_json(to_wire(result)))
+    elif command in _TREND_QUERY_RUNNERS:
+        print(dump_json(to_wire(_TREND_QUERY_RUNNERS[command](args))))
     else:
         parser.print_help()

@@ -9,8 +9,8 @@
 ### 1. 论坛浏览与搜索
 
 ```bash
-uv run yamibo-mcp-server browse-forum-page --page 1
-uv run yamibo-mcp-server search-threads --query "星灵感应"
+uv run yamibo-archiver browse-forum-page --page 1
+uv run yamibo-archiver search-threads --query "星灵感应"
 ```
 
 验证点：正确解析论坛列表、搜索结果，识别帖子元数据。
@@ -18,8 +18,8 @@ uv run yamibo-mcp-server search-threads --query "星灵感应"
 ### 2. 归档创建与状态跟踪
 
 ```bash
-uv run yamibo-mcp-server create-thread-archive-job --tid <tid>
-uv run yamibo-mcp-server job-status <job_id>
+uv run yamibo-archiver create-thread-archive-job --tid <tid>
+uv run yamibo-archiver job-status <job_id>
 ```
 
 验证点：任务正确入库，daemon 消费执行，状态转换正确。
@@ -27,7 +27,7 @@ uv run yamibo-mcp-server job-status <job_id>
 ### 3. 本地归档读取
 
 ```bash
-uv run yamibo-mcp-server read-resource "yamibo://threads/<tid>/summary"
+uv run yamibo-archiver read-resource "yamibo://threads/<tid>/summary"
 ```
 
 验证点：返回结构化数据，包含楼层、图片、元数据。
@@ -35,7 +35,7 @@ uv run yamibo-mcp-server read-resource "yamibo://threads/<tid>/summary"
 ### 4. RAG 检索
 
 ```bash
-uv run yamibo-mcp-server search-archived-content --query "..." --mode hybrid
+uv run yamibo-archiver search-archived-content --query "..." --mode hybrid
 ```
 
 验证点：返回相关片段，含溯源信息。

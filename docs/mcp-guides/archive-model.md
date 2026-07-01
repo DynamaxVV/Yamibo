@@ -10,9 +10,9 @@
 
 **CLI**：
 ```bash
-uv run yamibo-mcp-server browse-forum-page --page 1
-uv run yamibo-mcp-server search-threads --query "..."
-uv run yamibo-mcp-server check-thread-updates --tid <tid>
+uv run yamibo-archiver browse-forum-page --page 1
+uv run yamibo-archiver search-threads --query "..."
+uv run yamibo-archiver check-thread-updates --tid <tid>
 ```
 
 **约束**：可读取本地 SQLite 补充"是否已归档"提示。不写 thread/floor/content_blocks/assets。不下载图片。
@@ -23,10 +23,10 @@ uv run yamibo-mcp-server check-thread-updates --tid <tid>
 
 **CLI**：
 ```bash
-uv run yamibo-mcp-server search-archived-content --query "..." --mode hybrid
-uv run yamibo-mcp-server read-resource "yamibo://threads/<tid>/summary"
-uv run yamibo-mcp-server read-resource "yamibo://threads/<tid>/diagnostics"
-uv run yamibo-mcp-server job-status <job_id>
+uv run yamibo-archiver search-archived-content --query "..." --mode hybrid
+uv run yamibo-archiver read-resource "yamibo://threads/<tid>/summary"
+uv run yamibo-archiver read-resource "yamibo://threads/<tid>/diagnostics"
+uv run yamibo-archiver job-status <job_id>
 ```
 
 **MCP**：调用 `read_archived_thread` 工具，`content` 视图支持 `has_more` / `next_cursor` 分页。任务状态通过 `read_job` / `read_job_events` 读取。
@@ -37,9 +37,9 @@ uv run yamibo-mcp-server job-status <job_id>
 
 **CLI**：
 ```bash
-uv run yamibo-mcp-server create-thread-archive-job --tid <tid>
-uv run yamibo-mcp-server create-export-thread-job --tid <tid>
-uv run yamibo-mcp-server create-rag-index-job --tid <tid>
+uv run yamibo-archiver create-thread-archive-job --tid <tid>
+uv run yamibo-archiver create-export-thread-job --tid <tid>
+uv run yamibo-archiver create-rag-index-job --tid <tid>
 ```
 
 **约束**：命令层只创建 job，执行由 daemon 负责。结果通过 `job-status` 或资源 URI 读取。
@@ -49,7 +49,7 @@ uv run yamibo-mcp-server create-rag-index-job --tid <tid>
 批量归档前先用探测工具判断是否需要补跑：
 
 ```bash
-uv run yamibo-mcp-server probe-archived-threads --tid <tid1> --tid <tid2>
+uv run yamibo-archiver probe-archived-threads --tid <tid1> --tid <tid2>
 ```
 
 探测只读本地归档状态，不创建 job，不抓远端。

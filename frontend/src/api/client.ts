@@ -239,10 +239,34 @@ export interface ThreadImage {
 }
 
 export interface LogEntry {
-  ts: number
+  ts: string
   level: string
-  logger: string
-  msg: string
+  service: string
+  component: string
+  event_type: string
+  message: string
+  result: string
+  status: string
+  job_id?: string
+  job_type?: string
+  tid?: number
+  forum_id?: number
+  run_id?: string
+  stage?: string
+  worker_id?: string
+  error_code?: string
+  error_message?: string
+  retryable?: boolean
+  attempt?: number
+  duration_ms?: number
+  fallback_mode?: string
+  fallback_reason?: string
+  warning_codes?: string[]
+  agent_hint?: string
+  next_action?: string
+  trace_id?: string
+  correlation_id?: string
+  tags?: string[]
 }
 
 export interface DashboardData {
@@ -274,6 +298,21 @@ export interface DashboardData {
     interrupted: number
     paused: number
   }
+}
+
+export interface DaemonStatus {
+  operational_mode: 'active' | 'idle' | 'paused' | 'remote_paused'
+  jobs_enabled: boolean
+  job_counts: {
+    queued: number
+    running: number
+    retrying: number
+    interrupted: number
+    paused: number
+  }
+  daemon_alive: boolean
+  worker_count: number
+  remote_access_paused: boolean
 }
 
 export interface FontAsset {
@@ -523,6 +562,7 @@ export const api = {
   job: (id: string) => fetchJson<JobSummary>(`/jobs/${id}`),
   jobEvents: (id: string) => fetchJson<JobEvent[]>(`/jobs/${id}/events`),
   resumeRemoteAccess: () => postJson<{ ok: boolean; resumed_job_ids: string[]; resumed_job_count: number }>('/remote-access/resume', {}),
+  daemonStatus: () => fetchJson<DaemonStatus>('/daemon/status'),
   controlJobs: (action: 'pause' | 'resume') => postJson<{ ok: boolean; action: string; changed_job_ids: string[]; changed_count: number; job_control: DashboardData['job_control'] }>('/jobs/control', { action }),
   threads: (params?: { q?: string; forum_id?: number; days?: number; archive_status?: string; sort_key?: string; sort_dir?: string; page?: number; page_size?: number }) => {
     const qs = new URLSearchParams()

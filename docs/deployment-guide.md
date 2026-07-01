@@ -1,6 +1,6 @@
 # 部署指南 & 运维手册
 
-> 版本：0.11.1 | 更新日期：2026-07-01
+> 版本：0.12.0 | 更新日期：2026-07-02
 
 ## 1. 环境要求
 
@@ -96,7 +96,7 @@ uv sync --extra dev
 | `denied_patterns` | `[]` | 正则黑名单，匹配任意一项即排除 |
 | `max_delay_ms` | `0` | 延迟上限（毫秒），超过的排除（0 = 不限制） |
 
-验证配置：`uv run yamibo-mcp-server check-proxy-pool`
+验证配置：`uv run yamibo-archiver check-proxy-pool`
 
 #### Cookie 定时刷新
 
@@ -185,15 +185,15 @@ Daemon 启动后，Web 控制台自动在 `http://127.0.0.1:8765` 提供服务�
 MCP Server 不需要手动启动。配置好 LLM 客户端后，客户端会自动调用：
 
 ```bash
-uv run yamibo-mcp-server stdio
+uv run yamibo-archiver stdio
 ```
 
 支持的传输模式：
 
 ```bash
-uv run yamibo-mcp-server stdio                        # 默认 stdio
-uv run yamibo-mcp-server stdio --transport sse         # SSE
-uv run yamibo-mcp-server stdio --transport streamable-http  # HTTP
+uv run yamibo-archiver stdio                        # 默认 stdio
+uv run yamibo-archiver stdio --transport sse         # SSE
+uv run yamibo-archiver stdio --transport streamable-http  # HTTP
 ```
 
 ### 3.3 CLI 直接调用（无需启动服务）
@@ -201,11 +201,11 @@ uv run yamibo-mcp-server stdio --transport streamable-http  # HTTP
 所有 MCP 工具也可通过命令行直接调用，返回 JSON 结果：
 
 ```bash
-uv run yamibo-mcp-server browse-forum-page --page 1
-uv run yamibo-mcp-server search-threads --query "关键词"
-uv run yamibo-mcp-server create-sync-thread-job --tid 572313
-uv run yamibo-mcp-server job-status <job_id>
-uv run yamibo-mcp-server read-resource "yamibo://threads/572313/summary"
+uv run yamibo-archiver browse-forum-page --page 1
+uv run yamibo-archiver search-threads --query "关键词"
+uv run yamibo-archiver create-sync-thread-job --tid 572313
+uv run yamibo-archiver job-status <job_id>
+uv run yamibo-archiver read-resource "yamibo://threads/572313/summary"
 ```
 
 ---
@@ -217,7 +217,7 @@ uv run yamibo-mcp-server read-resource "yamibo://threads/572313/summary"
 如果你的 LLM 客户端支持通过 URL 连接 MCP 服务，可以使用 SSE 模式：
 
 ```bash
-uv run yamibo-mcp-server stdio --transport sse
+uv run yamibo-archiver stdio --transport sse
 ```
 
 对应的客户端配置一般写成指向 SSE 入口的 URL，例如：
@@ -244,7 +244,7 @@ SSE 适合常驻服务进程；如果客户端只支持本地命令启动，继�
   "mcpServers": {
     "yamibo": {
       "command": "uv",
-      "args": ["run", "yamibo-mcp-server", "stdio"],
+      "args": ["run", "yamibo-archiver", "stdio"],
       "cwd": "/path/to/yamibo"
     }
   }
@@ -260,7 +260,7 @@ SSE 适合常驻服务进程；如果客户端只支持本地命令启动，继�
   "servers": {
     "yamibo": {
       "command": "uv",
-      "args": ["run", "yamibo-mcp-server", "stdio"],
+      "args": ["run", "yamibo-archiver", "stdio"],
       "cwd": "/path/to/yamibo"
     }
   }

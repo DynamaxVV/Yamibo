@@ -60,6 +60,7 @@ compact solutions.
 
 <explore>
 1. Identify the recently modified code sections provided
+   - In this repo, start from the current `git diff` and treat discussion-trend query/report shaping plus wrapper/CLI registration drift as high-value simplification targets when they appear in the touched set.
 2. Analyze for opportunities to improve elegance and consistency
 3. Apply project-specific best practices and coding standards
 4. Ensure all functionality remains unchanged

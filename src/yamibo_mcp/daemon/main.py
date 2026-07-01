@@ -9,7 +9,7 @@ from yamibo_mcp.daemon.runner import DaemonRunner
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run YamiboMCP daemon.")
+    parser = argparse.ArgumentParser(description="Run YamiboArchiver daemon.")
     parser.add_argument("--once", action="store_true", help="Process at most one job and exit.")
     parser.add_argument("--worker-id", help="Override worker id.")
     parser.add_argument("--no-web", action="store_true", help="Do not start the embedded web console.")

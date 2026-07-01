@@ -7,9 +7,16 @@ export type JobFailureKind =
   | 'local_missing'
   | 'empty_content'
   | 'forum_closed'
+  | 'thread_deleted'
+  | 'thread_permission'
   | 'thread_missing'
   | 'login_required'
   | 'maintenance'
+  | 'remote_http_404'
+  | 'remote_http_error'
+  | 'remote_timeout'
+  | 'remote_connection'
+  | 'remote_blocked'
   | 'remote_fetch'
   | 'unexpected_page'
   | 'validation'
@@ -21,9 +28,16 @@ const JOB_FAILURE_KIND_LABELS: Record<'zh' | 'en', Record<JobFailureKind, string
     local_missing: '本地缺档',
     empty_content: '正文为空',
     forum_closed: '查无此区/已关闭',
-    thread_missing: '主题不存在/已删除',
+    thread_deleted: '帖子已删除',
+    thread_permission: '帖子权限不足',
+    thread_missing: '主题不存在',
     login_required: '需要登录',
     maintenance: '论坛维护',
+    remote_http_404: 'HTTP 404',
+    remote_http_error: 'HTTP 错误',
+    remote_timeout: '请求超时',
+    remote_connection: '连接错误',
+    remote_blocked: '反爬拦截',
     remote_fetch: '远程抓取失败',
     unexpected_page: '页面不符合预期',
     validation: '校验失败',
@@ -34,9 +48,16 @@ const JOB_FAILURE_KIND_LABELS: Record<'zh' | 'en', Record<JobFailureKind, string
     local_missing: 'Local archive missing',
     empty_content: 'Empty content',
     forum_closed: 'Forum closed',
+    thread_deleted: 'Thread deleted',
+    thread_permission: 'Thread permission denied',
     thread_missing: 'Thread missing',
     login_required: 'Login required',
     maintenance: 'Maintenance',
+    remote_http_404: 'HTTP 404',
+    remote_http_error: 'HTTP Error',
+    remote_timeout: 'Timeout',
+    remote_connection: 'Connection Error',
+    remote_blocked: 'Blocked',
     remote_fetch: 'Remote fetch failed',
     unexpected_page: 'Unexpected page',
     validation: 'Validation failed',
@@ -103,9 +124,20 @@ export function getJobFailureKind(job: JobFailureLike): JobFailureKind | null {
   if (includesAny(combined, ['local_archive_not_found', 'export_precheck_failed', 'not archived locally', 'thread archive is partial', 'thread archive is not complete'])) return 'local_missing'
   if (includesAny(combined, ['content is required when no images are present'])) return 'empty_content'
   if (pageType === 'prompt_forum_closed' || includesAny(combined, ['查无此区', '此区已关闭', '版块已关闭'])) return 'forum_closed'
-  if (pageType === 'prompt_thread_missing_or_removed_or_review' || includesAny(combined, ['指定的主题不存在', '已被删除', '正在被审核'])) return 'thread_missing'
+  if (pageType === 'prompt_thread_missing_or_removed_or_review' || includesAny(combined, ['指定的主题不存在', '正在被审核'])) return 'thread_missing'
+  if (includesAny(combined, ['已被删除', 'thread_deleted'])) return 'thread_deleted'
+  // 权限不足（非 255 的删除码 / 群组限制 / 用户组升级）
+  if (includesAny(errorCode, ['remote_thread_permission_required', 'group_access_denied', 'user_group_upgrade_required'])) return 'thread_permission'
   if (includesAny(errorCode, ['loginrequirederror', 'remote_login_required']) || includesAny(combined, ['login required', 'login_required'])) return 'login_required'
-  if (includesAny(errorCode, ['remotemaintenanceerror', 'remote_maintenance']) || combined.includes('maintenance')) return 'maintenance'
+  // 维护 / 反爬暂停
+  if (includesAny(errorCode, ['remotemaintenanceerror', 'remote_maintenance', 'remote_access_paused']) || combined.includes('maintenance')) return 'maintenance'
+  // 远程抓取类 — 细分
+  if (includesAny(errorCode, ['remote_http_404'])) return 'remote_http_404'
+  if (includesAny(errorCode, ['remote_http_403', 'remote_http_5xx', 'remote_http_xxx'])) return 'remote_http_error'
+  if (includesAny(errorCode, ['remote_timeout'])) return 'remote_timeout'
+  if (includesAny(errorCode, ['remote_connection_error'])) return 'remote_connection'
+  if (includesAny(errorCode, ['remote_soft_block'])) return 'remote_blocked'
+  // 远程抓取兜底
   if (includesAny(errorCode, ['remotefetcherror', 'remote_fetch_failed']) || includesAny(combined, ['failed to read', 'remote fetch'])) return 'remote_fetch'
   if (includesAny(errorCode, ['unexpectedpageerror', 'unexpected_remote_page']) || includesAny(combined, ['unexpected page', 'expected thread detail page'])) return 'unexpected_page'
   if (includesAny(errorCode, ['invalid_argument', 'valueerror'])) return 'validation'

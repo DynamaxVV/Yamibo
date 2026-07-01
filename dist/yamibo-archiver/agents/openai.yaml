@@ -1,0 +1,7 @@
+interface:
+  display_name: "YamiboArchiver 中文助手"
+  short_description: "用于检索、浏览、归档、读取本地归档，并执行 Discussion Trend V1 趋势查询与 evidence/report 工作流"
+  default_prompt: "Use $yamibo-archiver to search, browse, inspect remote previews, read local archives, probe local archive state, and manage archive/update/export/RAG jobs across Yamibo forum sections. For PostgreSQL-backed discussion analysis, also use the Discussion Trend V1 tools: create_discussion_trend_index_job, get_discussion_partition_trends, get_discussion_topic_trends, get_discussion_user_trends, get_discussion_topic_evidence, get_forum_evidence_pack, create_discussion_trend_report_job, create_forum_research_report_job, and get_discussion_report. Prefer guide resources (yamibo://guide/agent-workflows, yamibo://guide/archive-model, yamibo://guide/error-codes, yamibo://guide/agent-evaluation) and use read_job, yamibo://jobs/{job_id}/status, wait_for_job, and read_job_events for long-running tasks."
+
+policy:
+  allow_implicit_invocation: true

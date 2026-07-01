@@ -25,7 +25,7 @@ from yamibo_mcp.services.title_hints import update_title_hints
 from yamibo_mcp.services.title_llm import refine_title_parse_with_llm, title_parse_to_dict
 from yamibo_mcp.daemon.heartbeat import HeartbeatPacer
 from yamibo_mcp.yamibo.account_pool import borrow_yamibo_client, has_configured_account_pool, next_permission_threshold
-from yamibo_mcp.errors import ThreadPermissionRequiredError
+from yamibo_mcp.errors import ThreadPermissionRequiredError, UnexpectedPageError, _extract_permission_code
 from yamibo_mcp.yamibo.client import YamiboClient
 from yamibo_mcp.yamibo.parsers.thread_detail import parse_thread_snapshot
 from yamibo_mcp.yamibo.proxy_pool import select_thread_proxy
@@ -115,6 +115,15 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
                 if has_configured_account_pool(settings):
                     min_permission: int | None = None
                     identity = None
+                    LOG.info(
+                        "sync_thread job=%s tid=%s entering account pool loop (accounts: %s)",
+                        job.job_id, tid,
+                        ", ".join(
+                            f"{a.account_id}:{a.permission_level}"
+                            for a in getattr(settings, "account_pool", [])
+                            if getattr(a, "enabled", True)
+                        ) or "(none)",
+                    )
                     while True:
                         try:
                             identity, client = stack.enter_context(
@@ -152,9 +161,7 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
                             source_url = fetched.final_url
                             break
                         except ThreadPermissionRequiredError as exc:
-                            if min_permission is not None:
-                                raise
-                            next_min_permission = next_permission_threshold(exc.required_permission)
+                            next_min_permission = next_permission_threshold(exc.required_permission, current_min=min_permission)
                             account_id = getattr(identity, "account_id", "unknown")
                             LOG.info(
                                 "sync_thread job=%s switching account after permission gate account_id=%s required_permission=%s next_min_permission=%s",
@@ -167,6 +174,42 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
                             client_stack = ExitStack()
                             stack = client_stack
                             min_permission = next_min_permission
+                            # 循环回到顶部以更高的 min_permission 重试借号
+                        except UnexpectedPageError as exc:
+                            # 「错误权限代码 30/40/50/100」实际是权限不足，尝试升级账号
+                            code = _extract_permission_code(str(exc))
+                            if code is not None and code != 255:
+                                account_id = getattr(identity, "account_id", "unknown")
+                                current_level = getattr(identity, "permission_level", "unknown")
+                                next_min = (min_permission or 0) + 1
+                                LOG.warning(
+                                    "sync_thread job=%s permission denied (code=%s) account_id=%s current_level=%s "
+                                    "min_permission=%s next_min_permission=%s — escalating",
+                                    job.job_id, code, account_id, current_level, min_permission, next_min,
+                                )
+                                stack.close()
+                                client_stack = ExitStack()
+                                stack = client_stack
+                                min_permission = next_min
+                            else:
+                                raise
+                        except ValueError:
+                            # acquire() 找不到满足 min_permission 的账号 →
+                            # 若在此之前已触发权限升级，说明最高权限号也不够，上抛原错误
+                            if min_permission:
+                                LOG.warning(
+                                    "sync_thread job=%s no account with permission >= %s in pool (accounts: %s)",
+                                    job.job_id, min_permission,
+                                    ", ".join(
+                                        f"{a.account_id}:{a.permission_level}"
+                                        for a in getattr(settings, "account_pool", [])
+                                        if getattr(a, "enabled", True)
+                                    ) or "(none)",
+                                )
+                                raise ThreadPermissionRequiredError(
+                                    f"no account with permission >= {min_permission} available in pool"
+                                ) from None
+                            raise
                 else:
                     client = YamiboClient(
                         timeout=getattr(settings, "request_timeout_seconds", 15.0),

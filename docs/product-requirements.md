@@ -122,7 +122,7 @@ Yamibo Archive — 百合会漫画本地归档系统
                            │ MCP Protocol (stdio/SSE)
                            ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                    yamibo-mcp-server                             │
+│                    yamibo-archiver                             │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐       │
 │  │  Tools   │  │Resources │  │ Protocol │  │  Schemas │       │
 │  └──────────┘  └──────────┘  └──────────┘  └──────────┘       │
@@ -155,7 +155,7 @@ Yamibo Archive — 百合会漫画本地归档系统
 
 | 组件 | 入口 | 职责 |
 |------|------|------|
-| MCP Server | `yamibo-mcp-server stdio` | 接收 LLM 客户端请求，创建任务到 SQLite |
+| MCP Server | `yamibo-archiver stdio` | 接收 LLM 客户端请求，创建任务到 SQLite |
 | Daemon | `yamibo-daemon` | 轮询 SQLite，抢占任务并执行处理器 |
 | Web Console | 嵌入 Daemon | HTTP 管理界面 |
 | Yamibo Client | `yamibo/client.py` | 论坛 HTTP 客户端，含登录、Cookie 管理 |

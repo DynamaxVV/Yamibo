@@ -23,13 +23,13 @@
 ### 查看任务失败原因
 
 ```bash
-uv run yamibo-mcp-server job-status <job_id>
+uv run yamibo-archiver job-status <job_id>
 ```
 
 ### 查看远程访问暂停状态
 
 ```bash
-uv run yamibo-mcp-server read-resource "yamibo://system/remote-access-pause"
+uv run yamibo-archiver read-resource "yamibo://system/remote-access-pause"
 ```
 
 ### 手动恢复远程访问

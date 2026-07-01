@@ -81,7 +81,7 @@ def test_run_once_moves_retryable_remote_fetch_error_to_retrying(tmp_path, monke
 
     assert result.processed == 1
     assert calls["job_id"] == job.job_id
-    assert calls["error_code"] == "RemoteFetchError"
+    assert calls["error_code"] == "REMOTE_CONNECTION_ERROR"
     assert calls["artifacts"]["failure_context"]["exception_type"] == "RemoteFetchError"
 
 
@@ -141,7 +141,7 @@ def test_run_once_rolls_back_handler_transaction_before_marking_failed(tmp_path,
 
     assert result.processed == 1
     assert calls["job_id"] == job.job_id
-    assert calls["error_code"] == "RuntimeError"
+    assert calls["error_code"] == "INTERNAL_ERROR"
     assert calls["artifacts"]["failure_context"]["exception_type"] == "RuntimeError"
 
 
@@ -181,7 +181,7 @@ def test_run_once_logs_permission_error_without_traceback(tmp_path, monkeypatch,
 
     assert result.processed == 1
     assert calls["job_id"] == job.job_id
-    assert calls["error_code"] == "ThreadPermissionRequiredError"
+    assert calls["error_code"] == "REMOTE_THREAD_PERMISSION_REQUIRED"
     assert "requires higher read permission" in caplog.text
 
 
@@ -228,16 +228,21 @@ def test_run_once_pauses_on_http_444(tmp_path, monkeypatch):
         "yamibo_mcp.daemon.runner.JobsRepository.fail",
         lambda self, job_id, error_code, error_message, artifacts=None: fail_calls.append(job_id),
     )
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.runner.JobsRepository.retry_later",
+        lambda self, job_id, *, error_code, error_message, artifacts=None: None,
+    )
+    monkeypatch.setattr("yamibo_mcp.daemon.runner.clear_proxy_cache", lambda: 0)
 
     # Clear 444 counter before test
     with runner_mod._444_LOCK:
         runner_mod._444_EVENTS.clear()
 
-    # First 444 — should fail single job, NOT escalate
+    # First 444 — should retry job with different proxy, NOT fail or pause
     result1 = runner.run_once()
     assert result1.processed == 1
     assert len(pause_calls) == 0  # no global pause
-    assert len(fail_calls) == 1   # single job failed
+    assert len(fail_calls) == 0   # retry_later instead of fail
 
     # Second 444
     result2 = runner.run_once()
@@ -248,4 +253,4 @@ def test_run_once_pauses_on_http_444(tmp_path, monkeypatch):
     assert result3.processed == 1
     assert len(pause_calls) == 1
     assert "3 times within" in pause_calls[0]["message"]
-    assert len(fail_calls) == 2  # first two failed, third paused
+    assert len(fail_calls) == 0  # all three retried, third also paused globally

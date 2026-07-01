@@ -27,6 +27,15 @@ _BOOTSTRAP_TABLES: tuple[str, ...] = (
     "sync_runs",
     "rag_index_meta",
     "rag_chunks",
+    "discussion_index_runs",
+    "discussion_current_indexes",
+    "discussion_topics",
+    "discussion_topic_assignments",
+    "discussion_partition_daily",
+    "discussion_topic_daily",
+    "discussion_user_daily",
+    "discussion_report_runs",
+    "discussion_rag_chunk_topics",
 )
 
 
@@ -42,6 +51,18 @@ def upgrade_postgres_schema(connection: Any, *, schema: str = "public") -> None:
             raise FileNotFoundError(f"Alembic script location not found: {script_location}")
 
         raw_connection.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"'))
+        # Pre-create alembic_version with VARCHAR(255) so revision IDs longer than
+        # the default 32 chars fit. Migration 003+ (003_add_jobs_parent_created_index
+        # = 33 chars) would otherwise crash on the first upgrade that updates
+        # alembic_version. We pre-create the table because alembic runs its own
+        # migration in a single transaction that we can't easily widen mid-flight.
+        raw_connection.execute(
+            text(
+                f'CREATE TABLE IF NOT EXISTS "{schema}".alembic_version ('
+                "version_num VARCHAR(255) NOT NULL"
+                ")"
+            )
+        )
         config = Config()
         config.set_main_option("script_location", str(script_location))
         config.attributes["connection"] = raw_connection

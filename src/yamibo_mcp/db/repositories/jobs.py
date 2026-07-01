@@ -11,6 +11,7 @@ from yamibo_mcp.domain.enums import JobStatus
 from yamibo_mcp.domain.job_state import new_job_id
 from yamibo_mcp.domain.models import Job
 from yamibo_mcp.errors import JobNotFound, LeaseNotAcquired
+from yamibo_mcp.structured_logging import emit
 from yamibo_mcp.time_utils import utc_after_iso, utc_now_iso
 
 LOG = logging.getLogger(__name__)
@@ -202,6 +203,9 @@ class JobsRepository:
                 self._mark_superseded_rows(superseded_job_ids, superseded_by_job_id=job_id, now=now)
         self.conn.commit()
         self._append_event(job_id, "job.created", status=JobStatus.QUEUED.value)
+        emit(LOG, logging.INFO, "job.created", f"Job {job_id} created",
+             result="success", status=JobStatus.QUEUED.value,
+             job_id=job_id, job_type=job_type, tid=tid)
         for superseded_job_id in superseded_job_ids:
             self._append_event(
                 superseded_job_id,
@@ -492,6 +496,8 @@ class JobsRepository:
             stage="acquired",
             payload={"worker_id": worker_id},
         )
+        emit(LOG, logging.INFO, "job.started", f"Job {job_id} started by {worker_id}",
+             result="success", status=JobStatus.RUNNING.value, stage="acquired")
         return self.get(job_id)
 
     def heartbeat(self, job_id: str, worker_id: str, lease_seconds: int) -> None:
@@ -577,6 +583,8 @@ class JobsRepository:
             status=JobStatus.SUCCEEDED.value,
             payload={"artifacts": artifacts or {}},
         )
+        emit(LOG, logging.INFO, "job.succeeded", f"Job {job_id} succeeded",
+             result="success", status=JobStatus.SUCCEEDED.value, stage="finalize")
 
     def fail(
         self,
@@ -622,6 +630,9 @@ class JobsRepository:
                 "artifacts": next_artifacts,
             },
         )
+        emit(LOG, logging.ERROR, "job.failed", f"Job {job_id} failed: {error_code}",
+             result="failure", status=JobStatus.FAILED.value,
+             error_code=error_code, error_message=error_message)
 
     def retry_later(
         self,
@@ -677,6 +688,10 @@ class JobsRepository:
                 "artifacts": next_artifacts,
             },
         )
+        emit(LOG, logging.WARNING, "job.retrying", f"Job {job_id} retrying ({refreshed.retry_count}/{refreshed.max_retries}): {error_code}",
+             result="retry", status=JobStatus.RETRYING.value,
+             error_code=error_code, error_message=error_message,
+             attempt=refreshed.retry_count)
         return True
 
     def partial(self, job_id: str, artifacts: dict[str, Any] | None = None) -> None:
@@ -750,6 +765,8 @@ class JobsRepository:
         cur = self._with_locked_retry(_pause)
         if cur.rowcount > 0:
             self._append_event(job_id, "job.paused", status=JobStatus.PAUSED.value)
+            emit(LOG, logging.INFO, "job.paused", f"Job {job_id} paused",
+                 result="success", status=JobStatus.PAUSED.value)
         return cur.rowcount > 0
 
     def finalize_pause(self, job_id: str) -> bool:
@@ -788,6 +805,8 @@ class JobsRepository:
         cur = self._with_locked_retry(_resume)
         if cur.rowcount > 0:
             self._append_event(job_id, "job.resumed", status=JobStatus.QUEUED.value)
+            emit(LOG, logging.INFO, "job.resumed", f"Job {job_id} resumed",
+                 result="success", status=JobStatus.QUEUED.value)
         return cur.rowcount > 0
 
     def release_expired_paused_jobs(self) -> int:

@@ -25,3 +25,5 @@ class JobType(StrEnum):
     CLEANUP_JOB = "cleanup_job"
     TITLE_REFINE = "title_refine"
     RAG_INDEX = "rag_index"
+    DISCUSSION_TREND_INDEX = "discussion_trend_index"
+    DISCUSSION_TREND_REPORT = "discussion_trend_report"

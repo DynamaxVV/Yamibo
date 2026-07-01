@@ -1,6 +1,6 @@
 # 用户操作手册
 
-> 版本：0.11.1 | 更新日期：2026-07-01
+> 版本：0.12.0 | 更新日期：2026-07-02
 
 ## 1. 快速开始
 
@@ -27,10 +27,10 @@ uv run yamibo-daemon
 
 ```bash
 # 浏览论坛第 1 页
-uv run yamibo-mcp-server browse-forum-page --page 1
+uv run yamibo-archiver browse-forum-page --page 1
 
 # 读取论坛分区列表
-uv run yamibo-mcp-server read-resource "yamibo://forums/index"
+uv run yamibo-archiver read-resource "yamibo://forums/index"
 ```
 
 ---
@@ -43,61 +43,61 @@ CLI 是主要操作方式，所有命令返回 JSON 格式结果，方便脚本�
 
 ```bash
 # 浏览论坛
-uv run yamibo-mcp-server browse-forum-page --page 1
-uv run yamibo-mcp-server browse-forum-page --page 1 --forum-id 55
-uv run yamibo-mcp-server browse-forum-page --page 1 --order dateline
+uv run yamibo-archiver browse-forum-page --page 1
+uv run yamibo-archiver browse-forum-page --page 1 --forum-id 55
+uv run yamibo-archiver browse-forum-page --page 1 --order dateline
 
 # 搜索帖子
-uv run yamibo-mcp-server search-threads --query "星灵感应"
+uv run yamibo-archiver search-threads --query "星灵感应"
 ```
 
 ### 2.2 归档与更新
 
 ```bash
 # 创建归档任务
-uv run yamibo-mcp-server create-thread-archive-job --tid 572313
+uv run yamibo-archiver create-thread-archive-job --tid 572313
 
 # 批量归档
-uv run yamibo-mcp-server create-sync-thread-batch-jobs --tid 572313 --tid 572314
-uv run yamibo-mcp-server create-sync-forum-range-jobs --start-page 1 --end-page 5
+uv run yamibo-archiver create-sync-thread-batch-jobs --tid 572313 --tid 572314
+uv run yamibo-archiver create-sync-forum-range-jobs --start-page 1 --end-page 5
 
 # 批量探测（先查本地状态再决定是否补跑）
-uv run yamibo-mcp-server probe-archived-threads --tid 572313 --tid 572314
+uv run yamibo-archiver probe-archived-threads --tid 572313 --tid 572314
 
 # 检查轻小说更新
-uv run yamibo-mcp-server check-thread-updates --tid 544422
-uv run yamibo-mcp-server update-thread --tid 544422
+uv run yamibo-archiver check-thread-updates --tid 544422
+uv run yamibo-archiver update-thread --tid 544422
 ```
 
 ### 2.3 导出
 
 ```bash
-uv run yamibo-mcp-server create-export-thread-job --tid 572313
+uv run yamibo-archiver create-export-thread-job --tid 572313
 ```
 
 ### 2.4 任务监控
 
 ```bash
-uv run yamibo-mcp-server job-status <job_id>
+uv run yamibo-archiver job-status <job_id>
 ```
 
 ### 2.5 本地检索
 
 ```bash
 # 构建 RAG 索引
-uv run yamibo-mcp-server create-rag-index-job --tid 572313
-uv run yamibo-mcp-server create-rag-index-batch-jobs --tid 572313 --tid 572314
+uv run yamibo-archiver create-rag-index-job --tid 572313
+uv run yamibo-archiver create-rag-index-batch-jobs --tid 572313 --tid 572314
 
 # 搜索归档内容
-uv run yamibo-mcp-server search-archived-content --query "星空 告白" --mode hybrid --top-k 5
+uv run yamibo-archiver search-archived-content --query "星空 告白" --mode hybrid --top-k 5
 ```
 
 ### 2.6 读取资源
 
 ```bash
-uv run yamibo-mcp-server read-resource "yamibo://threads/572313/summary"
-uv run yamibo-mcp-server read-resource "yamibo://threads/572313/diagnostics"
-uv run yamibo-mcp-server read-resource "yamibo://forums/index"
+uv run yamibo-archiver read-resource "yamibo://threads/572313/summary"
+uv run yamibo-archiver read-resource "yamibo://threads/572313/diagnostics"
+uv run yamibo-archiver read-resource "yamibo://forums/index"
 ```
 
 ---

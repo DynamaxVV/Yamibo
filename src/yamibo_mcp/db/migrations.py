@@ -356,7 +356,7 @@ def _seed_default_forums(conn: sqlite3.Connection) -> None:
 def main() -> None:
     from yamibo_mcp.db.connection import connect
 
-    parser = argparse.ArgumentParser(description="Initialize YamiboMCP database.")
+    parser = argparse.ArgumentParser(description="Initialize YamiboArchiver database.")
     parser.add_argument("--db", help="Override SQLite database path.")
     args = parser.parse_args()
     settings = load_settings()

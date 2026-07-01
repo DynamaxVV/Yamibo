@@ -14,6 +14,7 @@ class PageType(StrEnum):
     PROMPT_FORUM_CLOSED = "prompt_forum_closed"
     PROMPT_THREAD_MISSING_OR_REMOVED_OR_REVIEW = "prompt_thread_missing_or_removed_or_review"
     PROMPT_THREAD_PERMISSION_REQUIRED = "prompt_thread_permission_required"
+    PROMPT_USER_GROUP_UPGRADE_REQUIRED = "prompt_user_group_upgrade_required"
     UNKNOWN = "unknown"
 
 
@@ -56,6 +57,8 @@ def classify_html(html: str) -> PageClassification:
             )
         if re.search(r"阅读权限高于\s*\d+", prompt_text):
             return PageClassification(PageType.PROMPT_THREAD_PERMISSION_REQUIRED, f"discuz prompt: {prompt_text}")
+        if "您需要升级您所在的用户组" in prompt_text:
+            return PageClassification(PageType.PROMPT_USER_GROUP_UPGRADE_REQUIRED, f"discuz prompt: {prompt_text}")
         if "提示信息" in html and prompt_text_lower:
             return PageClassification(PageType.UNKNOWN, f"discuz prompt: {prompt_text}")
     return PageClassification(PageType.UNKNOWN, "no known marker")

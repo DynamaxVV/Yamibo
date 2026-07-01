@@ -50,7 +50,11 @@ def validate_thread_snapshot(snapshot: ThreadSnapshot) -> ValidationResult:
         # 楼主楼层需要严格，普通回复楼如果被清洗成空则记 warning，不阻断整帖归档。
         if not floor.content and not floor.has_images:
             floor_publisher = (floor.publisher or "").strip()
-            is_primary_content_floor = floor.floor_no == 1 or (floor_publisher and floor_publisher in main_publishers)
+            # 只有真正的楼主（floor_no==1）才要求内容/图片必须存在；
+            # 同为 thread_publisher 的其他楼层（如连载帖中作者更新的后续楼层）
+            # 可能因权限不足被锁定而导致内容为空，这种情况记录 warning 即可，
+            # 不应该阻断整个帖子的归档。
+            is_primary_content_floor = floor.floor_no == 1
             if is_primary_content_floor:
                 errors.append(f"floor {floor.pid} content is required when no images are present")
             else:

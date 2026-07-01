@@ -12,6 +12,21 @@ from yamibo_mcp.application.archive_queries import (
     probe_archived_threads as _probe_archived_threads,
     read_forum_profiles as _read_forum_profiles,
 )
+from yamibo_mcp.application.discussion_trend_commands import (
+    create_discussion_trend_index_job as _create_discussion_trend_index_job,
+)
+from yamibo_mcp.application.discussion_report import (
+    create_discussion_trend_report_job as _create_discussion_trend_report_job,
+    create_forum_research_report_job as _create_forum_research_report_job,
+)
+from yamibo_mcp.application.discussion_trend_queries import (
+    get_discussion_partition_trends as _get_discussion_partition_trends,
+    get_discussion_topic_trends as _get_discussion_topic_trends,
+    get_discussion_user_trends as _get_discussion_user_trends,
+    get_discussion_report as _get_discussion_report,
+    get_discussion_topic_evidence as _get_discussion_topic_evidence,
+    get_forum_evidence_pack as _get_forum_evidence_pack,
+)
 from yamibo_mcp.application.job_queries import read_job as _read_job
 from yamibo_mcp.application.job_queries import read_job_events as _read_job_events
 from yamibo_mcp.application.job_queries import wait_for_job as _wait_for_job
@@ -257,6 +272,213 @@ def read_forum_profiles() -> AgentResult:
     return _read_forum_profiles()
 
 
+@agent_tool
+def create_discussion_trend_index_job(
+    *,
+    forum_id: int,
+    start_date: str,
+    end_date: str,
+    version: str = "trend-v1",
+    thresholds: dict[str, float | int] | None = None,
+    retention_success_runs: int = 3,
+) -> AgentResult:
+    return _create_discussion_trend_index_job(
+        forum_id=forum_id,
+        start_date=start_date,
+        end_date=end_date,
+        version=version,
+        thresholds=thresholds,
+        retention_success_runs=retention_success_runs,
+    )
+
+
+@agent_tool
+def get_discussion_partition_trends(
+    *,
+    forum_id: int,
+    start_date: str,
+    end_date: str,
+    version: str = "trend-v1",
+    granularity: str = "day",
+) -> AgentResult:
+    return _get_discussion_partition_trends(
+        forum_id=forum_id,
+        start_date=start_date,
+        end_date=end_date,
+        version=version,
+        granularity=granularity,
+    )
+
+
+@agent_tool
+def get_discussion_topic_trends(
+    *,
+    forum_id: int,
+    start_date: str,
+    end_date: str,
+    version: str = "trend-v1",
+    top_k: int = 20,
+    min_floor_count: int | None = None,
+    min_thread_count: int | None = None,
+    min_user_count: int | None = None,
+    min_confidence: float | None = None,
+) -> AgentResult:
+    return _get_discussion_topic_trends(
+        forum_id=forum_id,
+        start_date=start_date,
+        end_date=end_date,
+        version=version,
+        top_k=top_k,
+        min_floor_count=min_floor_count,
+        min_thread_count=min_thread_count,
+        min_user_count=min_user_count,
+        min_confidence=min_confidence,
+    )
+
+
+@agent_tool
+def get_discussion_user_trends(
+    *,
+    forum_id: int,
+    start_date: str,
+    end_date: str,
+    version: str = "trend-v1",
+    top_k: int = 20,
+    sort_by: str = "post_count",
+) -> AgentResult:
+    return _get_discussion_user_trends(
+        forum_id=forum_id,
+        start_date=start_date,
+        end_date=end_date,
+        version=version,
+        top_k=top_k,
+        sort_by=sort_by,
+    )
+
+
+@agent_tool
+def get_discussion_report(
+    *,
+    forum_id: int,
+    start_date: str,
+    end_date: str,
+    version: str = "trend-v1",
+    format: str = "json",
+    report_kind: str | None = None,
+) -> AgentResult:
+    return _get_discussion_report(
+        forum_id=forum_id,
+        start_date=start_date,
+        end_date=end_date,
+        version=version,
+        format=format,
+        report_kind=report_kind,
+    )
+
+
+@agent_tool
+def get_discussion_topic_evidence(
+    *,
+    forum_id: int,
+    start_date: str,
+    end_date: str,
+    topic_id: int | None = None,
+    topic_label: str | None = None,
+    version: str = "trend-v1",
+    top_k: int = 10,
+    mode: str = "auto",
+) -> AgentResult:
+    return _get_discussion_topic_evidence(
+        forum_id=forum_id,
+        start_date=start_date,
+        end_date=end_date,
+        topic_id=topic_id,
+        topic_label=topic_label,
+        version=version,
+        top_k=top_k,
+        mode=mode,
+    )
+
+
+@agent_tool
+def get_forum_evidence_pack(
+    *,
+    forum_id: int,
+    query: str,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    top_k: int = 10,
+    mode: str = "auto",
+    intent: str = "general_research",
+    require_current_run: bool = False,
+) -> AgentResult:
+    return _get_forum_evidence_pack(
+        forum_id=forum_id,
+        query=query,
+        start_date=start_date,
+        end_date=end_date,
+        top_k=top_k,
+        mode=mode,
+        intent=intent,
+        require_current_run=require_current_run,
+    )
+
+
+@agent_tool
+def create_discussion_trend_report_job(
+    *,
+    forum_id: int,
+    start_date: str,
+    end_date: str,
+    version: str = "trend-v1",
+    period: str = "monthly",
+    format: list[str] | None = None,
+) -> AgentResult:
+    return _create_discussion_trend_report_job(
+        forum_id=forum_id,
+        start_date=start_date,
+        end_date=end_date,
+        version=version,
+        period=period,
+        format=format,
+    )
+
+
+@agent_tool
+def create_forum_research_report_job(
+    *,
+    forum_id: int,
+    start_date: str,
+    end_date: str,
+    question: str,
+    intent: str = "general_research",
+    query: str = "",
+    format: list[str] | None = None,
+) -> AgentResult:
+    return _create_forum_research_report_job(
+        forum_id=forum_id,
+        start_date=start_date,
+        end_date=end_date,
+        question=question,
+        intent=intent,
+        query=query,
+        format=format,
+    )
+
+
+_DISCUSSION_AGENT_TOOLS = [
+    ("create_discussion_trend_index_job", "Create a background job that builds the discussion trend mart for a (forum_id, date window). Side effect: writes a queued job to the database.", create_discussion_trend_index_job),
+    ("get_discussion_partition_trends", "Read-only query for partition-level daily activity trends from the current trend mart run. Returns bucket-level thread/post/user counts.", get_discussion_partition_trends),
+    ("get_discussion_topic_trends", "Read-only query for topic-level daily trends with caller-side threshold filtering. Returns empty topics + TOPIC_QUALITY_INSUFFICIENT warning when below quality threshold.", get_discussion_topic_trends),
+    ("get_discussion_user_trends", "Read-only query for user-level daily activity trends from the current trend mart run. Sortable by floor_count, thread_count, or topic_count.", get_discussion_user_trends),
+    ("get_discussion_report", "Read-only query for generated trend or research report artifacts. Returns DISCUSSION_REPORT_NOT_FOUND when the requested run has no stored artifact yet.", get_discussion_report),
+    ("get_forum_evidence_pack", "Read-only research tool for non-trend forum investigation (slang, atmosphere, context). Uses SQL floor snippet search; does not require a current trend run.", get_forum_evidence_pack),
+    ("get_discussion_topic_evidence", "Read-only query for representative floor evidence (snippets) for a specific topic in the current trend run. Supports auto/rag/sql retrieval modes with SQL fallback when RAG is unavailable.", get_discussion_topic_evidence),
+    ("create_discussion_trend_report_job", "Create a background job that generates a template-driven trend report (JSON + Markdown) for a forum window. Requires an existing current trend run.", create_discussion_trend_report_job),
+    ("create_forum_research_report_job", "Create a background job that generates a forum research report (JSON + Markdown) for non-trend investigations. Does not require a current trend run.", create_forum_research_report_job),
+]
+
+
 PUBLIC_AGENT_TOOLS = [
     ("search_forum_threads", "Remote-first, read-only forum search. Uses forum pagination and compact archive hints; does not expose a limit parameter.", search_forum_threads),
     ("browse_forum_page", "Remote read-only forum page browse. Returns one page of compact thread items and never creates jobs.", browse_forum_page),
@@ -276,4 +498,5 @@ PUBLIC_AGENT_TOOLS = [
     ("read_job_events", "Read persisted job event history for a queued or completed job.", read_job_events),
     ("wait_for_job", "Wait for a background job to reach a terminal state without client-side sleep.", wait_for_job),
     ("read_forum_profiles", "Read configured forum profiles and content-type guidance from local metadata.", read_forum_profiles),
+    *_DISCUSSION_AGENT_TOOLS,
 ]

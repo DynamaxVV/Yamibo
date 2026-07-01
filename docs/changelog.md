@@ -1,5 +1,17 @@
 # 百合会归档助手 — 版本更新日志
 
+## v0.12.0 (2026-07-02)
+
+### 新增
+- **Discussion Trend 文档入口补全**：README、API、Agent 文档都补上了 PostgreSQL-only 的 trend / evidence / report 能力面和 CLI 示例
+- **讨论趋势实现收敛说明**：新增对 query/report 共享 helper 与 trend CLI 表驱动注册的文档同步，方便后续继续沿同一路径收敛
+
+### 修复
+- **同窗口趋势重跑语义与文档对齐**：明确相同 `(forum_id, start_date, end_date, version)` 可以重复重跑，由 `discussion_current_indexes` 维护 current pointer
+- **topic evidence 文档与实现对齐**：补充 thread-level assignment 的 SQL evidence 语义，不再误导为只能按 `pid` 取证
+- **discussion-report CLI 示例修正**：文档移除未暴露的 `--format` CLI 参数，改为当前实际可用的默认 JSON 读取方式
+- **版本信息统一推进**：包版本、README 和主要用户文档统一更新到 `0.12.0`
+
 ## v0.11.1 (2026-07-01)
 
 ### 新增
@@ -40,7 +52,7 @@
 ### 新增
 - **Mihomo 代理池**：支持 thread 级 best-effort 代理绑定，通过 mihomo controller API 自动发现节点、并行测延迟、按 tid 哈希稳定选择
 - **Cookie 定时刷新**：`yamibo.cookie_refresh_interval_hours`（默认 12h），到期自动删除 cookie 文件触发重新登录
-- **代理池健康检查**：`uv run yamibo-mcp-server check-proxy-pool` 一键诊断 controller 连通性、节点延迟、过滤规则效果
+- **代理池健康检查**：`uv run yamibo-archiver check-proxy-pool` 一键诊断 controller 连通性、节点延迟、过滤规则效果
 - **节点过滤规则**：`allowed_patterns` / `denied_patterns` / `max_delay_ms` 正则过滤和延迟上限
 
 ### 改进
@@ -93,7 +105,7 @@
 ## v0.8.1 (2026-06-23)
 
 ### 调整
-- 旧的 `yamibo-forum` skill 收口为弃用别名，统一引导到 `yamibo-mcp`
+- 旧的 `yamibo-forum` skill 收口为弃用别名，统一引导到 `yamibo-archiver`
 - Hermes MCP 导入切换到 `streamable-http` 的 `/mcp` 入口
 - `wait_for_job` 与 `yamibo://jobs/{job_id}/status` 同步进 Skill / Agent 文档
 - 版本号统一推进至 `0.8.1`

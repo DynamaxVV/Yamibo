@@ -286,9 +286,11 @@ def test_borrow_yamibo_client_uses_explicit_cookie_override(tmp_path):
 
 
 def test_next_permission_threshold_moves_to_next_tier():
-    assert next_permission_threshold(None) == 1
-    assert next_permission_threshold(0) == 1
-    assert next_permission_threshold(10) == 11
+    assert next_permission_threshold(None) == 1  # 无法提取权限 → 兜底 +1
+    assert next_permission_threshold(0) == 0  # 要求 0 权限，0 权限号即可
+    assert next_permission_threshold(10) == 10  # 要求 10 权限，10 权限号即可
+    assert next_permission_threshold(10, 10) == 11  # 已用过 >=10 仍失败 → 强制 +1
+    assert next_permission_threshold(None, 20) == 21  # 无法提取权限 + 当前已到 20 → +1
 
 
 def test_refresh_cookie_deletes_stale_file(tmp_path, monkeypatch):
