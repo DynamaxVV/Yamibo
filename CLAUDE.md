@@ -186,12 +186,51 @@ Local dev PostgreSQL: `docker compose up -d` starts `pgvector/pgvector:pg15` wit
 
 **Test structure**: `tests/unit/` mirrors the source layout — `test_application/`, `test_daemon/`, `test_db/`, `test_domain/`, `test_parsers/`, `test_rag/`, `test_server/`, `test_services/`, `test_storage/`, `test_web/`, `test_yamibo/`. `tests/integration/` covers agent workflows, PostgreSQL regression, SQLite→PG ETL, shadow validation, and transport/notification tests.
 
+## Anti-Bot & Forum HTTP Client
+
+The `yamibo/` layer implements multi-layered anti-anti-bot measures to get past Cloudflare + Alibaba Cloud WAF on `bbs.yamibo.com`.
+
+### HTTP client (`client.py`)
+
+- **curl_cffi** replaces `urllib` — provides HTTP/2, browser TLS fingerprint impersonation (`BrowserType.chrome131`), and gzip decompression.
+- **Browser-like headers**: `sec-ch-ua`, `Sec-Fetch-Site/Mode/Dest/User`, `Upgrade-Insecure-Requests`, `Accept-Encoding: gzip, deflate, br` are sent on every request. `Sec-Fetch-Site` switches to `same-origin` when a Referer is present.
+- **Random UA pool**: Chrome 131 / Safari 18 / Firefox 133 on macOS, Windows, Linux. Each request gets a fresh UA.
+- **acw_sc__v2 CF challenge solver** (`cf_challenge.py`): Pure-Python XOR-based solver detects the challenge page in `_open_html`, computes the cookie value, sets it on the session, and retries. Transparent to callers.
+- **BurstThrottle** (`client.py`): Simulates human browsing — 1–4 quick requests (0.3–1.5s apart) followed by a 2–8s "reading" pause. Superimposed on top of the configured `request_interval + jitter`.
+- **Login bootstrap**: `_bootstrap_login_if_needed()` — if no cookie file exists and credentials are configured, auto-logs in at client creation. Login flow goes through the same CF-solving `_open_html` path. Failure is logged but does not prevent client creation.
+- **Cookie persistence**: Cookies saved as `name=value` lines in `data/cookies/{account_id}.cookie`. curl_cffi's `Cookies` jar is dict-like (`.items()` yields name/value tuples). `_load_cookies` skips already-present names to avoid overwriting server-fresh values with stale file data. `_open_html` does `delete` + `set` when updating `acw_sc__v2` to ensure the new value takes effect.
+
+### Proxy pool (`proxy_pool.py`)
+
+- Mihomo (Clash) controller API integration at `proxy_pool.controller_url`.
+- `select_thread_proxy()`: deterministic node selection via `hash((tid, retry_hint)) % len(usable)`. Node list cached with 30s TTL. Supports `allowed_patterns`/`denied_patterns`/`max_delay_ms` filtering.
+- `clear_proxy_cache()`: called after soft-block errors to force fresh node discovery on retry.
+
+### Account pool (`account_pool.py`)
+
+- Per-account config: `account_id`, `username`, `password`, `permission_level`, `weight`, `cookie_file`.
+- `acquire()`: returns the lowest-loaded account matching `min_permission`. Supports `prefer_high_permission` for permission escalation.
+- `_refresh_cookie_if_stale()`: deletes cookie file if older than `cookie_refresh_interval_hours` (12h default), forcing re-login. Uses file mtime (not in-memory state) to survive process restarts.
+
+### Anti-bot detection (`anti_bot.py`)
+
+- `is_soft_block_page()`: detects CF challenge / CAPTCHA pages via HTML signatures (`just a moment`, `cf-browser-verification`, `checking your browser`, etc.).
+- `is_http_444_error()` / `is_http_429_error()`: detect connection-level blocks.
+- `get_remote_access_pause_state()` / `ensure_remote_access_allowed()`: global pause mechanism — when HTTP 444 count exceeds threshold within a time window, all remote archive/update jobs are paused until manually resumed.
+
+### Permission escalation (`sync_thread.py`)
+
+When fetching a thread fails with `ThreadPermissionRequiredError` (explicit "阅读权限高于 X"), the handler retries with `min_permission` bumped to `X`. When it fails with `UnexpectedPageError` and the page type is `prompt_thread_missing_or_removed_or_review` (thread appears deleted), it also escalates — the thread might only be invisible to low-permission accounts.
+
 ## Gotchas
 
 - The daemon must be running for archive/export/RAG jobs to execute. Creating a job only writes to the queue.
 - Discussion Trend V1 is PostgreSQL-only. Integration tests against SQLite must set `YAMIBO_DB_BACKEND=sqlite` and clear `YAMIBO_DB_URL`, otherwise inherited PG config leaks into subprocesses.
 - Forum maintenance window: daily 5:30–6:30 AM (UTC+8). Forum search rate limit: 1 request per 10 seconds.
-- Forum requires valid `.cookie` file for remote access.
+- Forum requires valid `.cookie` file for remote access. Cookies are stored per-account in `data/cookies/{account_id}.cookie`.
+- **CF challenge**: When the forum is under Cloudflare's `acw_sc__v2` JS challenge, every request to `bbs.yamibo.com` returns a `<script>` challenge page. The solver in `cf_challenge.py` handles this transparently, but if it breaks, requests will fail with `REMOTE_SOFT_BLOCK` or `UNEXPECTED_REMOTE_PAGE` (page_type=unknown).
+- **Proxy pool**: All proxy nodes may be simultaneously blocked by CF. Direct connection (no proxy) often works when proxies don't. The `acw_sc__v2` challenge is IP-agnostic — solving it inline is the primary mitigation, not IP rotation.
+- `curl_cffi` 0.15 has an internal `TypeError: an integer is required` bug in `set_curl_options` that triggers intermittently. The session recreation workaround is in `_open_html`.
 - `*.egg-info/` and `.mimocode/` are local artifacts — don't commit.
 - Python side has no lint/typecheck configured. Frontend runs `tsc` as part of `npm run build`.
 - After modifying the frontend TSX/TS source code, you must run `cd frontend && npm run build` to recompile; otherwise, the web client will still display the old static assets. `npm run dev` is only used for local development and debugging (HMR). In production, static files rely on the build output to `src/yamibo_mcp/web/static/`.

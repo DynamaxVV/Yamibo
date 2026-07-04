@@ -11,13 +11,26 @@ from yamibo_mcp.context import LogContext, new_trace_id
 from yamibo_mcp.db.connection import connect
 from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.db.repositories.system_state import SystemStateRepository
-from yamibo_mcp.errors import LeaseNotAcquired, RemoteFetchError, ThreadPermissionRequiredError, classify_error
+from yamibo_mcp.domain.enums import JobStatus
+from yamibo_mcp.errors import LeaseNotAcquired, RemoteFetchError, RemoteMaintenanceError, ThreadPermissionRequiredError, UnexpectedPageError, classify_error
 from yamibo_mcp.daemon.handlers import get_handler
 from yamibo_mcp.daemon.handlers.sync_thread import JobCancelled, JobPaused
+from yamibo_mcp.daemon.image_backfill_scheduler import maybe_enqueue_image_backfill_dry_run
 from yamibo_mcp.daemon.recovery import recover_expired_jobs
 from yamibo_mcp.maintenance.forum_sizes import FORUM_SIZE_CACHE_REFRESH_SECONDS, refresh_forum_size_cache
 from yamibo_mcp.structured_logging import emit
-from yamibo_mcp.yamibo.anti_bot import activate_remote_access_pause, is_http_429_error, is_http_444_error
+from yamibo_mcp.yamibo.anti_bot import (
+    REMOTE_JOB_TYPES,
+    activate_remote_access_pause,
+    is_http_429_error,
+    is_http_444_error,
+    should_probe_maintenance,
+    probe_maintenance,
+    get_maintenance_pause_state,
+    activate_maintenance_pause,
+    record_maintenance_probe_success,
+    record_maintenance_probe_failure,
+)
 from yamibo_mcp.yamibo.proxy_pool import clear_proxy_cache
 
 LOG = logging.getLogger(__name__)
@@ -96,8 +109,36 @@ class DaemonRunner:
             repo = JobsRepository(conn)
             recover_expired_jobs(repo)
             _restore_444_events(conn)
+
+            # 维护恢复探测：每 10 分钟用一次轻量请求检查维护是否结束。
+            maintenance_state = get_maintenance_pause_state(conn)
+            if maintenance_state is not None and should_probe_maintenance(conn):
+                LOG.info("Running maintenance recovery probe...")
+                if probe_maintenance(
+                    cookie_file=str(settings.cookie_file),
+                    settings=settings,
+                ):
+                    result = record_maintenance_probe_success(conn)
+                    maintenance_state = None
+                    LOG.info(
+                        "Maintenance over, resumed %s job(s)",
+                        result.get("resumed_job_count", 0),
+                    )
+                else:
+                    record_maintenance_probe_failure(conn)
+                    LOG.info("Maintenance still active, will probe again later")
+
+            # 维护期间：跳过自动任务，但手动恢复的任务可以执行（作为维护探测）。
             job = repo.acquire_next(self.worker_id, settings.worker_lease_seconds)
             if job is None:
+                # 空闲时尝试入队闲时任务（image_backfill）
+                try:
+                    maybe_enqueue_image_backfill_dry_run(repo, settings)
+                except Exception:
+                    LOG.debug("Image backfill scheduler failed", exc_info=True)
+                return DaemonResult(processed=0)
+            in_maintenance = maintenance_state is not None
+            if in_maintenance and job.status not in (JobStatus.QUEUED.value,):
                 return DaemonResult(processed=0)
             LOG.info("Acquired job %s (%s)", job.job_id, job.job_type)
             with LogContext(
@@ -113,6 +154,14 @@ class DaemonRunner:
                     return DaemonResult(processed=1)
                 try:
                     handler(repo, job, self.worker_id, settings.worker_lease_seconds, settings)
+                    # 远程任务成功说明维护已结束。
+                    if in_maintenance and job.job_type in REMOTE_JOB_TYPES:
+                        result = record_maintenance_probe_success(conn)
+                        LOG.info(
+                            "Job %s succeeded during maintenance window — clearing maintenance pause, resumed %s job(s)",
+                            job.job_id,
+                            result.get("resumed_job_count", 0),
+                        )
                 except JobCancelled:
                     LOG.info("Job %s was cancelled", job.job_id)
                     repo.fail(job.job_id, "CANCELLED", "Job was cancelled by user")
@@ -125,6 +174,21 @@ class DaemonRunner:
                 except Exception as exc:  # noqa: BLE001 - top-level daemon boundary
                     LOG.exception("Job %s failed", job.job_id)
                     conn.rollback()
+
+                    # 论坛维护：激活全局暂停，所有远程任务进入 paused 状态。
+                    if isinstance(exc, RemoteMaintenanceError):
+                        state = activate_maintenance_pause(
+                            conn,
+                            source=f"daemon:{job.job_type}:{job.job_id}",
+                            context={"job_id": job.job_id, "job_type": job.job_type, "tid": job.tid},
+                        )
+                        repo.finalize_pause(job.job_id)
+                        LOG.warning(
+                            "Forum maintenance detected, paused %s remote job(s): %s",
+                            state.get("paused_job_count", 0),
+                            state,
+                        )
+                        return DaemonResult(processed=1)
 
                     # 反爬拦截（444 / soft block）：清除代理缓存后重试，
                     # 让下一次 acquire 能选到不同的 IP 节点。
@@ -167,6 +231,33 @@ class DaemonRunner:
                         )
                         LOG.warning("Soft block on job %s — will retry with different proxy", job.job_id)
                         return DaemonResult(processed=1)
+                    # 未知页面类型（很可能是反爬页面 / CF 挑战变体）：清除代理缓存后重试
+                    if isinstance(exc, UnexpectedPageError):
+                        exc_details = getattr(exc, "details", None) or {}
+                        if exc_details.get("page_type") == "unknown":
+                            cleared = clear_proxy_cache()
+                            if cleared:
+                                LOG.info(
+                                    "Cleared %d proxy cache entries after unknown page on job %s",
+                                    cleared, job.job_id,
+                                )
+                            html_snippet = exc_details.get("html_snippet", "")
+                            page_title = exc_details.get("page_title", "")
+                            LOG.warning(
+                                "Unknown page type on job %s — likely anti-bot. title=%s html_len=%s snippet=%s",
+                                job.job_id, page_title, exc_details.get("html_length"), html_snippet[:200],
+                            )
+                            repo.retry_later(
+                                job.job_id,
+                                error_code="REMOTE_SOFT_BLOCK",
+                                error_message=(
+                                    f"Unknown page type (likely anti-bot) from "
+                                    f"{exc_details.get('url', 'unknown')}; "
+                                    f"proxy cache cleared, will retry with different node. "
+                                    f"title={page_title}"
+                                ),
+                            )
+                            return DaemonResult(processed=1)
                     if isinstance(exc, RemoteFetchError) and is_http_429_error(exc):
                         LOG.warning("HTTP 429 rate limit on job %s, retrying later", job.job_id)
                         repo.retry_later(job.job_id, "HTTP_429", str(exc))

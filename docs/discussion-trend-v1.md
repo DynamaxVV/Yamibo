@@ -2,7 +2,7 @@
 
 Discussion Trend V1 为 Yamibo 历史论坛分析提供一套仅支持 PostgreSQL 的趋势事实层、证据检索能力和报告工具。
 
-> 文档同步版本：0.12.0 | 更新日期：2026-07-02
+> 文档同步版本：0.12.1 | 更新日期：2026-07-05
 
 ## 范围
 
@@ -21,7 +21,7 @@ V1 包含：
 - trend report artifact
 - forum research report artifact
 
-## 0.12.0 同步说明
+## 0.12.1 同步说明
 
 本轮对 V1 的主要收口如下：
 

@@ -136,17 +136,14 @@ class _ThreadSubjectParser(TextCaptureParser):
             return
         if self._capture_floor and tag in self._BLOCK_BREAK_END_TAGS:
             self._append_floor_break()
-        if self._capture_floor and tag == "td":
-            self._floor_td_depth -= 1
-        else:
-            if self._capture_floor:
-                for index in range(len(self._rich_tag_stack) - 1, -1, -1):
-                    source_tag, close_tag = self._rich_tag_stack[index]
-                    if source_tag != tag:
-                        continue
-                    self._rich_parts.append(close_tag or "")
-                    del self._rich_tag_stack[index]
-                    break
+        if self._capture_floor:
+            for index in range(len(self._rich_tag_stack) - 1, -1, -1):
+                source_tag, close_tag = self._rich_tag_stack[index]
+                if source_tag != tag:
+                    continue
+                self._rich_parts.append(close_tag or "")
+                del self._rich_tag_stack[index]
+                break
         if tag == "td" and self._capture_floor:
             self._floor_td_depth -= 1
             if self._floor_td_depth <= 0:

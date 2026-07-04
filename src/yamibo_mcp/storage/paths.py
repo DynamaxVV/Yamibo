@@ -34,6 +34,18 @@ class StoragePaths:
     def thread_images_dir(self, tid: int) -> Path:
         return self.thread_dir(tid) / "images"
 
+    def thread_rag_cleaned_json(self, tid: int, version: str) -> Path:
+        return self.thread_dir(tid) / f"rag_cleaned.{version}.json"
+
+    def thread_rag_cleaned_markdown(self, tid: int, version: str) -> Path:
+        return self.thread_dir(tid) / f"rag_cleaned.{version}.md"
+
+    def thread_rag_chunks_preview_jsonl(self, tid: int, version: str) -> Path:
+        return self.thread_dir(tid) / f"rag_chunks.preview.{version}.jsonl"
+
+    def thread_rag_materialized_marker(self, tid: int, version: str) -> Path:
+        return self.thread_dir(tid) / f"rag_materialized.{version}.json"
+
     def shared_asset_path(self, url: str) -> Path:
         parsed = urlparse(url)
         host = (parsed.netloc or "unknown-host").replace(":", "_")

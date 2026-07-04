@@ -254,3 +254,70 @@ def test_run_once_pauses_on_http_444(tmp_path, monkeypatch):
     assert len(pause_calls) == 1
     assert "3 times within" in pause_calls[0]["message"]
     assert len(fail_calls) == 0  # all three retried, third also paused globally
+
+
+def test_run_once_detects_http_444_via_curl_error_92(tmp_path, monkeypatch):
+    """curl error 92 (HTTP/2 PROTOCOL_ERROR) is the curl_cffi manifestation of HTTP 444."""
+    import yamibo_mcp.daemon.runner as runner_mod
+
+    db_path = tmp_path / "test.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    migrate(conn)
+    job = JobsRepository(conn).create("sync_thread", tid=42)
+    conn.close()
+
+    settings = SimpleNamespace(
+        db_path=db_path,
+        worker_id="daemon-test",
+        worker_poll_seconds=0.0,
+        worker_lease_seconds=300,
+    )
+    runner = DaemonRunner(settings, worker_id="daemon-test-1")
+    retry_calls: list[str] = []
+    fail_calls: list[str] = []
+
+    def _handler(repo, current_job, worker_id, lease_seconds, handler_settings):
+        raise RemoteFetchError(
+            "failed to fetch https://bbs.yamibo.com/forum.php?mod=viewthread&tid=19787&page=1 "
+            "after 3 attempt(s) with timeout=30.0s: "
+            "Failed to perform, curl: (92) HTTP/2 stream 5 was not closed cleanly: "
+            "PROTOCOL_ERROR (err 1)",
+            details={
+                "url": "https://bbs.yamibo.com/forum.php?mod=viewthread&tid=19787&page=1",
+                "attempts": 3,
+                "timeout_seconds": 30.0,
+                "last_error_type": "RequestsError",
+                "last_error_message": (
+                    "Failed to perform, curl: (92) HTTP/2 stream 5 was not closed cleanly: "
+                    "PROTOCOL_ERROR (err 1)"
+                ),
+            },
+        )
+
+    monkeypatch.setattr("yamibo_mcp.daemon.runner.get_handler", lambda _job: _handler)
+    monkeypatch.setattr("yamibo_mcp.daemon.runner.recover_expired_jobs", lambda repo: None)
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.runner.JobsRepository.acquire_next",
+        lambda self, worker_id, lease_seconds: job,
+    )
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.runner.JobsRepository.retry_later",
+        lambda self, job_id, *, error_code, error_message, artifacts=None: retry_calls.append(job_id),
+    )
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.runner.JobsRepository.fail",
+        lambda self, job_id, error_code, error_message, artifacts=None: fail_calls.append(job_id),
+    )
+    monkeypatch.setattr("yamibo_mcp.daemon.runner.clear_proxy_cache", lambda: 0)
+
+    # Clear 444 counter before test
+    with runner_mod._444_LOCK:
+        runner_mod._444_EVENTS.clear()
+
+    result = runner.run_once()
+    assert result.processed == 1
+    # Should be detected as HTTP 444 → retry_later, NOT fail
+    assert len(retry_calls) == 1
+    assert len(fail_calls) == 0

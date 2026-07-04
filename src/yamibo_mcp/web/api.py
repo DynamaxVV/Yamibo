@@ -15,6 +15,7 @@ from .routes.jobs import (
     handle_pause_job, handle_resume_job, handle_job_control,
     handle_batch_delete_jobs, handle_batch_delete_jobs_by_ids,
     handle_safe_delete_job, handle_resume_remote_access,
+    handle_backfill_status,
 )
 from .routes.threads import (
     handle_threads_list, handle_thread_detail, handle_thread_images,
@@ -75,6 +76,8 @@ def _route(handler, route: str, params, conn, settings):
         handle_jobs_counts(handler, conn)
     elif route == "/jobs/failure-counts" and handler.command == "GET":
         handle_jobs_failure_counts(handler, params, conn)
+    elif route == "/jobs/backfill-status" and handler.command == "GET":
+        handle_backfill_status(handler, conn, settings)
     elif route.startswith("/jobs/") and route.endswith("/events"):
         job_id = route[6:-7]
         handle_job_events(handler, job_id, conn)

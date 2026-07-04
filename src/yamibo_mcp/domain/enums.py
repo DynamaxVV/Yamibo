@@ -27,3 +27,4 @@ class JobType(StrEnum):
     RAG_INDEX = "rag_index"
     DISCUSSION_TREND_INDEX = "discussion_trend_index"
     DISCUSSION_TREND_REPORT = "discussion_trend_report"
+    IMAGE_BACKFILL = "image_backfill"

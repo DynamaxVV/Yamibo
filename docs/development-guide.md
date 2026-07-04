@@ -1,6 +1,6 @@
 # 核心模块开发说明
 
-> 版本：0.12.0 | 更新日期：2026-07-02
+> 版本：0.12.1 | 更新日期：2026-07-05
 
 ## 1. 标题解析引擎
 
@@ -127,7 +127,12 @@ LLM 使用 OpenAI-compatible API，prompt 中包含：
 |------|--------|------|
 | `noop` | `handlers/noop.py` | 空操作，用于验证系统 |
 | `sync_thread` | `handlers/sync_thread.py` | 帖子同步（解析 → 校验 → 下载图片 → 写 DB → 物化） |
+| `update_thread` | `handlers/update_thread.py` | 轻小说增量更新（只看楼主尾页增量） |
 | `export_thread` | `handlers/export_thread.py` | 帖子导出（precheck → sync if needed → ZIP 打包） |
+| `rag_index` | `handlers/rag_index.py` | 本地归档分块与向量索引 |
+| `discussion_trend_index` | `handlers/discussion_trend_index.py` | PostgreSQL-only 讨论趋势索引 |
+| `discussion_trend_report` | `handlers/discussion_trend_report.py` | 讨论趋势/研究报告物化 |
+| `image_backfill` | `handlers/image_backfill.py` | 已归档帖子图片差异补抓与资产修复 |
 | `cleanup_job` | `handlers/cleanup_job.py` | 清理 staging 目录 |
 | `title_refine` | `handlers/title_refine.py` | 标题精炼（重新运行 LLM 解析） |
 
@@ -166,7 +171,14 @@ Daemon B: recover_expired_jobs()
 - 图片下载失败不阻断整体归档（标记为 `partial`）
 - Daemon 崩溃后，过期任务自动恢复为 `interrupted` 状态
 
-### 2.5 Job Event Outbox
+### 2.5 Runner 级调度补充
+
+- **维护暂停**：`daemon/runner.py` 在识别 `RemoteMaintenanceError` 后，会通过 `anti_bot.py` 把所有远程 job 切到全局 paused 状态，并记录触发来源。
+- **维护恢复探测**：维护暂停激活后，Daemon 每 10 分钟用一次轻量论坛列表请求探测维护是否结束；探测成功后统一恢复远程任务。
+- **闲时任务入队**：当队列空闲时，Runner 会调用 `image_backfill_scheduler.py`，按 budget 规则自动创建 `image_backfill` dry-run/apply 任务。
+- **软封锁恢复**：HTTP 444、429，以及未知反爬页面会优先走 `retry_later()` 和代理缓存清理，而不是直接落成终态失败。
+
+### 2.6 Job Event Outbox
 
 任务状态变更时追加事件到 `job_events` 表，支持诊断和未来通知。
 
@@ -197,6 +209,7 @@ Daemon B: recover_expired_jobs()
 | `sync_forum_range(start_page, end_page, forum_id?, ...)` | 按论坛页批量创建归档任务 |
 | `list_exports(limit?)` | 列出已有导出 |
 | `get_job_status_payload(job_id)` | 读取任务状态 |
+| `get_knowledge_research(question, ...)` | 研究问句参数推断 + trend/evidence/narrative 聚合（只读） |
 
 ### 3.2 Agent Contract
 
@@ -215,6 +228,12 @@ class AgentResult:
 ```
 
 统一由 `server/agent_adapter.py` 转成 MCP wire payload。
+
+### 3.3 Web 层现状
+
+- `src/yamibo_mcp/web_fastapi/` 是当前嵌入式 Web 的主实现，负责 `/api/*`、`/media/*`、`/fonts/*`、`/artifacts/*` 和 SPA fallback。
+- `src/yamibo_mcp/web/` 仍保留已打包静态资源和旧实现兼容层；前端构建产物继续输出到 `src/yamibo_mcp/web/static/`。
+- Jobs 页新增 `/api/jobs/backfill-status`，Knowledge 页对应 `/api/knowledge/research`、`/api/knowledge/trend-index`、`/api/knowledge/research-report`。
 
 ---
 

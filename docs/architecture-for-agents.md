@@ -1,6 +1,6 @@
 # Agent 架构导航
 
-> 版本：0.12.0 | 更新日期：2026-07-02
+> 版本：0.12.1 | 更新日期：2026-07-05
 
 本文回答的是“AI 编码代理应该改哪里”。它不是产品说明，而是面向改代码、补测试、做集成的操作性文档。
 
@@ -90,8 +90,8 @@ MCP 客户端
 
 ```text
 浏览器
-  -> web.app
-  -> web.api
+  -> web_fastapi.app
+  -> web_fastapi.routers/*
   -> application queries/commands
   -> db.repositories / storage
 ```
@@ -111,19 +111,23 @@ MCP 客户端
 | `src/yamibo_mcp/application/archive_commands.py` | 归档/导出/ensure 的命令侧逻辑 | 有副作用的“创建任务”放这里 |
 | `src/yamibo_mcp/application/archive_queries.py` | 本地归档读取 | 禁止导入或调用 `YamiboClient` |
 | `src/yamibo_mcp/application/remote_queries.py` | 远端 browse/search/preview 与本地归档提示补充 | 可读本地库，不可持久化远端结果 |
+| `src/yamibo_mcp/application/knowledge_queries.py` | 研究问句参数推断、trend/evidence 聚合 | 只读；不要在这里写 job，写 job 走 commands |
 | `src/yamibo_mcp/application/update_queries.py` | 更新检测 | 可做远端比对，不创建 job |
 | `src/yamibo_mcp/application/update_commands.py` | 增量更新任务创建 | 副作用仅是写入 queued job |
 | `src/yamibo_mcp/application/job_queries.py` | 任务状态与事件读取 | 只读 SQLite |
 | `src/yamibo_mcp/daemon/runner.py` | 轮询、抢占、执行调度 | 任务生命周期变更改这里 |
 | `src/yamibo_mcp/daemon/handlers/` | 具体任务实现 | 长任务实现放这里 |
+| `src/yamibo_mcp/daemon/image_backfill_scheduler.py` | 队列空闲时的自动 `image_backfill` 入队策略 | 改预算、候选 SQL、去重逻辑时看这里 |
 | `src/yamibo_mcp/db/repositories/` | SQL 访问 | SQL 收敛在这里 |
 | `src/yamibo_mcp/domain/` | 领域模型、枚举、校验 | 纯领域规则放这里 |
-| `src/yamibo_mcp/yamibo/` | 论坛 HTTP、URL、页面分类、HTML 解析、标题解析 | 站点知识集中在这里 |
+| `src/yamibo_mcp/yamibo/` | 论坛 HTTP、URL、页面分类、HTML 解析、标题解析、反爬/维护状态 | 站点知识集中在这里 |
 | `src/yamibo_mcp/yamibo/account_pool.py` | 账号池与 cookie 管理、`borrow_yamibo_client()` | 定时 cookie 刷新逻辑在此 |
 | `src/yamibo_mcp/yamibo/proxy_pool.py` | mihomo controller 客户端与 thread 级代理绑定 | 默认关闭；`select_thread_proxy()` 为入口 |
+| `src/yamibo_mcp/yamibo/anti_bot.py` / `cf_challenge.py` | 维护暂停、软封锁识别、`acw_sc__v2` 解算 | 反爬逻辑优先收口在这里，不要散落到 handlers |
 | `src/yamibo_mcp/storage/` | 文件路径、staging、归档物化、图片、导出 | 文件系统行为集中在这里 |
 | `src/yamibo_mcp/services/` | LLM 客户端与标题辅助逻辑 | 内部能力，不是公共 Agent 接口 |
-| `src/yamibo_mcp/web/` | 嵌入式 HTTP 服务与 packaged static | Python 侧 Web 路由改这里 |
+| `src/yamibo_mcp/web_fastapi/` | 嵌入式 FastAPI 服务、API routers、静态资源挂载 | Python 侧 Web 主路径改这里 |
+| `src/yamibo_mcp/web/` | 旧 Web 实现与 packaged static | 仅处理兼容/构建产物相关改动 |
 | `frontend/` | React/Vite 前端源码 | UI 改这里，再构建到 `web/static/` |
 | `src/yamibo_mcp/maintenance/` | 备份、清理、重置 | 运维脚本 |
 
@@ -137,11 +141,13 @@ MCP 客户端
 | 新增批量归档探测 | `application/archive_queries.py`、`db/repositories/threads.py`、`server/agent_tools.py`、`server/mcp_registry.py` | `uv run pytest tests/unit/test_application/test_archive_queries.py tests/unit/test_server/test_agent_interface.py` |
 | 修改远端搜索/浏览/预览 | `application/remote_queries.py`、`yamibo/client.py`、`yamibo/parsers/*` | `uv run pytest tests/unit/test_server/test_forum_id_tools.py tests/unit/test_server/test_agent_interface.py tests/unit/test_parsers/` |
 | 修改归档任务行为 | `application/archive_commands.py`、`daemon/handlers/sync_thread.py`、`storage/*`、repositories | `uv run pytest tests/unit/test_server/test_forum_id_tools.py tests/unit/test_daemon/` |
+| 修改图片回填闲时任务 | `daemon/image_backfill_scheduler.py`、`daemon/handlers/image_backfill.py`、`web_fastapi/routers/jobs.py` | `uv run pytest tests/unit/test_daemon/test_image_backfill.py tests/unit/test_web_fastapi/ tests/unit/test_db/` |
+| 修改知识研究 API | `application/knowledge_queries.py`、`web_fastapi/routers/knowledge.py` | `uv run pytest tests/unit/test_application/test_knowledge_queries.py tests/unit/test_web_fastapi/` |
 | 修改更新检测/追加更新 | `application/update_queries.py`、`application/update_commands.py`、`daemon/handlers/update_thread.py` | `uv run pytest tests/unit/test_application/test_thread_update_use_cases.py tests/unit/test_daemon/test_update_thread_handler.py` |
 | 修改任务状态/事件 | `application/job_queries.py`、`db/repositories/jobs.py`、`db/repositories/job_events.py` | `uv run pytest tests/unit/test_application/test_job_use_cases.py tests/unit/test_db/` |
-| 修改 Web API | `web/routes/*.py`、相关 `application/*` | `uv run pytest tests/unit/test_web/` |
+| 修改 Web API | `web_fastapi/routers/*.py`、相关 `application/*` | `uv run pytest tests/unit/test_web_fastapi/ tests/unit/test_web/` |
 | 修改 Web UI | `frontend/src/*`、`frontend/public/*` | `npm --prefix frontend run build` 后 `uv run pytest tests/unit/test_web/` |
-| 修改静态资源路由 | `web/app.py`、`src/yamibo_mcp/web/static/README.md` | `uv run pytest tests/unit/test_web/test_app.py` |
+| 修改静态资源路由 | `web_fastapi/app.py`、`src/yamibo_mcp/web/static/README.md` | `uv run pytest tests/unit/test_web_fastapi/ tests/unit/test_web/test_app.py` |
 | 修改迁移/Schema | `db/migrations.py`、repositories | `uv run pytest tests/unit/test_db/ tests/unit/test_application/` |
 
 ## 4. 简化约束
@@ -177,7 +183,7 @@ MCP 客户端
 | MCP Resources | `uv run pytest tests/unit/test_server/test_resources.py` |
 | 应用层 | `uv run pytest tests/unit/test_application/` |
 | Server 层 | `uv run pytest tests/unit/test_server/` |
-| Web API / 静态路由 | `uv run pytest tests/unit/test_web/` |
+| Web API / 静态路由 | `uv run pytest tests/unit/test_web_fastapi/ tests/unit/test_web/` |
 | 数据库 / Repository | `uv run pytest tests/unit/test_db/` |
 | Daemon handlers | `uv run pytest tests/unit/test_daemon/` |
 | 解析器 | `uv run pytest tests/unit/test_parsers/` |

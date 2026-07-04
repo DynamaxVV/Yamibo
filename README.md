@@ -2,7 +2,7 @@
 
 百合会 (yamibo.com) 论坛本地归档系统。通过 MCP 协议让 LLM 客户端浏览、搜索、归档、检查更新和导出论坛贴子；内嵌 React WebUI 控制台，支持多主题切换。
 
-> 当前版本：`0.12.0`
+> 当前版本：`0.12.1`
 
 ## 功能特性
 
@@ -11,6 +11,7 @@
 - **智能标题解析** — 规则引擎 + LLM 辅助作为内部归档实现细节
 - **自动归档** — 抓取帖子 HTML，解析楼层，下载图片，生成结构化本地存档
 - **轻小说更新检测** — 独立 `check_thread_updates` / `update_thread` 流程，轻小说贴子支持只看楼主增量更新
+- **图片回填闲时任务** — Daemon 空闲时可自动为已归档帖子补跑 `image_backfill`，优先修复缺失图片和非首楼漏记资产
 - **内容模型** — 支持 comic/novel/discussion/mixed 四种内容形态，有序内容块 + 资产管理
 - **系列管理** — 按 series_key 自动聚合同一系列的多个章节帖子
 - **标准化导出** — 漫画/通用贴子 ZIP 打包（context.md + metadata.json + 图片），轻小说导出为可追加的 TXT 文件
@@ -18,9 +19,11 @@
 - **批量归档探测** — `probe_archived_threads` 可先读取本地归档尾部状态，再配合远端 `last_reply_at` 决定是否补跑
 - **Job Event Outbox** — 任务状态变更追加耐久化事件，支持诊断和未来通知
 - **本地 RAG 检索** — 基于 FTS5 / PostgreSQL `tsvector` + `pgvector` 的归档内容混合检索，返回可追溯证据片段
+- **动漫区清洗语料物化** — 新增 `yamibo-rag-anime-materialize`，可为动漫区生成清洗后的 RAG 中间产物与统计报告
 - **Discussion Trend V1** — PostgreSQL-only 的分区趋势查询、topic/user 排名、topic/forum evidence 检索，以及 trend / research report artifact
+- **抗反爬增强** — HTTP 客户端切到 `curl_cffi` + 浏览器指纹，请求内置 `acw_sc__v2` 挑战解算、维护页探测与软封锁重试
 - **Agent-Friendly Interface** — 区分远端预览/任务创建与本地归档读取，统一结构化错误和紧凑输出
-- **Web 控制台** — React+Vite SPA，中英文双语，多套可切换主题 + 暗黑模式，支持远程论坛实时浏览（`/forum`）
+- **Web 控制台** — React+Vite SPA + FastAPI 嵌入式服务，中英文双语，多套可切换主题 + 暗黑模式，支持远程论坛实时浏览（`/forum`）
 - **CLI** — 所有工具均可通过命令行直接调用
 
 ## 快速开始
@@ -44,7 +47,13 @@ uv sync --extra dev
   "yamibo": {
     "cookie_file": ".cookie",
     "novel_author_only_max_pages": 50,
-    "novel_author_only_page_delay_seconds": 0.5
+    "novel_author_only_page_delay_seconds": 0.5,
+    "image_backfill_enabled": true,
+    "image_backfill_dry_run": true,
+    "image_backfill_forum_id": 5,
+    "image_backfill_auto_interval_seconds": 60,
+    "image_backfill_daily_limit": 100,
+    "image_backfill_max_pages": 1
   },
   "export": {
     "dir": "data/exports",
@@ -81,6 +90,16 @@ uv sync --extra dev
 
 默认低权限账号会优先用于普通抓取；遇到“阅读权限高于 xx 才能浏览”或需要先看论坛列表/搜索结果时，会自动切到更高权限账号。
 
+`yamibo.image_backfill_*` 用于控制 Daemon 的闲时图片回填调度器：
+
+- `image_backfill_enabled`：是否启用自动回填
+- `image_backfill_dry_run`：只做差异探测，不写回本地归档
+- `image_backfill_forum_id`：候选帖子来源分区
+- `image_backfill_auto_interval_seconds`：两次自动入队之间的最短间隔
+- `image_backfill_daily_limit`：每日最多自动入队数量
+- `image_backfill_max_pages`：单个回填任务最多抓取的远端页数
+- `image_backfill_fixed_after`：仅处理某个时间点之后的归档代次
+
 其中：
 
 - `llm.*` 负责标题解析等 chat/completions 场景
@@ -93,6 +112,12 @@ uv sync --extra dev
 数据库后端默认使用 PostgreSQL（`pgvector`），同时保留 SQLite 支持用于本地开发和单机部署。通过 `database.backend` 配置切换。
 
 其中轻小说 TXT 导出目录对应 `YAMIBO_NOVEL_TXT_EXPORT_DIR`，轻小说只看楼主更新检测阈值对应 `YAMIBO_NOVEL_AUTHOR_ONLY_MAX_PAGES` 和 `YAMIBO_NOVEL_AUTHOR_ONLY_PAGE_DELAY_SECONDS`。
+
+## 运行期行为
+
+- **论坛维护暂停**：当 Daemon 识别到维护页时，会把所有远程任务统一切到 `paused`，并每 10 分钟做一次轻量探测；维护结束后自动恢复。
+- **软封锁恢复**：遇到 HTTP 444、429 或未知反爬页时，会优先清理代理缓存并把任务转入重试，而不是直接失败。
+- **闲时图片回填**：当队列空闲且达到预算条件时，Daemon 会自动创建 `image_backfill` 任务；Web「任务」页可查看当日入队计数和最近一次入队原因。
 
 ### 初始化数据库
 
@@ -218,6 +243,9 @@ uv run yamibo-archiver create-rag-index-job --tid 572313
 # 批量创建 RAG 索引任务
 uv run yamibo-archiver create-rag-index-batch-jobs --tid 572313 --tid 572314
 
+# 物化动漫区清洗后的 RAG 语料（PostgreSQL-first）
+uv run yamibo-rag-anime-materialize --forum-id 5 --limit 200
+
 # 搜索本地归档内容（只读，不抓远端）
 uv run yamibo-archiver search-archived-content --query "星空 告白" --mode hybrid --top-k 5
 
@@ -255,7 +283,8 @@ src/yamibo_mcp/
 ├── server/          # MCP 注册、CLI、资源处理适配
 ├── application/     # Agent-facing commands/queries
 ├── daemon/          # 后台任务消费 + 处理器
-├── web/             # 嵌入式 Web 控制台
+├── web_fastapi/     # FastAPI 嵌入式 Web API / 静态资源服务（主路径）
+├── web/             # 旧 Web 实现与已打包静态资源
 ├── yamibo/          # 论坛 HTTP 客户端、HTML 解析器、标题解析
 ├── storage/         # 文件 I/O（staging、归档、导出、图片）
 ├── db/              # SQLite schema、迁移、Repository
@@ -293,6 +322,7 @@ scripts/run_hermes_benchmark.sh
 | [账号池设计](docs/account-pool-design.md) | 多账号权限分配与 Cookie 管理 |
 | [SQLite-Vec RAG 设计](docs/rag-sqlite-vec-design.md) | 本地归档检索、chunk、embedding 与 `sqlite-vec` 方案 |
 | [核心模块开发说明](docs/development-guide.md) | 标题解析、Job 系统、配置 |
+| [FastAPI 迁移方案](docs/design/fastapi-migration-plan.md) | Web 层迁移决策、构建自动化与路由收敛背景 |
 | [部署指南 & 运维手册](docs/deployment-guide.md) | 安装、配置、运维操作 |
 | [用户操作手册](docs/user-manual.md) | MCP/Web/CLI 使用方式 |
 | [测试方案](docs/testing-strategy.md) | 测试原则、规范、数据与回归策略 |

@@ -545,6 +545,18 @@ export interface RemoteThreadDetail {
   floors: FloorSummary[]
 }
 
+export interface BackfillStatus {
+  enabled: boolean
+  dry_run: boolean
+  forum_id: number
+  daily_limit: number
+  interval_seconds: number
+  max_pages: number
+  today_count: number
+  last_enqueued_at: string | null
+  last_reason: string | null
+}
+
 // API methods
 export const api = {
   dashboard: (limit?: number) => fetchJson<DashboardData>(`/dashboard${limit ? `?limit=${limit}` : ''}`),
@@ -564,6 +576,7 @@ export const api = {
   resumeRemoteAccess: () => postJson<{ ok: boolean; resumed_job_ids: string[]; resumed_job_count: number }>('/remote-access/resume', {}),
   daemonStatus: () => fetchJson<DaemonStatus>('/daemon/status'),
   controlJobs: (action: 'pause' | 'resume') => postJson<{ ok: boolean; action: string; changed_job_ids: string[]; changed_count: number; job_control: DashboardData['job_control'] }>('/jobs/control', { action }),
+  backfillStatus: () => fetchJson<BackfillStatus>('/jobs/backfill-status'),
   threads: (params?: { q?: string; forum_id?: number; days?: number; archive_status?: string; sort_key?: string; sort_dir?: string; page?: number; page_size?: number }) => {
     const qs = new URLSearchParams()
     if (params?.q) qs.set('q', params.q)

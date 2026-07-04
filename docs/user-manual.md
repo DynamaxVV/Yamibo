@@ -1,6 +1,6 @@
 # 用户操作手册
 
-> 版本：0.12.0 | 更新日期：2026-07-02
+> 版本：0.12.1 | 更新日期：2026-07-05
 
 ## 1. 快速开始
 
@@ -113,6 +113,7 @@ uv run yamibo-archiver read-resource "yamibo://forums/index"
 - 最近任务列表
 - Daemon 心跳状态
 - 最近审计事件
+- 当前任务开关是运行中还是已暂停
 
 ### 3.2 任务管理
 
@@ -124,6 +125,15 @@ uv run yamibo-archiver read-resource "yamibo://forums/index"
 - 任务状态、阶段、进度
 - 错误信息（如有）
 - Staging 文件（snapshot.json、failure.json、title_parse_log.json）
+
+**闲时任务视图**：
+- 任务页底部可切换到「闲时任务」，查看 `image_backfill` 自动任务
+- 页面会展示调度器是否启用、是否 dry-run、来源分区、冷却间隔、每日限额、今日已入队次数
+- 列表为空不代表关闭，可能只是当前预算未触发或没有候选帖子
+
+**维护期行为**：
+- 若论坛进入维护窗口，远程相关任务会统一显示为 `paused`
+- 维护结束后系统会自动探测并恢复，无需手工逐个重试
 
 ### 3.3 远程论坛浏览
 
@@ -149,6 +159,8 @@ uv run yamibo-archiver read-resource "yamibo://forums/index"
 - 帖子内 yamibo 链接自动转为内部跳转
 
 **性能**：首次加载 ~6-8s（代理池预热），后续 ~0.5-1s。从详情返回列表时有 2 分钟缓存，无需重新加载。
+
+**兼容性说明**：论坛请求现在会自动处理常见 Cloudflare `acw_sc__v2` 挑战；如果仍触发软封锁，系统会优先重试或短暂停顿，而不是立刻把任务打成失败。
 
 ### 3.4 帖子管理
 

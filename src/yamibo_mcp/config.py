@@ -96,6 +96,13 @@ class Settings:
     account_pool: tuple[AccountConfig, ...]
     proxy_pool: MihomoProxyPoolConfig
     cookie_refresh_interval_hours: float
+    image_backfill_enabled: bool
+    image_backfill_dry_run: bool
+    image_backfill_forum_id: int
+    image_backfill_auto_interval_seconds: float
+    image_backfill_daily_limit: int
+    image_backfill_max_pages: int
+    image_backfill_fixed_after: str | None
 
 
 def _read_local_config(path: Path) -> dict[str, object]:
@@ -501,5 +508,44 @@ def load_settings() -> Settings:
                 "YAMIBO_COOKIE_REFRESH_INTERVAL_HOURS",
                 str(_cfg_value(config, "yamibo", "cookie_refresh_interval_hours", 12)),
             )
+        ),
+        image_backfill_enabled=str(
+            os.environ.get(
+                "YAMIBO_IMAGE_BACKFILL_ENABLED",
+                str(_cfg_value(config, "yamibo", "image_backfill_enabled", True)),
+            )
+        ).lower() in {"1", "true", "yes", "on"},
+        image_backfill_dry_run=str(
+            os.environ.get(
+                "YAMIBO_IMAGE_BACKFILL_DRY_RUN",
+                str(_cfg_value(config, "yamibo", "image_backfill_dry_run", True)),
+            )
+        ).lower() in {"1", "true", "yes", "on"},
+        image_backfill_forum_id=int(
+            os.environ.get(
+                "YAMIBO_IMAGE_BACKFILL_FORUM_ID",
+                str(_cfg_value(config, "yamibo", "image_backfill_forum_id", 5)),
+            )
+        ),
+        image_backfill_auto_interval_seconds=float(
+            os.environ.get(
+                "YAMIBO_IMAGE_BACKFILL_AUTO_INTERVAL_SECONDS",
+                str(_cfg_value(config, "yamibo", "image_backfill_auto_interval_seconds", 60.0)),
+            )
+        ),
+        image_backfill_daily_limit=int(
+            os.environ.get(
+                "YAMIBO_IMAGE_BACKFILL_DAILY_LIMIT",
+                str(_cfg_value(config, "yamibo", "image_backfill_daily_limit", 100)),
+            )
+        ),
+        image_backfill_max_pages=int(
+            os.environ.get(
+                "YAMIBO_IMAGE_BACKFILL_MAX_PAGES",
+                str(_cfg_value(config, "yamibo", "image_backfill_max_pages", 1)),
+            )
+        ),
+        image_backfill_fixed_after=os.environ.get("YAMIBO_IMAGE_BACKFILL_FIXED_AFTER") or (
+            None if _cfg_value(config, "yamibo", "image_backfill_fixed_after", None) in {None, ""} else str(_cfg_value(config, "yamibo", "image_backfill_fixed_after", None))
         ),
     )

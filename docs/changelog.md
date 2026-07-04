@@ -1,5 +1,25 @@
 # 百合会归档助手 — 版本更新日志
 
+## v0.12.1 (2026-07-05)
+
+### 新增
+- **图片回填闲时任务**：新增 `image_backfill` job、自动候选选择器、每日预算/冷却控制，以及任务页 `backfill-status` 只读状态面
+- **动漫区 RAG 清洗物化**：新增 `yamibo-rag-anime-materialize` CLI 与对应的清洗/对比中间产物输出
+- **知识研究查询入口**：新增 `application/knowledge_queries.py` 与 FastAPI `/api/knowledge/*` 路由，用于研究问句推断、趋势/evidence 聚合和报告建任务
+
+### 改进
+- **Web 主路径切到 FastAPI**：新增 `web_fastapi/` 应用、路由和静态资源挂载，保留现有打包产物目录
+- **远端抓取抗反爬增强**：`YamiboClient` 切到 `curl_cffi`，补上浏览器指纹头、gzip 解码、`acw_sc__v2` 挑战解算和更自然的 burst throttle
+- **论坛维护期调度收敛**：Daemon 识别维护页后统一暂停远程任务，空闲时按间隔探测恢复，不再让每个任务各自失败
+- **任务页与 Dashboard 状态可视化**：Dashboard 的任务开关文案更直接；Jobs 页新增闲时任务视图和回填参数/统计展示
+
+### 修复
+- **HTTP 444 识别补强**：补上 `curl_cffi` / HTTP2 场景下的 curl error 92、56 映射，避免把反爬拦截误判成普通超时失败
+- **未知页面兜底重试**：线程页解析落到未知页面类型时，附带标题/HTML 摘要，并按软封锁路径清代理后重试
+- **楼层富文本闭合修正**：`thread_detail` 结束标签处理收紧，避免正文富文本栈在 `td` 嵌套时提前错位
+- **超时文本判定收紧**：错误分类不再把 `timeout=` 参数字样误识别成真实超时
+- **jobs 活跃查询索引**：新增 `idx_jobs_type_tid_status_created`，降低回填候选与活跃任务检查的扫描成本
+
 ## v0.12.0 (2026-07-02)
 
 ### 新增

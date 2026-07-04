@@ -107,11 +107,9 @@ export function Dashboard() {
   const liveStatuses = data?.live_thread_statuses ?? {}
   const jobControl = data?.job_control ?? { jobs_enabled: true, queued: 0, running: 0, retrying: 0, interrupted: 0, paused: 0 }
   const daemonRunning = jobControl.jobs_enabled
-  const canPauseJobs = daemonRunning
-  const canResumeJobs = !daemonRunning
-  const jobControlAction = canPauseJobs ? 'pause' : 'resume'
+  const jobControlAction = daemonRunning ? 'pause' : 'resume'
+  const jobControlLabel = daemonRunning ? t('job_control_running') : t('job_control_paused')
   const runJobControl = () => {
-    if (!canPauseJobs && !canResumeJobs) return
     setJobControlBusy(true)
     api.controlJobs(jobControlAction)
       .then(result => {
@@ -160,14 +158,14 @@ export function Dashboard() {
         </div>
       )}
       <div className="stat-row">
-        <div className="stat-cell">
+        <div className="stat-cell" style={{ flex: 1.6 }}>
           <div className="label">{t('thread_count')}</div>
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
+          <div className="stat-body">
             <div className="value">{data.thread_count}</div>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <div className="stat-forum-counts">
               {Object.entries(data.forum_counts).map(([fid, cnt]) => (
-                <span key={fid} style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
-                  {forumNames[Number(fid)] || fid} <b style={{ color: 'var(--text-secondary)' }}>{cnt}</b>
+                <span key={fid}>
+                  {forumNames[Number(fid)] || fid} <b>{cnt}</b>
                 </span>
               ))}
             </div>
@@ -184,11 +182,11 @@ export function Dashboard() {
               <span>{t('paused')} <b>{jobControl.paused}</b></span>
             </div>
             <button
-              className={canPauseJobs ? 'btn-danger' : 'btn-subtle'}
-              disabled={jobControlBusy || (!canPauseJobs && !canResumeJobs)}
+              className={daemonRunning ? 'btn-subtle' : 'btn-warning'}
+              disabled={jobControlBusy}
               onClick={runJobControl}
             >
-              {jobControlBusy ? t('running') : (canPauseJobs ? t('pause_active_jobs') : t('resume_paused_jobs'))}
+              {jobControlBusy ? t('loading') : jobControlLabel}
             </button>
           </div>
         </div>

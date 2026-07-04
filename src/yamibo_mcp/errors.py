@@ -179,7 +179,8 @@ def _has_soft_block(*texts: str) -> bool:
 
 
 def _has_timeout(*texts: str) -> bool:
-    return any("timed out" in t.lower() or "timeout" in t.lower() for t in texts)
+    """检测真正的超时错误，避免误匹配参数描述中的 timeout= 字样。"""
+    return any("timed out" in t.lower() for t in texts)
 
 
 def _has_connection_error(*texts: str) -> bool:

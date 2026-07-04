@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { Link } from 'react-router-dom'
-import { api, type JobSummary } from '../api/client'
+import { api, type JobSummary, type BackfillStatus } from '../api/client'
 import { Badge } from '../components/Badge'
 import { PaginationControls } from '../components/PaginationControls'
 import { useI18n } from '../context/I18nContext'
@@ -14,6 +14,7 @@ const STORAGE_KEY = 'yamibo_jobs_status'
 const FAILURE_STORAGE_KEY = 'yamibo_jobs_failure_kind'
 const PAGE_STORAGE_KEY = 'yamibo_jobs_page'
 const PAGE_SIZE_STORAGE_KEY = 'yamibo_jobs_page_size'
+const IDLE_TASKS_STORAGE_KEY = 'yamibo_jobs_idle_tasks'
 const LOADING_DELAY_MS = 180
 
 export function Jobs() {
@@ -53,6 +54,11 @@ export function Jobs() {
   const [pendingCancelId, setPendingCancelId] = useState<string | null>(null)
   const [pendingRetryId, setPendingRetryId] = useState<string | null>(null)
   const [pendingSelectedRetry, setPendingSelectedRetry] = useState(false)
+  const [showIdleTasks, setShowIdleTasks] = useState(() => {
+    try { return localStorage.getItem(IDLE_TASKS_STORAGE_KEY) === '1' } catch { return false }
+  })
+  const [backfillStatus, setBackfillStatus] = useState<BackfillStatus | null>(null)
+  const [idleJobs, setIdleJobs] = useState<JobSummary[]>([])
   const jobsRef = useRef<JobSummary[]>([])
   const countsRef = useRef<Record<string, number>>({})
   const refreshTokenRef = useRef(0)
@@ -139,6 +145,20 @@ export function Jobs() {
   useEffect(() => {
     let active = true
     const poll = window.setInterval(async () => {
+      if (showIdleTasks) {
+        try {
+          const [status, allJobs] = await Promise.all([
+            api.backfillStatus(),
+            api.jobs({ page_size: 50 }),
+          ])
+          if (!active) return
+          setBackfillStatus(status)
+          setIdleJobs(allJobs.items.filter(j => j.job_type === 'image_backfill'))
+        } catch { /* ignore */ }
+        return
+      }
+      // 始终拉取 backfill status 用于状态摘要行
+      api.backfillStatus().then(setBackfillStatus).catch(() => {})
       try {
         const jobsRequest = api.jobs({
           status: status || undefined,
@@ -170,7 +190,7 @@ export function Jobs() {
       active = false
       window.clearInterval(poll)
     }
-  }, [failureKind, failureKindCounts, page, pageSize, status, t])
+  }, [failureKind, failureKindCounts, page, pageSize, status, t, showIdleTasks])
 
   useEffect(() => {
     if (!pendingCancelId) return
@@ -192,6 +212,8 @@ export function Jobs() {
   }, [pendingCancelId, refreshJobs])
 
   const setStatusAndRemember = (s: string | null) => {
+    setShowIdleTasks(false)
+    try { localStorage.removeItem(IDLE_TASKS_STORAGE_KEY) } catch {}
     setStatus(s)
     try { s ? localStorage.setItem(STORAGE_KEY, s) : localStorage.removeItem(STORAGE_KEY) } catch {}
   }
@@ -401,7 +423,7 @@ export function Jobs() {
           const key = s || 'all'
           const count = statusCounts[key]
           return (
-            <a key={key} className={status === s ? 'active' : ''}
+            <a key={key} className={status === s && !showIdleTasks ? 'active' : ''}
               href="#" onClick={e => { e.preventDefault(); setStatusAndRemember(s) }}>
               {s ? t(s) : t('all')}{count != null && <span className="seg-count">{count}</span>}
             </a>
@@ -471,6 +493,71 @@ export function Jobs() {
         </div>
       </div>
       {jobActionError && <div className="panel" style={{ marginTop: 12, color: 'var(--status-error)' }}>{jobActionError}</div>}
+      <div style={{ marginTop: 4, fontSize: 11, color: 'var(--text-tertiary)' }}>
+        <a href="#" onClick={e => {
+          e.preventDefault()
+          const next = !showIdleTasks
+          setShowIdleTasks(next)
+          if (next) {
+            try { localStorage.setItem(IDLE_TASKS_STORAGE_KEY, '1') } catch {}
+            api.backfillStatus().then(setBackfillStatus).catch(() => {})
+            api.jobs({ page_size: 50 }).then(r => setIdleJobs(r.items.filter(j => j.job_type === 'image_backfill'))).catch(() => {})
+          } else {
+            try { localStorage.removeItem(IDLE_TASKS_STORAGE_KEY) } catch {}
+          }
+        }} style={{ color: showIdleTasks ? 'var(--accent)' : 'var(--text-tertiary)' }}>
+          {t('idle_tasks')}{backfillStatus ? ` · ${t('backfill_today_count')}: ${backfillStatus.today_count}/${backfillStatus.daily_limit}` : ''}
+        </a>
+      </div>
+      {showIdleTasks ? (
+        <>
+          {backfillStatus && (
+            <div className="panel" style={{ marginTop: 12 }}>
+              <h3 style={{ margin: '0 0 12px', fontSize: 14, color: 'var(--text-primary)' }}>{t('backfill_params_title')}</h3>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '8px 16px', fontSize: 13 }}>
+                <div><span style={{ color: 'var(--text-tertiary)' }}>{t('backfill_enabled')}</span>: {backfillStatus.enabled ? '✅' : '❌'}</div>
+                <div><span style={{ color: 'var(--text-tertiary)' }}>{t('backfill_dry_run')}</span>: {backfillStatus.dry_run ? '⚠️' : '✅'}</div>
+                <div><span style={{ color: 'var(--text-tertiary)' }}>{t('backfill_forum_id')}</span>: {backfillStatus.forum_id}</div>
+                <div><span style={{ color: 'var(--text-tertiary)' }}>{t('backfill_daily_limit')}</span>: {backfillStatus.daily_limit}</div>
+                <div><span style={{ color: 'var(--text-tertiary)' }}>{t('backfill_interval')}</span>: {backfillStatus.interval_seconds}</div>
+                <div><span style={{ color: 'var(--text-tertiary)' }}>{t('backfill_max_pages')}</span>: {backfillStatus.max_pages}</div>
+              </div>
+              <h3 style={{ margin: '16px 0 12px', fontSize: 14, color: 'var(--text-primary)' }}>{t('backfill_status_title')}</h3>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '8px 16px', fontSize: 13 }}>
+                <div><span style={{ color: 'var(--text-tertiary)' }}>{t('backfill_today_count')}</span>: <strong>{backfillStatus.today_count}</strong> / {backfillStatus.daily_limit}</div>
+                {backfillStatus.last_enqueued_at && <div><span style={{ color: 'var(--text-tertiary)' }}>{t('backfill_last_enqueued')}</span>: {formatDateTime(backfillStatus.last_enqueued_at)}</div>}
+                {backfillStatus.last_reason && <div><span style={{ color: 'var(--text-tertiary)' }}>{t('backfill_last_reason')}</span>: {backfillStatus.last_reason}</div>}
+              </div>
+            </div>
+          )}
+          <div id="jobs-pagination-top" />
+          <div className="jobs-table-shell">
+            <div className="table-wrap"><table style={{ tableLayout: 'fixed', width: '100%' }}>
+            <thead><tr>
+              <th style={{ width: 65 }}>{t('tid')}</th>
+              <th style={{ width: '35%' }}>{t('description')}</th>
+              <th style={{ width: 80 }}>{t('status')}</th>
+              <th style={{ width: 80 }} className="hide-mobile">{t('progress')}</th>
+              <th style={{ width: 110 }}>{t('created_at')}</th>
+            </tr></thead>
+            <tbody>
+              {idleJobs.length === 0 ? (
+                <tr><td colSpan={5} style={{ textAlign: 'center', padding: 32, color: 'var(--text-tertiary)' }}>{t('backfill_no_jobs')}</td></tr>
+              ) : idleJobs.map(j => (
+                <tr key={j.job_id}>
+                  <td>{j.tid ? <Link to={`/threads/${j.tid}`}>{j.tid}</Link> : '-'}</td>
+                  <td className="truncate" title={desc(j)}><Link to={`/jobs/${j.job_id}`}>{desc(j)}</Link></td>
+                  <td><Badge status={j.status} /></td>
+                  <td className="nowrap hide-mobile">{j.progress_current}/{j.progress_total ?? '?'}</td>
+                  <td className="nowrap col-time">{formatDateTime(j.created_at)}</td>
+                </tr>
+              ))}
+            </tbody>
+            </table></div>
+          </div>
+        </>
+      ) : (
+        <>
       <div id="jobs-pagination-top" />
       <div className="jobs-table-shell">
         <div className="table-wrap"><table style={{ tableLayout: 'fixed', width: '100%' }}>
@@ -479,7 +566,7 @@ export function Jobs() {
           <th style={{ width: 65 }}>{t('tid')}</th>
           <th style={{ width: '35%' }}>{t('description')}</th>
           <th style={{ width: 80 }}>{t('status')}</th>
-          <th style={{ width: 80 }} className="hide-mobile">{t('stage')}</th>
+          <th style={{ width: 120 }} className="hide-mobile">{t('stage')}</th>
           <th style={{ width: 80 }} className="hide-mobile">{t('progress')}</th>
           <th style={{ width: 110 }}>{t('created_at')}</th>
           <th style={{ width: 110 }}>{t('action')}</th>
@@ -538,6 +625,8 @@ export function Jobs() {
       </div>
 
       <PaginationControls page={page} totalPages={totalPages} onPageChange={setPage} scrollTargetId="jobs-pagination-top" />
+        </>
+      )}
 
       {confirmDelete && (
         <div className="confirm-overlay" onClick={() => { setConfirmDelete(null); setDeleteError(null) }}>

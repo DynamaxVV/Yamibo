@@ -213,6 +213,44 @@ class RagChunksRepository:
             "failed_chunks": int(row["failed_chunks"] or 0) if row is not None else 0,
         }
 
+    def count_floor_coverage_diagnostics(self) -> dict[str, object]:
+        eligible_row = self.conn.execute(
+            """
+            SELECT COUNT(*) AS eligible_floor_count
+            FROM floors
+            WHERE NULLIF(TRIM(COALESCE(content, '')), '') IS NOT NULL
+            """
+        ).fetchone()
+        indexed_row = self.conn.execute(
+            """
+            SELECT COUNT(*) AS indexed_floor_count
+            FROM (
+              SELECT DISTINCT tid, floor_no
+              FROM rag_chunks
+              WHERE floor_no IS NOT NULL
+                AND embedding_status = 'indexed'
+            ) indexed_floors
+            """
+        ).fetchone()
+        eligible_floor_count = int(eligible_row["eligible_floor_count"] or 0) if eligible_row is not None else 0
+        indexed_floor_count = int(indexed_row["indexed_floor_count"] or 0) if indexed_row is not None else 0
+        skipped_non_empty_floor_count = max(eligible_floor_count - indexed_floor_count, 0)
+        skipped_reasons: list[dict[str, object]] = []
+        if skipped_non_empty_floor_count:
+            skipped_reasons.append(
+                {
+                    "reason": "non_empty_floor_without_indexed_chunk",
+                    "count": skipped_non_empty_floor_count,
+                }
+            )
+        return {
+            "rag_full_floor_policy": "all_non_empty_text_floors",
+            "eligible_floor_count": eligible_floor_count,
+            "indexed_floor_count": indexed_floor_count,
+            "skipped_non_empty_floor_count": skipped_non_empty_floor_count,
+            "skipped_reasons": skipped_reasons,
+        }
+
     def list_rag_forum_breakdown(self) -> list[sqlite3.Row]:
         return self.conn.execute(
             """

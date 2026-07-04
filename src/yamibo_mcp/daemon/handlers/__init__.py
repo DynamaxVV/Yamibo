@@ -10,6 +10,7 @@ from yamibo_mcp.daemon.handlers.noop import handle_noop
 from yamibo_mcp.daemon.handlers.rag_index import handle_rag_index
 from yamibo_mcp.daemon.handlers.sync_thread import handle_sync_thread
 from yamibo_mcp.daemon.handlers.update_thread import handle_update_thread
+from yamibo_mcp.daemon.handlers.image_backfill import handle_image_backfill
 from yamibo_mcp.daemon.handlers.title_refine import handle_title_refine
 
 
@@ -32,4 +33,6 @@ def get_handler(job: Job):
         return handle_discussion_trend_index
     if job.job_type == JobType.DISCUSSION_TREND_REPORT.value:
         return handle_discussion_trend_report
+    if job.job_type == JobType.IMAGE_BACKFILL.value:
+        return handle_image_backfill
     return None
