@@ -149,3 +149,9 @@ def test_remote_forums_list(client):
     """GET /api/remote/forums returns enabled forums."""
     resp = client.get("/api/remote/forums")
     assert resp.status_code == 200
+
+
+def test_remote_image_proxy_rejects_localhost(client):
+    resp = client.get("/api/remote/image", params={"url": "http://127.0.0.1:8000/a.png"})
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "only public http(s) image URLs are supported"

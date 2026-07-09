@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from yamibo_mcp.application.archive_queries import probe_archived_threads, read_archived_thread
+from yamibo_mcp.application.archive_queries import plan_thread_resync_batch, probe_archived_threads, read_archived_thread
 from yamibo_mcp.db.repositories.content_blocks import ContentBlocksRepository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
 from yamibo_mcp.domain.models import ContentBlock, FloorSnapshot, ThreadSnapshot, TitleSnapshot
@@ -117,6 +117,30 @@ def test_read_archived_thread_content_cursor_reads_last_chunk(tmp_path, db):
     assert last.data["floors"][-1]["floor_no"] == 105
     assert last.data["has_more"] is False
     assert last.data["next_cursor"] is None
+
+
+def test_plan_thread_resync_batch_dry_run_reports_decisions(tmp_path, db):
+    settings = _fake_settings(tmp_path)
+    _seed_large_thread(db, tid=9002, floor_count=3)
+    db.execute(
+        "UPDATE threads SET remote_reply_count = ?, remote_last_reply_at = ?, remote_last_reply_at_raw = ?, remote_last_replier = ?, remote_observed_at = ?, remote_observed_from = ? WHERE tid = ?",
+        (2, "2026-01-01T00:00:00", "2026-01-01", "最后回复者", "2026-01-01T00:00:00", "https://bbs.yamibo.com/forum.php?mod=forumdisplay&fid=30&page=1", 9002),
+    )
+    db.commit()
+
+    with patch("yamibo_mcp.application.archive_queries.load_settings", return_value=settings), \
+         patch("yamibo_mcp.application.archive_queries.connect", return_value=db):
+        result = plan_thread_resync_batch(tids=[9002, 12345], include_unknown=True, max_detail_jobs=10)
+
+    assert result.ok is True
+    assert result.data["count"] == 2
+    items = {item["tid"]: item for item in result.data["items"]}
+    assert items[9002]["decision"] == "skip"
+    assert items[9002]["reason_codes"] == ["up_to_date"]
+    assert items[9002]["job_preview"]["create_sync_thread"] is False
+    assert items[12345]["decision"] == "needs_resync"
+    assert items[12345]["reason_codes"] == ["not_archived"]
+    assert items[12345]["job_preview"]["create_sync_thread"] is True
 
 
 def test_probe_archived_threads_reports_local_archive_state(tmp_path, db):

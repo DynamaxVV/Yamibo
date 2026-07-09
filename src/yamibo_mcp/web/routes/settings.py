@@ -29,9 +29,12 @@ SETTINGS_FIELD_SPECS = {
     "archive_thread_max_pages": {"section": "yamibo", "key": "archive_thread_max_pages", "type": "int", "default": 50, "env": "YAMIBO_ARCHIVE_THREAD_MAX_PAGES", "effect": "restart_daemon"},
     "novel_author_only_max_pages": {"section": "yamibo", "key": "novel_author_only_max_pages", "type": "int", "default": 50, "env": "YAMIBO_NOVEL_AUTHOR_ONLY_MAX_PAGES", "effect": "restart_daemon"},
     "novel_author_only_page_delay_seconds": {"section": "yamibo", "key": "novel_author_only_page_delay_seconds", "type": "float", "default": 0.5, "env": "YAMIBO_NOVEL_AUTHOR_ONLY_PAGE_DELAY_SECONDS", "effect": "restart_daemon"},
-    "llm_base_url": {"section": "llm", "key": "base_url", "type": "string", "default": "https://api.openai.com/v1", "env": "YAMIBO_LLM_BASE_URL", "effect": "restart_daemon_web"},
-    "llm_api_key": {"section": "llm", "key": "api_key", "type": "string", "default": None, "env": "YAMIBO_LLM_API_KEY", "sensitive": True, "effect": "restart_daemon_web"},
-    "llm_model": {"section": "llm", "key": "model", "type": "string", "default": "gpt-4.1-mini", "env": "YAMIBO_LLM_MODEL", "effect": "restart_daemon_web"},
+    "hermes_endpoint": {"section": "chat", "key": "hermes_endpoint", "type": "string", "default": "http://host.docker.internal:8642", "env": "YAMIBO_HERMES_ENDPOINT", "effect": "restart_web"},
+    "hermes_port": {"section": "chat", "key": "hermes_port", "type": "int", "default": 8642, "env": "YAMIBO_HERMES_PORT", "effect": "restart_web"},
+    "hermes_host": {"section": "chat", "key": "hermes_host", "type": "string", "default": "host.docker.internal", "env": "YAMIBO_HERMES_HOST", "effect": "restart_web"},
+    "hermes_api_key": {"section": "chat", "key": "hermes_api_key", "type": "string", "default": None, "env": "YAMIBO_HERMES_API_KEY", "sensitive": True, "effect": "restart_web"},
+    "hermes_model": {"section": "chat", "key": "hermes_model", "type": "string", "default": "hermes-agent", "env": "YAMIBO_HERMES_MODEL", "effect": "restart_web"},
+    "hermes_stream": {"section": "chat", "key": "hermes_stream", "type": "bool", "default": False, "env": "YAMIBO_HERMES_STREAM", "effect": "restart_web"},
     "rag_enabled": {"section": "rag", "key": "enabled", "type": "bool", "default": True, "env": "YAMIBO_RAG_ENABLED", "effect": "restart_daemon_web"},
     "rag_base_url": {"section": "rag", "key": "base_url", "type": "string", "default": None, "env": "YAMIBO_RAG_BASE_URL", "inherit": "llm_base_url", "effect": "restart_daemon_web"},
     "rag_api_key": {"section": "rag", "key": "api_key", "type": "string", "default": None, "env": "YAMIBO_RAG_API_KEY", "inherit": "llm_api_key", "sensitive": True, "effect": "restart_daemon_web"},
@@ -79,7 +82,13 @@ def _setting_value_from_raw(raw_config: dict[str, object], spec: dict[str, objec
             return [str(item).strip() for item in value if str(item).strip()]
         return None
     if spec["type"] == "bool":
-        return bool(value)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value != 0
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return False
     if spec["type"] == "int":
         try:
             return int(value)
@@ -154,7 +163,13 @@ def _normalize_setting_input(name: str, value):
             return [line.strip() for line in value.splitlines() if line.strip()]
         return []
     if spec["type"] == "bool":
-        return bool(value)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value != 0
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return False
     if spec["type"] == "int":
         return int(value)
     if spec["type"] == "float":
@@ -277,31 +292,10 @@ def handle_settings_update(handler, settings: Settings) -> None:
 
 
 def handle_settings_models_get(handler, settings: Settings) -> None:
-    request = urllib.request.Request(
-        settings.llm_base_url.rstrip("/") + "/models",
-        headers={
-            "Content-Type": "application/json",
-            **({"Authorization": f"Bearer {settings.llm_api_key}"} if settings.llm_api_key else {}),
-        },
-        method="GET",
-    )
-    try:
-        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=30) as response:
-            data = json.loads(response.read().decode("utf-8"))
-    except Exception as exc:
-        error_response(handler, str(exc), HTTPStatus.BAD_GATEWAY)
-        return
-    models: list[str] = []
-    if isinstance(data, dict):
-        items = data.get("data")
-        if not isinstance(items, list):
-            items = data.get("models")
-        if isinstance(items, list):
-            for item in items:
-                if isinstance(item, dict):
-                    model_id = item.get("id") or item.get("model") or item.get("name")
-                    if model_id:
-                        models.append(str(model_id))
-                elif item:
-                    models.append(str(item))
-    json_response(handler, {"models": sorted(dict.fromkeys(models))})
+    json_response(handler, {"models": [], "disabled": True})
+
+
+def handle_hermes_test_connection(handler, settings: Settings) -> None:
+    from yamibo_mcp.services.web_chat import probe_hermes_chat_completions
+    result = probe_hermes_chat_completions(settings)
+    json_response(handler, result)

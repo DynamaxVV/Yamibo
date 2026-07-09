@@ -10,7 +10,7 @@ from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
 from yamibo_mcp.domain.enums import JobType
 from yamibo_mcp.server.resource_uris import job_events_uri, thread_summary_uri
-from yamibo_mcp.yamibo.anti_bot import activate_remote_access_pause, ensure_remote_access_allowed, is_http_444_error
+from yamibo_mcp.yamibo.anti_bot import ensure_remote_access_allowed, is_http_444_error
 from yamibo_mcp.yamibo.client import YamiboClient
 from yamibo_mcp.yamibo.proxy_pool import select_random_proxy
 from yamibo_mcp.yamibo.urls import thread_url_from_tid
@@ -269,10 +269,11 @@ def sync_forum_range(
                     collected.append(item)
         except Exception as exc:
             if is_http_444_error(exc):
-                activate_remote_access_pause(
+                from yamibo_mcp.yamibo.anti_bot import handle_http_444
+                handle_http_444(
                     conn,
                     source="archive_commands:sync_forum_range",
-                    message="Yamibo returned HTTP 444. Remote archive/update access has been paused.",
+                    exc=exc,
                     context={"start_page": start_page, "end_page": end_page, "forum_id": forum_id},
                 )
             raise

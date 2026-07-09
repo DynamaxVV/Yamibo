@@ -2,6 +2,7 @@
 
 import pytest
 from tests.fixtures.loader import load_forum_page, get_all_forum_pages
+from yamibo_mcp.yamibo.parsers.forum_list import parse_forum_list
 
 
 FORUM_PAGES = [1, 2, 3, 5, 10, 20]
@@ -48,6 +49,7 @@ class TestForumListParser:
         for item in data["items"]:
             for field in required_fields:
                 assert field in item, f"Missing field {field} in item {item.get('tid')}"
+            assert "last_replier" in item or item.get("last_replier") is None
 
     def test_tid_is_positive_integer(self):
         # Arrange
@@ -124,3 +126,33 @@ class TestForumListParser:
         for item in data["items"]:
             assert isinstance(item["reply_count"], int)
             assert item["reply_count"] >= 0
+            assert "last_replier" in item or item.get("last_replier") is None
+
+    def test_parse_forum_list_extracts_last_replier_from_second_by_block(self):
+        html = """
+        <tbody id="normalthread_123">
+          <tr>
+            <td class="icn"></td>
+            <th class="common">
+              <a href="forum.php?mod=viewthread&amp;tid=123" class="s xst">测试主题</a>
+            </th>
+            <td class="by">
+              <cite><a href="home.php?mod=space&amp;uid=1">楼主A</a></cite>
+              <em><span>2026-07-05 10:00</span></em>
+            </td>
+            <td class="num"><a>7</a><em>88</em></td>
+            <td class="by">
+              <cite><a href="home.php?mod=space&amp;uid=2">回复者B</a></cite>
+              <em><a href="forum.php?mod=redirect&amp;goto=findpost&amp;pid=9">2026-07-05 12:34</a></em>
+            </td>
+          </tr>
+        </tbody>
+        """
+
+        items = parse_forum_list(html)
+
+        assert len(items) == 1
+        assert items[0].publisher == "楼主A"
+        assert items[0].last_replier == "回复者B"
+        assert items[0].last_reply_at == "2026-07-05 12:34"
+        assert items[0].reply_count == 7

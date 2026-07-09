@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from typing import Any
 
@@ -70,9 +71,11 @@ class RagChunksRepository:
                 INSERT INTO rag_chunks (
                   chunk_id, tid, pid, floor_no, chunk_type, forum_id, content_kind, series_id, series_key,
                   chapter_index, publisher, pub_time, title, metadata_text, text, text_hash, source_uri,
+                  source_tid, source_pid, source_floor_no, cleaner_version, chunker_version,
+                  materializer_version, source_hash, generated_at, quality_flags,
                   embedding_model, embedding_dimensions, embedding_status, indexed_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
                 """,
                 (
                     chunk.chunk_id,
@@ -92,6 +95,15 @@ class RagChunksRepository:
                     chunk.text,
                     chunk.text_hash,
                     chunk.source_uri,
+                    chunk.source_tid,
+                    chunk.source_pid,
+                    chunk.source_floor_no,
+                    chunk.cleaner_version,
+                    chunk.chunker_version,
+                    chunk.materializer_version,
+                    chunk.source_hash,
+                    chunk.generated_at,
+                    json.dumps(chunk.quality_flags, ensure_ascii=False),
                     embedding_model,
                     embedding_dimensions,
                     now,
@@ -356,6 +368,10 @@ class RagChunksRepository:
               t.forum_id,
               t.content_kind,
               t.category,
+              tp.core_title_guess,
+              tp.chapter_name,
+              tp.author_guess,
+              tp.group_name,
               COALESCE(rag_stats.chunk_count, 0) AS rag_chunk_count,
               COALESCE(rag_stats.indexed_chunk_count, 0) AS rag_indexed_chunk_count,
               COALESCE(rag_stats.pending_chunk_count, 0) AS rag_pending_chunk_count,
@@ -368,6 +384,7 @@ class RagChunksRepository:
                 ELSE 'unindexed'
               END AS rag_index_state
             FROM threads t
+            LEFT JOIN title_parse tp ON tp.tid = t.tid
             LEFT JOIN (
               SELECT
                 tid,

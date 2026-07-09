@@ -53,8 +53,17 @@ class StoragePaths:
         safe_parts = [part[:120] for part in raw_parts] or ["asset.bin"]
         return self.data_dir / "shared" / host / Path(*safe_parts)
 
+    @property
+    def staging_root(self) -> Path:
+        return self.data_dir / "staging" / "jobs"
+
     def staging_job_dir(self, job_id: str) -> Path:
-        return self.data_dir / "staging" / "jobs" / job_id
+        # 拒绝路径穿越字符，防止 job_id 中的 ../ 逃逸出 staging 目录。
+        # job_id 来自 DB（格式为 {job_type}_{uuid_hex}）或用户输入（cleanup_job），
+        # 后者不可信，必须校验。
+        if ".." in job_id or "/" in job_id or "\\" in job_id:
+            raise ValueError(f"Invalid job_id: {job_id!r}")
+        return self.staging_root / job_id
 
     def staging_job_images_dir(self, job_id: str) -> Path:
         return self.staging_job_dir(job_id) / "images"

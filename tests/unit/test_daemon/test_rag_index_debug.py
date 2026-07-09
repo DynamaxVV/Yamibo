@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from yamibo_mcp.daemon.handlers.rag_index import handle_rag_index
+from yamibo_mcp.daemon.handlers.rag_index import _load_indexable_chunks, _read_materialized_preview_rows, handle_rag_index
 from yamibo_mcp.services.llm_client import LLMRequestError
 
 
@@ -117,8 +117,9 @@ class _FakeProvider:
         raise LLMRequestError("embedding response missing data field: keys=['error']")
 
 
-def _settings(*, debug: bool) -> SimpleNamespace:
+def _settings(*, debug: bool, data_dir) -> SimpleNamespace:
     return SimpleNamespace(
+        data_dir=data_dir,
         rag_debug_indexing=debug,
         rag_embedding_model="text-embedding-3-small",
         rag_embedding_dimensions=512,
@@ -129,8 +130,8 @@ def _settings(*, debug: bool) -> SimpleNamespace:
     )
 
 
-def test_rag_index_logs_partial_success_context(caplog):
-    settings = _settings(debug=True)
+def test_rag_index_logs_partial_success_context(caplog, tmp_path):
+    settings = _settings(debug=True, data_dir=tmp_path)
     job = SimpleNamespace(job_id="rag_1", tid=42, payload={"embedding_dimensions": 512})
     repo = _FakeJobsRepo()
 
@@ -150,8 +151,8 @@ def test_rag_index_logs_partial_success_context(caplog):
     assert "exc_type='LLMRequestError'" in caplog.text
 
 
-def test_rag_index_logs_missing_local_archive(caplog):
-    settings = _settings(debug=True)
+def test_rag_index_logs_missing_local_archive(caplog, tmp_path):
+    settings = _settings(debug=True, data_dir=tmp_path)
     job = SimpleNamespace(job_id="rag_2", tid=42, payload={"embedding_dimensions": 512})
     repo = _FakeJobsRepo()
 
@@ -163,3 +164,39 @@ def test_rag_index_logs_missing_local_archive(caplog):
     assert "[RAG-DEBUG] local archive missing" in caplog.text
     assert "job_id='rag_2'" in caplog.text
     assert "tid=42" in caplog.text
+
+
+def test_load_indexable_chunks_reads_materialized_preview(tmp_path):
+    settings = _settings(debug=False, data_dir=tmp_path)
+    thread_row = _FakeThreadsRepoReady(None).get_thread(42)
+    title_row = _FakeThreadsRepoReady(None).get_title_parse(42)
+    floor_rows = _FakeThreadsRepoReady(None).list_floors(42)
+
+    chunks = _load_indexable_chunks(
+        settings=settings,
+        thread_row=thread_row,
+        title_row=title_row,
+        floor_rows=floor_rows,
+    )
+
+    assert chunks
+    assert all(chunk.materializer_version == "anime-rag-materializer-1.2" for chunk in chunks)
+    assert any("anime-chunker-1.2" in chunk.chunk_id for chunk in chunks)
+
+
+def test_read_materialized_preview_rows_rejects_hash_mismatch(tmp_path):
+    from yamibo_mcp.storage.paths import StoragePaths
+
+    paths = StoragePaths(tmp_path)
+    thread_dir = tmp_path / "threads" / "42"
+    thread_dir.mkdir(parents=True)
+    preview_path = thread_dir / "rag_chunks.preview.1.2.jsonl"
+    marker_path = thread_dir / "rag_materialized.1.2.json"
+    preview_path.write_text('{"chunk_id":"x","text":"ok"}\n', encoding="utf-8")
+    marker_path.write_text(
+        '{"complete": true, "artifacts": {"rag_chunks.preview.1.2.jsonl": {"sha256": "bad"}}}',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="rag preview hash mismatch"):
+        _read_materialized_preview_rows(paths=paths, tid=42, version="1.2")

@@ -11,6 +11,7 @@ from yamibo_mcp.domain.models import FloorSnapshot, ThreadSnapshot, TitleSnapsho
 from yamibo_mcp.web.routes.remote_forum import (
     handle_remote_forums_list,
     handle_remote_forum_browse,
+    handle_remote_image_proxy,
     handle_remote_thread_detail,
 )
 
@@ -103,6 +104,21 @@ def _mock_open_web_client(mock_client):
     def _cm(settings, **kwargs):
         yield None, mock_client
     return _cm
+
+
+class _MockImageResponse:
+    def __init__(self, body: bytes, content_type: str = "image/jpeg"):
+        self._body = body
+        self.headers = {"Content-Type": content_type}
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
 
 
 def test_remote_forums_list_returns_enabled_forums(db):
@@ -257,6 +273,87 @@ def test_remote_thread_detail_enriches_local_status(db, tmp_path: Path):
     assert payload["local_thread"]["content_kind"] == "comic"
     assert payload["forum_id"] == 30
     assert payload["content_kind"] == "comic"
+
+
+def test_remote_thread_detail_prefers_display_image_urls_over_attachment_links(db, tmp_path: Path):
+    settings = _make_settings(tmp_path)
+    snapshot = _make_snapshot(42)
+    snapshot = ThreadSnapshot(
+        **{
+            **snapshot.__dict__,
+            "floors": [
+                FloorSnapshot(
+                    **{
+                        **snapshot.floors[0].__dict__,
+                        "image_urls": [
+                            "https://bbs.yamibo.com/forum.php?mod=attachment&aid=abc&nothumb=yes"
+                        ],
+                    }
+                )
+            ],
+        }
+    )
+    detail_summary = ThreadSnapshot(
+        **{
+            **_make_snapshot(42).__dict__,
+            "floors": [
+                FloorSnapshot(
+                    **{
+                        **_make_snapshot(42).floors[0].__dict__,
+                        "image_urls": ["https://img.example.com/display.jpg"],
+                    }
+                )
+            ],
+        }
+    )
+
+    mock_result = MagicMock()
+    mock_result.final_url = "https://bbs.yamibo.com/forum.php?mod=viewthread&tid=42&page=1"
+    mock_result.html = "<html></html>"
+
+    mock_client = MagicMock()
+    mock_client.fetch_thread_page.return_value = mock_result
+
+    with patch(
+        "yamibo_mcp.web.routes.remote_forum._open_web_client", _mock_open_web_client(mock_client)
+    ), patch(
+        "yamibo_mcp.web.routes.remote_forum.parse_thread_snapshot", return_value=snapshot
+    ), patch(
+        "yamibo_mcp.web.routes.remote_forum.parse_thread_detail", return_value=detail_summary
+    ):
+        handler = _CaptureHandler()
+        handle_remote_thread_detail(handler, 42, {"page": ["1"]}, db, settings)
+
+    payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
+    assert payload["floors"][0]["image_slots"][0]["remote_url"] == "https://img.example.com/display.jpg"
+
+
+def test_remote_image_proxy_fetches_public_image(db, tmp_path: Path):
+    settings = _make_settings(tmp_path)
+    mock_client = MagicMock()
+    mock_client.timeout = 15.0
+    mock_client._request_headers.return_value = {"Referer": "https://bbs.yamibo.com/"}
+    mock_client.opener.open.return_value = _MockImageResponse(b"img-bytes", "image/png")
+
+    with patch(
+        "yamibo_mcp.web.routes.remote_forum._open_web_client", _mock_open_web_client(mock_client)
+    ):
+        handler = _CaptureHandler()
+        handle_remote_image_proxy(handler, {"url": ["https://img.example.com/a.png"]}, settings)
+
+    assert handler.status == 200
+    assert handler.wfile.getvalue() == b"img-bytes"
+    assert ("Content-Type", "image/png") in handler.sent_headers
+
+
+def test_remote_image_proxy_rejects_localhost(tmp_path: Path):
+    settings = _make_settings(tmp_path)
+    handler = _CaptureHandler()
+    handle_remote_image_proxy(handler, {"url": ["http://127.0.0.1:8000/a.png"]}, settings)
+
+    payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
+    assert handler.status == 400
+    assert payload["error"] == "only public http(s) image URLs are supported"
 
 
 def test_remote_thread_detail_invalid_page(db, tmp_path: Path):

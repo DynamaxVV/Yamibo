@@ -42,7 +42,7 @@ def _fastmcp_imports():
     return FastMCP
 
 
-def build_mcp_server():
+def build_mcp_server(*, host: str = "0.0.0.0", port: int = 8000, mount_path: str = "/", sse_path: str = "/sse"):
     FastMCP = _fastmcp_imports()
     notifier = JobResourceNotifier()
     server = FastMCP(
@@ -51,6 +51,10 @@ def build_mcp_server():
             "Yamibo 本地归档 MCP Server。长操作只返回 job_id；"
             "大文本和二进制内容请通过 resources 读取。"
         ),
+        host=host,
+        port=port,
+        mount_path=mount_path,
+        sse_path=sse_path,
     )
     server._yamibo_job_notifier = notifier  # type: ignore[attr-defined]
     register_agent_tools(server)

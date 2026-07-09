@@ -46,13 +46,18 @@ def throttle_cookie_request(cookie_file: str | Path | None, *, request_interval:
     if request_interval <= 0:
         return
     state = _state_for(cookie_file)
+    sleep_seconds = 0.0
     with state.lock:
-        elapsed = time.monotonic() - state.last_request_time
+        now = time.monotonic()
         jitter = random.uniform(0, request_interval_jitter) if request_interval_jitter > 0 else 0
-        wait = request_interval + jitter - elapsed
-        if wait > 0:
-            time.sleep(wait)
-        state.last_request_time = time.monotonic()
+        if state.last_request_time > now:
+            sleep_seconds = state.last_request_time - now
+            next_request_time = state.last_request_time + request_interval + jitter
+        else:
+            next_request_time = now + request_interval + jitter
+        state.last_request_time = next_request_time
+    if sleep_seconds > 0:
+        time.sleep(sleep_seconds)
 
 
 @contextmanager

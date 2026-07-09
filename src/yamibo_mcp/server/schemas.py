@@ -26,12 +26,14 @@ _RESULT_READY_STATUSES = {"succeeded", "partial"}
 _ACTIVE_JOB_STATUSES = {"queued", "running", "retrying", "interrupted", "cancel_requested", "paused"}
 
 
-def _parse_iso8601(value: str | None) -> datetime | None:
+def _parse_iso8601(value: datetime | str | None) -> datetime | None:
     if not value:
         return None
+    if isinstance(value, datetime):
+        return value
     try:
         return datetime.fromisoformat(value)
-    except ValueError:
+    except (TypeError, ValueError):
         return None
 
 

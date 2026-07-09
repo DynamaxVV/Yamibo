@@ -98,6 +98,8 @@ Yamibo Archive — 百合会漫画本地归档系统
 
 ---
 
+> 历史说明：本文部分章节写于 SQLite-first 阶段。当前实现已转向 PostgreSQL-primary；文中出现的 SQLite job queue / forum.db / FTS5 描述应按历史背景理解，而不是当前部署推荐。
+
 ## 3. 非功能需求
 
 | 类别 | 要求 |

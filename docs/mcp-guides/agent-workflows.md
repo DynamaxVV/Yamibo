@@ -4,7 +4,7 @@
 
 ## 核心原则
 
-CLI 是主要操作方式。所有操作均可通过 `uv run yamibo-archiver <command>` 完成，无需启动 MCP 服务或 daemon。MCP 工具是为 LLM 客户端提供的辅助通道。
+CLI 是主要操作方式。核心操作可通过 `uv run yamibo-archiver <command>` 完成，无需启动 MCP 服务。归档、更新、导出、RAG 索引和报告生成等长任务只创建 job，仍需要 daemon 消费。MCP 工具是为 LLM 客户端提供的结构化通道；大文本和文件优先通过 `yamibo://...` resources 读取。
 
 ## 典型工作流
 
@@ -41,6 +41,8 @@ uv run yamibo-archiver create-sync-thread-batch-jobs --tid 572313 --tid 572314
 任务创建后由 daemon 异步消费，通过 `job-status` 查看进度：
 ```bash
 uv run yamibo-archiver job-status <job_id>
+uv run yamibo-archiver wait-for-job <job_id>
+uv run yamibo-archiver read-job-events <job_id>
 ```
 
 ### 4. 读取本地归档
@@ -87,5 +89,6 @@ uv run yamibo-archiver create-export-thread-job --tid 572313
 
 1. CLI 命令创建任务，拿到 `job_id`
 2. `job-status <job_id>` 轻量轮询
-3. 仅 failed / partial / 长时间 running 时才深入事件日志
-4. succeeded 后切换到资源读取
+3. 脚本需要阻塞等待时用 `wait-for-job <job_id>`
+4. 仅 failed / partial / 长时间 running 时才用 `read-job-events <job_id>` 深入事件日志
+5. succeeded 后切换到资源读取

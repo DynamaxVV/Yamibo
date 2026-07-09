@@ -148,11 +148,13 @@ class TestSearchThreadsForumId:
         assert kwargs["forum_id"] == 55
 
     def test_http_444_pauses_remote_access(self, tmp_path):
+        """单次 444 只换节点重试；5 分钟内累计 3 次才触发全局暂停。"""
         settings = _fake_settings(tmp_path)
 
         from yamibo_mcp.application.remote_queries import search_threads
         from yamibo_mcp.db.migrations import migrate
         from yamibo_mcp.db.repositories.jobs import JobsRepository
+        import yamibo_mcp.yamibo.anti_bot as anti_bot_mod
 
         conn = sqlite3.connect(settings.db_path)
         conn.row_factory = sqlite3.Row
@@ -161,13 +163,31 @@ class TestSearchThreadsForumId:
         sync_job = repo.create("sync_thread", tid=123)
         rag_job = repo.create("rag_index", tid=123)
 
+        # 清空 444 计数器，避免被前置用例污染
+        with anti_bot_mod._444_LOCK:
+            anti_bot_mod._444_EVENTS.clear()
+
         with patch("yamibo_mcp.application.remote_queries.load_settings", return_value=settings), \
              patch(
                  "yamibo_mcp.application.remote_queries._remote_search_items",
                  side_effect=RemoteFetchError("HTTP Error 444", details={"status_code": 444}),
-             ), \
-             patch("yamibo_mcp.application.remote_queries.connect", return_value=conn):
-            with pytest.raises(RemoteFetchError):
+             ):
+            # 前两次 444：换节点重试，不暂停
+            for _ in range(2):
+                with pytest.raises(RemoteFetchError):
+                    search_threads(query="test", forum_id=55)
+            verify_conn_1 = sqlite3.connect(settings.db_path)
+            verify_conn_1.row_factory = sqlite3.Row
+            try:
+                assert verify_conn_1.execute(
+                    "SELECT value_json FROM system_state WHERE key = 'remote_access_pause'"
+                ).fetchone() is None
+            finally:
+                verify_conn_1.close()
+
+            # 第三次 444：触发全局暂停，抛 RemoteAccessPausedError
+            from yamibo_mcp.errors import RemoteAccessPausedError
+            with pytest.raises(RemoteAccessPausedError):
                 search_threads(query="test", forum_id=55)
 
         verify_conn = sqlite3.connect(settings.db_path)
@@ -217,7 +237,7 @@ class TestSearchThreadsForumId:
             result = search_threads(query="test", forum_id=55)
 
         assert result["source"] == "forum"
-        assert calls == [None, 6]
+        assert calls == [None, 5]
 
 
 class TestSyncForumRangeForumId:

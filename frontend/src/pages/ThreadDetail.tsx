@@ -191,6 +191,7 @@ export function ThreadDetail() {
   const [images, setImages] = useState<ThreadImage[]>(() => initialCache?.images ?? [])
   const [error, setError] = useState<string | null>(null)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [editingChapter, setEditingChapter] = useState(false)
   const [chapterForm, setChapterForm] = useState({ display_title: '', chapter_name: '', chapter_index: '', author_guess: '', group_name: '' })
@@ -284,6 +285,7 @@ export function ThreadDetail() {
   }
 
   const handleEditChapter = () => {
+    setActionError(null)
     setChapterForm({
       display_title: thread?.display_title || thread?.raw_title || '',
       chapter_name: thread?.chapter_name || '',
@@ -296,13 +298,22 @@ export function ThreadDetail() {
 
   const handleSaveChapter = async () => {
     setActionLoading('chapter')
+    setActionError(null)
     try {
-      await api.updateTitle({ tid, display_title: chapterForm.display_title || thread?.display_title || thread?.raw_title || '' })
-      await api.updateChapter(tid, chapterForm.chapter_name || null, chapterForm.chapter_index ? Number(chapterForm.chapter_index) : null, chapterForm.author_guess || null, chapterForm.group_name || null)
+      await api.updateChapter(
+        tid,
+        chapterForm.display_title || thread?.display_title || thread?.raw_title || '',
+        chapterForm.chapter_name || null,
+        chapterForm.chapter_index ? Number(chapterForm.chapter_index) : null,
+        chapterForm.author_guess || null,
+        chapterForm.group_name || null,
+      )
       const refreshed = await api.thread(tid, previewThreadParams)
       setThread(refreshed)
       setEditingChapter(false)
-    } catch { /* ignore */ }
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : String(e))
+    }
     setActionLoading(null)
   }
 
@@ -418,7 +429,8 @@ export function ThreadDetail() {
               [t(isComic ? 'scanlation_group' : 'translator'), thread.group_name || '-'],
             ] : []),
             [t('category'), thread.category || '-'],
-            [t('image_count'), String(thread.image_count ?? 0)],
+            [t('reply_count'), thread.reply_count != null ? String(thread.reply_count) : '-'],
+            [t('last_reply_time'), formatDateTime(thread.remote_last_reply_at)],
             [t('content_kind'), <ContentBadge kind={thread.content_kind} />],
             [t('archive_status'), displayArchiveStatus === 'running' ? <Badge status="running">{t('resyncing')}</Badge> : <Badge status={displayArchiveStatus} />],
             [t('validation_status'), <Badge status={thread.validation_status} />],
@@ -466,6 +478,7 @@ export function ThreadDetail() {
             <label>{t('author')}<input value={chapterForm.author_guess} onChange={e => setChapterForm(f => ({ ...f, author_guess: e.target.value }))} /></label>
             <label>{t(isComic ? 'scanlation_group' : 'translator')}<input value={chapterForm.group_name} onChange={e => setChapterForm(f => ({ ...f, group_name: e.target.value }))} /></label>
           </div>
+          {actionError && <div className="inline-edit-error">{actionError}</div>}
           <div className="inline-edit-actions">
             <button className="btn-primary" disabled={actionLoading === 'chapter'} onClick={handleSaveChapter}>{t('save')}</button>
             <button className="btn-subtle" onClick={() => setEditingChapter(false)}>{t('cancel')}</button>

@@ -17,6 +17,7 @@ class ForumThreadItem:
     publisher: str | None = None
     posted_at: str | None = None
     last_reply_at: str | None = None
+    last_replier: str | None = None
     reply_count: int | None = None
     url: str | None = None
 
@@ -82,6 +83,7 @@ def parse_forum_list(html_text: str) -> list[ForumThreadItem]:
         by_blocks = BY_BLOCK_RE.findall(body)
         publisher = _extract_anchor_text(by_blocks[0]) if by_blocks else None
         posted_at = _extract_datetime(by_blocks[0]) if by_blocks else None
+        last_replier = _extract_anchor_text(by_blocks[1]) if len(by_blocks) > 1 else None
         last_reply_at = _extract_datetime(by_blocks[1]) if len(by_blocks) > 1 else None
         num_block = NUM_BLOCK_RE.search(body)
         reply_count, _view_count = _extract_counts(num_block.group(1)) if num_block else (None, None)
@@ -95,6 +97,7 @@ def parse_forum_list(html_text: str) -> list[ForumThreadItem]:
                 publisher=publisher,
                 posted_at=posted_at,
                 last_reply_at=last_reply_at,
+                last_replier=last_replier,
                 reply_count=reply_count,
                 url=href,
             )

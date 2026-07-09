@@ -4,7 +4,7 @@
 
 ## 概览
 
-CLI 是主要操作方式，所有功能均可通过 `uv run yamibo-archiver <command>` 直接调用。MCP 工具是为 LLM 客户端提供的辅助通道，底层与 CLI 共享同一 application 层。
+CLI 是主要操作方式，核心 Agent-facing 工具可通过 `uv run yamibo-archiver <command>` 直接调用。MCP 工具是为 LLM 客户端提供的结构化通道，底层与 CLI 共享同一 application 层。
 
 所有公共工具统一返回结构：
 
@@ -35,7 +35,7 @@ CLI 是主要操作方式，所有功能均可通过 `uv run yamibo-archiver <co
 
 ## 公共工具
 
-所有工具均有对应的 CLI 命令。**推荐优先使用 CLI**。
+核心工具均有对应的 CLI 命令。**推荐人类操作和脚本优先使用 CLI；LLM 客户端优先使用 MCP tool 和 resource。**
 
 | MCP 工具 | CLI 命令 |
 |---|---|
@@ -50,8 +50,9 @@ CLI 是主要操作方式，所有功能均可通过 `uv run yamibo-archiver <co
 | `create_rag_index_job` | `uv run yamibo-archiver create-rag-index-job --tid <tid>` |
 | `create_rag_index_batch_jobs` | `uv run yamibo-archiver create-rag-index-batch-jobs --tid ... --tid ...` |
 | `search_archived_content` | `uv run yamibo-archiver search-archived-content --query "..." --mode hybrid` |
-| `read_job` / `wait_for_job` | `uv run yamibo-archiver job-status <job_id>` |
-| `read_job_events` | (通过 Web 控制台或 API) |
+| `read_job` | `uv run yamibo-archiver job-status <job_id>` |
+| `wait_for_job` | `uv run yamibo-archiver wait-for-job <job_id>` |
+| `read_job_events` | `uv run yamibo-archiver read-job-events <job_id>` |
 | `read_archived_thread` | `uv run yamibo-archiver read-resource "yamibo://threads/<tid>/summary"` |
 | `probe_archived_threads` | `uv run yamibo-archiver probe-archived-threads --tid ... --tid ...` |
 | `create_discussion_trend_index_job` | `uv run yamibo-archiver create-discussion-trend-index-job --forum-id 5 --start-date 2014-11-01 --end-date 2014-11-30` |
@@ -77,6 +78,19 @@ CLI 是主要操作方式，所有功能均可通过 `uv run yamibo-archiver <co
 2. 再读 `yamibo://guide/archive-model`，确认“远端只读 / 本地只读 / daemon 执行”的边界
 3. 发生失败时读 `yamibo://guide/error-codes`
 4. 需要动态确认 tool 参数时读 `yamibo://schema/tools`
+
+## Tool 与 Resource 边界
+
+MCP tool 负责结构化操作：远程只读查询、创建后台 job、轮询 job、按参数读取本地归档视图，以及 `read_archived_thread(content)` 这种带 `cursor` / `chunk_size` 的分页消费。需要传复杂参数、判断 side effects、获得 `next_actions` 时，应使用 tool。
+
+MCP resource 负责稳定 URI 下的大文本、文件和只读快照：归档正文、帖子列表、诊断、资产、导出包、job status/events、guide 和 schema。需要把内容交给不方便继续调 tool 的客户端，或读取二进制/大文本时，应使用 `yamibo://...` resource；CLI 对应入口是 `read-resource`。
+
+边界原则：
+
+- tool 可以返回 resource URI 作为后续读取提示，但不应把大文本和二进制内容塞进一次工具结果。
+- resource 只读取稳定内容，不创建 job，不触发远程抓取。
+- `read_archived_thread` 是结构化本地读取工具；`yamibo://threads/<tid>/...` 是同一归档结果的 URI 读取面。
+- `read_job` / `wait_for_job` / `read_job_events` 是状态观察工具；`yamibo://jobs/<job_id>/status` 和 `/events` 是同一状态的 resource 读取面。
 
 ## 本地读取
 

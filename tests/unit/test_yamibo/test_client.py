@@ -92,7 +92,7 @@ def test_client_bootstraps_login_when_cookie_missing(tmp_path, monkeypatch):
 
 def test_cookie_request_throttle_is_shared_across_clients(monkeypatch):
     runtime_limits._STATE_REGISTRY.clear()
-    values = iter([100.0, 100.0, 100.1, 100.1])
+    values = iter([100.0, 100.1])
     sleeps: list[float] = []
 
     monkeypatch.setattr(runtime_limits.time, "monotonic", lambda: next(values))
@@ -100,6 +100,27 @@ def test_cookie_request_throttle_is_shared_across_clients(monkeypatch):
 
     runtime_limits.throttle_cookie_request("/tmp/shared.cookie", request_interval=1.0, request_interval_jitter=0.0)
     runtime_limits.throttle_cookie_request("/tmp/shared.cookie", request_interval=1.0, request_interval_jitter=0.0)
+    assert sleeps == [pytest.approx(0.9)]
+
+
+def test_cookie_request_throttle_sleeps_outside_cookie_lock(monkeypatch):
+    runtime_limits._STATE_REGISTRY.clear()
+    key = "/tmp/shared-lock.cookie"
+    state = runtime_limits._state_for(key)
+    values = iter([100.0, 100.1])
+    sleeps: list[float] = []
+
+    monkeypatch.setattr(runtime_limits.time, "monotonic", lambda: next(values))
+
+    def _sleep(value: float) -> None:
+        assert not state.lock.locked()
+        sleeps.append(value)
+
+    monkeypatch.setattr(runtime_limits.time, "sleep", _sleep)
+
+    runtime_limits.throttle_cookie_request(key, request_interval=1.0, request_interval_jitter=0.0)
+    runtime_limits.throttle_cookie_request(key, request_interval=1.0, request_interval_jitter=0.0)
+
     assert sleeps == [pytest.approx(0.9)]
 
 

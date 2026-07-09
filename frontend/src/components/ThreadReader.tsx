@@ -281,7 +281,6 @@ export function ThreadReader({ tid, source, contentKind, floors: floorSource, im
   const themeVariant: ThemeVariant = dark ? 'dark' : 'light'
   const isComic = contentKind === 'comic'
   const isNovel = contentKind === 'novel'
-  const remoteImageMode = source === 'remote'
 
   const [imgWidth, setImgWidth] = useState(isMobile ? 100 : 75)
   const [readingModeOpen, setReadingModeOpen] = useState(false)
@@ -524,12 +523,11 @@ export function ThreadReader({ tid, source, contentKind, floors: floorSource, im
         </a>
       )
     }
-    if (remoteImageMode && slot.status === 'remote') {
-      const proxySrc = `/api/remote/image?url=${encodeURIComponent(slot.remote_url)}`
-      if (isSmall) return <LazyImage key={`${slot.remote_url}-${i}`} src={proxySrc} alt="" className="small-img" />
+    if (source === 'remote' && slot.status === 'remote') {
+      if (isSmall) return <LazyImage key={`${slot.remote_url}-${i}`} src={slot.remote_url} alt="" className="small-img" />
       return (
         <a key={`${slot.remote_url}-${i}`} href={slot.remote_url} target="_blank" rel="noreferrer" className="floor-image-link">
-          <LazyImage src={proxySrc} alt="" />
+          <LazyImage src={slot.remote_url} alt="" />
         </a>
       )
     }

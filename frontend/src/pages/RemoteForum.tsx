@@ -4,6 +4,7 @@ import { api, type RemoteForum as RemoteForumType, type RemoteForumListResponse 
 import { Badge } from '../components/Badge'
 import { PaginationControls } from '../components/PaginationControls'
 import { useI18n } from '../context/I18nContext'
+import { formatThreadListTitle } from '../utils/threadTitle'
 
 const DEFAULT_FORUM_ID = 30
 const LIST_CACHE_KEY = 'yamibo.remote-forum-cache.v1'
@@ -35,6 +36,18 @@ function _isCacheFresh(key: string): boolean {
 
 function _writeCache(key: string, data: RemoteForumListResponse): void {
   try { sessionStorage.setItem(key, JSON.stringify({ _ts: Date.now(), _data: data })) } catch { /* ignore */ }
+}
+
+function formatDateTimeStacked(value: string | null) {
+  if (!value) return '-'
+  const [datePart, timePart, ...rest] = value.split(' ')
+  if (!datePart || !timePart || rest.length > 0) return value
+  return (
+    <span className="rag-date-time">
+      <span>{datePart}</span>
+      <span>{timePart}</span>
+    </span>
+  )
 }
 
 export function RemoteForum() {
@@ -167,44 +180,49 @@ export function RemoteForum() {
               {data.items.length === 0 ? (
                 <tr><td colSpan={9} style={{ textAlign: 'center', color: 'var(--text-tertiary)' }}>{t('no_data')}</td></tr>
               ) : data.items.map(item => (
-                <tr key={item.tid}>
-                  <td className="mono col-tid">
-                    <Link to={`/forum/${item.tid}?forum_id=${forumId}&page=1`}>{item.tid}</Link>
-                  </td>
-                  <td className="truncate col-title" title={item.display_title}>
-                    <Link to={`/forum/${item.tid}?forum_id=${forumId}&page=1`}>{item.display_title}</Link>
-                  </td>
-                  <td className="nowrap col-forum">{forumName(forumId)}</td>
-                  <td className="nowrap hide-mobile col-category">{item.category || '-'}</td>
-                  <td className="nowrap col-publisher">{item.publisher || '-'}</td>
-                  <td className="nowrap col-time">{item.posted_at || '-'}</td>
-                  <td className="col-replies" style={{ textAlign: 'center' }}>{item.reply_count ?? '-'}</td>
-                  <td className="col-status">
-                    {item.local_thread?.archived ? (
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 2, alignItems: 'flex-start' }}>
-                        <Badge status={item.archive_status || 'complete'} />
-                        <Link to={`/threads/${item.tid}`} className="btn-subtle" style={{ fontSize: 11, padding: '2px 6px' }}>
-                          {lang === 'en' ? 'Local' : '本地'}
-                        </Link>
-                      </div>
-                    ) : (
-                      <Badge status="none" />
-                    )}
-                  </td>
-                  <td className="col-action" style={{ textAlign: 'center' }}>
-                    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', justifyContent: 'center' }}>
-                      {!item.local_thread?.archived ? (
-                        <button className="btn-subtle" style={{ fontSize: 11 }} disabled={actionLoading === `archive-${item.tid}`} onClick={() => handleArchive(item.tid)}>
-                          {t('archive')}
-                        </button>
-                      ) : (
-                        <button className="btn-subtle" style={{ fontSize: 11 }} disabled={actionLoading === `resync-${item.tid}`} onClick={() => handleResync(item.tid)}>
-                          {t('resync')}
-                        </button>
-                      )}
-                    </div>
-                  </td>
-                </tr>
+                (() => {
+                  const titleText = formatThreadListTitle(item)
+                  return (
+                    <tr key={item.tid}>
+                      <td className="mono col-tid">
+                        <Link to={`/forum/${item.tid}?forum_id=${forumId}&page=1`}>{item.tid}</Link>
+                      </td>
+                      <td className="truncate col-title" title={titleText}>
+                        <Link to={`/forum/${item.tid}?forum_id=${forumId}&page=1`}>{titleText}</Link>
+                      </td>
+                      <td className="nowrap col-forum">{forumName(forumId)}</td>
+                      <td className="nowrap hide-mobile col-category">{item.category || '-'}</td>
+                      <td className="nowrap col-publisher">{item.publisher || '-'}</td>
+                      <td className="col-time">{formatDateTimeStacked(item.posted_at || null)}</td>
+                      <td className="col-replies" style={{ textAlign: 'center' }}>{item.reply_count ?? '-'}</td>
+                      <td className="col-status">
+                        {item.local_thread?.archived ? (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 2, alignItems: 'flex-start' }}>
+                            <Badge status={item.archive_status || 'complete'} />
+                            <Link to={`/threads/${item.tid}`} className="btn-subtle" style={{ fontSize: 11, padding: '2px 6px' }}>
+                              {lang === 'en' ? 'Local' : '本地'}
+                            </Link>
+                          </div>
+                        ) : (
+                          <Badge status="none" />
+                        )}
+                      </td>
+                      <td className="col-action" style={{ textAlign: 'center' }}>
+                        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', justifyContent: 'center' }}>
+                          {!item.local_thread?.archived ? (
+                            <button className="btn-subtle" style={{ fontSize: 11 }} disabled={actionLoading === `archive-${item.tid}`} onClick={() => handleArchive(item.tid)}>
+                              {t('archive')}
+                            </button>
+                          ) : (
+                            <button className="btn-subtle" style={{ fontSize: 11 }} disabled={actionLoading === `resync-${item.tid}`} onClick={() => handleResync(item.tid)}>
+                              {t('resync')}
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })()
               ))}
             </tbody>
           </table></div>

@@ -68,14 +68,17 @@ def inspect_export_readiness(paths: StoragePaths, tid: int) -> ExportReadiness:
     )
 
 
-def is_thread_stale(sync_time: str | None, *, stale_after_hours: int) -> bool:
+def is_thread_stale(sync_time: str | datetime | None, *, stale_after_hours: int) -> bool:
     if not sync_time:
         return True
-    try:
-        normalized = sync_time.replace("Z", "+00:00")
-        dt = datetime.fromisoformat(normalized)
-    except ValueError:
-        return True
+    if isinstance(sync_time, datetime):
+        dt = sync_time
+    else:
+        try:
+            normalized = str(sync_time).replace("Z", "+00:00")
+            dt = datetime.fromisoformat(normalized)
+        except ValueError:
+            return True
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt < datetime.now(timezone.utc) - timedelta(hours=stale_after_hours)

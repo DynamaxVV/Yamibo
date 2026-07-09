@@ -124,6 +124,36 @@ LEGACY_RICH_BODY_HTML = """
 """
 
 
+ATTACHMENT_RESIDUE_HTML = """
+<div>
+  <div>
+    <p><strong>i-000a.jpg</strong> <em>(842.99 KB, 下载次数: 15)</em></p>
+    <p>
+      <a href="https://bbs.yamibo.com/forum.php?mod=attachment&aid=abc&nothumb=yes">下载附件</a>
+      保存到相册
+    </p>
+    <p>2026-6-11 22:57 上传</p>
+  </div>
+  <div></div>
+</div>
+"""
+
+
+ATTACHMENT_FILENAME_ONLY_HTML = """
+<div>
+  <div>
+    <p><strong>招募页 - ANE_20221231.png</strong> <em>(3.63 MB, 下载次数: 3)</em></p>
+  </div>
+</div>
+"""
+
+
+ATTACHMENT_CLICK_TO_DOWNLOAD_HTML = """
+<p><a href="https://bbs.yamibo.com/forum.php?mod=attachment&aid=abc">花物语-吉屋信子.epub</a><em>(740.03 KB, 下载次数: 131)</em></p>
+<div><div><div>2025-9-18 08:17 上传</div> 点击文件名下载附件 </div></div>
+"""
+
+
 class TestThreadDetailParser:
     """帖子详情解析器测试 - 预期值由人工判断"""
 
@@ -460,6 +490,56 @@ class TestThreadDetailParser:
         assert re.search(r"<p[^>]*>.*?第6话 扭曲的喜悦.*?</p>", cleaned, re.S)
         assert re.search(r"<p[^>]*>.*?第7话 扭曲关系的开始.*?</p>", cleaned, re.S)
         assert re.search(r"<p[^>]*>.*?第8话 如同诅咒的爱之形态.*?</p>", cleaned, re.S)
+
+    def test_attachment_blocks_are_removed_from_rich_body_html(self):
+        cleaned = clean_rich_body_html(
+            "<div><p>正文段落</p></div>" + ATTACHMENT_RESIDUE_HTML
+        ) or ""
+
+        assert "正文段落" in cleaned
+        assert "i-000a.jpg" not in cleaned
+        assert "下载附件" not in cleaned
+        assert "保存到相册" not in cleaned
+        assert "842.99 KB" not in cleaned
+        assert "2026-6-11 22:57 上传" not in cleaned
+
+    def test_filename_only_attachment_blocks_are_removed_from_rich_body_html(self):
+        cleaned = clean_rich_body_html(ATTACHMENT_FILENAME_ONLY_HTML)
+        assert cleaned is None
+
+    def test_click_to_download_attachment_blocks_are_removed_from_rich_body_html(self):
+        cleaned = clean_rich_body_html(ATTACHMENT_CLICK_TO_DOWNLOAD_HTML)
+        assert cleaned is None
+
+    def test_parser_removes_attachment_residue_from_content_and_rich_html(self):
+        html = f"""
+        <html><body>
+          <td id="postmessage_1">
+            <p>正文段落</p>
+            {ATTACHMENT_RESIDUE_HTML}
+          </td>
+        </body></html>
+        """
+        summary = parse_thread_detail(html)
+        floor = summary.floors[0]
+        rich = floor.rich_body_html or ""
+
+        assert floor.content == "正文段落"
+        assert "i-000a.jpg" not in rich
+        assert "下载附件" not in rich
+        assert "保存到相册" not in rich
+        assert "上传" not in rich
+
+    def test_parser_removes_inline_attachment_suffix_from_content(self):
+        html = """
+        <html><body>
+          <td id="postmessage_1">
+            <p>不存在什么误读的空间其实076.png(372 Bytes, 下载次数: 79)</p>
+          </td>
+        </body></html>
+        """
+        summary = parse_thread_detail(html)
+        assert summary.floors[0].content == "不存在什么误读的空间其实"
 
     def test_exported_thread_has_zip_path(self):
         """572530 应有导出路径"""

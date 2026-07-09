@@ -7,6 +7,7 @@ from contextlib import ExitStack
 from dataclasses import replace
 from typing import Any
 
+from yamibo_mcp.application.thread_context import build_obsidian_context_payload
 from yamibo_mcp.application.update_queries import check_thread_updates
 from yamibo_mcp.config import Settings
 from yamibo_mcp.db.connection import transaction
@@ -23,11 +24,11 @@ from yamibo_mcp.domain.validation import validate_thread_snapshot
 from yamibo_mcp.storage.images import download_images_to_staging
 from yamibo_mcp.storage.paths import StoragePaths
 from yamibo_mcp.storage.thread_archive import materialize_thread
-from yamibo_mcp.errors import ThreadPermissionRequiredError, UnexpectedPageError, _extract_permission_code
+from yamibo_mcp.errors import LoginRequiredError, ThreadPermissionRequiredError, UnexpectedPageError, _extract_permission_code
 from yamibo_mcp.yamibo.account_pool import borrow_yamibo_client, has_configured_account_pool, next_permission_threshold
 from yamibo_mcp.yamibo.client import YamiboClient
 from yamibo_mcp.yamibo.parsers.thread_detail import extract_author_only_total_pages, parse_thread_snapshot
-from yamibo_mcp.yamibo.proxy_pool import select_thread_proxy
+from yamibo_mcp.yamibo.proxy_pool import activate_proxy_binding, select_thread_proxy
 
 LOG = logging.getLogger(__name__)
 
@@ -43,17 +44,53 @@ def handle_update_thread(repo: JobsRepository, job: Job, worker_id: str, lease_s
     tid = int(tid)
 
     base_url = job.payload.get("base_url")
-    check_result = check_thread_updates(tid=tid, base_url=base_url)
+    proxy_binding = select_thread_proxy(settings, tid=tid, job_id=job.job_id)
+    proxy_url = proxy_binding.proxy_url if proxy_binding else None
+    proxy_pool_artifacts: dict[str, object] = {}
+    if proxy_binding:
+        proxy_pool_artifacts = {
+            "proxy_pool.enabled": True,
+            "proxy_pool.group": proxy_binding.group,
+            "proxy_pool.node": proxy_binding.node,
+            "proxy_pool.best_effort": proxy_binding.best_effort,
+            "proxy_pool.diagnostics": proxy_binding.diagnostics,
+        }
+    elif getattr(settings, "proxy_pool", None) and settings.proxy_pool.enabled:
+        proxy_pool_artifacts = {
+            "proxy_pool.enabled": True,
+            "proxy_pool.fallback": True,
+            "proxy_pool.error": "no_usable_nodes",
+        }
+
+    proxy_stack = ExitStack()
+    proxy_stack.enter_context(activate_proxy_binding(settings, proxy_binding))
+    fetch_lease_seconds = max(
+        lease_seconds,
+        int(max(float(getattr(settings, "request_timeout_seconds", 30.0)) * 4.0, 120.0)),
+    )
+    repo.update_stage(job.job_id, "fetch_remote", progress_current=1, progress_total=4)
+    repo.heartbeat(job.job_id, worker_id, fetch_lease_seconds)
+
+    try:
+        check_result = check_thread_updates(tid=tid, base_url=base_url, proxy_url=proxy_url)
+    except Exception:
+        proxy_stack.close()
+        raise
+    proxy_stack.close()
     status = str(check_result.get("status") or "")
     if status == "not_supported":
+        proxy_stack.close()
         raise ValueError(str(check_result.get("reason") or f"thread {tid} is not supported for incremental update"))
     if status == "failed":
+        proxy_stack.close()
         raise ValueError(str(check_result.get("reason") or f"failed to inspect thread {tid} before update"))
     if status == "up_to_date":
         repo.update_stage(job.job_id, "finalize", progress_current=1, progress_total=1)
         repo.succeed(job.job_id, {"tid": tid, "updated": False, "status": status, "reason": check_result.get("reason")})
+        proxy_stack.close()
         return
     if status != "updated":
+        proxy_stack.close()
         raise ValueError(str(check_result.get("reason") or f"unexpected update check status: {status}"))
 
     thread_repo = ThreadsRepository(repo.conn)
@@ -76,26 +113,11 @@ def handle_update_thread(repo: JobsRepository, job: Job, worker_id: str, lease_s
     forum_id = int(thread["forum_id"]) if "forum_id" in thread.keys() and thread["forum_id"] is not None else None
     resolved_base_url = str(base_url) if base_url else _base_url_for_thread(thread)
     client_stack = ExitStack()
-
-    proxy_binding = select_thread_proxy(settings, tid=tid, job_id=job.job_id)
-    proxy_url = proxy_binding.proxy_url if proxy_binding else None
-    proxy_pool_artifacts: dict[str, object] = {}
-    if proxy_binding:
-        proxy_pool_artifacts = {
-            "proxy_pool.enabled": True,
-            "proxy_pool.group": proxy_binding.group,
-            "proxy_pool.node": proxy_binding.node,
-            "proxy_pool.best_effort": proxy_binding.best_effort,
-            "proxy_pool.diagnostics": proxy_binding.diagnostics,
-        }
-    elif getattr(settings, "proxy_pool", None) and settings.proxy_pool.enabled:
-        proxy_pool_artifacts = {
-            "proxy_pool.enabled": True,
-            "proxy_pool.fallback": True,
-            "proxy_pool.error": "no_usable_nodes",
-        }
+    proxy_stack = ExitStack()
 
     try:
+        proxy_stack.enter_context(activate_proxy_binding(settings, proxy_binding))
+        repo.heartbeat(job.job_id, worker_id, fetch_lease_seconds)
         stack = client_stack
         if has_configured_account_pool(settings):
             min_permission: int | None = None
@@ -150,6 +172,22 @@ def handle_update_thread(repo: JobsRepository, job: Job, worker_id: str, lease_s
                     stack = client_stack
                     min_permission = next_min_permission
                     # 循环回到顶部以更高的 min_permission 重试借号
+                except LoginRequiredError as exc:
+                    account_id = getattr(identity, "account_id", "unknown")
+                    current_level = getattr(identity, "permission_level", "unknown")
+                    next_min = (min_permission or 0) + 1
+                    LOG.warning(
+                        "update_thread job=%s login required; escalating account_id=%s current_level=%s min_permission=%s next_min_permission=%s",
+                        job.job_id,
+                        account_id,
+                        current_level,
+                        min_permission,
+                        next_min,
+                    )
+                    stack.close()
+                    client_stack = ExitStack()
+                    stack = client_stack
+                    min_permission = next_min
                 except UnexpectedPageError as exc:
                     code = _extract_permission_code(str(exc))
                     if code is not None and code != 255:
@@ -375,6 +413,24 @@ def handle_update_thread(repo: JobsRepository, job: Job, worker_id: str, lease_s
             AssetsRepository(repo.conn).upsert_assets(merged_snapshot.tid, synced_assets)
 
         repo.update_stage(job.job_id, "materialize", progress_current=4, progress_total=4)
+        context_metadata, cleaner_output = build_obsidian_context_payload(
+            merged_snapshot,
+            forum_id=forum_id,
+            archive_status=archive_status,
+            reply_count=max(len(merged_snapshot.floors) - 1, 0),
+            sync_time=thread["sync_time"] if "sync_time" in thread.keys() else None,
+            archived_images=merged_archive_maps["archived_images"],
+            non_export_images=merged_archive_maps["non_export_images"],
+            shared_images=merged_archive_maps["shared_images"],
+            skipped_image_urls=merged_archive_maps["skipped_image_urls"],
+            missing_image_urls=_unique_list(
+                [*(existing_archive_maps["missing_image_urls"] or []), *image_result.missing_urls]
+            ),
+            missing_shared_image_urls=_unique_list(
+                [*(existing_archive_maps["missing_shared_image_urls"] or []), *image_result.missing_shared_urls]
+            ),
+            context_source="update_thread",
+        )
         context_path, metadata_path = materialize_thread(
             paths,
             merged_snapshot,
@@ -389,6 +445,9 @@ def handle_update_thread(repo: JobsRepository, job: Job, worker_id: str, lease_s
             missing_shared_image_urls=_unique_list(
                 [*(existing_archive_maps["missing_shared_image_urls"] or []), *image_result.missing_shared_urls]
             ),
+            context_format_version="obsidian-md-v2",
+            cleaner_output=cleaner_output,
+            metadata=context_metadata,
         )
 
         artifacts = {
@@ -426,6 +485,7 @@ def handle_update_thread(repo: JobsRepository, job: Job, worker_id: str, lease_s
             repo.succeed(job.job_id, artifacts)
     finally:
         client_stack.close()
+        proxy_stack.close()
 
 
 def _load_local_thread_snapshot(paths: StoragePaths, conn, thread_row) -> ThreadSnapshot:

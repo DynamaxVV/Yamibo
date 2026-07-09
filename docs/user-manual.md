@@ -1,6 +1,6 @@
 # 用户操作手册
 
-> 版本：0.12.1 | 更新日期：2026-07-05
+> 版本：0.12.1 | 更新日期：2026-07-06
 
 ## 1. 快速开始
 
@@ -49,6 +49,9 @@ uv run yamibo-archiver browse-forum-page --page 1 --order dateline
 
 # 搜索帖子
 uv run yamibo-archiver search-threads --query "星灵感应"
+
+# 远端只读预览单帖
+uv run yamibo-archiver inspect-remote-thread --tid 572313
 ```
 
 ### 2.2 归档与更新
@@ -61,12 +64,21 @@ uv run yamibo-archiver create-thread-archive-job --tid 572313
 uv run yamibo-archiver create-sync-thread-batch-jobs --tid 572313 --tid 572314
 uv run yamibo-archiver create-sync-forum-range-jobs --start-page 1 --end-page 5
 
+# 修复“磁盘有归档、DB 无 thread row”的历史帖子，并顺便回填 PG
+uv run python scripts/enqueue_missing_db_thread_sync.py --dry-run --batch-size 100 --max-batches 2
+uv run python scripts/enqueue_missing_db_thread_sync.py --batch-size 100 --max-batches 2
+
 # 批量探测（先查本地状态再决定是否补跑）
 uv run yamibo-archiver probe-archived-threads --tid 572313 --tid 572314
 
 # 检查轻小说更新
 uv run yamibo-archiver check-thread-updates --tid 544422
 uv run yamibo-archiver update-thread --tid 544422
+
+# 等待和排障后台任务
+uv run yamibo-archiver job-status <job_id>
+uv run yamibo-archiver wait-for-job <job_id>
+uv run yamibo-archiver read-job-events <job_id>
 ```
 
 ### 2.3 导出
@@ -81,7 +93,34 @@ uv run yamibo-archiver create-export-thread-job --tid 572313
 uv run yamibo-archiver job-status <job_id>
 ```
 
-### 2.5 本地检索
+### 2.5 历史归档回填
+
+适用场景：
+
+- `data/threads/<tid>/` 下已经有 `metadata.json` / `context.md`
+- 但 `preview-thread-context`、RAG、Web 详情页仍提示本地不存在
+- 这通常表示旧归档文件存在，但当前数据库没有对应 `threads` / `floors` 记录
+
+推荐处理方式：
+
+1. 先启动 daemon
+2. 通过批量脚本为缺失 tid 创建 `sync_thread` 任务
+3. 让系统从远端重新抓取，并自动补 `forum_id`、`title_parse`、`floors`、`local_reply_count`
+
+```bash
+# 先看计划
+uv run python scripts/enqueue_missing_db_thread_sync.py --dry-run --batch-size 100 --max-batches 2
+
+# 正式入队前两批
+uv run python scripts/enqueue_missing_db_thread_sync.py --batch-size 100 --max-batches 2
+```
+
+补充说明：
+
+- 这类任务不需要手动提供 `forum_id`，系统会在 `sync_thread` 时从远端页面面包屑/论坛链接自动提取
+- 在处理完成前，不要运行 `cleanup-orphan-thread-dirs`，否则旧归档目录可能被误删
+
+### 2.6 本地检索
 
 ```bash
 # 构建 RAG 索引
@@ -92,7 +131,7 @@ uv run yamibo-archiver create-rag-index-batch-jobs --tid 572313 --tid 572314
 uv run yamibo-archiver search-archived-content --query "星空 告白" --mode hybrid --top-k 5
 ```
 
-### 2.6 读取资源
+### 2.7 读取资源
 
 ```bash
 uv run yamibo-archiver read-resource "yamibo://threads/572313/summary"
@@ -271,7 +310,7 @@ MCP 资源 URI：
 ### 5.1 单帖子归档并导出
 
 ```
-1. create-sync-thread-job --tid 572313
+1. create-thread-archive-job --tid 572313
                                      → 创建归档任务
 2. 启动 Daemon 或等待现有 Daemon 消费
 3. create-export-thread-job --tid 572313

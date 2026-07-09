@@ -223,7 +223,7 @@ def test_check_thread_updates_retries_permission_gate_with_next_threshold(tmp_pa
         def __exit__(self, exc_type, exc, tb):
             return False
 
-    def fake_borrow(settings_arg, *, min_permission=None, prefer_high_permission=False, cookie_file=None):
+    def fake_borrow(settings_arg, *, min_permission=None, prefer_high_permission=False, cookie_file=None, proxy_url=None):
         calls.append(min_permission)
         return _BorrowContext(fail=len(calls) == 1)
 
@@ -236,7 +236,7 @@ def test_check_thread_updates_retries_permission_gate_with_next_threshold(tmp_pa
         result = check_thread_updates(tid=540745)
 
     assert result["status"] == "up_to_date"
-    assert calls == [None, 11]
+    assert calls == [None, 10]
 
 
 def test_check_thread_updates_returns_not_supported_for_non_novel_forum(tmp_path, db):

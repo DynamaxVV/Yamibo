@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import { api, type ThreadSummary, type SeriesSummary } from '../api/client'
 import { useI18n } from '../context/I18nContext'
+import { formatThreadListTitle } from '../utils/threadTitle'
 
 interface ConfirmAction {
   type: 'title' | 'series' | 'merge' | 'confirmTitle' | 'confirmSeries' | 'rebuild'
@@ -57,11 +58,12 @@ export function Review() {
     if (!editingTitle) return
     const th = titles.find(x => x.tid === editingTitle)
     if (!th) return
+    const currentTitle = formatThreadListTitle(th)
     setConfirm({
       type: 'title',
       label: t('save_title_change'),
       before: {
-        [t('title')]: th.display_title || th.raw_title || '',
+        [t('title')]: currentTitle,
         [t('author')]: th.publisher || '',
         [t('core_title')]: th.core_title_guess || '',
         [t('series_key')]: th.series_key || '',
@@ -116,11 +118,12 @@ export function Review() {
   }
 
   const proposeConfirmTitle = (th: ThreadSummary) => {
+    const titleText = formatThreadListTitle(th)
     setConfirm({
       type: 'confirmTitle',
       label: t('confirm'),
-      before: { 'TID': String(th.tid), [t('title')]: th.display_title || th.raw_title || '', [t('review_status')]: t('pending_review') },
-      after: { 'TID': String(th.tid), [t('title')]: th.display_title || th.raw_title || '', [t('review_status')]: t('confirmed') },
+      before: { 'TID': String(th.tid), [t('title')]: titleText, [t('review_status')]: t('pending_review') },
+      after: { 'TID': String(th.tid), [t('title')]: titleText, [t('review_status')]: t('confirmed') },
       execute: async () => { await api.confirmTitle(th.tid); refresh() },
     })
   }
@@ -272,23 +275,25 @@ export function Review() {
         <div className="table-wrap"><table className="review-table">
           <thead><tr><th>{t('tid')}</th><th>{t('title')}</th><th>{t('core_title')}</th><th>{t('author')}</th><th>{t('series_key')}</th><th>{t('action')}</th></tr></thead>
           <tbody>
-            {titles.flatMap(th => [
-              <tr key={th.tid}>
-                <td className="mono"><Link to={`/threads/${th.tid}`}>{th.tid}</Link></td>
-                <td className="truncate" title={th.display_title || th.raw_title || ''}>{th.display_title || th.raw_title}</td>
-                <td>{th.core_title_guess || '-'}</td>
-                <td>{th.publisher || '-'}</td>
-                <td className="mono">{th.series_key || '-'}</td>
-                <td>
-                  <div className="row-actions">
-                    <button className="btn-subtle" onClick={() => startEditTitle(th)}>
-                      {editingTitle === th.tid ? t('collapse') : t('edit')}
-                    </button>
-                    <button className="btn-subtle" onClick={() => proposeConfirmTitle(th)}>{t('confirm')}</button>
-                  </div>
-                </td>
-              </tr>,
-              ...(editingTitle === th.tid ? [
+            {titles.flatMap(th => {
+              const titleText = formatThreadListTitle(th)
+              return [
+                <tr key={th.tid}>
+                  <td className="mono"><Link to={`/threads/${th.tid}`}>{th.tid}</Link></td>
+                  <td className="truncate" title={titleText}>{titleText}</td>
+                  <td>{th.core_title_guess || '-'}</td>
+                  <td>{th.publisher || '-'}</td>
+                  <td className="mono">{th.series_key || '-'}</td>
+                  <td>
+                    <div className="row-actions">
+                      <button className="btn-subtle" onClick={() => startEditTitle(th)}>
+                        {editingTitle === th.tid ? t('collapse') : t('edit')}
+                      </button>
+                      <button className="btn-subtle" onClick={() => proposeConfirmTitle(th)}>{t('confirm')}</button>
+                    </div>
+                  </td>
+                </tr>,
+                ...(editingTitle === th.tid ? [
                 <tr key={`${th.tid}-edit`}>
                   <td colSpan={6} style={{ padding: 0 }}>
                     <div className="inline-edit">
@@ -306,7 +311,8 @@ export function Review() {
                   </td>
                 </tr>,
               ] : []),
-            ])}
+              ]
+            })}
           </tbody>
         </table></div>
       )}

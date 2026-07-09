@@ -1,5 +1,7 @@
 # 数据字典 / 数据库设计文档
 
+> 历史说明：本文最初按 SQLite-first 写成。当前运行时默认数据库已经切到 PostgreSQL。文中涉及 `data/forum.db`、`schema_migrations`、SQLite FTS/WAL 的部分应视为历史基线或兼容层说明，不再代表主部署方案。
+
 > 版本：0.9.3 | 更新日期：2026-06-26
 
 ## 1. 概述

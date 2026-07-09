@@ -16,7 +16,7 @@ from yamibo_mcp.server.agent_tools import (
     read_archived_thread,
     read_job,
     wait_for_job,
-    search_forum_threads,
+    search_threads,
 )
 from yamibo_mcp.server.mcp_registry import register_agent_tools
 
@@ -92,7 +92,7 @@ class TestPublicAgentTools:
         assert missing == []
 
     def test_public_search_tool_signature_does_not_expose_limit(self):
-        signature = inspect.signature(search_forum_threads)
+        signature = inspect.signature(search_threads)
 
         assert "limit" not in signature.parameters
 
@@ -135,12 +135,20 @@ class TestPublicAgentTools:
 
 
 class TestStructuredAgentWireFormat:
-    def test_to_wire_omits_empty_optional_fields(self):
+    def test_to_wire_includes_complete_payload_shape_for_success(self):
         result = AgentResult(ok=True, data={"tid": 1})
 
-        assert to_wire(result) == {"ok": True, "data": {"tid": 1}}
+        assert to_wire(result) == {
+            "ok": True,
+            "data": {"tid": 1},
+            "error": None,
+            "resources": {},
+            "next_actions": [],
+            "warnings": [],
+            "side_effects": [],
+        }
 
-    def test_to_wire_serializes_actions_and_errors(self):
+    def test_to_wire_includes_complete_payload_shape_for_errors(self):
         result = AgentResult(
             ok=False,
             error=AgentError(
@@ -159,6 +167,7 @@ class TestStructuredAgentWireFormat:
 
         assert to_wire(result) == {
             "ok": False,
+            "data": None,
             "error": {
                 "code": "LOCAL_ARCHIVE_NOT_FOUND",
                 "message": "Thread 572313 is not archived locally.",
@@ -172,6 +181,10 @@ class TestStructuredAgentWireFormat:
                     }
                 ],
             },
+            "resources": {},
+            "next_actions": [],
+            "warnings": [],
+            "side_effects": [],
         }
 
 

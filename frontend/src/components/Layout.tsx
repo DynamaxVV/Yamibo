@@ -17,6 +17,7 @@ export function Layout() {
     { to: '/forum', key: 'remoteForum' },
     { to: '/forums', key: 'forums' },
     { to: '/rag', key: 'rag' },
+    { to: '/chat', key: 'chat' },
     { to: '/settings', key: 'settings' },
     { to: '/logs', key: 'logs' },
   ]

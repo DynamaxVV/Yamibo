@@ -86,8 +86,13 @@ class ThreadsRepository:
               t.tid, t.raw_title, t.display_title, t.publisher, t.pub_time, t.sync_time,
               t.archive_status, t.validation_status, t.context_path, t.series_id, t.export_path,
               t.forum_id, t.content_kind, t.category,
+              t.local_reply_count, t.reply_count_checked_at, t.reply_count_mismatch_reason,
+              t.remote_last_reply_at_raw, t.remote_last_reply_at, t.remote_last_replier,
+              t.remote_reply_count, t.remote_observed_at, t.remote_observed_from,
               tp.core_title_guess, tp.series_key, tp.chapter_name, tp.chapter_index, tp.chapter_index_end, tp.group_name, tp.author_guess, tp.needs_review,
-              (SELECT COUNT(*) FROM floors f WHERE f.tid = t.tid) AS reply_count
+              (SELECT COUNT(*) FROM floors f WHERE f.tid = t.tid) AS floor_count,
+              (SELECT f.pub_time FROM floors f WHERE f.tid = t.tid ORDER BY f.floor_no DESC, f.pid DESC LIMIT 1) AS last_floor_pub_time,
+              (SELECT f.publisher FROM floors f WHERE f.tid = t.tid ORDER BY f.floor_no DESC, f.pid DESC LIMIT 1) AS last_floor_publisher
         """
 
     def _thread_list_from_clause(self, *, q: str | None = None) -> str:
@@ -101,12 +106,20 @@ class ThreadsRepository:
 
     def _thread_list_order_clause(self, sort_key: str, sort_dir: str) -> str:
         backend = getattr(self.conn, "backend", None)
-        sort_key = sort_key if sort_key in {"sync_time", "pub_time", "reply_count"} else "sync_time"
+        sort_key = sort_key if sort_key in {"sync_time", "pub_time", "reply_count", "remote_last_reply_at"} else "sync_time"
         sort_dir = "asc" if sort_dir == "asc" else "desc"
+        floor_count_expr = "(SELECT COUNT(*) FROM floors f WHERE f.tid = t.tid)"
         order_expr = {
             "sync_time": "COALESCE(t.sync_time, TIMESTAMPTZ 'epoch')" if backend in {"postgres", "postgresql"} else "COALESCE(t.sync_time, '')",
             "pub_time": "COALESCE(t.pub_time, TIMESTAMPTZ 'epoch')" if backend in {"postgres", "postgresql"} else "COALESCE(t.pub_time, '')",
-            "reply_count": "reply_count",
+            "reply_count": (
+                "COALESCE("
+                "t.remote_reply_count, "
+                "t.local_reply_count, "
+                f"CASE WHEN {floor_count_expr} > 0 THEN {floor_count_expr} - 1 ELSE 0 END"
+                ")"
+            ),
+            "remote_last_reply_at": "COALESCE(t.remote_last_reply_at, TIMESTAMPTZ 'epoch')" if backend in {"postgres", "postgresql"} else "COALESCE(t.remote_last_reply_at, '')",
         }[sort_key]
         return f"{order_expr} {sort_dir.upper()}, t.tid {sort_dir.upper()}"
 
@@ -139,9 +152,9 @@ class ThreadsRepository:
               tid, series_id, page_type, raw_title, display_title, publisher, publisher_uid,
               pub_time, sync_time, last_pid, permission, image_count, context_path,
               archive_status, validation_status, missing_images_json, needs_title_review, needs_series_review,
-              forum_id, content_kind, primary_media_type, category
+              forum_id, content_kind, primary_media_type, category, local_reply_count
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'valid', ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'valid', ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(tid) DO UPDATE SET
               series_id = excluded.series_id,
               page_type = excluded.page_type,
@@ -163,7 +176,8 @@ class ThreadsRepository:
               forum_id = excluded.forum_id,
               content_kind = excluded.content_kind,
               primary_media_type = excluded.primary_media_type,
-              category = excluded.category
+              category = excluded.category,
+              local_reply_count = excluded.local_reply_count
             """,
             (
                 snapshot.tid,
@@ -187,11 +201,13 @@ class ThreadsRepository:
                 content.content_kind,
                 primary_media_type,
                 category,
+                max(0, len(snapshot.floors) - 1),
             ),
         )
         self._upsert_title(snapshot, title_warnings=title_warnings)
         self._upsert_floors(snapshot)
         self._upsert_fts(snapshot)
+        self._sync_local_reply_metadata_for_tid(snapshot.tid)
 
     def _upsert_title(self, snapshot: ThreadSnapshot, *, title_warnings: dict[str, object] | None = None) -> None:
         title = snapshot.title
@@ -387,23 +403,96 @@ class ThreadsRepository:
             (series_id, self._bool_value(needs_series_review), tid),
         )
 
-    def update_chapter_info(
+    def update_archive_metadata(
         self,
         tid: int,
         *,
+        display_title: str | None,
         chapter_name: str | None,
         chapter_index: float | None,
         author_guess: str | None,
         group_name: str | None,
     ) -> None:
+        thread_row = self.get_thread(tid)
+        if thread_row is None:
+            raise ValueError(f"thread not found: {tid}")
+        title_row = self.get_title_parse(tid)
+        final_display_title = normalize_display_title(
+            display_title or thread_row["display_title"] or thread_row["raw_title"] or ""
+        )
+        if not final_display_title:
+            raise ValueError("display_title is required")
         self.conn.execute(
             """
-            UPDATE title_parse
-            SET chapter_name = ?, chapter_index = ?, author_guess = ?, group_name = ?
+            UPDATE threads
+            SET display_title = ?, sync_time = ?
             WHERE tid = ?
             """,
-            (chapter_name, chapter_index, author_guess, group_name, tid),
+            (final_display_title, utc_now_iso(), tid),
         )
+        if title_row is None:
+            core_title_guess = normalize_display_title(
+                thread_row["display_title"] or thread_row["raw_title"] or final_display_title
+            )
+            normalized_core_title = normalize_series_key(core_title_guess)
+            series_key = normalize_series_key(core_title_guess)
+            self.conn.execute(
+                """
+                INSERT INTO title_parse (
+                  tid, raw_title, display_title, group_name, author_guess,
+                  core_title_guess, normalized_core_title, series_key,
+                  title_aliases_json, chapter_name, chapter_index, chapter_index_end, chapter_title, subtitle,
+                  tags_json, confidence, parser_version, needs_review, warnings_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, NULL, NULL, NULL, '[]', ?, ?, ?, NULL)
+                """,
+                (
+                    tid,
+                    thread_row["raw_title"] or final_display_title,
+                    final_display_title,
+                    group_name,
+                    author_guess,
+                    core_title_guess,
+                    normalized_core_title,
+                    series_key,
+                    chapter_name,
+                    chapter_index,
+                    1.0,
+                    "manual-edit",
+                    self._bool_value(False),
+                ),
+            )
+        else:
+            self.conn.execute(
+                """
+                UPDATE title_parse
+                SET display_title = ?, chapter_name = ?, chapter_index = ?, author_guess = ?, group_name = ?
+                WHERE tid = ?
+                """,
+                (final_display_title, chapter_name, chapter_index, author_guess, group_name, tid),
+            )
+        if self._uses_sqlite_fts():
+            fts_existing = self.conn.execute(
+                "SELECT content_preview, catalog_text FROM thread_fts WHERE tid = ?",
+                (tid,),
+            ).fetchone()
+            self.conn.execute("DELETE FROM thread_fts WHERE tid = ?", (tid,))
+            title_core = self.get_title_parse(tid)
+            self.conn.execute(
+                """
+                INSERT INTO thread_fts (tid, title, core_title, author, group_name, content_preview, catalog_text)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    tid,
+                    final_display_title,
+                    None if title_core is None else title_core["core_title_guess"],
+                    author_guess,
+                    group_name,
+                    "" if fts_existing is None else (fts_existing["content_preview"] or ""),
+                    "" if fts_existing is None else (fts_existing["catalog_text"] or ""),
+                ),
+            )
 
     def get_title_parse(self, tid: int) -> sqlite3.Row | None:
         return self.conn.execute("SELECT * FROM title_parse WHERE tid = ?", (tid,)).fetchone()
@@ -744,6 +833,15 @@ class ThreadsRepository:
               t.content_kind,
               t.publisher,
               t.pub_time,
+              t.local_reply_count,
+              t.reply_count_checked_at,
+              t.reply_count_mismatch_reason,
+              t.remote_last_reply_at_raw,
+              t.remote_last_reply_at,
+              t.remote_last_replier,
+              t.remote_reply_count,
+              t.remote_observed_at,
+              t.remote_observed_from,
               COALESCE((SELECT COUNT(*) FROM floors f WHERE f.tid = t.tid), 0) AS floor_count,
               (SELECT f.pid FROM floors f WHERE f.tid = t.tid ORDER BY f.floor_no DESC, f.pid DESC LIMIT 1) AS last_pid,
               (SELECT f.floor_no FROM floors f WHERE f.tid = t.tid ORDER BY f.floor_no DESC, f.pid DESC LIMIT 1) AS last_floor_no,
@@ -770,6 +868,14 @@ class ThreadsRepository:
                         "pub_time": None,
                         "local_floor_count": 0,
                         "local_reply_count": 0,
+                        "reply_count_checked_at": None,
+                        "reply_count_mismatch_reason": None,
+                        "remote_last_reply_at_raw": None,
+                        "remote_last_reply_at": None,
+                        "remote_last_replier": None,
+                        "remote_reply_count": None,
+                        "remote_observed_at": None,
+                        "remote_observed_from": None,
                         "local_last_pid": None,
                         "local_last_floor_no": None,
                         "local_last_floor_pub_time": None,
@@ -790,7 +896,15 @@ class ThreadsRepository:
                     "publisher": row["publisher"],
                     "pub_time": row["pub_time"],
                     "local_floor_count": floor_count,
-                    "local_reply_count": max(0, floor_count - 1),
+                    "local_reply_count": row["local_reply_count"] if row["local_reply_count"] is not None else max(0, floor_count - 1),
+                    "reply_count_checked_at": row["reply_count_checked_at"],
+                    "reply_count_mismatch_reason": row["reply_count_mismatch_reason"],
+                    "remote_last_reply_at_raw": row["remote_last_reply_at_raw"],
+                    "remote_last_reply_at": row["remote_last_reply_at"],
+                    "remote_last_replier": row["remote_last_replier"],
+                    "remote_reply_count": row["remote_reply_count"],
+                    "remote_observed_at": row["remote_observed_at"],
+                    "remote_observed_from": row["remote_observed_from"],
                     "local_last_pid": row["last_pid"],
                     "local_last_floor_no": row["last_floor_no"],
                     "local_last_floor_pub_time": last_floor_pub_time,
@@ -798,6 +912,313 @@ class ThreadsRepository:
                 }
             )
         return result
+
+    def _sync_local_reply_metadata_for_tid(self, tid: int, *, overwrite_last_reply: bool = False) -> bool:
+        row = self.conn.execute(
+            """
+            SELECT
+              t.tid,
+              t.local_reply_count,
+              t.remote_last_reply_at_raw,
+              t.remote_last_reply_at,
+              t.remote_last_replier,
+              COALESCE((SELECT COUNT(*) FROM floors f WHERE f.tid = t.tid), 0) AS floor_count,
+              (SELECT f.pub_time FROM floors f WHERE f.tid = t.tid ORDER BY f.floor_no DESC, f.pid DESC LIMIT 1) AS last_floor_pub_time,
+              (SELECT f.publisher FROM floors f WHERE f.tid = t.tid ORDER BY f.floor_no DESC, f.pid DESC LIMIT 1) AS last_floor_publisher
+            FROM threads t
+            WHERE t.tid = ?
+            """,
+            (tid,),
+        ).fetchone()
+        if row is None:
+            return False
+
+        floor_count = int(row["floor_count"] or 0)
+        computed_reply_count = max(floor_count - 1, 0)
+        last_floor_pub_time = row["last_floor_pub_time"]
+        last_floor_publisher = row["last_floor_publisher"]
+        next_remote_last_reply_raw = row["remote_last_reply_at_raw"]
+        next_remote_last_reply_at = row["remote_last_reply_at"]
+        next_remote_last_replier = row["remote_last_replier"]
+
+        local_changed = row["local_reply_count"] != computed_reply_count
+        if overwrite_last_reply:
+            reply_changed = (
+                next_remote_last_reply_raw != last_floor_pub_time
+                or next_remote_last_reply_at != last_floor_pub_time
+                or next_remote_last_replier != last_floor_publisher
+            )
+            next_remote_last_reply_raw = last_floor_pub_time
+            next_remote_last_reply_at = last_floor_pub_time
+            next_remote_last_replier = last_floor_publisher
+        else:
+            reply_changed = False
+            if next_remote_last_reply_raw in {None, ""} and last_floor_pub_time not in {None, ""}:
+                next_remote_last_reply_raw = last_floor_pub_time
+                reply_changed = True
+            if next_remote_last_reply_at in {None, ""} and last_floor_pub_time not in {None, ""}:
+                next_remote_last_reply_at = last_floor_pub_time
+                reply_changed = True
+            if next_remote_last_replier in {None, ""} and last_floor_publisher not in {None, ""}:
+                next_remote_last_replier = last_floor_publisher
+                reply_changed = True
+
+        if not local_changed and not reply_changed:
+            return False
+
+        self.conn.execute(
+            """
+            UPDATE threads
+            SET local_reply_count = ?,
+                remote_last_reply_at_raw = ?,
+                remote_last_reply_at = ?,
+                remote_last_replier = ?
+            WHERE tid = ?
+            """,
+            (
+                computed_reply_count,
+                next_remote_last_reply_raw,
+                next_remote_last_reply_at,
+                next_remote_last_replier,
+                int(row["tid"]),
+            ),
+        )
+        return True
+
+    def backfill_local_reply_metadata(self, *, overwrite_last_reply: bool = False) -> dict[str, int]:
+        rows = self.conn.execute(
+            """
+            SELECT
+              t.tid,
+              t.local_reply_count,
+              t.remote_last_reply_at_raw,
+              t.remote_last_reply_at,
+              t.remote_last_replier,
+              COALESCE((SELECT COUNT(*) FROM floors f WHERE f.tid = t.tid), 0) AS floor_count,
+              (SELECT f.pub_time FROM floors f WHERE f.tid = t.tid ORDER BY f.floor_no DESC, f.pid DESC LIMIT 1) AS last_floor_pub_time,
+              (SELECT f.publisher FROM floors f WHERE f.tid = t.tid ORDER BY f.floor_no DESC, f.pid DESC LIMIT 1) AS last_floor_publisher
+            FROM threads t
+            ORDER BY t.tid ASC
+            """
+        ).fetchall()
+        local_reply_count_updates = 0
+        last_reply_updates = 0
+        untouched = 0
+        for row in rows:
+            tid = int(row["tid"])
+            local_changed = row["local_reply_count"] != max(int(row["floor_count"] or 0) - 1, 0)
+            reply_changed = overwrite_last_reply or (
+                row["remote_last_reply_at_raw"] in {None, ""} and row["last_floor_pub_time"] not in {None, ""}
+            ) or (
+                row["remote_last_reply_at"] in {None, ""} and row["last_floor_pub_time"] not in {None, ""}
+            ) or (
+                row["remote_last_replier"] in {None, ""} and row["last_floor_publisher"] not in {None, ""}
+            )
+            if not local_changed and not reply_changed:
+                untouched += 1
+                continue
+            if local_changed:
+                local_reply_count_updates += 1
+            if reply_changed:
+                last_reply_updates += 1
+
+        backend = getattr(self.conn, "backend", None)
+        if rows:
+            if backend in {"postgres", "postgresql"}:
+                self.conn.execute(
+                    """
+                    WITH floor_counts AS (
+                        SELECT f.tid, COUNT(*) AS floor_count
+                        FROM floors f
+                        GROUP BY f.tid
+                    ),
+                    last_floors AS (
+                        SELECT DISTINCT ON (f.tid)
+                            f.tid,
+                            CAST(f.pub_time AS TEXT) AS last_floor_pub_time_raw,
+                            f.pub_time AS last_floor_pub_time,
+                            f.publisher AS last_floor_publisher
+                        FROM floors f
+                        ORDER BY f.tid, f.floor_no DESC, f.pid DESC
+                    ),
+                    floor_meta AS (
+                        SELECT
+                            t.tid,
+                            GREATEST(COALESCE(fc.floor_count, 0) - 1, 0) AS computed_reply_count,
+                            lf.last_floor_pub_time_raw,
+                            lf.last_floor_pub_time,
+                            lf.last_floor_publisher
+                        FROM threads t
+                        LEFT JOIN floor_counts fc ON fc.tid = t.tid
+                        LEFT JOIN last_floors lf ON lf.tid = t.tid
+                    )
+                    UPDATE threads AS t
+                    SET local_reply_count = fm.computed_reply_count,
+                        remote_last_reply_at_raw = CASE
+                            WHEN :overwrite_last_reply THEN fm.last_floor_pub_time_raw
+                            WHEN (t.remote_last_reply_at_raw IS NULL OR t.remote_last_reply_at_raw = '')
+                                 AND fm.last_floor_pub_time_raw IS NOT NULL
+                                 AND fm.last_floor_pub_time_raw <> '' THEN fm.last_floor_pub_time_raw
+                            ELSE t.remote_last_reply_at_raw
+                        END,
+                        remote_last_reply_at = CASE
+                            WHEN :overwrite_last_reply THEN fm.last_floor_pub_time
+                            WHEN t.remote_last_reply_at IS NULL
+                                 AND fm.last_floor_pub_time IS NOT NULL THEN fm.last_floor_pub_time
+                            ELSE t.remote_last_reply_at
+                        END,
+                        remote_last_replier = CASE
+                            WHEN :overwrite_last_reply THEN fm.last_floor_publisher
+                            WHEN (t.remote_last_replier IS NULL OR t.remote_last_replier = '')
+                                 AND fm.last_floor_publisher IS NOT NULL
+                                 AND fm.last_floor_publisher <> '' THEN fm.last_floor_publisher
+                            ELSE t.remote_last_replier
+                        END
+                    FROM floor_meta fm
+                    WHERE t.tid = fm.tid
+                      AND (
+                        t.local_reply_count IS DISTINCT FROM fm.computed_reply_count
+                        OR (
+                            :overwrite_last_reply
+                            AND (
+                                t.remote_last_reply_at_raw IS DISTINCT FROM fm.last_floor_pub_time_raw
+                                OR t.remote_last_reply_at IS DISTINCT FROM fm.last_floor_pub_time
+                                OR t.remote_last_replier IS DISTINCT FROM fm.last_floor_publisher
+                            )
+                        )
+                        OR (
+                            NOT :overwrite_last_reply
+                            AND (
+                                ((t.remote_last_reply_at_raw IS NULL OR t.remote_last_reply_at_raw = '') AND fm.last_floor_pub_time_raw IS NOT NULL AND fm.last_floor_pub_time_raw <> '')
+                                OR (t.remote_last_reply_at IS NULL AND fm.last_floor_pub_time IS NOT NULL)
+                                OR ((t.remote_last_replier IS NULL OR t.remote_last_replier = '') AND fm.last_floor_publisher IS NOT NULL AND fm.last_floor_publisher <> '')
+                            )
+                        )
+                      )
+                    """,
+                    {"overwrite_last_reply": overwrite_last_reply},
+                )
+            else:
+                self.conn.execute(
+                    """
+                    UPDATE threads
+                    SET local_reply_count = (
+                            CASE
+                                WHEN (SELECT COUNT(*) FROM floors f WHERE f.tid = threads.tid) > 0
+                                    THEN (SELECT COUNT(*) FROM floors f WHERE f.tid = threads.tid) - 1
+                                ELSE 0
+                            END
+                        ),
+                        remote_last_reply_at_raw = CASE
+                            WHEN :overwrite_last_reply THEN (
+                                SELECT f.pub_time FROM floors f WHERE f.tid = threads.tid ORDER BY f.floor_no DESC, f.pid DESC LIMIT 1
+                            )
+                            WHEN (remote_last_reply_at_raw IS NULL OR remote_last_reply_at_raw = '')
+                                 AND COALESCE((
+                                    SELECT f.pub_time FROM floors f WHERE f.tid = threads.tid ORDER BY f.floor_no DESC, f.pid DESC LIMIT 1
+                                 ), '') <> '' THEN (
+                                    SELECT f.pub_time FROM floors f WHERE f.tid = threads.tid ORDER BY f.floor_no DESC, f.pid DESC LIMIT 1
+                                 )
+                            ELSE remote_last_reply_at_raw
+                        END,
+                        remote_last_reply_at = CASE
+                            WHEN :overwrite_last_reply THEN (
+                                SELECT f.pub_time FROM floors f WHERE f.tid = threads.tid ORDER BY f.floor_no DESC, f.pid DESC LIMIT 1
+                            )
+                            WHEN (remote_last_reply_at IS NULL OR remote_last_reply_at = '')
+                                 AND COALESCE((
+                                    SELECT f.pub_time FROM floors f WHERE f.tid = threads.tid ORDER BY f.floor_no DESC, f.pid DESC LIMIT 1
+                                 ), '') <> '' THEN (
+                                    SELECT f.pub_time FROM floors f WHERE f.tid = threads.tid ORDER BY f.floor_no DESC, f.pid DESC LIMIT 1
+                                 )
+                            ELSE remote_last_reply_at
+                        END,
+                        remote_last_replier = CASE
+                            WHEN :overwrite_last_reply THEN (
+                                SELECT f.publisher FROM floors f WHERE f.tid = threads.tid ORDER BY f.floor_no DESC, f.pid DESC LIMIT 1
+                            )
+                            WHEN (remote_last_replier IS NULL OR remote_last_replier = '')
+                                 AND COALESCE((
+                                    SELECT f.publisher FROM floors f WHERE f.tid = threads.tid ORDER BY f.floor_no DESC, f.pid DESC LIMIT 1
+                                 ), '') <> '' THEN (
+                                    SELECT f.publisher FROM floors f WHERE f.tid = threads.tid ORDER BY f.floor_no DESC, f.pid DESC LIMIT 1
+                                 )
+                            ELSE remote_last_replier
+                        END
+                    WHERE
+                        local_reply_count IS NOT (
+                            CASE
+                                WHEN (SELECT COUNT(*) FROM floors f WHERE f.tid = threads.tid) > 0
+                                    THEN (SELECT COUNT(*) FROM floors f WHERE f.tid = threads.tid) - 1
+                                ELSE 0
+                            END
+                        )
+                        OR (
+                            :overwrite_last_reply
+                            AND (
+                                remote_last_reply_at_raw IS NOT (
+                                    SELECT f.pub_time FROM floors f WHERE f.tid = threads.tid ORDER BY f.floor_no DESC, f.pid DESC LIMIT 1
+                                )
+                                OR remote_last_reply_at IS NOT (
+                                    SELECT f.pub_time FROM floors f WHERE f.tid = threads.tid ORDER BY f.floor_no DESC, f.pid DESC LIMIT 1
+                                )
+                                OR remote_last_replier IS NOT (
+                                    SELECT f.publisher FROM floors f WHERE f.tid = threads.tid ORDER BY f.floor_no DESC, f.pid DESC LIMIT 1
+                                )
+                            )
+                        )
+                        OR (
+                            NOT :overwrite_last_reply
+                            AND (
+                                ((remote_last_reply_at_raw IS NULL OR remote_last_reply_at_raw = '') AND COALESCE((SELECT f.pub_time FROM floors f WHERE f.tid = threads.tid ORDER BY f.floor_no DESC, f.pid DESC LIMIT 1), '') <> '')
+                                OR ((remote_last_reply_at IS NULL OR remote_last_reply_at = '') AND COALESCE((SELECT f.pub_time FROM floors f WHERE f.tid = threads.tid ORDER BY f.floor_no DESC, f.pid DESC LIMIT 1), '') <> '')
+                                OR ((remote_last_replier IS NULL OR remote_last_replier = '') AND COALESCE((SELECT f.publisher FROM floors f WHERE f.tid = threads.tid ORDER BY f.floor_no DESC, f.pid DESC LIMIT 1), '') <> '')
+                            )
+                        )
+                    """,
+                    {"overwrite_last_reply": overwrite_last_reply},
+                )
+
+        return {
+            "thread_count": len(rows),
+            "local_reply_count_updates": local_reply_count_updates,
+            "last_reply_updates": last_reply_updates,
+            "unchanged": untouched,
+        }
+
+    def update_remote_observation_snapshot(
+        self,
+        *,
+        tid: int,
+        forum_id: int | None,
+        source_kind: str,
+        observation_type: str,
+        remote_title: str | None = None,
+        remote_category: str | None = None,
+        remote_publisher: str | None = None,
+        remote_posted_at_raw: str | None = None,
+        remote_posted_at: str | None = None,
+        remote_last_reply_at_raw: str | None = None,
+        remote_last_reply_at: str | None = None,
+        remote_last_replier: str | None = None,
+        remote_reply_count: int | None = None,
+        observed_at: str | None = None,
+        observed_from: str | None = None,
+    ) -> None:
+        if observation_type == "latest_tail":
+            self.conn.execute(
+                """
+                UPDATE threads
+                SET remote_last_reply_at_raw = ?,
+                    remote_last_reply_at = ?,
+                    remote_last_replier = ?,
+                    remote_reply_count = ?,
+                    remote_observed_at = ?,
+                    remote_observed_from = ?
+                WHERE tid = ?
+                """,
+                (remote_last_reply_at_raw, remote_last_reply_at, remote_last_replier, remote_reply_count, observed_at, observed_from, tid),
+            )
 
     def list_floors(self, tid: int) -> list[sqlite3.Row]:
         return self.conn.execute(

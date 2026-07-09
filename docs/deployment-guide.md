@@ -1,6 +1,6 @@
 # 部署指南 & 运维手册
 
-> 版本：0.12.1 | 更新日期：2026-07-05
+> 版本：0.12.1 | 更新日期：2026-07-06
 
 ## 1. 环境要求
 
@@ -8,20 +8,19 @@
 |------|---------|------|
 | Python | >= 3.11 | 推荐 3.13 |
 | uv | 最新版 | Python 包管理器 |
-| SQLite | >= 3.35 | 需支持 FTS5 和 `RETURNING` |
+| PostgreSQL | 15+ | 推荐配合 `pgvector` |
 | 操作系统 | macOS / Linux | Windows 未测试 |
 | 网络 | 可访问 bbs.yamibo.com | 远程归档需要 |
 
 RAG 相关补充：
 
-- 若要启用向量检索，SQLite 开发环境需要能安装并加载 `sqlite-vec`；PostgreSQL 环境需要 `pgvector`
+- 当前主路径为 PostgreSQL + `pgvector`
 - 若要生成 embedding，需要配置可用的 RAG API 凭据；未单独配置时会回退到 `YAMIBO_LLM_API_KEY`
 
-数据库后端预留配置：
+数据库说明：
 
-- 默认后端仍是 SQLite，继续使用 `YAMIBO_DB_PATH`
-- 预留的 PostgreSQL 开关包括 `YAMIBO_DB_BACKEND`、`YAMIBO_DB_URL`、`YAMIBO_DB_POOL_MIN`、`YAMIBO_DB_POOL_MAX`、`YAMIBO_DB_POOL_TIMEOUT`、`YAMIBO_DB_CONNECT_TIMEOUT`、`YAMIBO_DB_SCHEMA`、`YAMIBO_DB_SSL_MODE` 和 `YAMIBO_DB_SSL_ROOT_CERT`
-- 当前阶段这些值只作为配置底座，不改变运行时默认行为
+- 当前默认后端是 PostgreSQL，使用 `YAMIBO_DB_BACKEND=postgres` / `YAMIBO_DB_URL=...`
+- SQLite 仅保留给历史迁移输入、测试和少量兼容逻辑，不再作为后续部署推荐方案
 
 ---
 
@@ -153,14 +152,281 @@ uv run yamibo-init-db
 
 ---
 
-## 3. 启动服务
+## 3. Docker 部署（推荐）
+
+Docker 部署会启动 PostgreSQL/pgvector 与 Yamibo Daemon。Daemon 同时负责后台任务消费和 Web 控制台。项目运行数据建议通过宿主机 `data/` 目录外挂，PostgreSQL 数据默认使用 Docker named volume，也可以切换为宿主机目录。
+
+### 3.1 准备目录和配置
+
+```bash
+cp .env.docker.example .env
+mkdir -p data data/exports data/novel_exports data/cookies data/backups
+```
+
+Cookie 文件放在 `data/cookies/` 下。容器内路径对应 `/app/data/cookies/`。如果使用多账号池，建议为每个账号显式配置独立 cookie 文件，例如 `/app/data/cookies/primary.cookie`、`/app/data/cookies/secondary.cookie`。
+
+创建或调整 `yamibo.local.json`：
+
+```json
+{
+  "yamibo": {
+    "cookie_file": "/app/data/cookies/primary.cookie",
+    "novel_author_only_max_pages": 50,
+    "novel_author_only_page_delay_seconds": 0.5,
+    "image_backfill_enabled": true,
+    "image_backfill_dry_run": true,
+    "image_backfill_forum_id": 5,
+    "image_backfill_auto_interval_seconds": 60,
+    "image_backfill_daily_limit": 100,
+    "image_backfill_max_pages": 1
+  },
+  "export": {
+    "dir": "/app/data/exports",
+    "novel_txt_dir": "/app/data/novel_exports",
+    "novel_txt_include_filtered_notes": false,
+    "novel_txt_debug_markers": false
+  }
+}
+```
+
+数据库、端口、LLM/Hermes 和 RAG 建议放在 `.env`，不要写入 `yamibo.local.json`。
+
+### 3.2 data 目录外挂
+
+默认 compose 配置：
+
+```env
+YAMIBO_DATA_BIND=./data
+```
+
+容器内路径固定为 `/app/data`。常见持久化内容：
+
+| 容器路径 | 宿主机路径 | 说明 |
+|----------|------------|------|
+| `/app/data/exports` | `./data/exports` | 通用导出 |
+| `/app/data/novel_exports` | `./data/novel_exports` | 轻小说 TXT 导出 |
+| `/app/data/cookies` | `./data/cookies` | 多账号 cookie |
+| `/app/data/backups` | `./data/backups` | 备份输出 |
+| `/app/data/staging` | `./data/staging` | 临时归档工作区 |
+| `/app/data/title_hints.json` | `./data/title_hints.json` | 标题提示 |
+
+PostgreSQL 默认使用 named volume：
+
+```env
+YAMIBO_POSTGRES_DATA=yamibo_postgres_data
+```
+
+如果希望数据库文件也外挂到宿主机目录，改为：
+
+```env
+YAMIBO_POSTGRES_DATA=./postgres-data
+```
+
+首次切换前请停止容器，并确认目标目录为空或已完成数据迁移。
+
+### 3.3 首次启动
+
+```bash
+docker compose build
+docker compose up -d postgres
+docker compose run --rm yamibo yamibo-init-db
+docker compose up -d yamibo
+```
+
+访问 Web 控制台：
+
+```text
+http://localhost:8765
+```
+
+健康检查：
+
+```bash
+curl http://localhost:8765/api/health
+```
+
+### 3.4 外接 Hermes Docker（对话页优先场景）
+
+Web 对话页和标题解析使用 OpenAI-compatible `/v1/chat/completions`。默认 `.env.docker.example` 已按 Hermes 容器名配置：
+
+```env
+YAMIBO_LLM_BASE_URL=http://hermes:8000/v1
+YAMIBO_LLM_API_KEY=dummy
+YAMIBO_LLM_MODEL=hermes
+```
+
+Hermes 需要满足：
+
+- 容器内可通过 `http://hermes:8000/v1` 访问
+- 支持 `POST /v1/chat/completions`
+- 支持非流式响应，返回 `choices[0].message.content`
+- 对话模型能够按 Yamibo 对话页提示输出可解析内容
+
+如果 Hermes 在同一个 compose 中，添加类似服务：
+
+```yaml
+services:
+  hermes:
+    image: your-hermes-image
+    container_name: hermes
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+```
+
+如果 Hermes 已在另一个 Docker compose 中，建议使用共享网络：
+
+```bash
+docker network create llm-net
+docker network connect llm-net hermes
+```
+
+然后在 `docker-compose.yml` 为 `yamibo` 增加该外部网络，或启动后执行：
+
+```bash
+docker network connect llm-net yamibo-app
+```
+
+如果 Hermes 运行在宿主机：
+
+```env
+YAMIBO_LLM_BASE_URL=http://host.docker.internal:8000/v1
+```
+
+compose 已包含 `host.docker.internal:host-gateway`，Linux Docker Engine 下也可使用该地址。
+
+### 3.5 RAG embedding 与 Hermes 的关系
+
+很多 Hermes/OpenAI-compatible chat 服务只支持 `/v1/chat/completions`，不支持 `/v1/embeddings`。这种情况下建议先关闭 RAG：
+
+```env
+YAMIBO_RAG_ENABLED=false
+```
+
+如果需要 RAG，请把 embedding 单独接到支持 `/v1/embeddings` 的服务：
+
+```env
+YAMIBO_RAG_ENABLED=true
+YAMIBO_RAG_BASE_URL=https://api.openai.com/v1
+YAMIBO_RAG_API_KEY=sk-your-embedding-key
+YAMIBO_RAG_EMBEDDING_MODEL=text-embedding-3-small
+YAMIBO_RAG_EMBEDDING_DIMENSIONS=512
+```
+
+### 3.6 日常运维
+
+查看日志：
+
+```bash
+docker compose logs -f yamibo
+```
+
+重启：
+
+```bash
+docker compose restart yamibo
+```
+
+升级镜像和代码后执行数据库迁移：
+
+```bash
+docker compose build
+docker compose run --rm yamibo yamibo-init-db
+docker compose up -d
+```
+
+手动进入容器运行 CLI：
+
+```bash
+docker compose run --rm yamibo yamibo-archiver browse-forum-page --page 1
+```
+
+### 3.7 数据库备份、恢复与迁移
+
+#### PostgreSQL 备份
+
+推荐用 `pg_dump` 从 postgres 容器导出：
+
+```bash
+docker compose exec postgres pg_dump -U yamibo -d yamibo -Fc -f /tmp/yamibo.dump
+docker compose cp postgres:/tmp/yamibo.dump ./data/backups/yamibo.dump
+```
+
+也可以导出 SQL 文本：
+
+```bash
+docker compose exec postgres pg_dump -U yamibo -d yamibo -f /tmp/yamibo.sql
+docker compose cp postgres:/tmp/yamibo.sql ./data/backups/yamibo.sql
+```
+
+#### PostgreSQL 恢复到新库
+
+先停止 Yamibo，避免恢复过程中写入：
+
+```bash
+docker compose stop yamibo
+```
+
+恢复 custom dump：
+
+```bash
+docker compose cp ./data/backups/yamibo.dump postgres:/tmp/yamibo.dump
+docker compose exec postgres dropdb -U yamibo --if-exists yamibo
+docker compose exec postgres createdb -U yamibo yamibo
+docker compose exec postgres pg_restore -U yamibo -d yamibo /tmp/yamibo.dump
+docker compose run --rm yamibo yamibo-init-db
+docker compose up -d yamibo
+```
+
+#### 从本机 PostgreSQL 迁移到 Docker PostgreSQL
+
+在旧环境导出：
+
+```bash
+pg_dump "$YAMIBO_DB_URL" -Fc -f ./data/backups/yamibo-local.dump
+```
+
+导入 Docker：
+
+```bash
+docker compose up -d postgres
+docker compose cp ./data/backups/yamibo-local.dump postgres:/tmp/yamibo-local.dump
+docker compose exec postgres dropdb -U yamibo --if-exists yamibo
+docker compose exec postgres createdb -U yamibo yamibo
+docker compose exec postgres pg_restore -U yamibo -d yamibo /tmp/yamibo-local.dump
+docker compose run --rm yamibo yamibo-init-db
+```
+
+#### 迁移文件归档数据
+
+数据库只保存结构化记录和索引。归档文件、图片、导出、cookie、备份等在 `data/`。迁移机器时需要同时复制：
+
+```bash
+rsync -a ./data/ user@new-host:/path/to/Yamibo/data/
+rsync -a ./yamibo.local.json user@new-host:/path/to/Yamibo/yamibo.local.json
+```
+
+目标机器启动后执行：
+
+```bash
+docker compose run --rm yamibo yamibo-init-db
+docker compose up -d
+```
+
+#### 历史 file-only 归档补回数据库
+
+如果只迁移了 `data/threads/<tid>/metadata.json` / `context.md`，但数据库没有对应记录，按本指南后文“历史 file-only 归档补回数据库”执行 `scripts/enqueue_missing_db_thread_sync.py`，让 daemon 重新同步远端元数据。
+
+---
+
+## 4. 启动服务
 
 系统由两个独立进程组成：
 
 | 进程 | 生命周期 | 说明 |
 |------|---------|------|
-| MCP Server | 由 LLM 客户端触发，随会话长期运行 | 处理 MCP 请求，创建任务到 SQLite |
-| Daemon | 独立后台进程，支持单次或持续运行 | 轮询 SQLite 消费任务，内嵌 Web 控制台 |
+| MCP Server | 由 LLM 客户端触发，随会话长期运行 | 处理 MCP 请求，创建任务到 PostgreSQL |
+| Daemon | 独立后台进程，支持单次或持续运行 | 轮询 PostgreSQL 消费任务，内嵌 Web 控制台 |
 
 ### 3.1 启动 Daemon（后台任务消费 + Web 控制台）
 
@@ -198,19 +464,38 @@ uv run yamibo-archiver stdio --transport streamable-http  # HTTP
 
 ### 3.3 CLI 直接调用（无需启动服务）
 
-所有 MCP 工具也可通过命令行直接调用，返回 JSON 结果：
+核心 MCP 工具有对应的命令行入口，返回 JSON 结果；长任务命令只创建 job，仍需 daemon 消费：
 
 ```bash
 uv run yamibo-archiver browse-forum-page --page 1
 uv run yamibo-archiver search-threads --query "关键词"
-uv run yamibo-archiver create-sync-thread-job --tid 572313
+uv run yamibo-archiver inspect-remote-thread --tid 572313
+uv run yamibo-archiver create-thread-archive-job --tid 572313
 uv run yamibo-archiver job-status <job_id>
+uv run yamibo-archiver wait-for-job <job_id>
 uv run yamibo-archiver read-resource "yamibo://threads/572313/summary"
 ```
 
+### 3.4 历史 file-only 归档补回数据库
+
+如果 `data/threads/<tid>/` 下已有 `metadata.json` / `context.md`，但数据库里没有对应 `threads` 记录，建议优先走远端 `sync_thread` 重同步，而不是手工改库。
+
+```bash
+# 先看计划，不写入任务
+uv run python scripts/enqueue_missing_db_thread_sync.py --dry-run --batch-size 100 --max-batches 2
+
+# 正式按批次创建 sync_thread jobs，并让 daemon 自动补 forum_id / floors / title_parse / local_reply_count
+uv run python scripts/enqueue_missing_db_thread_sync.py --batch-size 100 --max-batches 2
+```
+
+说明：
+
+- 不需要手动传 `forum_id`，系统会从远端线程页面面包屑/论坛链接自动提取
+- 这些 tid 处理完成前，不要运行 `cleanup-orphan-thread-dirs`
+
 ---
 
-## 4. LLM 客户端集成
+## 5. LLM 客户端集成
 
 ### 4.0 SSE 连接方式
 
@@ -269,7 +554,7 @@ SSE 适合常驻服务进程；如果客户端只支持本地命令启动，继�
 
 ---
 
-## 5. 运维操作
+## 6. 运维操作
 
 ### 5.1 数据库备份
 
@@ -287,9 +572,9 @@ uv run yamibo-backup-db --copy-cookie
 uv run yamibo-backup-db --keep-count 10
 ```
 
-备份文件格式：SQLite 为 `forum_YYYYMMDD_HHMMSS.sqlite3`，PostgreSQL 为 `forum_YYYYMMDD_HHMMSS.pgdump`
+备份文件格式：PostgreSQL 为 `forum_YYYYMMDD_HHMMSS.pgdump`
 
-### 5.2 SQLite -> PostgreSQL 迁移
+### 5.2 历史 SQLite -> PostgreSQL 迁移
 
 ETL 命令：
 
@@ -342,7 +627,7 @@ Web 控制台（默认 `http://127.0.0.1:8765`）提供以下运维操作：
 
 ---
 
-## 6. 监控
+## 7. 监控
 
 ### 6.1 Web Dashboard
 
@@ -374,7 +659,7 @@ Daemon 和 Server 使用 Python stdlib logging：
 
 ---
 
-## 7. 已知约束
+## 8. 已知约束
 
 ### 7.1 论坛维护窗口
 
@@ -395,12 +680,12 @@ Daemon 和 Server 使用 Python stdlib logging：
 
 ---
 
-## 8. 故障排除
+## 9. 故障排除
 
 | 症状 | 原因 | 解决 |
 |------|------|------|
 | 任务一直 queued | Daemon 未启动 | `uv run yamibo-daemon` |
-| 任务 failed + LoginRequired | Cookie 过期 | 更新 `.cookie` 文件 |
+| 任务 failed + LoginRequired | Cookie 过期 | 更新 `data/cookies/` 下对应账号的 cookie 文件 |
 | 任务 failed + RemoteMaintenance | 论坛维护中 | 等待维护结束（5:30-6:30 UTC+8） |
 | 任务 partial | 部分图片下载失败 | 检查 `missing_images_json`，可重新同步 |
 | LLM 解析失败 | API Key 未配置或无效 | 检查 `llm.api_key` 配置 |

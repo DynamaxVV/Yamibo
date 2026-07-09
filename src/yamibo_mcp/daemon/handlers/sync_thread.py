@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import logging
+import shutil
 import time
 from contextlib import ExitStack
 from dataclasses import replace
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from yamibo_mcp.application.thread_context import build_obsidian_context_payload
 from yamibo_mcp.config import Settings
 from yamibo_mcp.db.connection import transaction
 from yamibo_mcp.db.repositories.assets import AssetsRepository
@@ -28,7 +30,7 @@ from yamibo_mcp.yamibo.account_pool import borrow_yamibo_client, has_configured_
 from yamibo_mcp.errors import ThreadPermissionRequiredError, UnexpectedPageError, _extract_permission_code
 from yamibo_mcp.yamibo.client import YamiboClient
 from yamibo_mcp.yamibo.parsers.thread_detail import parse_thread_snapshot
-from yamibo_mcp.yamibo.proxy_pool import select_thread_proxy
+from yamibo_mcp.yamibo.proxy_pool import activate_proxy_binding, select_thread_proxy
 from yamibo_mcp.yamibo.urls import thread_page_url_from_tid
 from yamibo_mcp.yamibo.urls import extract_tid_from_input
 
@@ -70,6 +72,7 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
     title_parse_log: dict[str, object] | None = None
     fetch_artifacts: dict[str, object] = {"archive_mode": "default"}
     client_stack = ExitStack()
+    proxy_stack = ExitStack()
 
     # Select proxy binding (no-op when disabled or not configured)
     proxy_binding = select_thread_proxy(settings, tid=tid, job_id=job.job_id)
@@ -91,6 +94,13 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
         }
 
     try:
+        proxy_stack.enter_context(activate_proxy_binding(settings, proxy_binding))
+        fetch_lease_seconds = max(
+            lease_seconds,
+            int(max(float(getattr(settings, "request_timeout_seconds", 30.0)) * 4.0, 120.0)),
+        )
+        repo.update_stage(job.job_id, "fetch_remote", progress_current=1, progress_total=6)
+        repo.heartbeat(job.job_id, worker_id, fetch_lease_seconds)
         stack = client_stack
         with stack:
             def _check_control_flags() -> None:
@@ -570,6 +580,19 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
                 AssetsRepository(repo.conn).upsert_assets(snapshot.tid, synced_assets)
 
             repo.update_stage(job.job_id, "materialize", progress_current=6, progress_total=6)
+            context_metadata, cleaner_output = build_obsidian_context_payload(
+                snapshot,
+                forum_id=forum_id,
+                archive_status=archive_status,
+                reply_count=max(len(snapshot.floors) - 1, 0),
+                archived_images=image_result.downloaded_relpaths,
+                non_export_images=image_result.non_export_relpaths,
+                shared_images=image_result.shared_relpaths,
+                skipped_image_urls=image_result.skipped_relpaths,
+                missing_image_urls=image_result.missing_urls,
+                missing_shared_image_urls=image_result.missing_shared_urls,
+                context_source="sync_thread",
+            )
             context_path, metadata_path = materialize_thread(
                 paths,
                 snapshot,
@@ -580,6 +603,9 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
                 skipped_image_urls=image_result.skipped_relpaths,
                 missing_image_urls=image_result.missing_urls,
                 missing_shared_image_urls=image_result.missing_shared_urls,
+                context_format_version="obsidian-md-v2",
+                cleaner_output=cleaner_output,
+                metadata=context_metadata,
             )
             artifacts = {
                 "tid": snapshot.tid,
@@ -669,6 +695,9 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
                         author_guess=snapshot.title.author_guess,
                     )
                 repo.succeed(job.job_id, artifacts)
+            # materialize_thread 已将图片 copy 到正式归档目录，
+            # staging 数据已完成使命，清理释放磁盘空间。
+            shutil.rmtree(paths.staging_job_dir(job.job_id), ignore_errors=True)
     except Exception as exc:
         write_staging_failure(
             paths,
@@ -687,6 +716,7 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
         raise
     finally:
         client_stack.close()
+        proxy_stack.close()
 
 
 def _extract_author_uid_from_url(value: str) -> str | None:

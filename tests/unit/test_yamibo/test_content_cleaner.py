@@ -25,9 +25,43 @@ class TestCleanContent:
         result = clean_content("photo.jpg")
         assert result == ""
 
+    def test_removes_standalone_unicode_image_filename(self):
+        result = clean_content("i-0016-尾页.jpg")
+        assert result == ""
+
+    def test_removes_standalone_spaced_unicode_image_filename(self):
+        result = clean_content("『映画　けいおん！』ＢＤＤＶＤが７月１８日発売決定.jpg")
+        assert result == ""
+
     def test_preserves_inline_image_reference(self):
         result = clean_content("看这个图 lol.jpg 太搞笑了")
         assert "lol.jpg" in result
+
+    def test_removes_compact_attachment_residue_from_short_line(self):
+        text = (
+            "正文很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长 "
+            "i-000a.jpg (842.99 KB, 下载次数: 15) 下载附件 保存到相册 2026-6-11 22:57 上传"
+        )
+        result = clean_content(text)
+        assert "i-000a.jpg" not in result
+        assert "下载附件" not in result
+        assert "保存到相册" not in result
+        assert "上传" not in result
+        assert "正文很长" in result
+
+    def test_removes_inline_attachment_suffix_appended_to_prose(self):
+        text = "不存在什么误读的空间其实076.png(372 Bytes, 下载次数: 79)"
+        result = clean_content(text)
+        assert result == "不存在什么误读的空间其实"
+
+    def test_removes_quoted_attachment_timestamp_count_line(self):
+        result = clean_content("> 2009-1-7 13:22, 下载次数: 3")
+        assert result == ""
+
+    def test_removes_boundary_prefixed_attachment_suffix_with_empty_download_count(self):
+        text = "气。生气气.jpg(118.57 KB, 下载次数: )"
+        result = clean_content(text)
+        assert result == "气。"
 
     def test_normalizes_nbsp(self):
         result = clean_content("hello\xa0world")

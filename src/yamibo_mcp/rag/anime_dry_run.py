@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Literal
 
@@ -292,6 +293,8 @@ class ThreadDryRunResult:
     floor_count: int
     chunks: tuple[AnimeDryRunChunk, ...]
     floors: tuple[FloorDryRunResult, ...]
+    source_hash: str = ""
+    generated_at: str = ""
 
 
 @dataclass(frozen=True)
@@ -774,6 +777,30 @@ def build_anime_dry_run_thread(
             )
         )
 
+    source_fingerprint = hashlib.sha256(
+        json.dumps(
+            {
+                "tid": tid,
+                "thread_lane": thread_classification.lane,
+                "thread_reasons": list(thread_classification.reasons),
+                "floors": [
+                    {
+                        "pid": floor.pid,
+                        "floor_no": floor.floor_no,
+                        "publisher": floor.publisher,
+                        "pub_time": floor.pub_time,
+                        "content": floor.original_text,
+                        "reply_text": floor.original_reply_text,
+                        "quote_text": floor.original_quote_text,
+                        "has_images": floor.has_images,
+                    }
+                    for floor in floors
+                ],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
     return ThreadDryRunResult(
         tid=tid,
         title=title,
@@ -786,6 +813,8 @@ def build_anime_dry_run_thread(
         floor_count=len(floor_rows),
         chunks=tuple(chunks),
         floors=tuple(floors),
+        source_hash=source_fingerprint,
+        generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
     )
 
 

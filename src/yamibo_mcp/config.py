@@ -12,7 +12,10 @@ if TYPE_CHECKING:
 from yamibo_mcp.storage.atomic import atomic_write_text
 
 def _project_root() -> Path:
-    return Path(__file__).resolve().parents[2]
+    env_root = os.environ.get("YAMIBO_PROJECT_ROOT")
+    if env_root:
+        return Path(env_root).expanduser().resolve()
+    return Path.cwd().resolve()
 
 
 @dataclass(frozen=True)
@@ -72,6 +75,13 @@ class Settings:
     llm_base_url: str
     llm_api_key: str | None
     llm_model: str
+    chat_transport: str
+    chat_mcp_sse_url: str | None
+    hermes_api_key: str | None
+    hermes_model: str
+    hermes_host: str
+    hermes_port: int
+    hermes_stream: bool
     rag_enabled: bool
     rag_base_url: str
     rag_api_key: str | None
@@ -189,7 +199,7 @@ def _cfg_account_pool(config: dict[str, object], *, config_dir: Path, data_dir: 
 
 def load_settings() -> Settings:
     root = _project_root()
-    config_path = Path(os.environ.get("YAMIBO_CONFIG_PATH", root / "yamibo.local.json")).expanduser()
+    config_path = Path(os.environ.get("YAMIBO_CONFIG_PATH", root / "data" / "yamibo.local.json")).expanduser()
     config = _read_local_config(config_path)
     data_dir = Path(os.environ.get("YAMIBO_DATA_DIR", root / "data")).expanduser()
     db_path = Path(os.environ.get("YAMIBO_DB_PATH", data_dir / "forum.db")).expanduser()
@@ -245,12 +255,13 @@ def load_settings() -> Settings:
         )
     ).expanduser()
     export_dir_env = os.environ.get("YAMIBO_EXPORT_DIR")
+    export_dir_config = _cfg_value(config, "export", "dir", None)
     if export_dir_env:
         export_dir = Path(export_dir_env).expanduser()
-    elif os.environ.get("YAMIBO_DATA_DIR"):
-        export_dir = (data_dir / "exports").expanduser()
+    elif export_dir_config not in {None, ""}:
+        export_dir = Path(str(export_dir_config)).expanduser()
     else:
-        export_dir = Path(_cfg_value(config, "export", "dir", str(data_dir / "exports"))).expanduser()
+        export_dir = (data_dir / "exports").expanduser()
     novel_txt_export_dir = Path(
         os.environ.get(
             "YAMIBO_NOVEL_TXT_EXPORT_DIR",
@@ -387,6 +398,46 @@ def load_settings() -> Settings:
                 str(_cfg_value(config, "llm", "model", "gpt-4.1-mini")),
             )
         ),
+        chat_transport=str(
+            os.environ.get(
+                "YAMIBO_CHAT_TRANSPORT",
+                str(_cfg_value(config, "chat", "transport", "cli")),
+            )
+        ),
+        chat_mcp_sse_url=os.environ.get("YAMIBO_CHAT_MCP_SSE_URL")
+        or (
+            None
+            if _cfg_value(config, "chat", "mcp_sse_url", None) in {None, ""}
+            else str(_cfg_value(config, "chat", "mcp_sse_url", None))
+        ),
+        hermes_api_key=os.environ.get("YAMIBO_HERMES_API_KEY") or (
+            None if _cfg_value(config, "chat", "hermes_api_key", None) in {None, ""} else str(_cfg_value(config, "chat", "hermes_api_key", None))
+        ),
+        hermes_model=str(
+            os.environ.get(
+                "YAMIBO_HERMES_MODEL",
+                str(_cfg_value(config, "chat", "hermes_model", "hermes-agent")),
+            )
+        ),
+        hermes_host=str(
+            os.environ.get(
+                "YAMIBO_HERMES_HOST",
+                str(_cfg_value(config, "chat", "hermes_host", "host.docker.internal")),
+            )
+        ),
+        hermes_port=int(
+            os.environ.get(
+                "YAMIBO_HERMES_PORT",
+                str(_cfg_value(config, "chat", "hermes_port", 8642)),
+            )
+        ),
+        hermes_stream=str(
+            os.environ.get(
+                "YAMIBO_HERMES_STREAM",
+                str(_cfg_value(config, "chat", "hermes_stream", False)),
+            )
+        ).lower()
+        in {"1", "true", "yes", "on"},
         rag_enabled=str(
             os.environ.get(
                 "YAMIBO_RAG_ENABLED",

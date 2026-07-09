@@ -5,6 +5,7 @@ import { api, type Forum, type RagOverview, type RagSearchItem, type RagThreadLi
 import { Badge, ContentBadge } from '../components/Badge'
 import { useI18n } from '../context/I18nContext'
 import { formatDateTime } from '../utils/time'
+import { formatThreadListTitle } from '../utils/threadTitle'
 
 const SEARCH_MODES = ['hybrid', 'keyword', 'vector'] as const
 const THREAD_PAGE_SIZES = [10, 25, 50] as const
@@ -548,36 +549,41 @@ export function Rag() {
                 </tr></thead>
                 <tbody>
                   {unindexedList?.items.map(row => (
-                    <tr key={row.tid}>
-                      <td>
-                        <input
-                          type="checkbox"
-                          checked={selectedTids.has(row.tid)}
-                          onChange={() => {
-                            setSelectedTids(prev => {
-                              const next = new Set(prev)
-                              next.has(row.tid) ? next.delete(row.tid) : next.add(row.tid)
-                              return next
-                            })
-                          }}
-                        />
-                      </td>
-                      <td className="mono"><Link to={`/threads/${row.tid}`}>{row.tid}</Link></td>
-                      <td className="truncate" title={row.display_title || row.raw_title}>{row.display_title || row.raw_title}</td>
-                      <td>{row.forum_id ? (forumMap[row.forum_id] || row.forum_id) : '-'}</td>
-                      <td><ContentBadge kind={row.content_kind} /></td>
-                      <td><Badge status={row.rag_index_state}>{t(`rag_index_state_${row.rag_index_state}`)}</Badge></td>
-                      <td>{row.rag_chunk_count}</td>
-                      <td><Badge status={row.rag_indexed_chunk_count > 0 ? 'ok' : 'muted'}>{row.rag_indexed_chunk_count}</Badge></td>
-                      <td><Badge status={row.rag_pending_chunk_count > 0 ? 'pending' : 'muted'}>{row.rag_pending_chunk_count}</Badge></td>
-                      <td><Badge status={row.rag_failed_chunk_count > 0 ? 'failed' : 'muted'}>{row.rag_failed_chunk_count}</Badge></td>
-                      <td className="col-time">{formatDateTimeStacked(row.rag_last_indexed_at || row.sync_time)}</td>
-                      <td>
-                        <button className="btn-subtle" onClick={() => void requestCreateIndex(row)}>
-                          {row.rag_index_state === 'unindexed' ? t('rag_index_now') : t('rag_reindex_now')}
-                        </button>
-                      </td>
-                    </tr>
+                    (() => {
+                      const titleText = formatThreadListTitle(row)
+                      return (
+                        <tr key={row.tid}>
+                          <td>
+                            <input
+                              type="checkbox"
+                              checked={selectedTids.has(row.tid)}
+                              onChange={() => {
+                                setSelectedTids(prev => {
+                                  const next = new Set(prev)
+                                  next.has(row.tid) ? next.delete(row.tid) : next.add(row.tid)
+                                  return next
+                                })
+                              }}
+                            />
+                          </td>
+                          <td className="mono"><Link to={`/threads/${row.tid}`}>{row.tid}</Link></td>
+                          <td className="truncate" title={titleText}>{titleText}</td>
+                          <td>{row.forum_id ? (forumMap[row.forum_id] || row.forum_id) : '-'}</td>
+                          <td><ContentBadge kind={row.content_kind} /></td>
+                          <td><Badge status={row.rag_index_state}>{t(`rag_index_state_${row.rag_index_state}`)}</Badge></td>
+                          <td>{row.rag_chunk_count}</td>
+                          <td><Badge status={row.rag_indexed_chunk_count > 0 ? 'ok' : 'muted'}>{row.rag_indexed_chunk_count}</Badge></td>
+                          <td><Badge status={row.rag_pending_chunk_count > 0 ? 'pending' : 'muted'}>{row.rag_pending_chunk_count}</Badge></td>
+                          <td><Badge status={row.rag_failed_chunk_count > 0 ? 'failed' : 'muted'}>{row.rag_failed_chunk_count}</Badge></td>
+                          <td className="col-time">{formatDateTimeStacked(row.rag_last_indexed_at || row.sync_time)}</td>
+                          <td>
+                            <button className="btn-subtle" onClick={() => void requestCreateIndex(row)}>
+                              {row.rag_index_state === 'unindexed' ? t('rag_index_now') : t('rag_reindex_now')}
+                            </button>
+                          </td>
+                        </tr>
+                      )
+                    })()
                   ))}
                 </tbody>
               </table>
@@ -614,23 +620,28 @@ export function Rag() {
                 </tr></thead>
                 <tbody>
                   {indexedList?.items.map(row => (
-                    <tr key={row.tid}>
-                      <td className="mono"><Link to={`/threads/${row.tid}`}>{row.tid}</Link></td>
-                      <td className="truncate" title={row.display_title || row.raw_title}>{row.display_title || row.raw_title}</td>
-                      <td>{row.forum_id ? (forumMap[row.forum_id] || row.forum_id) : '-'}</td>
-                      <td><ContentBadge kind={row.content_kind} /></td>
-                      <td><Badge status={row.rag_index_state}>{t(`rag_index_state_${row.rag_index_state}`)}</Badge></td>
-                      <td>{row.rag_chunk_count}</td>
-                      <td><Badge status={row.rag_indexed_chunk_count > 0 ? 'ok' : 'muted'}>{row.rag_indexed_chunk_count}</Badge></td>
-                      <td><Badge status={row.rag_pending_chunk_count > 0 ? 'pending' : 'muted'}>{row.rag_pending_chunk_count}</Badge></td>
-                      <td><Badge status={row.rag_failed_chunk_count > 0 ? 'failed' : 'muted'}>{row.rag_failed_chunk_count}</Badge></td>
-                      <td className="col-time">{formatDateTimeStacked(row.rag_last_indexed_at || row.sync_time)}</td>
-                      <td>
-                        <button className="btn-subtle" onClick={() => void requestCreateIndex(row)}>
-                          {row.rag_index_state === 'unindexed' ? t('rag_index_now') : t('rag_reindex_now')}
-                        </button>
-                      </td>
-                    </tr>
+                    (() => {
+                      const titleText = formatThreadListTitle(row)
+                      return (
+                        <tr key={row.tid}>
+                          <td className="mono"><Link to={`/threads/${row.tid}`}>{row.tid}</Link></td>
+                          <td className="truncate" title={titleText}>{titleText}</td>
+                          <td>{row.forum_id ? (forumMap[row.forum_id] || row.forum_id) : '-'}</td>
+                          <td><ContentBadge kind={row.content_kind} /></td>
+                          <td><Badge status={row.rag_index_state}>{t(`rag_index_state_${row.rag_index_state}`)}</Badge></td>
+                          <td>{row.rag_chunk_count}</td>
+                          <td><Badge status={row.rag_indexed_chunk_count > 0 ? 'ok' : 'muted'}>{row.rag_indexed_chunk_count}</Badge></td>
+                          <td><Badge status={row.rag_pending_chunk_count > 0 ? 'pending' : 'muted'}>{row.rag_pending_chunk_count}</Badge></td>
+                          <td><Badge status={row.rag_failed_chunk_count > 0 ? 'failed' : 'muted'}>{row.rag_failed_chunk_count}</Badge></td>
+                          <td className="col-time">{formatDateTimeStacked(row.rag_last_indexed_at || row.sync_time)}</td>
+                          <td>
+                            <button className="btn-subtle" onClick={() => void requestCreateIndex(row)}>
+                              {row.rag_index_state === 'unindexed' ? t('rag_index_now') : t('rag_reindex_now')}
+                            </button>
+                          </td>
+                        </tr>
+                      )
+                    })()
                   ))}
                 </tbody>
               </table>
@@ -678,12 +689,17 @@ export function Rag() {
             </p>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 260, overflow: 'auto', marginBottom: 14 }}>
               {pendingIndexAction.rows.slice(0, 8).map(row => (
-                <div key={row.tid} className="confirm-row">
-                  <span className="confirm-key">TID {row.tid}</span>
-                  <span className="confirm-val">
-                    {row.display_title || row.raw_title} · {t(`rag_index_state_${row.rag_index_state}`)}
-                  </span>
-                </div>
+                (() => {
+                  const titleText = formatThreadListTitle(row)
+                  return (
+                    <div key={row.tid} className="confirm-row">
+                      <span className="confirm-key">TID {row.tid}</span>
+                      <span className="confirm-val">
+                        {titleText} · {t(`rag_index_state_${row.rag_index_state}`)}
+                      </span>
+                    </div>
+                  )
+                })()
               ))}
               {pendingIndexAction.rows.length > 8 && (
                 <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>

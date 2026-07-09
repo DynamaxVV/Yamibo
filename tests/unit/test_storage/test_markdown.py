@@ -1,7 +1,14 @@
 import json
+import re
 
 from yamibo_mcp.domain.models import FloorSnapshot, ThreadSnapshot, TitleSnapshot
-from yamibo_mcp.storage.markdown import render_thread_markdown, render_thread_metadata
+from yamibo_mcp.storage.markdown import (
+    CONTEXT_FORMAT_OBSIDIAN_V2,
+    render_archive_markdown,
+    render_obsidian_markdown,
+    render_thread_markdown,
+    render_thread_metadata,
+)
 
 
 def _make_snapshot(tid=999, floors=None, **overrides):
@@ -82,6 +89,86 @@ class TestRenderThreadMarkdown:
     def test_ends_with_newline(self):
         md = render_thread_markdown(_make_snapshot())
         assert md.endswith("\n")
+
+
+class TestRenderObsidianMarkdown:
+    def test_frontmatter_and_body(self):
+        floor = {
+            "pid": 1,
+            "floor_no": 1,
+            "publisher": "用户_xxx",
+            "pub_time": "2026-01-01 12:00",
+            "cleaned_body": "正文1",
+            "cleaned_quote": "",
+            "quote_target_hints": [],
+            "image_slots": [],
+        }
+        md = render_obsidian_markdown(
+            _make_snapshot(),
+            metadata={"board": "动漫区", "tags": ["[其他]"], "reply_count": 4, "archive_status": "complete"},
+            cleaner_output={"cleaner_version": "cleaner-1.2", "source_hash": "abc", "floors": [floor]},
+        )
+        assert md.startswith("---\n")
+        assert f"context_format_version: {json.dumps(CONTEXT_FORMAT_OBSIDIAN_V2, ensure_ascii=False)}" in md
+        assert "# 测试漫画 第1话" in md
+        assert "正文1" in md
+
+    def test_frontmatter_contains_required_yaml_fields_and_partial_status(self):
+        floor = {
+            "pid": 1,
+            "floor_no": 1,
+            "publisher": "用户[]#|",
+            "pub_time": "2026-01-01 12:00",
+            "cleaned_body": "正文1",
+            "cleaned_quote": "引用内容",
+            "quote_target_hints": ["2F 用户B"],
+            "image_slots": [{"local_path": "images/a.jpg"}],
+        }
+        md = render_obsidian_markdown(
+            _make_snapshot(
+                floors=[
+                    FloorSnapshot(
+                        pid=1001,
+                        tid=999,
+                        floor_no=1,
+                        publisher="用户[]#|",
+                        content="原始正文",
+                        pub_time="2026-01-01 12:00",
+                        has_images=True,
+                        image_urls=["https://img.example/a.jpg"],
+                    )
+                ]
+            ),
+            metadata={
+                "board": "海域区",
+                "tags": ["[讨论]", "海域区"],
+                "reply_count": 4,
+                "archive_status": "partial",
+                "sync_time": "2026-07-05T00:00:00+00:00",
+                "ai_summary": "",
+                "context_rendered_at": "2026-07-05T01:02:03+00:00",
+                "context_inputs": {"source": "test"},
+            },
+            cleaner_output={"cleaner_version": "cleaner-1.2", "source_hash": "sha256:test", "floors": [floor]},
+        )
+
+        assert md.startswith("---\n")
+        assert 'title: "测试漫画 第1话"' in md
+        assert 'aliases: ["测试漫画 第1话", "[A组] 测试漫画 第1话"]' in md
+        assert 'publisher: "user1"' in md
+        assert 'reply_count: 4' in md
+        assert 'board: "海域区"' in md
+        assert 'tags: ["[讨论]", "海域区"]' in md
+        assert 'archive_status: "partial"' in md
+        assert 'sync_time: "2026-07-05T00:00:00+00:00"' in md
+        assert f"context_format_version: {json.dumps(CONTEXT_FORMAT_OBSIDIAN_V2, ensure_ascii=False)}" in md
+        assert 'cleaner_version: "cleaner-1.2"' in md
+        assert 'context_source_hash: "sha256:test"' in md
+        assert 'context_rendered_at: "2026-07-05T01:02:03+00:00"' in md
+        assert '> [!quote] 引用 [[2F 用户B]]：' in md
+        assert '![[images/a.jpg]]' in md
+        assert '## 1F · [[用户____]] · 2026-01-01 12:00' in md
+        assert "^f1" in md
 
 
 class TestRenderThreadMetadata:

@@ -54,9 +54,8 @@ export function Jobs() {
   const [pendingCancelId, setPendingCancelId] = useState<string | null>(null)
   const [pendingRetryId, setPendingRetryId] = useState<string | null>(null)
   const [pendingSelectedRetry, setPendingSelectedRetry] = useState(false)
-  const [showIdleTasks, setShowIdleTasks] = useState(() => {
-    try { return localStorage.getItem(IDLE_TASKS_STORAGE_KEY) === '1' } catch { return false }
-  })
+  const [pendingAction, setPendingAction] = useState(false)
+  const [showIdleTasks, setShowIdleTasks] = useState(false)
   const [backfillStatus, setBackfillStatus] = useState<BackfillStatus | null>(null)
   const [idleJobs, setIdleJobs] = useState<JobSummary[]>([])
   const jobsRef = useRef<JobSummary[]>([])
@@ -145,47 +144,47 @@ export function Jobs() {
   useEffect(() => {
     let active = true
     const poll = window.setInterval(async () => {
-      if (showIdleTasks) {
-        try {
-          const [status, allJobs] = await Promise.all([
-            api.backfillStatus(),
-            api.jobs({ page_size: 50 }),
-          ])
-          if (!active) return
-          setBackfillStatus(status)
-          setIdleJobs(allJobs.items.filter(j => j.job_type === 'image_backfill'))
-        } catch { /* ignore */ }
-        return
-      }
-      // 始终拉取 backfill status 用于状态摘要行
-      api.backfillStatus().then(setBackfillStatus).catch(() => {})
       try {
-        const jobsRequest = api.jobs({
-          status: status || undefined,
-          failure_kind: status === 'failed' ? failureKind || undefined : undefined,
-          page,
-          page_size: pageSize,
-        })
-        const failureCountsRequest = status === 'failed' ? api.jobFailureCounts('failed') : Promise.resolve<Record<string, number>>({})
-        const [nextJobs, nextCounts, nextFailureCounts] = await Promise.all([jobsRequest, api.jobCounts(), failureCountsRequest])
+        const [status, allJobs] = await Promise.all([
+          api.backfillStatus(),
+          api.jobs({ page_size: 50 }),
+        ])
         if (!active) return
-        const prevJobsKey = JSON.stringify(jobsRef.current.map(j => [j.job_id, j.status, j.stage, j.updated_at]))
-        const nextJobsKey = JSON.stringify(nextJobs.items.map(j => [j.job_id, j.status, j.stage, j.updated_at]))
-        const prevCountsKey = JSON.stringify(countsRef.current)
-        const nextCountsKey = JSON.stringify(nextCounts)
-        const prevFailureCountsKey = JSON.stringify(failureKindCounts)
-        const nextFailureCountsKey = JSON.stringify(nextFailureCounts)
-        if (prevJobsKey !== nextJobsKey || prevCountsKey !== nextCountsKey || prevFailureCountsKey !== nextFailureCountsKey) {
-          setJobs(nextJobs.items)
-          setTotalPages(nextJobs.total_pages)
-          setTotalCount(nextJobs.total_count)
-          setStatusCounts(nextCounts)
-          setFailureKindCounts(nextFailureCounts)
-          jobsRef.current = nextJobs.items
-          countsRef.current = nextCounts
-        }
+        setBackfillStatus(status)
+        setIdleJobs(allJobs.items.filter(j => j.job_type === 'image_backfill'))
       } catch { /* ignore */ }
+      if (!showIdleTasks) {
+        try {
+          const jobsRequest = api.jobs({
+            status: status || undefined,
+            failure_kind: status === 'failed' ? failureKind || undefined : undefined,
+            page,
+            page_size: pageSize,
+          })
+          const failureCountsRequest = status === 'failed' ? api.jobFailureCounts('failed') : Promise.resolve<Record<string, number>>({})
+          const [nextJobs, nextCounts, nextFailureCounts] = await Promise.all([jobsRequest, api.jobCounts(), failureCountsRequest])
+          if (!active) return
+          const prevJobsKey = JSON.stringify(jobsRef.current.map(j => [j.job_id, j.status, j.stage, j.updated_at]))
+          const nextJobsKey = JSON.stringify(nextJobs.items.map(j => [j.job_id, j.status, j.stage, j.updated_at]))
+          const prevCountsKey = JSON.stringify(countsRef.current)
+          const nextCountsKey = JSON.stringify(nextCounts)
+          const prevFailureCountsKey = JSON.stringify(failureKindCounts)
+          const nextFailureCountsKey = JSON.stringify(nextFailureCounts)
+          if (prevJobsKey !== nextJobsKey || prevCountsKey !== nextCountsKey || prevFailureCountsKey !== nextFailureCountsKey) {
+            setJobs(nextJobs.items)
+            setTotalPages(nextJobs.total_pages)
+            setTotalCount(nextJobs.total_count)
+            setStatusCounts(nextCounts)
+            setFailureKindCounts(nextFailureCounts)
+            jobsRef.current = nextJobs.items
+            countsRef.current = nextCounts
+          }
+        } catch { /* ignore */ }
+      }
     }, 5000)
+    // 首次加载立即拉取
+    api.backfillStatus().then(s => { if (active) setBackfillStatus(s) }).catch(() => {})
+    api.jobs({ page_size: 50 }).then(r => { if (active) setIdleJobs(r.items.filter(j => j.job_type === 'image_backfill')) }).catch(() => {})
     return () => {
       active = false
       window.clearInterval(poll)
@@ -264,6 +263,7 @@ export function Jobs() {
 
   const handlePauseResume = async (j: JobSummary) => {
     setJobActionError(null)
+    setPendingAction(true)
     try {
       if (j.status === 'paused') {
         await api.resumeJob(j.job_id)
@@ -273,12 +273,15 @@ export function Jobs() {
       await refreshJobs(false)
     } catch (e: any) {
       setJobActionError(e.message || String(e))
+    } finally {
+      setPendingAction(false)
     }
   }
 
   const handleRetry = async (j: JobSummary) => {
     setJobActionError(null)
     setPendingRetryId(j.job_id)
+    setPendingAction(true)
     try {
       await api.retryJob(j.job_id)
       await refreshJobs(false)
@@ -286,11 +289,13 @@ export function Jobs() {
       setJobActionError(e.message || String(e))
     } finally {
       setPendingRetryId(null)
+      setPendingAction(false)
     }
   }
 
   const confirmDoDelete = async () => {
     if (!confirmDelete) return
+    setPendingAction(true)
     try {
       const result = await api.safeDeleteJob(confirmDelete.job_id)
       if (result.action === 'cancel_requested') {
@@ -306,11 +311,14 @@ export function Jobs() {
       }
     } catch (e: any) {
       setDeleteError(e.message || String(e))
+    } finally {
+      setPendingAction(false)
     }
   }
 
   const handleBatchDelete = async () => {
     if (!confirmBatchDelete) return
+    setPendingAction(true)
     try {
       // 当选中失败类型筛选时，只删除当前筛选类型的失败任务
       let deletedCount = 0
@@ -333,12 +341,15 @@ export function Jobs() {
       refreshCounts()
     } catch (e: any) {
       setDeleteError(e.message || String(e))
+    } finally {
+      setPendingAction(false)
     }
   }
 
   const handleSelectedDelete = async () => {
     const ids = Array.from(selectedIds)
     if (ids.length === 0) return
+    setPendingAction(true)
     try {
       const deletedIds = new Set(ids)
       const result = await api.batchDeleteJobIds(ids)
@@ -352,6 +363,8 @@ export function Jobs() {
       refreshCounts()
     } catch (e: any) {
       setDeleteError(e.message || String(e))
+    } finally {
+      setPendingAction(false)
     }
   }
 
@@ -360,6 +373,7 @@ export function Jobs() {
     if (retryableJobs.length === 0) return
     setJobActionError(null)
     setPendingSelectedRetry(true)
+    setPendingAction(true)
     try {
       for (const job of retryableJobs) {
         await api.retryJob(job.job_id)
@@ -370,6 +384,7 @@ export function Jobs() {
       setJobActionError(e.message || String(e))
     } finally {
       setPendingSelectedRetry(false)
+      setPendingAction(false)
     }
   }
 
@@ -378,6 +393,7 @@ export function Jobs() {
     if (queuedJobs.length === 0) return
     setJobActionError(null)
     setPendingSelectedRetry(true)
+    setPendingAction(true)
     try {
       for (const job of queuedJobs) {
         await api.pauseJob(job.job_id)
@@ -388,6 +404,7 @@ export function Jobs() {
       setJobActionError(e.message || String(e))
     } finally {
       setPendingSelectedRetry(false)
+      setPendingAction(false)
     }
   }
 
@@ -396,6 +413,7 @@ export function Jobs() {
     if (pausedJobs.length === 0) return
     setJobActionError(null)
     setPendingSelectedRetry(true)
+    setPendingAction(true)
     try {
       for (const job of pausedJobs) {
         await api.resumeJob(job.job_id)
@@ -406,6 +424,7 @@ export function Jobs() {
       setJobActionError(e.message || String(e))
     } finally {
       setPendingSelectedRetry(false)
+      setPendingAction(false)
     }
   }
 
@@ -461,24 +480,24 @@ export function Jobs() {
           {selectedIds.size > 0 && (
             <>
             <button className="btn-danger-outline toolbar-compact-btn" style={{ marginLeft: 8 }}
-              onClick={() => setConfirmSelectedDelete(true)}>
+              onClick={() => setConfirmSelectedDelete(true)} disabled={pendingAction}>
               {t('delete_selected')} ({selectedIds.size})
             </button>
             {canRetrySelected && (
               <button className="btn-subtle toolbar-compact-btn" style={{ marginLeft: 8 }}
-                onClick={() => void handleSelectedRetry()} disabled={pendingSelectedRetry}>
+                onClick={() => void handleSelectedRetry()} disabled={pendingSelectedRetry || pendingAction}>
                 {pendingSelectedRetry ? t('running') : `${t('rerun')} (${selectedIds.size})`}
               </button>
             )}
             {canPauseSelected && (
               <button className="btn-subtle toolbar-compact-btn" style={{ marginLeft: 8 }}
-                onClick={() => void handleSelectedPause()} disabled={pendingSelectedRetry}>
+                onClick={() => void handleSelectedPause()} disabled={pendingSelectedRetry || pendingAction}>
                 {pendingSelectedRetry ? t('running') : `${t('batch_pause_selected')} (${selectedIds.size})`}
               </button>
             )}
             {canResumeSelected && (
               <button className="btn-subtle toolbar-compact-btn" style={{ marginLeft: 8 }}
-                onClick={() => void handleSelectedResume()} disabled={pendingSelectedRetry}>
+                onClick={() => void handleSelectedResume()} disabled={pendingSelectedRetry || pendingAction}>
                 {pendingSelectedRetry ? t('running') : `${t('batch_resume_selected')} (${selectedIds.size})`}
               </button>
             )}
@@ -493,22 +512,22 @@ export function Jobs() {
         </div>
       </div>
       {jobActionError && <div className="panel" style={{ marginTop: 12, color: 'var(--status-error)' }}>{jobActionError}</div>}
-      <div style={{ marginTop: 4, fontSize: 11, color: 'var(--text-tertiary)' }}>
-        <a href="#" onClick={e => {
-          e.preventDefault()
-          const next = !showIdleTasks
-          setShowIdleTasks(next)
-          if (next) {
-            try { localStorage.setItem(IDLE_TASKS_STORAGE_KEY, '1') } catch {}
-            api.backfillStatus().then(setBackfillStatus).catch(() => {})
-            api.jobs({ page_size: 50 }).then(r => setIdleJobs(r.items.filter(j => j.job_type === 'image_backfill'))).catch(() => {})
-          } else {
-            try { localStorage.removeItem(IDLE_TASKS_STORAGE_KEY) } catch {}
-          }
-        }} style={{ color: showIdleTasks ? 'var(--accent)' : 'var(--text-tertiary)' }}>
-          {t('idle_tasks')}{backfillStatus ? ` · ${t('backfill_today_count')}: ${backfillStatus.today_count}/${backfillStatus.daily_limit}` : ''}
-        </a>
-      </div>
+      {(() => {
+        const idleTypes = [...new Set(idleJobs.map(j => j.job_type))]
+        const todayInfo = backfillStatus ? ` · ${t('backfill_today_count')}: ${backfillStatus.today_count}/${backfillStatus.daily_limit}` : ''
+        const names = idleTypes.length > 0 ? idleTypes.map(jt => t(`job_type_${jt}` as any) || jt).join(' · ') : ''
+        return (
+          <div style={{ marginTop: 4, fontSize: 11, color: 'var(--text-tertiary)' }}>
+            <a href="#" onClick={e => {
+              e.preventDefault()
+              setShowIdleTasks(prev => !prev)
+              try { localStorage.setItem(IDLE_TASKS_STORAGE_KEY, showIdleTasks ? '0' : '1') } catch {}
+            }} style={{ color: 'var(--text-tertiary)' }}>
+              {t('idle_tasks')}{names ? ` · ${names}` : ''}{todayInfo}
+            </a>
+          </div>
+        )
+      })()}
       {showIdleTasks ? (
         <>
           {backfillStatus && (
@@ -598,16 +617,16 @@ export function Jobs() {
               <td>
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                   {(j.status === 'partial' || j.status === 'failed' || j.status === 'interrupted') && (
-                    <button className="btn-subtle" onClick={() => void handleRetry(j)} disabled={pendingRetryId === j.job_id} style={{ fontSize: 11, padding: '2px 6px' }}>
+                    <button className="btn-subtle" onClick={() => void handleRetry(j)} disabled={pendingRetryId === j.job_id || pendingAction} style={{ fontSize: 11, padding: '2px 6px' }}>
                       {pendingRetryId === j.job_id ? t('running') : t('rerun')}
                     </button>
                   )}
                   {(j.status === 'queued' || j.status === 'running' || j.status === 'retrying' || j.status === 'paused') && (
-                    <button className="btn-subtle" onClick={() => handlePauseResume(j)} style={{ fontSize: 11, padding: '2px 6px' }}>
+                    <button className="btn-subtle" onClick={() => handlePauseResume(j)} disabled={pendingAction} style={{ fontSize: 11, padding: '2px 6px' }}>
                       {j.status === 'paused' ? t('resume') : t('pause')}
                     </button>
                   )}
-                  <button className="btn-subtle" onClick={() => handleDelete(j)} style={{ fontSize: 11, padding: '2px 6px' }}>{t('delete')}</button>
+                  <button className="btn-subtle" onClick={() => handleDelete(j)} disabled={pendingAction} style={{ fontSize: 11, padding: '2px 6px' }}>{t('delete')}</button>
                 </div>
               </td>
             </tr>
@@ -640,8 +659,11 @@ export function Jobs() {
             </p>
             {deleteError && <p style={{ fontSize: 12, color: 'var(--status-error)', margin: '0 0 12px' }}>{deleteError}</p>}
             <div className="confirm-actions">
-              <button className="btn-subtle" onClick={() => { setConfirmDelete(null); setDeleteError(null) }}>{t('cancel')}</button>
-              <button className="btn-danger" onClick={confirmDoDelete}>{t('confirm_execute')}</button>
+              <button className="btn-subtle" onClick={() => { setConfirmDelete(null); setDeleteError(null) }} disabled={pendingAction}>{t('cancel')}</button>
+              <button className="btn-danger" onClick={confirmDoDelete} disabled={pendingAction}>
+                {pendingAction ? <span className="loading-spinner" style={{ width: 12, height: 12, borderWidth: 2, marginRight: 6, display: 'inline-block', verticalAlign: 'middle' }} /> : null}
+                {pendingAction ? t('running') : t('confirm_execute')}
+              </button>
             </div>
           </div>
         </div>
@@ -664,8 +686,10 @@ export function Jobs() {
             </p>
             {deleteError && <p style={{ fontSize: 12, color: 'var(--status-error)', margin: '0 0 12px' }}>{deleteError}</p>}
             <div className="confirm-actions">
-              <button className="btn-subtle" onClick={() => { setConfirmBatchDelete(null); setDeleteError(null) }}>{t('cancel')}</button>
-              <button className="btn-danger" onClick={handleBatchDelete}>{t('confirm_execute')}</button>
+              <button className="btn-subtle" onClick={() => { setConfirmBatchDelete(null); setDeleteError(null) }} disabled={pendingAction}>{t('cancel')}</button>
+              <button className="btn-danger" onClick={handleBatchDelete} disabled={pendingAction}>
+                {pendingAction ? <><span className="loading-spinner" style={{ width: 12, height: 12, borderWidth: 2, marginRight: 6, display: 'inline-block', verticalAlign: 'middle' }} />{t('running')}</> : t('confirm_execute')}
+              </button>
             </div>
           </div>
         </div>
@@ -680,8 +704,10 @@ export function Jobs() {
             </p>
             {deleteError && <p style={{ fontSize: 12, color: 'var(--status-error)', margin: '0 0 12px' }}>{deleteError}</p>}
             <div className="confirm-actions">
-              <button className="btn-subtle" onClick={() => { setConfirmSelectedDelete(false); setDeleteError(null) }}>{t('cancel')}</button>
-              <button className="btn-danger" onClick={handleSelectedDelete}>{t('confirm_execute')}</button>
+              <button className="btn-subtle" onClick={() => { setConfirmSelectedDelete(false); setDeleteError(null) }} disabled={pendingAction}>{t('cancel')}</button>
+              <button className="btn-danger" onClick={handleSelectedDelete} disabled={pendingAction}>
+                {pendingAction ? <><span className="loading-spinner" style={{ width: 12, height: 12, borderWidth: 2, marginRight: 6, display: 'inline-block', verticalAlign: 'middle' }} />{t('running')}</> : t('confirm_execute')}
+              </button>
             </div>
           </div>
         </div>

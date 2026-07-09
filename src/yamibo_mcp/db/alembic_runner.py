@@ -118,4 +118,24 @@ def _relocate_bootstrap_tables(connection: Any, schema: str) -> None:
 
 @lru_cache(maxsize=1)
 def _alembic_script_location() -> Path:
-    return Path(__file__).resolve().parents[3] / "alembic"
+    candidates: list[Path] = []
+
+    import os
+
+    env_location = os.environ.get("YAMIBO_ALEMBIC_SCRIPT_LOCATION")
+    if env_location:
+        candidates.append(Path(env_location).expanduser())
+
+    current_file = Path(__file__).resolve()
+    candidates.extend(
+        [
+            Path.cwd() / "alembic",
+            current_file.parents[3] / "alembic",
+            current_file.parents[4] / "alembic" if len(current_file.parents) > 4 else current_file.parents[3] / "alembic",
+            Path("/app/alembic"),
+        ]
+    )
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]

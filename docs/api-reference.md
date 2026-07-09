@@ -1,6 +1,6 @@
 # API 接口文档
 
-> 版本：0.12.1 | 更新日期：2026-07-05
+> 版本：0.12.1 | 更新日期：2026-07-06
 
 ## 1. MCP 工具 (Tools)
 
@@ -9,7 +9,7 @@ MCP Server 通过 FastMCP 暴露以下工具。LLM 客户端通过 MCP 协议调
 新的 Agent-facing 主接口见 [agent-interface.md](agent-interface.md)。核心原则：
 
 - 远端工具只做发现、预览、更新检查和创建任务
-- 本地工具只读 SQLite 与物化归档
+- 本地工具只读当前数据库与物化归档
 - 公共工具统一返回 `ok/data/error/resources/next_actions/warnings/side_effects`
 - 公共 Agent 工具不再暴露 `limit`
 - `llm_transform_text` 与 `parse_thread_title` 不再属于公共 Agent 接口
@@ -94,7 +94,7 @@ Discussion Trend V1 是 PostgreSQL-only 能力面，包含：
 
 ### 1.2 inspect_remote_thread
 
-远端只读预览；不会写 SQLite、下载图片或创建任务。
+远端只读预览；不会写数据库、下载图片或创建任务。
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
@@ -160,7 +160,7 @@ Discussion Trend V1 是 PostgreSQL-only 能力面，包含：
 
 ### 1.4.1 create_thread_archive_batch_jobs
 
-为多个帖子批量创建本地归档任务。只写 SQLite job，不同步执行归档。
+为多个帖子批量创建本地归档任务。只写 job queue，不同步执行归档。
 
 | 参数 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
@@ -263,7 +263,7 @@ Discussion Trend V1 是 PostgreSQL-only 能力面，包含：
 
 ### 1.7.1 create_rag_index_job
 
-为本地已归档帖子创建 RAG 索引任务。只写 SQLite job，不同步执行索引。
+为本地已归档帖子创建 RAG 索引任务。只写 job queue，不同步执行索引。
 
 | 参数 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
@@ -277,7 +277,7 @@ Discussion Trend V1 是 PostgreSQL-only 能力面，包含：
 
 ### 1.7.1.1 create_rag_index_batch_jobs
 
-为多个已归档帖子批量创建 RAG 索引任务。只写 SQLite job，不同步执行索引。
+为多个已归档帖子批量创建 RAG 索引任务。只写 job queue，不同步执行索引。
 
 | 参数 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
@@ -291,7 +291,7 @@ Discussion Trend V1 是 PostgreSQL-only 能力面，包含：
 
 ### 1.7.2 search_archived_content
 
-搜索本地归档文本内容。只读 SQLite 和本地向量索引，不抓远端论坛。
+搜索本地归档文本内容。只读当前数据库和本地向量索引，不抓远端论坛。
 
 | 参数 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
@@ -433,15 +433,22 @@ Web 控制台和 API 提供任务暂停 / 恢复能力，便于在图片下载�
 
 ---
 
-### 1.14 CLI 子命令
+### 1.14 CLI 对应入口与本地命令
 
-以下命令保留给本地人工操作，但不属于 Agent-facing MCP 主接口：
+以下命令通过 `yamibo-archiver` 暴露给本地人工操作和脚本。多数是 MCP 工具的 CLI 对应入口；`cleanup-*`、范围同步等命令偏本地运维或批处理：
 
 - `search-threads`
-- `create-sync-thread-job`
+- `inspect-remote-thread`
+- `create-thread-archive-job`
+- `create-sync-thread-job`（legacy alias，优先使用 `create-thread-archive-job`）
+- `create-sync-thread-batch-jobs`
+- `probe-archived-threads`
+- `ensure-thread-archived`
 - `create-export-thread-job`
 - `update-thread`
 - `job-status`
+- `wait-for-job`
+- `read-job-events`
 - `cleanup-job`
 - `create-sync-forum-range-jobs`
 
@@ -575,7 +582,16 @@ yamibo-archiver browse-forum-page --page 1 --forum-id 55
 yamibo-archiver search-threads --query "星灵感应"
 
 # 创建归档任务
-yamibo-archiver create-sync-thread-job --tid 572313
+yamibo-archiver create-thread-archive-job --tid 572313
+
+# 批量创建归档任务
+yamibo-archiver create-sync-thread-batch-jobs --tid 572313 --tid 572314
+
+# 远端只读预览
+yamibo-archiver inspect-remote-thread --tid 572313
+
+# 批量本地探测
+yamibo-archiver probe-archived-threads --tid 572313 --tid 572314
 
 # 创建导出任务
 yamibo-archiver create-export-thread-job --tid 572313
@@ -589,8 +605,14 @@ yamibo-archiver update-thread --tid 544422
 # 批量同步
 yamibo-archiver create-sync-forum-range-jobs --start-page 1 --end-page 5
 
+# 批量重同步旧的 file-only 归档，并顺便回填 PG
+uv run python scripts/enqueue_missing_db_thread_sync.py --dry-run --batch-size 100 --max-batches 2
+uv run python scripts/enqueue_missing_db_thread_sync.py --batch-size 100 --max-batches 2
+
 # 任务状态
 yamibo-archiver job-status <job_id>
+yamibo-archiver wait-for-job <job_id>
+yamibo-archiver read-job-events <job_id>
 
 # 列出导出包
 yamibo-archiver list-exports
@@ -603,7 +625,7 @@ yamibo-archiver read-resource "yamibo://threads/572313/posts"
 yamibo-archiver read-resource "yamibo://threads/572313/assets"
 yamibo-archiver read-resource "yamibo://threads/544422/update-check"
 yamibo-archiver read-resource "yamibo://forums/index"
-yamibo-archiver read-resource "yamibo://jobs/sync_thread_xxxx/events"
+yamibo-archiver read-resource "yamibo://jobs/<job_id>/events"
 ```
 
 ---

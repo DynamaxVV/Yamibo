@@ -3,14 +3,13 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
-from threading import Event, Lock, Thread
+from threading import Event, Thread
 from uuid import uuid4
 
 from yamibo_mcp.config import Settings, load_settings
 from yamibo_mcp.context import LogContext, new_trace_id
 from yamibo_mcp.db.connection import connect
 from yamibo_mcp.db.repositories.jobs import JobsRepository
-from yamibo_mcp.db.repositories.system_state import SystemStateRepository
 from yamibo_mcp.domain.enums import JobStatus
 from yamibo_mcp.errors import LeaseNotAcquired, RemoteFetchError, RemoteMaintenanceError, ThreadPermissionRequiredError, UnexpectedPageError, classify_error
 from yamibo_mcp.daemon.handlers import get_handler
@@ -18,58 +17,31 @@ from yamibo_mcp.daemon.handlers.sync_thread import JobCancelled, JobPaused
 from yamibo_mcp.daemon.image_backfill_scheduler import maybe_enqueue_image_backfill_dry_run
 from yamibo_mcp.daemon.recovery import recover_expired_jobs
 from yamibo_mcp.maintenance.forum_sizes import FORUM_SIZE_CACHE_REFRESH_SECONDS, refresh_forum_size_cache
+from yamibo_mcp.storage.paths import StoragePaths
+from yamibo_mcp.storage.staging import cleanup_stale_staging
 from yamibo_mcp.structured_logging import emit
 from yamibo_mcp.yamibo.anti_bot import (
     REMOTE_JOB_TYPES,
     activate_remote_access_pause,
+    get_remote_access_pause_state,
+    handle_http_444,
     is_http_429_error,
     is_http_444_error,
+    probe_remote_access,
+    record_remote_access_probe_failure,
+    record_remote_access_probe_success,
     should_probe_maintenance,
+    should_probe_remote_access,
     probe_maintenance,
     get_maintenance_pause_state,
     activate_maintenance_pause,
     record_maintenance_probe_success,
     record_maintenance_probe_failure,
+    _restore_444_events,
 )
 from yamibo_mcp.yamibo.proxy_pool import clear_proxy_cache
 
 LOG = logging.getLogger(__name__)
-
-# Graduated 444 response: track consecutive 444s within a time window;
-# persist to system_state for crash-survival. Only escalate to global pause
-# after hitting threshold.
-_444_KEY = "anti_bot_444_events"
-_444_EVENTS: list[float] = []
-_444_LOCK = Lock()
-_444_THRESHOLD = 3
-_444_WINDOW_SECONDS = 300  # 5 minutes
-
-
-def _restore_444_events(conn) -> None:
-    """Restore persisted 444 events from system_state on daemon startup."""
-    state = SystemStateRepository(conn).get_json(_444_KEY)
-    if not isinstance(state, dict):
-        return
-    timestamps = state.get("timestamps", [])
-    if not isinstance(timestamps, list):
-        return
-    now = time.monotonic()
-    with _444_LOCK:
-        _444_EVENTS[:] = [float(t) for t in timestamps if isinstance(t, (int, float)) and now - float(t) < _444_WINDOW_SECONDS]
-
-
-def _record_444(conn) -> bool:
-    """Record a 444 event. Persists to system_state. Returns True if threshold exceeded."""
-    now = time.monotonic()
-    with _444_LOCK:
-        _444_EVENTS[:] = [t for t in _444_EVENTS if now - t < _444_WINDOW_SECONDS]
-        _444_EVENTS.append(now)
-        exceeded = len(_444_EVENTS) >= _444_THRESHOLD
-        try:
-            SystemStateRepository(conn).set_json(_444_KEY, {"timestamps": _444_EVENTS, "threshold": _444_THRESHOLD, "window_seconds": _444_WINDOW_SECONDS})
-        except Exception:
-            pass  # persistence is best-effort; don't break the handler
-        return exceeded
 
 
 def _is_soft_block_error(exc: RemoteFetchError) -> bool:
@@ -104,7 +76,7 @@ class DaemonRunner:
         settings = self._current_settings()
         if not getattr(settings, "jobs_enabled", True):
             return DaemonResult(processed=0)
-        conn = connect(settings.db_path)
+        conn = connect(settings.db_path, pool_role="daemon")
         try:
             repo = JobsRepository(conn)
             recover_expired_jobs(repo)
@@ -114,19 +86,46 @@ class DaemonRunner:
             maintenance_state = get_maintenance_pause_state(conn)
             if maintenance_state is not None and should_probe_maintenance(conn):
                 LOG.info("Running maintenance recovery probe...")
-                if probe_maintenance(
-                    cookie_file=str(settings.cookie_file),
-                    settings=settings,
-                ):
-                    result = record_maintenance_probe_success(conn)
-                    maintenance_state = None
-                    LOG.info(
-                        "Maintenance over, resumed %s job(s)",
-                        result.get("resumed_job_count", 0),
-                    )
-                else:
+                conn.commit()
+                try:
+                    if probe_maintenance(
+                        cookie_file=str(settings.cookie_file),
+                        settings=settings,
+                    ):
+                        result = record_maintenance_probe_success(conn)
+                        maintenance_state = None
+                        LOG.info(
+                            "Maintenance over, resumed %s job(s)",
+                            result.get("resumed_job_count", 0),
+                        )
+                    else:
+                        record_maintenance_probe_failure(conn)
+                        LOG.info("Maintenance still active, will probe again later")
+                except Exception:
+                    LOG.exception("Maintenance probe failed")
                     record_maintenance_probe_failure(conn)
-                    LOG.info("Maintenance still active, will probe again later")
+
+            # 444 暂停恢复探测：每 10 分钟探一次反爬是否解除，确认正常页面才恢复。
+            remote_access_state = get_remote_access_pause_state(conn)
+            if remote_access_state is not None and should_probe_remote_access(conn):
+                LOG.info("Running HTTP 444 recovery probe...")
+                conn.commit()
+                try:
+                    if probe_remote_access(
+                        cookie_file=str(settings.cookie_file),
+                        settings=settings,
+                    ):
+                        result = record_remote_access_probe_success(conn)
+                        LOG.info(
+                            "HTTP 444 pause lifted, resumed %s job(s)",
+                            result.get("resumed_job_count", 0),
+                        )
+                    else:
+                        record_remote_access_probe_failure(conn)
+                        LOG.info("HTTP 444 still active, will probe again later")
+                except Exception:
+                    LOG.exception("HTTP 444 probe failed")
+                    record_remote_access_probe_failure(conn)
 
             # 维护期间：跳过自动任务，但手动恢复的任务可以执行（作为维护探测）。
             job = repo.acquire_next(self.worker_id, settings.worker_lease_seconds)
@@ -141,6 +140,7 @@ class DaemonRunner:
             if in_maintenance and job.status not in (JobStatus.QUEUED.value,):
                 return DaemonResult(processed=0)
             LOG.info("Acquired job %s (%s)", job.job_id, job.job_type)
+            conn.commit()
             with LogContext(
                 trace_id=new_trace_id(),
                 job_id=job.job_id,
@@ -190,40 +190,39 @@ class DaemonRunner:
                         )
                         return DaemonResult(processed=1)
 
-                    # 反爬拦截（444 / soft block）：清除代理缓存后重试，
-                    # 让下一次 acquire 能选到不同的 IP 节点。
-                    is_anti_bot = (
-                        isinstance(exc, RemoteFetchError)
-                        and (is_http_444_error(exc) or _is_soft_block_error(exc))
-                    )
-                    if is_anti_bot:
-                        cleared = clear_proxy_cache()
-                        if cleared:
-                            LOG.info(
-                                "Cleared %d proxy cache entries after anti-bot block on job %s",
-                                cleared,
-                                job.job_id,
-                            )
-
+                    # HTTP 444：节点级黑名单优先，全部节点都 444 才全局暂停。
                     if isinstance(exc, RemoteFetchError) and is_http_444_error(exc):
-                        if _record_444(conn):
-                            state = activate_remote_access_pause(
-                                conn,
-                                source=f"daemon:{job.job_type}:{job.job_id}",
-                                message=f"Yamibo returned HTTP 444 {_444_THRESHOLD} times within {_444_WINDOW_SECONDS}s. Remote access paused.",
-                                context={"job_id": job.job_id, "job_type": job.job_type, "tid": job.tid, "remote_fetch": exc.details},
-                            )
+                        from yamibo_mcp.yamibo.proxy_pool import bump_retry_hint, get_job_node
+                        node = get_job_node(job.job_id)
+                        paused = handle_http_444(
+                            conn,
+                            source=f"daemon:{job.job_type}:{job.job_id}",
+                            exc=exc,
+                            context={"job_id": job.job_id, "job_type": job.job_type, "tid": job.tid},
+                            node=node,
+                            settings=settings,
+                        )
+                        if paused:
                             repo.finalize_pause(job.job_id)
-                            LOG.warning("Paused remote archive/update jobs after %d consecutive HTTP 444s: %s", _444_THRESHOLD, state)
                         else:
+                            bump_retry_hint(job.job_id)
                             repo.retry_later(
                                 job.job_id,
                                 error_code="HTTP_444",
-                                error_message=f"HTTP 444 from {exc.details.get('url', 'unknown')}; proxy cache cleared, will retry with different node",
+                                error_message=f"HTTP 444 from {exc.details.get('url', 'unknown')} (node={node}); node blacklisted, will retry with different node",
                             )
-                            LOG.warning("HTTP 444 on job %s — will retry with different proxy", job.job_id)
+                            LOG.warning("HTTP 444 on job %s (node=%s) — will retry with different node", job.job_id, node)
                         return DaemonResult(processed=1)
+                    # soft block：清除代理缓存后重试，让下一次 acquire 能选到不同的 IP 节点。
+                    # 444 的清缓存已下沉到 handle_http_444，这里只处理 soft block。
                     if isinstance(exc, RemoteFetchError) and _is_soft_block_error(exc):
+                        cleared = clear_proxy_cache()
+                        if cleared:
+                            LOG.info(
+                                "Cleared %d proxy cache entries after soft-block on job %s",
+                                cleared,
+                                job.job_id,
+                            )
                         repo.retry_later(
                             job.job_id,
                             error_code="REMOTE_SOFT_BLOCK",
@@ -288,6 +287,9 @@ class DaemonRunner:
         except LeaseNotAcquired:
             return DaemonResult(processed=0)
         finally:
+            from yamibo_mcp.yamibo.proxy_pool import clear_job_state
+            if 'job' in locals():
+                clear_job_state(job.job_id)
             conn.close()
 
     def run_forever(self) -> None:
@@ -301,7 +303,16 @@ class DaemonRunner:
                  result="success", status="running")
             try:
                 while not stop_event.is_set():
-                    result = self.run_once()
+                    try:
+                        result = self.run_once()
+                    except Exception:  # noqa: BLE001 - keep daemon alive on transient failures
+                        LOG.exception("Daemon %s crashed outside job handler loop", self.worker_id)
+                        emit(LOG, logging.ERROR, "daemon.worker_crashed",
+                             f"Daemon {self.worker_id} crashed outside job handler loop",
+                             result="failure", status="crashed")
+                        if stop_event.wait(self._worker_poll_seconds()):
+                            break
+                        continue
                     if result.processed == 0:
                         stop_event.wait(self._worker_poll_seconds())
             except KeyboardInterrupt:
@@ -355,11 +366,13 @@ class DaemonRunner:
                  result="success", status="stopped")
 
     def _run_forum_size_cache_loop(self, stop_event: Event) -> None:
-        LOG.info("Forum size cache refresher started")
+        LOG.info("Maintenance loop started (forum size cache + staging cleanup)")
         emit(LOG, logging.INFO, "maintenance.cache_refresh_started",
-             "Forum size cache refresher started",
+             "Maintenance loop started",
              result="success", status="running",
              tags=["maintenance", "cache"])
+        # staging 清理计数：每 12 小时（与 cache 刷新同频）执行一次，
+        # 清理超过 48 小时的残留目录，防止异常/崩溃后遗留的临时数据堆积。
         while not stop_event.is_set():
             try:
                 refresh_forum_size_cache(self.settings)
@@ -369,5 +382,11 @@ class DaemonRunner:
                      "Failed to refresh forum size cache",
                      result="failure", status="error",
                      tags=["maintenance", "cache"])
+            try:
+                paths = StoragePaths(self.settings.data_dir)
+                older_than = getattr(self.settings, "cleanup_staging_older_than_hours", 48)
+                cleanup_stale_staging(paths, older_than_hours=older_than)
+            except Exception:  # noqa: BLE001 - background maintenance should not stop the daemon
+                LOG.debug("Staging cleanup skipped", exc_info=True)
             if stop_event.wait(FORUM_SIZE_CACHE_REFRESH_SECONDS):
                 break

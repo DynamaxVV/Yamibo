@@ -55,6 +55,13 @@ class WebHandler(BaseHTTPRequestHandler):
             return
         self._send_text("Not found", HTTPStatus.NOT_FOUND)
 
+    def do_DELETE(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/"):
+            handle_api(self, parsed.path, parsed.query, self.settings)
+            return
+        self._send_text("Not found", HTTPStatus.NOT_FOUND)
+
     def log_message(self, format: str, *args) -> None:  # noqa: A003
         return
 

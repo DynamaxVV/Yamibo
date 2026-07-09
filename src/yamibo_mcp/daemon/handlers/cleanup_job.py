@@ -1,18 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 import shutil
-from pathlib import Path
 
 from yamibo_mcp.config import Settings
 from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.domain.models import Job
 from yamibo_mcp.storage.paths import StoragePaths
-
-
-def _older_than(path: Path, *, hours: int) -> bool:
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
-    return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc) < cutoff
+from yamibo_mcp.storage.staging import cleanup_stale_staging
 
 
 def handle_cleanup_job(repo: JobsRepository, job: Job, worker_id: str, lease_seconds: int, settings: Settings) -> None:
@@ -43,20 +37,13 @@ def handle_cleanup_job(repo: JobsRepository, job: Job, worker_id: str, lease_sec
 
     if mode == "stale_staging":
         older_than_hours = int(job.payload.get("older_than_hours") or settings.cleanup_staging_older_than_hours)
-        staging_root = settings.data_dir / "staging" / "jobs"
-        removed_dirs: list[str] = []
-        if staging_root.exists():
-            for child in staging_root.iterdir():
-                if child.is_dir() and _older_than(child, hours=older_than_hours):
-                    shutil.rmtree(child)
-                    removed_dirs.append(str(child))
+        removed = cleanup_stale_staging(paths, older_than_hours=older_than_hours)
         repo.succeed(
             job.job_id,
             {
                 "mode": mode,
                 "older_than_hours": older_than_hours,
-                "removed_count": len(removed_dirs),
-                "removed_dirs": removed_dirs[:100],
+                "removed_count": removed,
             },
         )
         return

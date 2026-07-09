@@ -30,79 +30,101 @@ class RagChunk:
     text: str
     text_hash: str
     source_uri: str
+    source_tid: int
+    source_pid: int | None
+    source_floor_no: int | None
+    cleaner_version: str
+    chunker_version: str
+    materializer_version: str
+    source_hash: str
+    generated_at: str
+    quality_flags: list[str]
 
 
-def build_rag_chunks(
-    *,
-    thread_row,
-    title_row,
-    floor_rows: list,
-    settings: Settings,
-) -> list[RagChunk]:
+def build_rag_chunks(*, thread_row, title_row, floor_rows: list, settings: Settings) -> list[RagChunk]:
+    from yamibo_mcp.rag.anime_dry_run import build_anime_dry_run_thread
+
+    result = build_anime_dry_run_thread(thread_row=thread_row, floor_rows=floor_rows, structured_cleaning=True)
     tid = int(thread_row["tid"])
-    content_kind = thread_row["content_kind"]
-    metadata_text = _thread_metadata_text(thread_row, title_row)
-    title_text = (thread_row["display_title"] or thread_row["raw_title"] or "").strip()
-
     chunks: list[RagChunk] = []
-    if title_text:
+    for chunk in result.chunks:
         chunks.append(
-            _make_chunk(
-                chunk_id=f"thread:{tid}:title",
+            RagChunk(
+                chunk_id=chunk.chunk_id,
+                tid=chunk.tid,
+                pid=chunk.pid,
+                floor_no=chunk.floor_no,
+                chunk_type=chunk.chunk_type,
+                forum_id=thread_row["forum_id"],
+                content_kind=thread_row["content_kind"],
+                series_id=thread_row["series_id"],
+                series_key=title_row["series_key"] if title_row else None,
+                chapter_index=title_row["chapter_index"] if title_row else None,
+                publisher=thread_row.get("publisher"),
+                pub_time=thread_row.get("pub_time"),
+                title=thread_row.get("display_title") or thread_row.get("raw_title"),
+                metadata_text="",
+                text=chunk.text,
+                text_hash=chunk.chunk_id,
+                source_uri=thread_summary_uri(tid) if chunk.floor_no is None else f"{thread_posts_uri(tid)}#floor={chunk.floor_no}",
+                source_tid=tid,
+                source_pid=chunk.pid,
+                source_floor_no=chunk.floor_no,
+                cleaner_version="anime-cleaner-1.2",
+                chunker_version="anime-chunker-1.2",
+                materializer_version="anime-rag-materializer-1.2",
+                source_hash=getattr(result, "source_hash", ""),
+                generated_at=getattr(result, "generated_at", ""),
+                quality_flags=list(chunk.clean_rules),
+            )
+        )
+    return chunks
+
+
+def build_rag_chunks_from_preview_rows(*, thread_row, title_row, preview_rows: list[dict]) -> list[RagChunk]:
+    tid = int(thread_row["tid"])
+    title = thread_row.get("display_title") or thread_row.get("raw_title")
+    series_key = title_row.get("series_key") if title_row else None
+    chapter_index = title_row.get("chapter_index") if title_row else None
+    chunks: list[RagChunk] = []
+    for row in preview_rows:
+        floor_no = row.get("floor_no")
+        source_floor_no = row.get("source_floor_no", floor_no)
+        pid = row.get("pid")
+        source_pid = row.get("source_pid", pid)
+        materializer_version = str(row.get("materializer_version") or "1.2")
+        if not materializer_version.startswith("anime-rag-materializer-"):
+            materializer_version = f"anime-rag-materializer-{materializer_version}"
+        chunks.append(
+            RagChunk(
+                chunk_id=str(row["chunk_id"]),
                 tid=tid,
-                pid=None,
-                floor_no=None,
-                chunk_type="thread_title",
-                thread_row=thread_row,
-                title_row=title_row,
-                publisher=thread_row["publisher"],
-                pub_time=thread_row["pub_time"],
-                title=title_text,
-                metadata_text=metadata_text,
-                text=title_text,
-                source_uri=thread_summary_uri(tid),
+                pid=None if pid is None else int(pid),
+                floor_no=None if floor_no is None else int(floor_no),
+                chunk_type=str(row.get("chunk_type") or "floor"),
+                forum_id=thread_row["forum_id"],
+                content_kind=thread_row["content_kind"],
+                series_id=thread_row["series_id"],
+                series_key=series_key,
+                chapter_index=chapter_index,
+                publisher=thread_row.get("publisher"),
+                pub_time=thread_row.get("pub_time"),
+                title=title,
+                metadata_text="",
+                text=str(row.get("text") or ""),
+                text_hash=str(row.get("chunk_id") or ""),
+                source_uri=thread_summary_uri(tid) if source_floor_no is None else f"{thread_posts_uri(tid)}#floor={source_floor_no}",
+                source_tid=int(row.get("source_tid") or tid),
+                source_pid=None if source_pid is None else int(source_pid),
+                source_floor_no=None if source_floor_no is None else int(source_floor_no),
+                cleaner_version=str(row.get("cleaner_version") or "anime-cleaner-1.2"),
+                chunker_version=str(row.get("chunker_version") or "anime-chunker-1.2"),
+                materializer_version=materializer_version,
+                source_hash=str(row.get("source_hash") or ""),
+                generated_at=str(row.get("generated_at") or ""),
+                quality_flags=[str(flag) for flag in (row.get("quality_flags") or [])],
             )
         )
-
-    for floor_row in floor_rows:
-        floor_text = (floor_row["content"] or "").strip()
-        if not floor_text:
-            continue
-        floor_metadata = metadata_text
-        if floor_row["quote_text"]:
-            floor_metadata = f"{floor_metadata}\n引用: {floor_row['quote_text']}".strip()
-        if floor_row["reply_text"]:
-            floor_metadata = f"{floor_metadata}\n回复: {floor_row['reply_text']}".strip()
-
-        floor_no = int(floor_row["floor_no"])
-        pid = int(floor_row["pid"])
-        source_uri = f"{thread_posts_uri(tid)}#floor={floor_no}"
-
-        parts = split_text_for_embedding(
-            floor_text,
-            max_chunk_chars=settings.rag_max_chunk_chars,
-        )
-
-        for part_index, part in enumerate(parts, start=1):
-            if len(part.strip()) < settings.rag_min_chunk_chars:
-                continue
-            chunks.append(
-                _make_chunk(
-                    chunk_id=f"thread:{tid}:floor:{floor_no}:part:{part_index}",
-                    tid=tid,
-                    pid=pid,
-                    floor_no=floor_no,
-                    chunk_type="floor",
-                    thread_row=thread_row,
-                    title_row=title_row,
-                    publisher=floor_row["publisher"],
-                    pub_time=floor_row["pub_time"],
-                    title=title_text,
-                    metadata_text=floor_metadata,
-                    text=part.strip(),
-                    source_uri=source_uri,
-                )
-            )
     return chunks
 
 
@@ -214,4 +236,13 @@ def _make_chunk(
         text=text,
         text_hash=text_hash,
         source_uri=source_uri,
+        source_tid=tid,
+        source_pid=pid,
+        source_floor_no=floor_no,
+        cleaner_version="anime-cleaner-1.2",
+        chunker_version="anime-chunker-1.2",
+        materializer_version="anime-rag-materializer-1.2",
+        source_hash="",
+        generated_at="",
+        quality_flags=[],
     )

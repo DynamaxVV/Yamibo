@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { api, type ThreadSummary, type SeriesSummary } from '../api/client'
 import { Badge } from '../components/Badge'
 import { useI18n } from '../context/I18nContext'
+import { formatThreadListTitle } from '../utils/threadTitle'
 
 export function Exports() {
   const { t } = useI18n()
@@ -14,12 +15,17 @@ export function Exports() {
       <thead><tr><th>{t('tid')}</th><th>{t('title')}</th><th>{t('archive_status')}</th><th>{t('export_path')}</th></tr></thead>
       <tbody>
         {exports.map(t_ => (
+          (() => {
+            const titleText = formatThreadListTitle(t_)
+            return (
           <tr key={t_.tid}>
             <td className="mono"><Link to={`/threads/${t_.tid}`}>{t_.tid}</Link></td>
-            <td className="truncate" title={t_.display_title || t_.raw_title || ''}><Link to={`/threads/${t_.tid}`}>{t_.display_title || t_.raw_title}</Link></td>
+            <td className="truncate" title={titleText}><Link to={`/threads/${t_.tid}`}>{titleText}</Link></td>
             <td><Badge status={t_.archive_status} /></td>
             <td className="truncate" title={t_.export_path || ''}>{t_.export_path || '-'}</td>
           </tr>
+            )
+          })()
         ))}
       </tbody>
     </table></div>
@@ -90,6 +96,7 @@ export function SeriesDetail() {
   const navigate = useNavigate()
   const [data, setData] = useState<{ series: SeriesSummary; threads: ThreadSummary[] } | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [loading, setLoading] = useState<string | null>(null)
   const [mergeTargetId, setMergeTargetId] = useState('')
@@ -103,45 +110,67 @@ export function SeriesDetail() {
   }, [id])
 
   const handleDelete = async () => {
+    setActionError(null)
     if (!confirmDelete) { setConfirmDelete(true); return }
     setLoading('delete')
     try {
       await api.deleteSeries(id)
       navigate('/series')
-    } catch { /* ignore */ }
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : String(e))
+    }
     setLoading(null)
     setConfirmDelete(false)
   }
 
   const handleMerge = async () => {
-    if (!mergeTargetId.trim()) return
-    const targetId = parseInt(mergeTargetId)
-    if (isNaN(targetId) || targetId === id) return
+    setActionError(null)
+    if (!mergeTargetId.trim()) {
+      setActionError(t('target_id'))
+      return
+    }
+    const targetId = parseInt(mergeTargetId, 10)
+    if (isNaN(targetId)) {
+      setActionError(`${t('target_id')} invalid`)
+      return
+    }
+    if (targetId === id) {
+      setActionError('source and target series must differ')
+      return
+    }
     setLoading('merge')
     try {
       const detail = await api.seriesDetail(targetId)
       setMergeTargetInfo(detail.series)
       setConfirmMerge(true)
-    } catch {
+    } catch (e) {
       setMergeTargetInfo(null)
-      setConfirmMerge(true)
+      setConfirmMerge(false)
+      setActionError(e instanceof Error ? e.message : String(e))
     }
     setLoading(null)
   }
 
   const executeMerge = async () => {
-    const targetId = parseInt(mergeTargetId)
-    if (isNaN(targetId)) return
+    setActionError(null)
+    const targetId = parseInt(mergeTargetId, 10)
+    if (isNaN(targetId)) {
+      setActionError(`${t('target_id')} invalid`)
+      return
+    }
     setLoading('merge')
     try {
       await api.mergeSeries(id, targetId)
       navigate(`/series/${targetId}`)
-    } catch { /* ignore */ }
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : String(e))
+    }
     setLoading(null)
     setConfirmMerge(false)
   }
 
   const handleEdit = () => {
+    setActionError(null)
     setEditForm({
       series_key: data?.series.series_key || '',
       author_guess: data?.series.author_guess || '',
@@ -151,12 +180,15 @@ export function SeriesDetail() {
 
   const handleSaveEdit = async () => {
     setLoading('edit')
+    setActionError(null)
     try {
       await api.updateSeries({ series_id: id, ...editForm })
       const refreshed = await api.seriesDetail(id)
       setData(refreshed)
       setEditing(false)
-    } catch { /* ignore */ }
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : String(e))
+    }
     setLoading(null)
   }
 
@@ -189,6 +221,7 @@ export function SeriesDetail() {
           )}
           {!isEmpty && <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{t('only_empty_deletable')}</span>}
         </div>
+        {actionError && <div className="inline-edit-error" style={{ marginTop: 10 }}>{actionError}</div>}
       </div>
 
       <h2 style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -226,12 +259,17 @@ export function SeriesDetail() {
         <thead><tr><th>{t('tid')}</th><th>{t('title')}</th><th>{t('chapter')}</th><th>{t('archive')}</th></tr></thead>
         <tbody>
           {data.threads.map(t_ => (
+            (() => {
+              const titleText = formatThreadListTitle(t_)
+              return (
             <tr key={t_.tid}>
               <td className="mono"><Link to={`/threads/${t_.tid}`} state={{ from: 'series', seriesId: id }}>{t_.tid}</Link></td>
-              <td className="truncate" title={t_.display_title || t_.raw_title || ''}><Link to={`/threads/${t_.tid}`} state={{ from: 'series', seriesId: id }}>{t_.display_title || t_.raw_title}</Link></td>
+              <td className="truncate" title={titleText}><Link to={`/threads/${t_.tid}`} state={{ from: 'series', seriesId: id }}>{titleText}</Link></td>
               <td>{t_.chapter_name || '-'}</td>
               <td><Badge status={t_.archive_status} /></td>
             </tr>
+              )
+            })()
           ))}
         </tbody>
       </table></div>

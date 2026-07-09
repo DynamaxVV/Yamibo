@@ -7,11 +7,21 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
+from sqlalchemy.engine import make_url
+
 from yamibo_mcp.config import load_settings
 
 
 def _timestamp() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+def _pg_dump_connection_arg(db_url: str) -> str:
+    url = make_url(db_url)
+    drivername = url.drivername
+    if drivername.startswith("postgresql+"):
+        url = url.set(drivername="postgresql")
+    return url.render_as_string(hide_password=False)
 
 
 def backup_database(*, backend: str, db_path: Path, db_url: str | None, dest_dir: Path, keep_count: int) -> Path:
@@ -20,7 +30,10 @@ def backup_database(*, backend: str, db_path: Path, db_url: str | None, dest_dir
         if not db_url:
             raise ValueError("db_url is required when backing up a PostgreSQL database")
         backup_path = dest_dir / f"forum_{_timestamp()}.pgdump"
-        subprocess.run(["pg_dump", "--format=custom", "--file", str(backup_path), db_url], check=True)
+        subprocess.run(
+            ["pg_dump", "--format=custom", "--file", str(backup_path), _pg_dump_connection_arg(db_url)],
+            check=True,
+        )
         pattern = "forum_*.pgdump"
     else:
         backup_path = dest_dir / f"forum_{_timestamp()}.sqlite3"

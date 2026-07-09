@@ -1,0 +1,44 @@
+.git
+.venv
+venv
+__pycache__
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+htmlcov
+*.pyc
+*.pyo
+*.pyd
+*.db
+*.sqlite
+*.sqlite3
+.DS_Store
+
+# Local runtime data and secrets
+data
+postgres-data
+.cookie
+*.cookie
+yamibo.local.json
+.env
+.env.*
+!.env.example
+!.env.docker.example
+
+# Local agent/editor state
+.omc
+.mimocode
+.tokensave
+.understand-anything
+.serena
+.vscode
+.idea
+
+# Frontend local build/dependency caches
+frontend/node_modules
+frontend/dist
+
+# Misc local artifacts
+empty_ai_summary_files.txt
+iTerm2

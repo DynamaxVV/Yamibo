@@ -8,7 +8,9 @@ import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from dataclasses import dataclass, field
+from collections.abc import Iterator
 
 from yamibo_mcp.config import Settings
 
@@ -61,6 +63,8 @@ LOG = logging.getLogger(__name__)
 _CACHE_TTL_SECONDS = 30.0
 _cache: dict[tuple[str, str], tuple[list[tuple[str, int]], float]] = {}
 _cache_lock = threading.Lock()
+_selector_locks: dict[tuple[str, str], threading.Lock] = {}
+_selector_locks_lock = threading.Lock()
 
 
 def _cache_key(controller_url: str, selector_group: str) -> tuple[str, str]:
@@ -90,6 +94,132 @@ def clear_proxy_cache() -> int:
         count = len(_cache)
         _cache.clear()
         return count
+
+
+def _selector_lock_for(key: tuple[str, str]) -> threading.Lock:
+    with _selector_locks_lock:
+        lock = _selector_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _selector_locks[key] = lock
+        return lock
+
+
+# --- 节点级 444 黑名单 ---
+# 单个节点被 444 后临时拉黑（TTL 到期自动恢复），避免反复撞同一节点。
+# 全部可用节点都在黑名单时，由 anti_bot.handle_http_444 触发全局暂停。
+# daemon 单 worker 串行处理 job，以下 dict 无需额外加锁。
+
+_NODE_BLACKLIST_TTL_SECONDS = 300.0  # 5 分钟
+_node_blacklist: dict[str, float] = {}  # node -> 过期 monotonic 时间戳
+_current_node_by_job: dict[str, str] = {}  # job_id -> 最近选定的 node
+_retry_hint_by_job: dict[str, int] = {}  # job_id -> 444 重试计数
+
+
+def _prune_blacklist() -> None:
+    """删除已过期的黑名单条目。"""
+    now = time.monotonic()
+    expired = [n for n, exp in _node_blacklist.items() if exp <= now]
+    for n in expired:
+        del _node_blacklist[n]
+
+
+def mark_node_444(node: str | None) -> None:
+    """把节点加入 444 黑名单。node 为 None 时无操作。"""
+    if not node:
+        return
+    _node_blacklist[node] = time.monotonic() + _NODE_BLACKLIST_TTL_SECONDS
+    LOG.info("mihomo: node %s blacklisted for %.0fs after HTTP 444", node, _NODE_BLACKLIST_TTL_SECONDS)
+
+
+def clear_node_blacklist() -> int:
+    """清空节点黑名单，返回清除条目数。测试用。"""
+    count = len(_node_blacklist)
+    _node_blacklist.clear()
+    return count
+
+
+def get_blacklisted_nodes() -> list[str]:
+    """返回当前黑名单中的节点名（已剪掉过期项）。"""
+    _prune_blacklist()
+    return list(_node_blacklist.keys())
+
+
+def all_nodes_blacklisted(settings) -> bool:
+    """是否所有可用节点都在黑名单中（即没有可用节点了）。
+
+    重新发现节点 + delay test（绕过缓存）以拿到当前可用集合，再与黑名单求差。
+    无可用节点配置时返回 False（让全局阈值逻辑兜底）。
+    """
+    if not _check_enabled(settings):
+        return False
+    _prune_blacklist()
+    if not _node_blacklist:
+        return False
+    cfg = settings.proxy_pool
+    client = MihomoControllerClient(
+        controller_url=cfg.controller_url,
+        secret=cfg.secret,
+        selector_group=cfg.selector_group,
+        test_url=cfg.test_url,
+        test_timeout_ms=cfg.test_timeout_ms,
+    )
+    nodes = client.discover_nodes()
+    if not nodes:
+        return False
+    usable = client.test_all_nodes_parallel(nodes)
+    usable = _filter_nodes(
+        usable,
+        allowed_patterns=cfg.allowed_patterns,
+        denied_patterns=cfg.denied_patterns,
+        max_delay_ms=cfg.max_delay_ms,
+    )
+    if not usable:
+        return True  # 没有可用节点 ≡ 全黑名单
+    usable_names = {name for name, _ in usable}
+    return usable_names.issubset(_node_blacklist.keys())
+
+
+def record_job_node(job_id: str | None, node: str | None) -> None:
+    """记录某 job 当前选定的 node，供 444 时反查。"""
+    if job_id is None:
+        return
+    if node is None:
+        _current_node_by_job.pop(job_id, None)
+    else:
+        _current_node_by_job[job_id] = node
+
+
+def get_job_node(job_id: str | None) -> str | None:
+    """取某 job 最近选定的 node。"""
+    if job_id is None:
+        return None
+    return _current_node_by_job.get(job_id)
+
+
+def bump_retry_hint(job_id: str | None) -> int:
+    """自增并返回某 job 的 444 重试计数。"""
+    if job_id is None:
+        return 0
+    current = _retry_hint_by_job.get(job_id, 0) + 1
+    _retry_hint_by_job[job_id] = current
+    return current
+
+
+def get_retry_hint(job_id: str | None) -> int:
+    """取某 job 的 444 重试计数（默认 0）。"""
+    if job_id is None:
+        return 0
+    return _retry_hint_by_job.get(job_id, 0)
+
+
+def clear_job_state(job_id: str | None) -> None:
+    """清掉某 job 的 node/retry_hint 状态。job 终态时调用。"""
+    if job_id is None:
+        return
+    _current_node_by_job.pop(job_id, None)
+    _retry_hint_by_job.pop(job_id, None)
+
 
 
 def _filter_nodes(
@@ -267,10 +397,18 @@ def select_thread_proxy(
     settings: Settings,
     tid: int,
     job_id: str | None = None,
+    retry_hint: int | None = None,
 ) -> ProxyBinding | None:
+    """选择线程代理节点。
+
+    retry_hint 为 None 时，自动从 _retry_hint_by_job 取（444 重试时 runner 会
+    bump 该计数），让同一 tid 在重试时换到不同节点。
+    """
     if not _check_enabled(settings):
         return None
 
+    if retry_hint is None:
+        retry_hint = get_retry_hint(job_id)
     cfg = settings.proxy_pool
     key = _cache_key(cfg.controller_url, cfg.selector_group)
     cached = _cache_get(key)
@@ -309,23 +447,32 @@ def select_thread_proxy(
         _cache_set(key, usable)
         from_cache = False
 
-    idx = hash(tid) % len(usable)
-    selected_node, selected_delay = usable[idx]
+    # 过滤 444 黑名单节点
+    _prune_blacklist()
+    if _node_blacklist:
+        usable = [(n, d) for n, d in usable if n not in _node_blacklist]
+        if not usable:
+            LOG.warning("mihomo: all usable nodes blacklisted after 444 filtering for job %s", job_id)
+            record_job_node(job_id, None)
+            return None
 
-    # Only call select_node if cache was stale (avoid unnecessary PUTs)
-    if not from_cache:
-        client = MihomoControllerClient(
-            controller_url=cfg.controller_url,
-            secret=cfg.secret,
-            selector_group=cfg.selector_group,
-            test_url=cfg.test_url,
-            test_timeout_ms=cfg.test_timeout_ms,
-        )
-        try:
+    idx = hash((tid, retry_hint)) % len(usable)
+    selected_node, selected_delay = usable[idx]
+    record_job_node(job_id, selected_node)
+
+    client = MihomoControllerClient(
+        controller_url=cfg.controller_url,
+        secret=cfg.secret,
+        selector_group=cfg.selector_group,
+        test_url=cfg.test_url,
+        test_timeout_ms=cfg.test_timeout_ms,
+    )
+    try:
+        with _selector_lock_for(key):
             client.select_node(selected_node)
-        except Exception:
-            LOG.warning("mihomo: failed to select node %s", selected_node, exc_info=True)
-            # Still return binding — proxy may already be on this node
+    except Exception:
+        LOG.warning("mihomo: failed to select node %s", selected_node, exc_info=True)
+        # Still return binding — proxy may already be on this node
 
     return ProxyBinding(
         group=cfg.selector_group,
@@ -336,8 +483,40 @@ def select_thread_proxy(
             "delay_ms": selected_delay,
             "candidates": len(usable),
             "from_cache": from_cache,
+            "retry_hint": retry_hint,
         },
     )
+
+
+@contextmanager
+def activate_proxy_binding(settings: Settings, binding: ProxyBinding | None) -> Iterator[ProxyBinding | None]:
+    """Hold the Mihomo selector on one node for a job's full remote request span.
+
+    Mihomo selectors are process-external global state. Without holding this lock,
+    concurrent workers can switch the selector between pages of the same thread.
+    """
+    if binding is None or not _check_enabled(settings):
+        yield binding
+        return
+    cfg = settings.proxy_pool
+    key = _cache_key(cfg.controller_url, cfg.selector_group)
+    lock = _selector_lock_for(key)
+    lock.acquire()
+    try:
+        client = MihomoControllerClient(
+            controller_url=cfg.controller_url,
+            secret=cfg.secret,
+            selector_group=cfg.selector_group,
+            test_url=cfg.test_url,
+            test_timeout_ms=cfg.test_timeout_ms,
+        )
+        try:
+            client.select_node(binding.node)
+        except Exception:
+            LOG.warning("mihomo: failed to activate held node %s", binding.node, exc_info=True)
+        yield binding
+    finally:
+        lock.release()
 
 
 def check_proxy_pool_health(settings: Settings) -> dict:
@@ -500,6 +679,14 @@ def select_random_proxy(settings: Settings) -> ProxyBinding | None:
             return None
         _cache_set(key, usable)
 
+    # 过滤 444 黑名单节点（非线程动作也跳过被拉黑的节点）
+    _prune_blacklist()
+    if _node_blacklist:
+        usable = [(n, d) for n, d in usable if n not in _node_blacklist]
+        if not usable:
+            LOG.warning("mihomo: all usable nodes blacklisted (random select)")
+            return None
+
     selected_node = random.choice(usable)[0]
 
     client = MihomoControllerClient(
@@ -510,7 +697,8 @@ def select_random_proxy(settings: Settings) -> ProxyBinding | None:
         test_timeout_ms=cfg.test_timeout_ms,
     )
     try:
-        client.select_node(selected_node)
+        with _selector_lock_for(key):
+            client.select_node(selected_node)
     except Exception:
         LOG.warning("mihomo: failed to select node for random proxy %s", selected_node, exc_info=True)
 

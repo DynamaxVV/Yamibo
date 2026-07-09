@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ipaddress
 import re
+import urllib.parse
 import urllib.request
 from contextlib import contextmanager
 
@@ -22,7 +24,8 @@ from yamibo_mcp.web_fastapi.deps import get_conn, get_settings
 from yamibo_mcp.yamibo.account_pool import borrow_yamibo_client, has_configured_account_pool
 from yamibo_mcp.yamibo.client import YamiboClient
 from yamibo_mcp.yamibo.parsers.forum_list import ForumThreadItem, extract_total_pages
-from yamibo_mcp.yamibo.parsers.thread_detail import parse_thread_snapshot
+from yamibo_mcp.yamibo.parsers.thread_detail import parse_thread_detail, parse_thread_snapshot
+from yamibo_mcp.yamibo.title.parser import parse_title
 from yamibo_mcp.yamibo.urls import thread_url_from_tid, thread_page_url_from_tid
 
 router = APIRouter(prefix="/api", tags=["remote_forum"])
@@ -31,6 +34,23 @@ _THREAD_URL_RE = re.compile(
     r'(https?://bbs\.yamibo\.com/(?:forum\.php\?mod=viewthread&tid=(\d+)[^"\'>\s]*|thread-(\d+)-[\d-]+\.html))',
     re.IGNORECASE,
 )
+
+
+def _is_allowed_remote_image_url(raw_url: str) -> bool:
+    try:
+        parsed = urllib.parse.urlparse(raw_url)
+    except ValueError:
+        return False
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return False
+    host = parsed.hostname.strip().lower()
+    if host in {"localhost", "localhost.localdomain"} or host.endswith(".local"):
+        return False
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return True
+    return not (ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified)
 
 
 def _open_web_client(settings):
@@ -118,12 +138,18 @@ def _enrich_items(items: list[dict], conn) -> list[dict]:
     return items
 
 
-def _forum_thread_item_to_dict(item: ForumThreadItem, base_url: str) -> dict:
+def _forum_thread_item_to_dict(item: ForumThreadItem, base_url: str, *, content_kind: str | None = None) -> dict:
+    parsed_title = parse_title(item.title)
     return {
         "tid": item.tid, "title": item.title, "display_title": item.title,
         "category": item.category, "row_kind": item.row_kind,
         "publisher": item.publisher, "posted_at": item.posted_at,
         "last_reply_at": item.last_reply_at, "reply_count": item.reply_count,
+        "content_kind": content_kind,
+        "core_title_guess": parsed_title.core_title_guess,
+        "chapter_name": parsed_title.chapter_name,
+        "author_guess": parsed_title.author_guess,
+        "group_name": parsed_title.group_name,
         "url": thread_url_from_tid(item.tid, base_url=base_url),
     }
 
@@ -172,7 +198,7 @@ def remote_forum_browse(
         raise HTTPException(status_code=status, detail={"error": message, "code": code})
 
     item_dicts = [
-        _forum_thread_item_to_dict(item, base_url)
+        _forum_thread_item_to_dict(item, base_url, content_kind=forum["content_kind"] if "content_kind" in forum.keys() else None)
         for item in items
         if not item.is_sticky and (item.category or "").strip() != "公告"
     ]
@@ -207,6 +233,16 @@ def remote_thread_detail(
         status, code, message = _map_remote_error(exc)
         raise HTTPException(status_code=status, detail={"error": message, "code": code})
 
+    try:
+        detail_summary = parse_thread_detail(result.html, base_url=result.final_url)
+    except Exception:
+        detail_summary = None
+
+    display_image_urls_by_pid = {
+        floor.pid: list(floor.image_urls or [])
+        for floor in (detail_summary.floors if detail_summary is not None else [])
+    }
+
     repo = ThreadsRepository(conn)
     local_row = repo.get_thread(tid)
 
@@ -222,7 +258,7 @@ def remote_thread_detail(
     for floor in snapshot.floors:
         image_slots = [
             {"remote_url": url, "local_path": None, "status": "remote"}
-            for url in (floor.image_urls or [])
+            for url in display_image_urls_by_pid.get(floor.pid, floor.image_urls or [])
         ]
         floors.append({
             "pid": floor.pid, "floor_no": floor.floor_no,
@@ -255,9 +291,8 @@ def remote_image_proxy(
     if not url:
         raise HTTPException(status_code=400, detail="url required")
 
-    parsed = urllib.parse.urlparse(url)
-    if not parsed.netloc or "yamibo.com" not in parsed.netloc:
-        raise HTTPException(status_code=400, detail="only yamibo URLs are supported")
+    if not _is_allowed_remote_image_url(url):
+        raise HTTPException(status_code=400, detail="only public http(s) image URLs are supported")
 
     try:
         with _open_web_client(settings) as (_identity, client):

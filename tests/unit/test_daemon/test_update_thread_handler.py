@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from yamibo_mcp.errors import ThreadPermissionRequiredError
+from yamibo_mcp.errors import LoginRequiredError, ThreadPermissionRequiredError
 from yamibo_mcp.daemon.handlers.update_thread import handle_update_thread
 from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
@@ -125,7 +125,7 @@ def test_handle_update_thread_appends_new_floor(db, tmp_path, monkeypatch):
     new_page = _make_snapshot(tid=540745, content="新增章节", floor_no=2, pid=1002)
     monkeypatch.setattr(
         "yamibo_mcp.daemon.handlers.update_thread.check_thread_updates",
-        lambda tid, base_url=None: {
+        lambda tid, base_url=None, proxy_url=None: {
             "tid": tid,
             "status": "updated",
             "reason": "remote author-only snapshot differs from local archive",
@@ -192,7 +192,7 @@ def test_handle_update_thread_refuses_tail_mismatch(db, tmp_path, monkeypatch):
 
     monkeypatch.setattr(
         "yamibo_mcp.daemon.handlers.update_thread.check_thread_updates",
-        lambda tid, base_url=None: {
+        lambda tid, base_url=None, proxy_url=None: {
             "tid": tid,
             "status": "updated",
             "reason": "remote author-only snapshot differs from local archive",
@@ -248,7 +248,7 @@ def test_handle_update_thread_retries_permission_gate_with_next_threshold(db, tm
     new_page = _make_snapshot(tid=540745, content="新增章节", floor_no=2, pid=1002)
     monkeypatch.setattr(
         "yamibo_mcp.daemon.handlers.update_thread.check_thread_updates",
-        lambda tid, base_url=None: {
+        lambda tid, base_url=None, proxy_url=None: {
             "tid": tid,
             "status": "updated",
             "reason": "remote author-only snapshot differs from local archive",
@@ -278,11 +278,13 @@ def test_handle_update_thread_retries_permission_gate_with_next_threshold(db, tm
     calls: list[int | None] = []
 
     class _BorrowContext:
-        def __init__(self, fail: bool) -> None:
-            self.fail = fail
+        def __init__(self, mode: str) -> None:
+            self.mode = mode
 
         def __enter__(self):
-            if self.fail:
+            if self.mode == "login_required":
+                raise LoginRequiredError("please login first")
+            if self.mode == "permission_required":
                 raise ThreadPermissionRequiredError(
                     "thread requires read permission above 10 for https://bbs.yamibo.com/forum.php?mod=viewthread&tid=540745",
                     required_permission=10,
@@ -308,11 +310,12 @@ def test_handle_update_thread_retries_permission_gate_with_next_threshold(db, tm
 
     def fake_borrow(settings_arg, *, min_permission=None, prefer_high_permission=False, cookie_file=None, proxy_url=None):
         calls.append(min_permission)
-        return _BorrowContext(fail=len(calls) == 1)
+        mode = "login_required" if len(calls) == 1 else "ok"
+        return _BorrowContext(mode=mode)
 
     monkeypatch.setattr("yamibo_mcp.daemon.handlers.update_thread.has_configured_account_pool", lambda settings: True)
     monkeypatch.setattr("yamibo_mcp.daemon.handlers.update_thread.borrow_yamibo_client", fake_borrow)
 
     handle_update_thread(repo, job, "worker-1", 300, settings)
 
-    assert calls == [None, 10]
+    assert calls == [None, 1]

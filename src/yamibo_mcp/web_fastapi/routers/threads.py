@@ -13,6 +13,7 @@ from yamibo_mcp.db.repositories.rag_chunks import RagChunksRepository
 from yamibo_mcp.db.repositories.series import SeriesRepository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
 from yamibo_mcp.application.archive_commands import create_thread_archive_batch_jobs
+from yamibo_mcp.application.update_commands import create_update_thread_job
 from yamibo_mcp.application.update_queries import check_thread_updates
 from yamibo_mcp.maintenance.cleanup_data import remove_thread_dir
 from yamibo_mcp.server.agent_adapter import to_wire
@@ -282,11 +283,12 @@ def update_thread(body: dict, conn: DatabaseConnection = Depends(get_conn)):
     tid = body.get("tid")
     if not tid:
         raise HTTPException(status_code=400, detail="tid required")
-    payload = {"tid": int(tid)}
-    if body.get("base_url"):
-        payload["base_url"] = body["base_url"]
-    job = JobsRepository(conn).create("update_thread", tid=int(tid), payload=payload)
-    return {"ok": True, "job_id": job.job_id}
+    base_url = body.get("base_url") or None
+    try:
+        result = create_update_thread_job(tid=int(tid), base_url=base_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"ok": True, "job_id": result["job_id"], "created": result.get("created", True)}
 
 
 @router.post("/threads/export")

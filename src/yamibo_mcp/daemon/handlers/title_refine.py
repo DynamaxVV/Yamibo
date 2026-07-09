@@ -69,7 +69,7 @@ def _write_series_artifacts(settings) -> dict[str, object]:
     index_path = paths.series_index()
     index_path.parent.mkdir(parents=True, exist_ok=True)
 
-    conn = connect(settings.db_path)
+    conn = connect(settings.db_path, pool_role="daemon")
     try:
         repo = SeriesRepository(conn)
         series_rows = repo.list_series(limit=10000)

@@ -3,18 +3,127 @@ services:
     image: pgvector/pgvector:pg15
     container_name: yamibo-postgres
     environment:
-      POSTGRES_DB: yamibo
-      POSTGRES_USER: yamibo
-      POSTGRES_PASSWORD: yamibo
+      POSTGRES_DB: ${POSTGRES_DB:-yamibo}
+      POSTGRES_USER: ${POSTGRES_USER:-yamibo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-yamibo}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
-      - yamibo_postgres_data:/var/lib/postgresql/data
+      - ${YAMIBO_POSTGRES_DATA:-yamibo_postgres_data}:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U yamibo -d yamibo"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-yamibo} -d ${POSTGRES_DB:-yamibo}"]
       interval: 5s
       timeout: 5s
       retries: 10
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  yamibo:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.12-slim}
+    container_name: yamibo-app
+    environment:
+      YAMIBO_DATA_DIR: /app/data
+      YAMIBO_CONFIG_PATH: /app/data/yamibo.local.json
+      YAMIBO_ALEMBIC_SCRIPT_LOCATION: /app/alembic
+      YAMIBO_COOKIE_FILE: /app/data/cookies/primary.cookie
+      YAMIBO_DB_BACKEND: postgres
+      YAMIBO_DB_URL: ${YAMIBO_DB_URL:-postgresql://yamibo:yamibo@postgres:5432/yamibo}
+      YAMIBO_DB_POOL_MIN: ${YAMIBO_DB_POOL_MIN:-1}
+      YAMIBO_DB_POOL_MAX: ${YAMIBO_DB_POOL_MAX:-5}
+      YAMIBO_WEB_HOST: 0.0.0.0
+      YAMIBO_WEB_PORT: 8765
+      YAMIBO_WORKER_ID: ${YAMIBO_WORKER_ID:-docker-daemon}
+      YAMIBO_WORKER_PARALLELISM: ${YAMIBO_WORKER_PARALLELISM:-2}
+      YAMIBO_LLM_BASE_URL: ${YAMIBO_LLM_BASE_URL:-http://host.docker.internal:8000/v1}
+      YAMIBO_LLM_API_KEY: ${YAMIBO_LLM_API_KEY:-dummy}
+      YAMIBO_LLM_MODEL: ${YAMIBO_LLM_MODEL:-hermes}
+      YAMIBO_RAG_ENABLED: ${YAMIBO_RAG_ENABLED:-false}
+      YAMIBO_RAG_BASE_URL: ${YAMIBO_RAG_BASE_URL:-http://host.docker.internal:8000/v1}
+      YAMIBO_RAG_API_KEY: ${YAMIBO_RAG_API_KEY:-dummy}
+      YAMIBO_RAG_EMBEDDING_MODEL: ${YAMIBO_RAG_EMBEDDING_MODEL:-text-embedding-3-small}
+      YAMIBO_RAG_EMBEDDING_DIMENSIONS: ${YAMIBO_RAG_EMBEDDING_DIMENSIONS:-512}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${YAMIBO_WEB_PORT:-8765}:8765"
+    volumes:
+      - ${YAMIBO_DATA_BIND:-./data}:/app/data
+      - ${YAMIBO_CONFIG_BIND:-./data/yamibo.local.json}:/app/yamibo.local.json
+      - ${YAMIBO_COMIC_EXPORT_BIND:-/Volumes/comic/百合会}:/Volumes/comic/百合会
+      - ${YAMIBO_NOVEL_EXPORT_BIND:-/Volumes/personal_folder/novel}:/Volumes/personal_folder/novel
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8765/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  yamibo-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.12-slim}
+    container_name: yamibo-mcp
+    command: ["yamibo-archiver", "stdio", "--transport", "sse", "--host", "0.0.0.0", "--port", "8000", "--path", "/sse"]
+    environment:
+      YAMIBO_DATA_DIR: /app/data
+      YAMIBO_CONFIG_PATH: /app/yamibo.local.json
+      YAMIBO_ALEMBIC_SCRIPT_LOCATION: /app/alembic
+      YAMIBO_COOKIE_FILE: /app/data/cookies/primary.cookie
+      YAMIBO_DB_BACKEND: postgres
+      YAMIBO_DB_URL: ${YAMIBO_DB_URL:-postgresql://yamibo:yamibo@postgres:5432/yamibo}
+      YAMIBO_DB_POOL_MIN: ${YAMIBO_DB_POOL_MIN:-1}
+      YAMIBO_DB_POOL_MAX: ${YAMIBO_DB_POOL_MAX:-5}
+      YAMIBO_WEB_HOST: 0.0.0.0
+      YAMIBO_WEB_PORT: 8765
+      YAMIBO_MCP_HOST: 0.0.0.0
+      YAMIBO_MCP_PORT: 8000
+      YAMIBO_WORKER_ID: ${YAMIBO_WORKER_ID:-docker-daemon}
+      YAMIBO_WORKER_PARALLELISM: ${YAMIBO_WORKER_PARALLELISM:-2}
+      YAMIBO_LLM_BASE_URL: ${YAMIBO_LLM_BASE_URL:-http://host.docker.internal:8000/v1}
+      YAMIBO_LLM_API_KEY: ${YAMIBO_LLM_API_KEY:-dummy}
+      YAMIBO_LLM_MODEL: ${YAMIBO_LLM_MODEL:-hermes}
+      YAMIBO_RAG_ENABLED: ${YAMIBO_RAG_ENABLED:-false}
+      YAMIBO_RAG_BASE_URL: ${YAMIBO_RAG_BASE_URL:-http://host.docker.internal:8000/v1}
+      YAMIBO_RAG_API_KEY: ${YAMIBO_RAG_API_KEY:-dummy}
+      YAMIBO_RAG_EMBEDDING_MODEL: ${YAMIBO_RAG_EMBEDDING_MODEL:-text-embedding-3-small}
+      YAMIBO_RAG_EMBEDDING_DIMENSIONS: ${YAMIBO_RAG_EMBEDDING_DIMENSIONS:-512}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${YAMIBO_MCP_PORT:-8000}:8000"
+    volumes:
+      - ${YAMIBO_DATA_BIND:-./data}:/app/data
+      - ${YAMIBO_CONFIG_BIND:-./data/yamibo.local.json}:/app/data/yamibo.local.json:ro
+      - ${YAMIBO_COMIC_EXPORT_BIND:-/Volumes/comic/百合会}:/Volumes/comic/百合会
+      - ${YAMIBO_NOVEL_EXPORT_BIND:-/Volumes/personal_folder/novel}:/Volumes/personal_folder/novel
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/sse"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     restart: unless-stopped
     logging:
       driver: json-file

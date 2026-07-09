@@ -12,6 +12,7 @@ from yamibo_mcp.application.archive_queries import (
     probe_archived_threads as _probe_archived_threads,
     read_forum_profiles as _read_forum_profiles,
 )
+from yamibo_mcp.application.thread_resync_planner import plan_thread_resync_batch as _plan_thread_resync_batch
 from yamibo_mcp.application.discussion_trend_commands import (
     create_discussion_trend_index_job as _create_discussion_trend_index_job,
 )
@@ -38,6 +39,7 @@ from yamibo_mcp.application.rag_queries import search_archived_content as _searc
 from yamibo_mcp.application.remote_queries import (
     browse_forum_page as _browse_forum_page,
     inspect_remote_thread as _inspect_remote_thread,
+    refresh_forum_remote_observations as _refresh_forum_remote_observations,
     search_threads as _search_forum_threads,
 )
 from yamibo_mcp.application.update_queries import check_thread_updates as _check_thread_updates
@@ -172,6 +174,54 @@ def read_archived_thread(
         floor_end=floor_end,
         cursor=cursor,
         chunk_size=chunk_size,
+    )
+
+
+@agent_tool
+def refresh_forum_remote_observations(
+    *,
+    forum_id: int = 30,
+    page_start: int = 1,
+    page_end: int | None = None,
+    order: str = "default",
+    base_url: str = "https://bbs.yamibo.com",
+    cookie_file: str | None = None,
+    include_sticky: bool = False,
+    include_announcements: bool = False,
+    dry_run: bool = False,
+) -> AgentResult:
+    return AgentResult(
+        ok=True,
+        data=_refresh_forum_remote_observations(
+            forum_id=forum_id,
+            page_start=page_start,
+            page_end=page_end,
+            order=order,
+            base_url=base_url,
+            cookie_file=cookie_file,
+            include_sticky=include_sticky,
+            include_announcements=include_announcements,
+            dry_run=dry_run,
+        ),
+        side_effects=[] if dry_run else ["remote_fetch_and_db_write"],
+    )
+
+
+@agent_tool
+def plan_thread_resync_batch(
+    *,
+    tids: list[int],
+    force: bool = False,
+    include_unknown: bool = True,
+    max_detail_jobs: int | None = None,
+    persist_observation: bool = False,
+) -> AgentResult:
+    return _plan_thread_resync_batch(
+        tids=tids,
+        force=force,
+        include_unknown=include_unknown,
+        max_detail_jobs=max_detail_jobs,
+        persist_observation=persist_observation,
     )
 
 

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from yamibo_mcp.application.contracts import AgentAction, AgentError, AgentResult
 from yamibo_mcp.config import load_settings
@@ -21,6 +23,7 @@ from yamibo_mcp.server.resource_uris import (
 )
 from yamibo_mcp.server.schemas import thread_summary_payload
 from yamibo_mcp.storage.paths import StoragePaths
+from yamibo_mcp.application.thread_resync_planner import plan_thread_resync_batch
 
 ARCHIVED_THREAD_VIEWS = {"summary", "content", "assets", "diagnostics", "export", "metadata"}
 DEFAULT_CONTENT_CHUNK_SIZE = 20
@@ -194,6 +197,105 @@ def read_archived_thread(
         conn.close()
 
 
+def plan_thread_resync_batch(*, forum_id: int | None = None, pages: list[int] | None = None, tids: list[int] | None = None, order: str = "default", mode: str = "daily_delta", force: bool = False, include_unknown: bool = True, max_detail_jobs: int | None = None, persist_observation: bool = False) -> AgentResult:
+    normalized_tids: list[int] = []
+    if tids is None:
+        tids = []
+    seen: set[int] = set()
+    for raw_tid in tids:
+        tid = int(raw_tid)
+        if tid <= 0:
+            raise ValueError("tids must contain positive integers")
+        if tid in seen:
+            continue
+        seen.add(tid)
+        normalized_tids.append(tid)
+    if not normalized_tids and not pages:
+        raise ValueError("tids or pages required")
+
+    settings = load_settings()
+    conn = connect(settings.db_path)
+    try:
+        repo = ThreadsRepository(conn)
+        items = repo.probe_archive_states(normalized_tids)
+        planned: list[dict[str, object]] = []
+        for item in items:
+            planned.append(_plan_thread_resync_item(item, force=force, include_unknown=include_unknown))
+        planned.sort(key=_plan_sort_key)
+        if max_detail_jobs is not None:
+            planned = planned[: max(0, max_detail_jobs)]
+        return AgentResult(ok=True, data={"count": len(planned), "items": planned, "force": force, "include_unknown": include_unknown, "persist_observation": persist_observation})
+    finally:
+        conn.close()
+
+
+def _plan_thread_resync_item(item: dict[str, Any], *, force: bool, include_unknown: bool) -> dict[str, object]:
+    decision = _decide_thread_resync(item, force=force, include_unknown=include_unknown)
+    return {
+        "tid": item["tid"],
+        "decision": decision["decision"],
+        "reason_codes": decision["reason_codes"],
+        "remote_observation": {
+            "remote_last_reply_at": item.get("remote_last_reply_at"),
+            "remote_last_reply_at_raw": item.get("remote_last_reply_at_raw"),
+            "remote_last_replier": item.get("remote_last_replier"),
+            "remote_reply_count": item.get("remote_reply_count"),
+            "remote_observed_at": item.get("remote_observed_at"),
+            "remote_observed_from": item.get("remote_observed_from"),
+        },
+        "local_state": {
+            "archive_status": item.get("archive_status"),
+            "sync_time": item.get("sync_time"),
+            "local_floor_count": item.get("local_floor_count"),
+            "local_reply_count": item.get("local_reply_count"),
+            "local_last_pid": item.get("local_last_pid"),
+            "local_last_floor_pub_time": item.get("local_last_floor_pub_time"),
+            "reply_count_mismatch_reason": item.get("reply_count_mismatch_reason"),
+        },
+        "job_preview": decision["job_preview"],
+    }
+
+
+def _decide_thread_resync(item: dict[str, Any], *, force: bool, include_unknown: bool) -> tuple[str, list[str], dict[str, object]]:
+    if force:
+        return "force_resync", ["force"], {"create_sync_thread": True}
+    if not item.get("archived"):
+        return "needs_resync", ["not_archived"], {"create_sync_thread": True}
+    archive_status = item.get("archive_status")
+    if archive_status in {"partial", "failed"}:
+        return "needs_resync", [f"{archive_status}_archive"], {"create_sync_thread": True}
+    remote_reply_count = item.get("remote_reply_count")
+    local_reply_count = int(item.get("local_reply_count") or 0)
+    remote_last_reply_at = item.get("remote_last_reply_at")
+    local_last_floor_pub_time = item.get("local_last_floor_pub_time")
+    if remote_reply_count is None and remote_last_reply_at is None:
+        return ("unknown" if include_unknown else "skip"), ["missing_observation"], {"create_sync_thread": include_unknown}
+    if isinstance(remote_reply_count, int) and remote_reply_count > local_reply_count:
+        return "needs_resync", ["remote_reply_count_gt_local"], {"create_sync_thread": True}
+    if isinstance(remote_reply_count, int) and remote_reply_count < local_reply_count:
+        return "unknown", ["reply_count_mismatch"], {"create_sync_thread": include_unknown}
+    remote_dt = _parse_iso_datetime(remote_last_reply_at)
+    local_dt = _parse_iso_datetime(local_last_floor_pub_time)
+    if remote_dt is not None and local_dt is not None and remote_dt > local_dt:
+        return "needs_resync", ["remote_last_reply_newer"], {"create_sync_thread": True}
+    return "skip", ["up_to_date"], {"create_sync_thread": False}
+
+
+def _plan_sort_key(item: dict[str, object]) -> tuple[int, str, int]:
+    order = {"force_resync": 0, "needs_resync": 1, "unknown": 2, "maybe_changed": 3, "skip": 4}
+    return (order.get(str(item.get("decision")), 99), str(item.get("remote_observation", {}).get("remote_last_reply_at") or ""), int(item.get("tid") or 0))
+
+
+def _parse_iso_datetime(value: object) -> datetime | None:
+    if value in {None, ""}:
+        return None
+    text = str(value).replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(text.replace(" ", "T"))
+    except ValueError:
+        return None
+
+
 def probe_archived_threads(*, tids: list[int]) -> AgentResult:
     normalized_tids: list[int] = []
     seen: set[int] = set()
@@ -257,6 +359,39 @@ def read_forum_profiles() -> AgentResult:
             ]
         },
     )
+
+
+def _decide_thread_resync(item: dict[str, object], *, force: bool, include_unknown: bool) -> dict[str, object]:
+    if force:
+        return {"decision": "force_resync", "reason_codes": ["force"], "job_preview": {"create_sync_thread": True}}
+    if not item.get("archived"):
+        return {"decision": "needs_resync", "reason_codes": ["not_archived"], "job_preview": {"create_sync_thread": True}}
+    archive_status = item.get("archive_status")
+    if archive_status in {"partial", "failed"}:
+        return {"decision": "needs_resync", "reason_codes": [f"{archive_status}_archive"], "job_preview": {"create_sync_thread": True}}
+    remote_reply_count = item.get("remote_reply_count")
+    local_reply_count = item.get("local_reply_count") or 0
+    remote_last_reply_at = item.get("remote_last_reply_at")
+    local_last_floor_pub_time = item.get("local_last_floor_pub_time")
+    if remote_reply_count is None and remote_last_reply_at is None:
+        decision = "unknown" if include_unknown else "skip"
+        return {"decision": decision, "reason_codes": ["missing_observation"], "job_preview": {"create_sync_thread": include_unknown}}
+    if isinstance(remote_reply_count, int) and remote_reply_count > local_reply_count:
+        return {"decision": "needs_resync", "reason_codes": ["remote_reply_count_gt_local"], "job_preview": {"create_sync_thread": True}}
+    if isinstance(remote_reply_count, int) and remote_reply_count < local_reply_count:
+        return {"decision": "unknown", "reason_codes": ["reply_count_mismatch"], "job_preview": {"create_sync_thread": include_unknown}}
+    if remote_last_reply_at and local_last_floor_pub_time:
+        try:
+            remote_dt = datetime.fromisoformat(str(remote_last_reply_at).replace("Z", "+00:00"))
+        except ValueError:
+            remote_dt = None
+        try:
+            local_dt = datetime.fromisoformat(str(local_last_floor_pub_time).replace(" ", "T"))
+        except ValueError:
+            local_dt = None
+        if remote_dt is not None and local_dt is not None and remote_dt > local_dt:
+            return {"decision": "needs_resync", "reason_codes": ["remote_last_reply_newer"], "job_preview": {"create_sync_thread": True}}
+    return {"decision": "skip", "reason_codes": ["up_to_date"], "job_preview": {"create_sync_thread": False}}
 
 
 def _build_summary(thread, title, *, floor_count: int) -> dict[str, object]:

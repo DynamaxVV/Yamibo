@@ -217,8 +217,8 @@ def test_run_once_pauses_on_http_444(tmp_path, monkeypatch):
     monkeypatch.setattr("yamibo_mcp.daemon.runner.recover_expired_jobs", lambda repo: None)
     monkeypatch.setattr("yamibo_mcp.daemon.runner.JobsRepository.acquire_next", lambda self, worker_id, lease_seconds: job)
     monkeypatch.setattr(
-        "yamibo_mcp.daemon.runner.activate_remote_access_pause",
-        lambda conn, source, message, context=None: pause_calls.append({"source": source, "message": message}),
+        "yamibo_mcp.yamibo.anti_bot.activate_remote_access_pause",
+        lambda conn, *, source, message, context=None: pause_calls.append({"source": source, "message": message}),
     )
     monkeypatch.setattr(
         "yamibo_mcp.daemon.runner.JobsRepository.finalize_pause",
@@ -235,8 +235,9 @@ def test_run_once_pauses_on_http_444(tmp_path, monkeypatch):
     monkeypatch.setattr("yamibo_mcp.daemon.runner.clear_proxy_cache", lambda: 0)
 
     # Clear 444 counter before test
-    with runner_mod._444_LOCK:
-        runner_mod._444_EVENTS.clear()
+    import yamibo_mcp.yamibo.anti_bot as anti_bot_mod
+    with anti_bot_mod._444_LOCK:
+        anti_bot_mod._444_EVENTS.clear()
 
     # First 444 — should retry job with different proxy, NOT fail or pause
     result1 = runner.run_once()
@@ -252,7 +253,7 @@ def test_run_once_pauses_on_http_444(tmp_path, monkeypatch):
     result3 = runner.run_once()
     assert result3.processed == 1
     assert len(pause_calls) == 1
-    assert "3 times within" in pause_calls[0]["message"]
+    assert "444" in pause_calls[0]["message"]
     assert len(fail_calls) == 0  # all three retried, third also paused globally
 
 
@@ -313,8 +314,9 @@ def test_run_once_detects_http_444_via_curl_error_92(tmp_path, monkeypatch):
     monkeypatch.setattr("yamibo_mcp.daemon.runner.clear_proxy_cache", lambda: 0)
 
     # Clear 444 counter before test
-    with runner_mod._444_LOCK:
-        runner_mod._444_EVENTS.clear()
+    import yamibo_mcp.yamibo.anti_bot as anti_bot_mod
+    with anti_bot_mod._444_LOCK:
+        anti_bot_mod._444_EVENTS.clear()
 
     result = runner.run_once()
     assert result.processed == 1

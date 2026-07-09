@@ -563,7 +563,7 @@ class JobsRepository:
                 UPDATE jobs
                 SET status = ?, stage = 'finalize', progress_current = COALESCE(progress_total, progress_current),
                     artifacts_json = ?, updated_at = ?, finished_at = ?,
-                    lease_until = NULL
+                    error_code = NULL, error_message = NULL, lease_until = NULL
                 WHERE job_id = ?
                 """,
                 (
@@ -701,7 +701,8 @@ class JobsRepository:
                 """
                 UPDATE jobs
                 SET status = ?, stage = 'finalize', progress_current = COALESCE(progress_total, progress_current),
-                    artifacts_json = ?, updated_at = ?, finished_at = ?, lease_until = NULL
+                    artifacts_json = ?, updated_at = ?, finished_at = ?,
+                    error_code = NULL, error_message = NULL, lease_until = NULL
                 WHERE job_id = ?
                 """,
                 (

@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 
 from yamibo_mcp.db.repositories.rag_chunks import RagChunksRepository
 from yamibo_mcp.db.repositories.rag_vectors import RagVectorUnavailableError, get_vector_repository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
-from yamibo_mcp.rag.chunker import build_rag_chunks
+from yamibo_mcp.rag.anime_dry_run import build_anime_dry_run_thread
+from yamibo_mcp.rag.anime_materializer import MATERIALIZER_VERSION, _build_thread_materialization, _write_thread_artifacts
+from yamibo_mcp.rag.chunker import build_rag_chunks, build_rag_chunks_from_preview_rows
 from yamibo_mcp.rag.embeddings import build_embedding_provider
+from yamibo_mcp.storage.paths import StoragePaths
 
 
 LOG = logging.getLogger(__name__)
@@ -35,11 +40,11 @@ def handle_rag_index(repo, job, worker_id: str, lease_seconds: int, settings) ->
 
     repo.heartbeat(job.job_id, worker_id, lease_seconds)
     repo.update_stage(job.job_id, "chunk", progress_current=2, progress_total=6)
-    chunks = build_rag_chunks(
+    chunks = _load_indexable_chunks(
+        settings=settings,
         thread_row=thread_row,
         title_row=title_row,
         floor_rows=floor_rows,
-        settings=settings,
     )
     chunks_repo = RagChunksRepository(repo.conn)
     chunk_rows = chunks_repo.replace_thread_chunks(
@@ -168,6 +173,45 @@ def _debug_rag_index(settings, message: str, **context) -> None:
     LOG.warning("[RAG-DEBUG] %s %s", message, " ".join(parts))
 
 
+def _load_indexable_chunks(*, settings, thread_row, title_row, floor_rows):
+    paths = StoragePaths(settings.data_dir)
+    result = build_anime_dry_run_thread(
+        thread_row=thread_row,
+        floor_rows=floor_rows,
+        structured_cleaning=True,
+    )
+    materialized = _build_thread_materialization(result=result, thread_row=thread_row, version=MATERIALIZER_VERSION)
+    _write_thread_artifacts(paths=paths, tid=int(thread_row["tid"]), materialized=materialized)
+    preview_rows = _read_materialized_preview_rows(paths=paths, tid=int(thread_row["tid"]), version=MATERIALIZER_VERSION)
+    if preview_rows:
+        return build_rag_chunks_from_preview_rows(
+            thread_row=thread_row,
+            title_row=title_row,
+            preview_rows=preview_rows,
+        )
+    return build_rag_chunks(
+        thread_row=thread_row,
+        title_row=title_row,
+        floor_rows=floor_rows,
+        settings=settings,
+    )
+
+
+def _read_materialized_preview_rows(*, paths: StoragePaths, tid: int, version: str) -> list[dict]:
+    marker_path = paths.thread_rag_materialized_marker(tid, version)
+    preview_path = paths.thread_rag_chunks_preview_jsonl(tid, version)
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    if not marker.get("complete"):
+        raise ValueError(f"incomplete rag materialization marker for tid={tid}")
+    artifacts = marker.get("artifacts") or {}
+    preview_meta = artifacts.get(preview_path.name) or {}
+    preview_content = preview_path.read_text(encoding="utf-8")
+    expected_hash = preview_meta.get("sha256")
+    if expected_hash and _sha256_text(preview_content) != expected_hash:
+        raise ValueError(f"rag preview hash mismatch for tid={tid}")
+    return [json.loads(line) for line in preview_content.splitlines() if line.strip()]
+
+
 def _chunk_preview(chunk_rows, *, limit: int = 2, text_limit: int = 160) -> list[dict[str, object]]:
     preview: list[dict[str, object]] = []
     for row in chunk_rows[:limit]:
@@ -181,3 +225,7 @@ def _chunk_preview(chunk_rows, *, limit: int = 2, text_limit: int = 160) -> list
             }
         )
     return preview
+
+
+def _sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()

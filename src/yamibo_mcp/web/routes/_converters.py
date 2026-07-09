@@ -359,6 +359,20 @@ def event_to_dict(e) -> dict:
 def thread_summary_dict(row) -> dict:
     def g(k):
         return row[k] if k in row.keys() else None
+    floor_count = g("floor_count")
+    local_reply_count = g("local_reply_count")
+    if local_reply_count is None and floor_count is not None:
+        try:
+            local_reply_count = max(int(floor_count) - 1, 0)
+        except (TypeError, ValueError):
+            local_reply_count = None
+    remote_reply_count = g("remote_reply_count")
+    remote_last_reply_at = g("remote_last_reply_at")
+    if remote_last_reply_at in {None, ""}:
+        remote_last_reply_at = g("last_floor_pub_time")
+    remote_last_replier = g("remote_last_replier")
+    if remote_last_replier in {None, ""}:
+        remote_last_replier = g("last_floor_publisher")
     return {
         "tid": int(row["tid"]), "raw_title": row["raw_title"],
         "display_title": row["display_title"] or row["raw_title"],
@@ -368,7 +382,19 @@ def thread_summary_dict(row) -> dict:
         "export_path": g("export_path"), "forum_id": g("forum_id"),
         "content_kind": g("content_kind"), "core_title_guess": g("core_title_guess"),
         "series_key": g("series_key"), "chapter_name": g("chapter_name"),
-        "category": g("category"), "reply_count": g("reply_count") or 0,
+        "author_guess": g("author_guess"), "group_name": g("group_name"),
+        "category": g("category"),
+        "floor_count": floor_count or 0,
+        "local_reply_count": local_reply_count,
+        "reply_count_checked_at": g("reply_count_checked_at"),
+        "reply_count_mismatch_reason": g("reply_count_mismatch_reason"),
+        "remote_last_reply_at_raw": g("remote_last_reply_at_raw") or remote_last_reply_at,
+        "remote_last_reply_at": remote_last_reply_at,
+        "remote_last_replier": remote_last_replier,
+        "remote_reply_count": remote_reply_count,
+        "remote_observed_at": g("remote_observed_at"),
+        "remote_observed_from": g("remote_observed_from"),
+        "reply_count": remote_reply_count if remote_reply_count is not None else (local_reply_count or 0),
     }
 
 

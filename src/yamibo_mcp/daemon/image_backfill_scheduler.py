@@ -43,7 +43,7 @@ def maybe_enqueue_image_backfill_dry_run(repo: JobsRepository, settings: Setting
         "candidate_reason": candidate["reason"],
         "sync_time": _serialize_sync_time(candidate.get("sync_time")),
     }
-    repo.create(JobType.IMAGE_BACKFILL.value, tid=int(candidate["tid"]), payload=payload, max_retries=0)
+    repo.create(JobType.IMAGE_BACKFILL.value, tid=int(candidate["tid"]), payload=payload, max_retries=3)
     _save_state(state_repo, state, enqueued=True, reason="created")
     LOG.info(
         "Enqueued automatic image_backfill %s job tid=%s reason=%s",

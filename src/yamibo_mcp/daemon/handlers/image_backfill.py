@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
+import shutil
 from collections import Counter
+from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -9,6 +11,7 @@ from typing import Any
 from urllib.parse import urlparse
 from urllib.parse import unquote
 
+from yamibo_mcp.application.thread_context import build_obsidian_context_payload
 from yamibo_mcp.config import Settings
 from yamibo_mcp.db.connection import transaction
 from yamibo_mcp.db.repositories.assets import AssetsRepository
@@ -26,7 +29,7 @@ from yamibo_mcp.errors import ThreadPermissionRequiredError, RemoteMaintenanceEr
 from yamibo_mcp.yamibo.account_pool import borrow_yamibo_client, next_permission_threshold
 from yamibo_mcp.yamibo.anti_bot import ensure_no_maintenance_pause
 from yamibo_mcp.yamibo.parsers.thread_detail import parse_thread_snapshot
-from yamibo_mcp.yamibo.proxy_pool import select_thread_proxy
+from yamibo_mcp.yamibo.proxy_pool import activate_proxy_binding, select_thread_proxy
 
 
 LOG = logging.getLogger(__name__)
@@ -47,7 +50,6 @@ def handle_image_backfill(
     lease_seconds: int,
     settings: Settings,
 ) -> None:
-    del worker_id, lease_seconds
     tid = int(job.tid or job.payload.get("tid") or 0)
     if tid <= 0:
         raise ValueError("image_backfill requires tid")
@@ -71,6 +73,11 @@ def handle_image_backfill(
     proxy_pool_artifacts = _proxy_pool_artifacts(settings, proxy_binding)
 
     repo.update_stage(job.job_id, "fetch_remote", progress_current=2, progress_total=4)
+    fetch_lease_seconds = max(
+        lease_seconds,
+        int(max(float(getattr(settings, "request_timeout_seconds", 30.0)) * 4.0, 120.0)),
+    )
+    repo.heartbeat(job.job_id, worker_id, fetch_lease_seconds)
     min_permission: int | None = None
     while True:
         identity = None
@@ -80,7 +87,11 @@ def handle_image_backfill(
             _check_paused(repo, job.job_id)
             ensure_no_maintenance_pause(repo.conn)
 
-            with borrow_yamibo_client(settings, min_permission=min_permission, proxy_url=proxy_url) as (identity, client):
+            with ExitStack() as stack:
+                stack.enter_context(activate_proxy_binding(settings, proxy_binding))
+                identity, client = stack.enter_context(
+                    borrow_yamibo_client(settings, min_permission=min_permission, proxy_url=proxy_url)
+                )
                 borrowed_client = True
                 first_page = client.fetch_thread_page(tid=tid, page=1, base_url=base_url)
                 if max_pages > 1:
@@ -172,6 +183,20 @@ def handle_image_backfill(
                     AssetsRepository(repo.conn).upsert_assets(apply_snapshot.tid, synced_assets)
 
                 repo.update_stage(job.job_id, "materialize", progress_current=6, progress_total=6)
+                context_metadata, cleaner_output = build_obsidian_context_payload(
+                    apply_snapshot,
+                    forum_id=thread["forum_id"] if "forum_id" in thread.keys() else None,
+                    archive_status=archive_status,
+                    reply_count=max(len(apply_snapshot.floors) - 1, 0),
+                    sync_time=thread["sync_time"] if "sync_time" in thread.keys() else None,
+                    archived_images=archive_maps["archived_images"],
+                    non_export_images=archive_maps["non_export_images"],
+                    shared_images=archive_maps["shared_images"],
+                    skipped_image_urls=archive_maps["skipped_image_urls"],
+                    missing_image_urls=missing_image_urls,
+                    missing_shared_image_urls=missing_shared_image_urls,
+                    context_source="image_backfill",
+                )
                 context_path, metadata_path = materialize_thread(
                     paths,
                     apply_snapshot,
@@ -182,6 +207,9 @@ def handle_image_backfill(
                     skipped_image_urls=archive_maps["skipped_image_urls"],
                     missing_image_urls=missing_image_urls,
                     missing_shared_image_urls=missing_shared_image_urls,
+                    context_format_version="obsidian-md-v2",
+                    cleaner_output=cleaner_output,
+                    metadata=context_metadata,
                 )
                 artifacts.update(
                     {
@@ -202,6 +230,8 @@ def handle_image_backfill(
                     repo.partial(job.job_id, artifacts)
                 else:
                     repo.succeed(job.job_id, artifacts)
+                # materialize 完成后清理 staging，避免磁盘膨胀。
+                shutil.rmtree(paths.staging_job_dir(job.job_id), ignore_errors=True)
                 return
         except ThreadPermissionRequiredError as exc:
             next_min_permission = next_permission_threshold(exc.required_permission, current_min=min_permission)

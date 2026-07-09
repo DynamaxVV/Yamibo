@@ -27,6 +27,23 @@ def _settings(tmp_path: Path) -> SimpleNamespace:
     )
 
 
+def _rag_chunk(**overrides):
+    base = dict(
+        pid=None,
+        source_tid=7001,
+        source_pid=None,
+        source_floor_no=None,
+        cleaner_version="anime-cleaner-1.2",
+        chunker_version="anime-chunker-1.2",
+        materializer_version="anime-rag-materializer-1.2",
+        source_hash="sha256:test",
+        generated_at="2026-07-05T00:00:00Z",
+        quality_flags=[],
+    )
+    base.update(overrides)
+    return RagChunk(**base)
+
+
 def _seed_thread_and_chunks(db) -> None:
     db.execute(
         """
@@ -40,10 +57,9 @@ def _seed_thread_and_chunks(db) -> None:
     repo.replace_thread_chunks(
         tid=7001,
         chunks=[
-            RagChunk(
+            _rag_chunk(
                 chunk_id="thread:7001:title",
                 tid=7001,
-                pid=None,
                 floor_no=None,
                 chunk_type="thread_title",
                 forum_id=55,
@@ -58,8 +74,9 @@ def _seed_thread_and_chunks(db) -> None:
                 text="测试轻小说 第一章",
                 text_hash="hash-a",
                 source_uri="yamibo://threads/7001/summary",
+                source_floor_no=None,
             ),
-            RagChunk(
+            _rag_chunk(
                 chunk_id="thread:7001:floor:1:part:1",
                 tid=7001,
                 pid=7010,
@@ -77,6 +94,8 @@ def _seed_thread_and_chunks(db) -> None:
                 text="少女在星空下告白，后来两人一起出发。",
                 text_hash="hash-b",
                 source_uri="yamibo://threads/7001/posts#floor=1",
+                source_pid=7010,
+                source_floor_no=1,
             ),
         ],
         embedding_model="text-embedding-3-small",
@@ -96,6 +115,8 @@ def test_search_archived_content_keyword_returns_local_evidence(tmp_path, db):
     assert result.data["count"] >= 1
     item = result.data["items"][0]
     assert item["tid"] == 7001
+    assert item["pid"] == 7010
+    assert item["floor_no"] == 1
     assert item["source_uri"].startswith("yamibo://threads/7001/")
     assert item["score_parts"]["keyword"] > 0
 
@@ -114,7 +135,7 @@ def test_search_archived_content_snippet_centers_match(tmp_path, db):
     repo.replace_thread_chunks(
         tid=7002,
         chunks=[
-            RagChunk(
+            _rag_chunk(
                 chunk_id="thread:7002:floor:1:part:1",
                 tid=7002,
                 pid=7020,
@@ -132,6 +153,9 @@ def test_search_archived_content_snippet_centers_match(tmp_path, db):
                 text="前言内容" + "无关描述" * 40 + "星空下告白" + "后文继续" * 20,
                 text_hash="hash-c",
                 source_uri="yamibo://threads/7002/posts#floor=1",
+                source_tid=7002,
+                source_pid=7020,
+                source_floor_no=1,
             ),
         ],
         embedding_model="text-embedding-3-small",

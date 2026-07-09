@@ -11,6 +11,7 @@ from yamibo_mcp.db.repositories.rag_chunks import RagChunksRepository
 from yamibo_mcp.db.repositories.series import SeriesRepository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
 from yamibo_mcp.application.archive_commands import create_thread_archive_batch_jobs
+from yamibo_mcp.application.update_commands import create_update_thread_job
 from yamibo_mcp.application.update_queries import check_thread_updates
 from yamibo_mcp.maintenance.cleanup_data import remove_thread_dir
 from yamibo_mcp.yamibo.urls import thread_url_from_tid, thread_author_url_from_tid
@@ -286,11 +287,13 @@ def handle_update_thread(handler, conn):
     if not tid:
         error_response(handler, "tid required")
         return
-    payload = {"tid": int(tid)}
-    if body.get("base_url"):
-        payload["base_url"] = body["base_url"]
-    job = JobsRepository(conn).create("update_thread", tid=int(tid), payload=payload)
-    json_response(handler, {"ok": True, "job_id": job.job_id})
+    base_url = body.get("base_url") or None
+    try:
+        result = create_update_thread_job(tid=int(tid), base_url=base_url)
+    except ValueError as exc:
+        error_response(handler, str(exc))
+        return
+    json_response(handler, {"ok": True, "job_id": result["job_id"], "created": result.get("created", True)})
 
 
 def handle_export_thread(handler, conn, settings):
@@ -395,15 +398,20 @@ def handle_update_chapter(handler, conn):
     if not tid:
         error_response(handler, "tid required")
         return
-    ThreadsRepository(conn).update_chapter_info(
-        int(tid),
-        chapter_name=body.get("chapter_name"),
-        chapter_index=body.get("chapter_index"),
-        author_guess=body.get("author_guess"),
-        group_name=body.get("group_name"),
-    )
-    conn.commit()
-    json_response(handler, {"ok": True, "tid": int(tid)})
+    try:
+        ThreadsRepository(conn).update_archive_metadata(
+            int(tid),
+            display_title=body.get("display_title"),
+            chapter_name=body.get("chapter_name"),
+            chapter_index=body.get("chapter_index"),
+            author_guess=body.get("author_guess"),
+            group_name=body.get("group_name"),
+        )
+        conn.commit()
+        json_response(handler, {"ok": True, "tid": int(tid)})
+    except ValueError as exc:
+        conn.rollback()
+        error_response(handler, str(exc), HTTPStatus.BAD_REQUEST if "required" in str(exc) else HTTPStatus.NOT_FOUND)
 
 
 def handle_archive_threads_batch(handler):

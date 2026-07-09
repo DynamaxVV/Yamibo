@@ -82,6 +82,15 @@ CREATE TABLE IF NOT EXISTS threads (
   pub_time TEXT,
   sync_time TEXT,
   last_pid INTEGER,
+  local_reply_count INTEGER,
+  reply_count_checked_at TEXT,
+  reply_count_mismatch_reason TEXT,
+  remote_last_reply_at_raw TEXT,
+  remote_last_reply_at TEXT,
+  remote_last_replier TEXT,
+  remote_reply_count INTEGER,
+  remote_observed_at TEXT,
+  remote_observed_from TEXT,
   permission INTEGER NOT NULL DEFAULT 0 CHECK(permission >= 0),
   is_finished INTEGER NOT NULL DEFAULT 0,
   image_count INTEGER NOT NULL DEFAULT 0 CHECK(image_count >= 0),
@@ -246,6 +255,15 @@ CREATE TABLE IF NOT EXISTS rag_chunks (
   text TEXT NOT NULL,
   text_hash TEXT NOT NULL,
   source_uri TEXT NOT NULL,
+  source_tid INTEGER,
+  source_pid INTEGER,
+  source_floor_no INTEGER,
+  cleaner_version TEXT,
+  chunker_version TEXT,
+  materializer_version TEXT,
+  source_hash TEXT,
+  generated_at TEXT,
+  quality_flags TEXT,
   embedding_model TEXT,
   embedding_dimensions INTEGER,
   embedding_status TEXT NOT NULL DEFAULT 'pending',
@@ -295,6 +313,15 @@ def migrate(conn: Any, *, schema: str | None = None) -> None:
     _ensure_column(conn, "threads", "content_kind", "TEXT")
     _ensure_column(conn, "threads", "primary_media_type", "TEXT")
     _ensure_column(conn, "threads", "category", "TEXT")
+    _ensure_column(conn, "threads", "local_reply_count", "INTEGER")
+    _ensure_column(conn, "threads", "reply_count_checked_at", "TEXT")
+    _ensure_column(conn, "threads", "reply_count_mismatch_reason", "TEXT")
+    _ensure_column(conn, "threads", "remote_last_reply_at_raw", "TEXT")
+    _ensure_column(conn, "threads", "remote_last_reply_at", "TEXT")
+    _ensure_column(conn, "threads", "remote_last_replier", "TEXT")
+    _ensure_column(conn, "threads", "remote_reply_count", "INTEGER")
+    _ensure_column(conn, "threads", "remote_observed_at", "TEXT")
+    _ensure_column(conn, "threads", "remote_observed_from", "TEXT")
     _ensure_column(conn, "jobs", "paused_at", "TEXT")
     _backfill_thread_forum_fields(conn)
     _ensure_column(conn, "forums", "name_en", "TEXT")

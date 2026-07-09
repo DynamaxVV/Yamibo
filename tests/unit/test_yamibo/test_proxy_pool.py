@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 import urllib.request
 from unittest.mock import MagicMock
 
@@ -11,11 +13,18 @@ from yamibo_mcp.yamibo.proxy_pool import (
     MihomoControllerClient,
     MihomoProxyPoolConfig,
     ProxyBinding,
+    activate_proxy_binding,
     _filter_nodes,
+    all_nodes_blacklisted,
     check_proxy_pool_health,
+    clear_node_blacklist,
     clear_proxy_cache,
+    get_blacklisted_nodes,
+    get_job_node,
+    mark_node_444,
     select_thread_proxy,
 )
+from yamibo_mcp.yamibo.anti_bot import get_remote_access_pause_state
 
 
 # --- fake mihomo controller responses ---
@@ -276,6 +285,13 @@ def _make_settings(enabled: bool = True) -> Settings:
             max_delay_ms=0,
         ),
         cookie_refresh_interval_hours=12.0,
+        image_backfill_enabled=True,
+        image_backfill_dry_run=True,
+        image_backfill_forum_id=5,
+        image_backfill_auto_interval_seconds=60.0,
+        image_backfill_daily_limit=100,
+        image_backfill_max_pages=1,
+        image_backfill_fixed_after=None,
     )
 
 
@@ -421,7 +437,7 @@ def test_select_thread_proxy_uses_cache_on_second_call(monkeypatch):
     """Second call should hit cache and skip discover + delay tests."""
     clear_proxy_cache()
     settings = _make_settings(enabled=True)
-    call_counts = {"discover": 0, "delay": 0}
+    call_counts = {"discover": 0, "delay": 0, "select": 0}
 
     def _fake_discover(self):
         call_counts["discover"] += 1
@@ -432,7 +448,7 @@ def test_select_thread_proxy_uses_cache_on_second_call(monkeypatch):
         return [("node-a", 100), ("node-b", 200)]
 
     def _fake_select(self, node):
-        pass
+        call_counts["select"] += 1
 
     monkeypatch.setattr(
         "yamibo_mcp.yamibo.proxy_pool.MihomoControllerClient.discover_nodes",
@@ -449,14 +465,62 @@ def test_select_thread_proxy_uses_cache_on_second_call(monkeypatch):
 
     r1 = select_thread_proxy(settings, tid=42)
     assert r1 is not None
-    assert call_counts == {"discover": 1, "delay": 1}
+    assert call_counts == {"discover": 1, "delay": 1, "select": 1}
 
     # Second call — cache hit, no additional discover or delay calls
     r2 = select_thread_proxy(settings, tid=42)
     assert r2 is not None
     assert r2.node == r1.node
     assert r2.diagnostics["from_cache"] is True
-    assert call_counts == {"discover": 1, "delay": 1}
+    assert call_counts == {"discover": 1, "delay": 1, "select": 2}
+
+
+def test_activate_proxy_binding_holds_selector_until_context_exit(monkeypatch):
+    clear_proxy_cache()
+    settings = _make_settings(enabled=True)
+    selected: list[str] = []
+
+    def _fake_select(self, node):
+        selected.append(node)
+
+    monkeypatch.setattr(
+        "yamibo_mcp.yamibo.proxy_pool.MihomoControllerClient.select_node",
+        _fake_select,
+    )
+
+    first = ProxyBinding(
+        group="yamibo",
+        node="node-a",
+        proxy_url="http://127.0.0.1:7890",
+        best_effort=True,
+        diagnostics={},
+    )
+    second = ProxyBinding(
+        group="yamibo",
+        node="node-b",
+        proxy_url="http://127.0.0.1:7890",
+        best_effort=True,
+        diagnostics={},
+    )
+    entered = threading.Event()
+
+    first_context = activate_proxy_binding(settings, first)
+    first_context.__enter__()
+    try:
+        def _enter_second() -> None:
+            with activate_proxy_binding(settings, second):
+                entered.set()
+
+        thread = threading.Thread(target=_enter_second)
+        thread.start()
+        time.sleep(0.05)
+        assert not entered.is_set()
+        assert selected == ["node-a"]
+    finally:
+        first_context.__exit__(None, None, None)
+    thread.join(timeout=1.0)
+    assert entered.is_set()
+    assert selected == ["node-a", "node-b"]
 
 
 def test_select_thread_proxy_cache_expires(monkeypatch):
@@ -622,3 +686,189 @@ def test_filter_nodes_empty_after_filter_returns_empty():
     nodes = [("node-a", 100), ("node-b", 200)]
     result = _filter_nodes(nodes, max_delay_ms=50)
     assert result == []
+
+
+# ── 节点级 444 黑名单 ──────────────────────────────────────────────
+
+def _patch_discover(monkeypatch, nodes):
+    """Patch MihomoControllerClient so discover_nodes returns `nodes`, delay tests succeed."""
+    from yamibo_mcp.yamibo import proxy_pool as mod
+    monkeypatch.setattr(mod.MihomoControllerClient, "discover_nodes", lambda self: list(nodes))
+    monkeypatch.setattr(mod.MihomoControllerClient, "test_node_delay", lambda self, n: 100)
+    monkeypatch.setattr(mod.MihomoControllerClient, "select_node", lambda self, n: None)
+
+
+def test_mark_node_444_blacklists_node_and_filters_it():
+    """被 444 的节点会被过滤掉，下次 select 选别的节点。"""
+    clear_proxy_cache()
+    clear_node_blacklist()
+    settings = _make_settings(enabled=True)
+
+    from yamibo_mcp.yamibo import proxy_pool as mod
+    mp = pytest.MonkeyPatch()
+    _patch_discover(mp, ["node-a", "node-b", "node-c"])
+    try:
+        first = select_thread_proxy(settings, tid=42, job_id="j1")
+        assert first is not None
+        # 拉黑 first.node
+        mark_node_444(first.node)
+        # 再选同一 tid，应避开被拉黑的节点
+        clear_proxy_cache()
+        second = select_thread_proxy(settings, tid=42, job_id="j2")
+        assert second is not None
+        assert second.node != first.node
+        assert second.node not in get_blacklisted_nodes()
+    finally:
+        mp.undo()
+        clear_proxy_cache()
+        clear_node_blacklist()
+
+
+def test_all_nodes_blacklisted_when_every_usable_node_is_marked():
+    """所有可用节点都在黑名单时，all_nodes_blacklisted 返回 True。"""
+    clear_proxy_cache()
+    clear_node_blacklist()
+    settings = _make_settings(enabled=True)
+
+    from yamibo_mcp.yamibo import proxy_pool as mod
+    mp = pytest.MonkeyPatch()
+    _patch_discover(mp, ["node-a", "node-b"])
+    try:
+        mark_node_444("node-a")
+        mark_node_444("node-b")
+        assert all_nodes_blacklisted(settings) is True
+    finally:
+        mp.undo()
+        clear_proxy_cache()
+        clear_node_blacklist()
+
+
+def test_all_nodes_blacklisted_false_when_some_nodes_clean():
+    clear_proxy_cache()
+    clear_node_blacklist()
+    settings = _make_settings(enabled=True)
+
+    from yamibo_mcp.yamibo import proxy_pool as mod
+    mp = pytest.MonkeyPatch()
+    _patch_discover(mp, ["node-a", "node-b", "node-c"])
+    try:
+        mark_node_444("node-a")
+        assert all_nodes_blacklisted(settings) is False
+    finally:
+        mp.undo()
+        clear_proxy_cache()
+        clear_node_blacklist()
+
+
+def test_retry_hint_changes_selected_node_for_same_tid():
+    """同一 tid，retry_hint 不同应能选到不同节点（遍历 hint 找到不同节点）。"""
+    clear_proxy_cache()
+    clear_node_blacklist()
+    settings = _make_settings(enabled=True)
+
+    from yamibo_mcp.yamibo import proxy_pool as mod
+    mp = pytest.MonkeyPatch()
+    _patch_discover(mp, ["node-a", "node-b", "node-c", "node-d", "node-e"])
+    try:
+        a = select_thread_proxy(settings, tid=42, retry_hint=0)
+        assert a is not None
+        # 遍历 retry_hint，至少有一个应选到不同节点
+        found_different = False
+        for hint in range(1, 6):
+            clear_proxy_cache()
+            b = select_thread_proxy(settings, tid=42, retry_hint=hint)
+            assert b is not None
+            if b.node != a.node:
+                found_different = True
+                break
+        assert found_different, "retry_hint did not change selected node across 5 hints"
+    finally:
+        mp.undo()
+        clear_proxy_cache()
+        clear_node_blacklist()
+
+
+def test_select_thread_proxy_returns_none_when_all_blacklisted():
+    """所有节点都被拉黑时，select_thread_proxy 返回 None。"""
+    clear_proxy_cache()
+    clear_node_blacklist()
+    settings = _make_settings(enabled=True)
+
+    from yamibo_mcp.yamibo import proxy_pool as mod
+    mp = pytest.MonkeyPatch()
+    _patch_discover(mp, ["node-a", "node-b"])
+    try:
+        mark_node_444("node-a")
+        mark_node_444("node-b")
+        result = select_thread_proxy(settings, tid=42, job_id="j1")
+        assert result is None
+        assert get_job_node("j1") is None
+    finally:
+        mp.undo()
+        clear_proxy_cache()
+        clear_node_blacklist()
+
+
+def test_handle_http_444_node_level_pauses_only_when_all_blacklisted():
+    """有 node 时：单节点 444 不暂停，全部节点 444 才暂停。"""
+    import yamibo_mcp.yamibo.anti_bot as ab
+    import sqlite3
+    from yamibo_mcp.db.migrations import migrate
+
+    clear_proxy_cache()
+    clear_node_blacklist()
+    # 清空全局 444 计数，避免退化路径干扰
+    with ab._444_LOCK:
+        ab._444_EVENTS.clear()
+
+    settings = _make_settings(enabled=True)
+    from yamibo_mcp.yamibo import proxy_pool as mod
+    mp = pytest.MonkeyPatch()
+    _patch_discover(mp, ["node-a", "node-b"])
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    migrate(conn)
+    try:
+        exc = Exception("444")
+        # 单节点 444 → 不暂停
+        paused = ab.handle_http_444(conn, source="test", exc=exc, node="node-a", settings=settings)
+        assert paused is False
+        assert get_remote_access_pause_state(conn) is None
+
+        # 全部节点都 444 → 暂停
+        paused = ab.handle_http_444(conn, source="test", exc=exc, node="node-b", settings=settings)
+        assert paused is True
+        assert get_remote_access_pause_state(conn) is not None
+    finally:
+        mp.undo()
+        clear_proxy_cache()
+        clear_node_blacklist()
+        conn.close()
+
+
+def test_handle_http_444_global_fallback_when_no_node():
+    """无 node 时退化为全局阈值：3 次才暂停。"""
+    import yamibo_mcp.yamibo.anti_bot as ab
+    import sqlite3
+    from yamibo_mcp.db.migrations import migrate
+
+    clear_proxy_cache()
+    clear_node_blacklist()
+    with ab._444_LOCK:
+        ab._444_EVENTS.clear()
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    migrate(conn)
+    try:
+        exc = Exception("444")
+        for _ in range(2):
+            assert ab.handle_http_444(conn, source="test", exc=exc, node=None, settings=None) is False
+        # 第三次达到全局阈值
+        assert ab.handle_http_444(conn, source="test", exc=exc, node=None, settings=None) is True
+    finally:
+        clear_proxy_cache()
+        clear_node_blacklist()
+        with ab._444_LOCK:
+            ab._444_EVENTS.clear()
+        conn.close()

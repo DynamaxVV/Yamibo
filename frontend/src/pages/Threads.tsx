@@ -5,11 +5,25 @@ import { ContentBadge } from '../components/Badge'
 import { PaginationControls } from '../components/PaginationControls'
 import { useI18n } from '../context/I18nContext'
 import { formatDateTime } from '../utils/time'
+import { formatThreadListTitle } from '../utils/threadTitle'
 
-type SortKey = 'pub_time' | 'sync_time' | 'reply_count'
+type SortKey = 'pub_time' | 'sync_time' | 'reply_count' | 'remote_last_reply_at'
 type SortDir = 'asc' | 'desc'
 const PAGE_SIZE_OPTIONS = [25, 50, 100] as const
 const PAGE_SIZE_STORAGE_KEY = 'threads_page_size'
+
+function formatDateTimeStacked(value: string | null) {
+  const formatted = formatDateTime(value)
+  if (formatted === '-') return formatted
+  const [datePart, timePart, ...rest] = formatted.split(' ')
+  if (!datePart || !timePart || rest.length > 0) return formatted
+  return (
+    <span className="rag-date-time">
+      <span>{datePart}</span>
+      <span>{timePart}</span>
+    </span>
+  )
+}
 
 function SortHeader({ label, sortKey, currentKey, currentDir, onSort, width, className }: {
   label: string; sortKey: SortKey; currentKey: SortKey | null; currentDir: SortDir; onSort: (key: SortKey) => void; width?: number; className?: string
@@ -274,35 +288,51 @@ export function Threads() {
           <tr>
             <th style={{ width: 32 }}><input type="checkbox" checked={allPagedSelected} onChange={toggleSelectAll} /></th>
             <th style={{ width: 60 }}>{t('tid')}</th>
-            <th style={{ width: 300 }}>{t('title')}</th>
+            <th style={{ width: 480 }}>{t('title')}</th>
             <th style={{ width: 80 }}>{t('forum')}</th>
             <th style={{ width: 110 }} className="hide-mobile">{t('category')}</th>
-            <th style={{ width: 90 }} className="hide-mobile">{t('archive')}</th>
+            <th style={{ width: 60 }} className="hide-mobile">{t('archive')}</th>
             <SortHeader label={t('reply_count')} sortKey="reply_count" currentKey={sortKey} currentDir={sortDir} onSort={handleSort} width={55} />
-            <SortHeader label={t('pub_time')} sortKey="pub_time" currentKey={sortKey} currentDir={sortDir} onSort={handleSort} width={130} />
-            <SortHeader label={t('sync_time')} sortKey="sync_time" currentKey={sortKey} currentDir={sortDir} onSort={handleSort} width={160} className="hide-mobile" />
+            <SortHeader label={t('pub_time')} sortKey="pub_time" currentKey={sortKey} currentDir={sortDir} onSort={handleSort} width={105} />
+            <SortHeader label={t('last_reply_time')} sortKey="remote_last_reply_at" currentKey={sortKey} currentDir={sortDir} onSort={handleSort} width={105} className="hide-mobile" />
+            <SortHeader label={t('sync_time')} sortKey="sync_time" currentKey={sortKey} currentDir={sortDir} onSort={handleSort} width={105} className="hide-mobile" />
             <th style={{ width: 84 }}>{t('action')}</th>
           </tr>
         </thead>
         <tbody>
-          {paged.map(t_ => (
+          {paged.map(t_ => {
+            const titleText = formatThreadListTitle(t_)
+            return (
             <tr key={t_.tid}>
               <td><input type="checkbox" checked={selectedTids.has(t_.tid)} onChange={() => toggleSelect(t_.tid)} /></td>
               <td className="mono"><Link to={`/threads/${t_.tid}`}>{t_.tid}</Link></td>
-              <td className="truncate" title={t_.display_title || t_.raw_title}><Link to={`/threads/${t_.tid}`}>{t_.display_title || t_.raw_title}</Link></td>
+              <td className="truncate" title={titleText}><Link to={`/threads/${t_.tid}`}>{titleText}</Link></td>
               <td className="nowrap">{forums.find(f => f.forum_id === t_.forum_id)?.[lang === 'en' ? 'name_en' : 'name'] || t_.forum_id || '-'}</td>
               <td className="nowrap hide-mobile">{t_.category || '-'}</td>
               <td className="hide-mobile"><ContentBadge kind={t_.content_kind} /></td>
-              <td>{t_.reply_count || '-'}</td>
-              <td style={{ textAlign: 'center' }}>{formatDateTime(t_.pub_time)}</td>
-              <td className="nowrap hide-mobile" style={{ textAlign: 'center' }}>{formatDateTime(t_.sync_time)}</td>
+              <td
+                title={
+                  t_.remote_reply_count != null
+                    ? `${t('remote_reply_count')}: ${t_.remote_reply_count} / ${t('local_reply_count')}: ${t_.local_reply_count ?? '-'} / ${t('floor_count')}: ${t_.floor_count}`
+                    : `${t('local_reply_count')}: ${t_.local_reply_count ?? '-'} / ${t('floor_count')}: ${t_.floor_count}`
+                }
+              >
+                {t_.reply_count ?? '-'}
+              </td>
+              <td className="col-time" style={{ textAlign: 'center' }}>{formatDateTimeStacked(t_.pub_time)}</td>
+              <td className="col-time hide-mobile" style={{ textAlign: 'center' }}>{formatDateTimeStacked(t_.remote_last_reply_at)}</td>
+              <td className="col-time hide-mobile" style={{ textAlign: 'center' }}>{formatDateTimeStacked(t_.sync_time)}</td>
               <td><button className="btn-danger-outline" onClick={() => setConfirmDeleteTids([t_.tid])} style={{ fontSize: 11, padding: '2px 6px' }}>{t('delete')}</button></td>
             </tr>
-          ))}
+          )})}
         </tbody>
       </table></div>
 
       <PaginationControls page={page} totalPages={totalPages} onPageChange={setPage} scrollTargetId="threads-pagination-top" />
+
+      {deleteError && !confirmDeleteTids && (
+        <p style={{ fontSize: 12, color: 'var(--status-error)', margin: '12px 0 0' }}>{deleteError}</p>
+      )}
 
       {confirmDeleteTids && (
         <div className="confirm-overlay" onClick={() => { setConfirmDeleteTids(null); setDeleteError(null) }}>

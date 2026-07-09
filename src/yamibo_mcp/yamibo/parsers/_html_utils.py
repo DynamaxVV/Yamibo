@@ -140,6 +140,23 @@ def format_style(style_map: dict[str, str]) -> str | None:
 
 _RICH_BLOCK_TAGS = {"div", "p", "blockquote", "ul", "ol", "li", "pre"}
 _RICH_IGNORED_TAGS: set[str] = set()
+_ATTACHMENT_FILE_EXTS = r"jpg|jpeg|png|gif|webp|bmp|txt|rar|zip|7z|pdf|doc|docx|xls|xlsx|ppt|pptx|epub|mobi|azw3|torrent"
+_ATTACHMENT_FILENAME_HTML_RE = re.compile(
+    rf"<p>\s*(?:(?:<strong>)?\s*[^<>]+?\.(?:{_ATTACHMENT_FILE_EXTS})\s*(?:</strong>)?|<a\b[^>]*>\s*[^<>]+?\.(?:{_ATTACHMENT_FILE_EXTS})\s*</a>)\s*(?:<em>\s*\([^<]*下载次数:\s*\d*\s*\)</em>)?\s*</p>",
+    re.IGNORECASE,
+)
+_ATTACHMENT_DOWNLOAD_HTML_RE = re.compile(
+    r"<p>\s*(?:<a\b[^>]*>\s*下载附件\s*</a>)?(?:\s|&nbsp;|\u00a0)*保存到相册(?:\s|&nbsp;|\u00a0)*(?:<a\b[^>]*>\s*下载附件\s*</a>)?(?:\s|&nbsp;|\u00a0)*</p>|<div>\s*(?:<div>\s*)*<div>\s*\d{4}-\d{1,2}-\d{1,2}\s+\d{1,2}:\d{2}\s+上传\s*</div>\s*点击文件名下载附件(?:\s*<br>\s*[^<]*)?\s*(?:</div>\s*)+</div>",
+    re.IGNORECASE,
+)
+_ATTACHMENT_UPLOAD_HTML_RE = re.compile(
+    r"<p>\s*\d{4}-\d{1,2}-\d{1,2}\s+\d{1,2}:\d{2}\s+上传\s*</p>|<div>\s*\d{4}-\d{1,2}-\d{1,2}\s+\d{1,2}:\d{2}\s+上传\s*</div>",
+    re.IGNORECASE,
+)
+_EMPTY_HTML_BLOCK_RE = re.compile(
+    r"<(?P<tag>div|p|span|em|strong|blockquote)>\s*(?:&nbsp;|\u00a0|\s|<br>)*</(?P=tag)>",
+    re.IGNORECASE,
+)
 
 
 class _RichBodyNormalizer(HTMLParser):
@@ -258,4 +275,34 @@ def normalize_rich_body_html(html: str | None) -> str | None:
         return None
     parser = _RichBodyNormalizer()
     parser.feed(html)
-    return parser.result() or None
+    normalized = parser.result()
+    normalized = _strip_attachment_noise_html(normalized)
+    normalized = _collapse_empty_html_blocks(normalized)
+    return normalized or None
+
+
+def _strip_attachment_noise_html(html: str) -> str:
+    cleaned = html
+    patterns = (
+        _ATTACHMENT_FILENAME_HTML_RE,
+        _ATTACHMENT_DOWNLOAD_HTML_RE,
+        _ATTACHMENT_UPLOAD_HTML_RE,
+    )
+    changed = True
+    while changed:
+        before = cleaned
+        for pattern in patterns:
+            cleaned = pattern.sub("", cleaned)
+        cleaned = re.sub(r"(?:\s|&nbsp;|\u00a0){2,}", " ", cleaned)
+        changed = cleaned != before
+    return cleaned.strip()
+
+
+def _collapse_empty_html_blocks(html: str) -> str:
+    cleaned = html
+    changed = True
+    while changed:
+        before = cleaned
+        cleaned = _EMPTY_HTML_BLOCK_RE.sub("", cleaned)
+        changed = cleaned != before
+    return cleaned.strip()

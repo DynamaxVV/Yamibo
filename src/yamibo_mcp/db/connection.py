@@ -196,7 +196,19 @@ def row_to_dict(row: Any | None) -> dict[str, Any] | None:
     return dict(row._mapping)
 
 
-def connect(db_path: Path | str | Settings | None = None) -> DatabaseConnection:
+def connect(
+    db_path: Path | str | Settings | None = None,
+    *,
+    pool_role: str = "web",
+) -> DatabaseConnection:
+    """打开一个数据库连接。
+
+    参数:
+        db_path: 数据库路径、Settings 对象或 None（使用默认配置）。
+        pool_role: 连接池角色 —— ``"web"`` 用于短连接（Web 请求），
+                   ``"daemon"`` 用于长连接（后台 job 处理）。
+                   仅 PostgreSQL 生效；SQLite 忽略此参数。
+    """
     settings = db_path if isinstance(db_path, Settings) else load_settings()
     # A Path that matches settings.db_path is NOT an explicit SQLite choice —
     # it's the caller passing along the default path. Respect db_backend.
@@ -208,7 +220,20 @@ def connect(db_path: Path | str | Settings | None = None) -> DatabaseConnection:
     if not explicit_sqlite_path and settings.db_backend == "postgres":
         if not settings.db_url:
             raise ValueError("db_url is required when db_backend=postgres")
-        engine = _postgres_engine(settings.db_url, settings.db_pool_min, settings.db_pool_max, settings.db_pool_timeout, settings.db_connect_timeout, settings.db_ssl_mode, str(settings.db_ssl_root_cert) if settings.db_ssl_root_cert else None)
+        pool_min = settings.db_pool_min
+        pool_max = settings.db_pool_max
+        if pool_role == "daemon":
+            pool_min, pool_max = _daemon_pool_size(settings)
+        engine = _postgres_engine_for_role(
+            settings.db_url,
+            pool_min,
+            pool_max,
+            settings.db_pool_timeout,
+            settings.db_connect_timeout,
+            settings.db_ssl_mode,
+            str(settings.db_ssl_root_cert) if settings.db_ssl_root_cert else None,
+            pool_role=pool_role,
+        )
         _bootstrap_postgres_database(engine, settings.db_schema)
         try:
             return DatabaseConnection(engine.connect(), backend="postgres")
@@ -246,8 +271,20 @@ def _resolve_db_path(db_path: Path | str | Settings | None, settings: Settings) 
     return Path(db_path).expanduser()
 
 
+def _daemon_pool_size(settings: Settings) -> tuple[int, int]:
+    """返回 daemon 连接池的 (pool_min, pool_max)。
+
+    每个 worker 最多同时持有 2 个连接（run_once + _write_series_artifacts），
+    乘以可能的 2 个 daemon 进程 + 余量 = parallelism * 4 + 2。
+    """
+    parallelism = max(getattr(settings, "worker_parallelism", 1), 1)
+    pool_min = max(parallelism, 2)
+    pool_max = max(parallelism * 4 + 2, pool_min + 3)
+    return pool_min, pool_max
+
+
 @lru_cache(maxsize=None)
-def _postgres_engine(
+def _postgres_engine_for_role(
     db_url: str,
     pool_min: int,
     pool_max: int,
@@ -255,7 +292,14 @@ def _postgres_engine(
     connect_timeout: float,
     ssl_mode: str,
     ssl_root_cert: str | None,
+    *,
+    pool_role: str = "web",
 ) -> Engine:
+    """返回 PostgreSQL 引擎，按角色隔离连接池。
+
+    ``pool_role="daemon"`` 使用独立的连接池，池大小由 ``_daemon_pool_size()``
+    根据 ``worker_parallelism`` 动态计算，避免 daemon 长时间持有连接时阻塞 Web 请求。
+    """
     connect_args: dict[str, object] = {"connect_timeout": connect_timeout}
     if ssl_mode:
         connect_args["sslmode"] = ssl_mode

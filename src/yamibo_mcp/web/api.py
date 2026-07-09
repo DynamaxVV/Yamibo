@@ -6,8 +6,8 @@ from http import HTTPStatus
 from yamibo_mcp.config import Settings
 from yamibo_mcp.db.connection import connect
 from yamibo_mcp.db.migrations import migrate
-from .routes._helpers import error_response
-from .routes.settings import handle_settings_get, handle_settings_update, handle_settings_models_get
+from .routes._helpers import error_response, json_response
+from .routes.settings import handle_settings_get, handle_settings_update, handle_settings_models_get, handle_hermes_test_connection
 from .routes.dashboard import handle_dashboard
 from .routes.jobs import (
     handle_jobs_list, handle_jobs_counts, handle_jobs_failure_counts,
@@ -45,6 +45,7 @@ from .routes.remote_forum import (
     handle_remote_forums_list, handle_remote_forum_browse, handle_remote_thread_detail,
     handle_remote_image_proxy,
 )
+from .routes.chat import handle_chat_context, handle_chat_turn, handle_chat_session_delete
 
 
 def handle_api(handler, path: str, query: str, settings: Settings) -> bool:
@@ -68,7 +69,16 @@ def handle_api(handler, path: str, query: str, settings: Settings) -> bool:
 
 
 def _route(handler, route: str, params, conn, settings):
-    if route == "/dashboard":
+    if route == "/health" and handler.command == "GET":
+        json_response(
+            handler,
+            {
+                "ok": True,
+                "database": settings.db_backend,
+                "data_dir": str(settings.data_dir),
+            },
+        )
+    elif route == "/dashboard":
         handle_dashboard(handler, conn, params, settings)
     elif route == "/jobs" and handler.command == "GET":
         handle_jobs_list(handler, params, conn)
@@ -183,10 +193,19 @@ def _route(handler, route: str, params, conn, settings):
         handle_settings_update(handler, settings)
     elif route == "/settings/models" and handler.command == "GET":
         handle_settings_models_get(handler, settings)
+    elif route == "/settings/hermes-test" and handler.command == "POST":
+        handle_hermes_test_connection(handler, settings)
     elif route == "/debug/info" and handler.command == "GET":
         handle_debug_info(handler, conn, settings)
     elif route == "/logs" and handler.command == "GET":
         handle_logs(handler, params)
+    elif route == "/chat/context" and handler.command == "GET":
+        handle_chat_context(handler, settings)
+    elif route == "/chat/turn" and handler.command == "POST":
+        handle_chat_turn(handler, settings)
+    elif route.startswith("/chat/sessions/") and handler.command == "DELETE":
+        session_id = route[15:]
+        handle_chat_session_delete(handler, settings, session_id)
     elif route == "/remote/forums" and handler.command == "GET":
         handle_remote_forums_list(handler, conn, settings)
     elif route == "/remote/forum" and handler.command == "GET":

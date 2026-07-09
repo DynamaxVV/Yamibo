@@ -16,6 +16,7 @@ import { RemoteThreadDetail } from './pages/RemoteThreadDetail'
 import { Logs } from './pages/Logs'
 import { Rag } from './pages/Rag'
 import { Settings } from './pages/Settings'
+import { Chat } from './pages/Chat'
 
 export default function App() {
   return (
@@ -37,6 +38,7 @@ export default function App() {
             <Route path="/forum" element={<RemoteForum />} />
             <Route path="/forum/:tid" element={<RemoteThreadDetail />} />
             <Route path="/rag" element={<Rag />} />
+            <Route path="/chat" element={<Chat />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/logs" element={<Logs />} />
           </Route>

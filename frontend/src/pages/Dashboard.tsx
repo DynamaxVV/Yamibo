@@ -4,25 +4,41 @@ import { api, type DashboardData, type ThreadSummary } from '../api/client'
 import { Badge } from '../components/Badge'
 import { useI18n } from '../context/I18nContext'
 import { formatDateTime } from '../utils/time'
+import { formatThreadListTitle } from '../utils/threadTitle'
+
+function formatDateTimeStacked(value: string | null) {
+  const formatted = formatDateTime(value)
+  if (formatted === '-') return formatted
+  const [datePart, timePart, ...rest] = formatted.split(' ')
+  if (!datePart || !timePart || rest.length > 0) return formatted
+  return (
+    <span className="rag-date-time">
+      <span>{datePart}</span>
+      <span>{timePart}</span>
+    </span>
+  )
+}
 
 function RecentTable({ threads, forumNames, t, liveStatuses }: { threads: ThreadSummary[]; forumNames: Record<number, string>; t: (k: string) => string; liveStatuses: Record<number, string> }) {
   if (threads.length === 0) return <div className="panel" style={{ color: 'var(--text-tertiary)', padding: '8px 12px', fontSize: 12 }}>{t('no_data')}</div>
   return (
       <div className="table-wrap"><table className="dashboard-recent-table">
-        <thead><tr><th className="col-tid">{t('tid')}</th><th className="col-title">{t('title')}</th><th className="col-forum">{t('forum')}</th><th className="col-status">{t('archive_status')}</th><th className="col-pub-time">{t('pub_time')}</th><th className="col-sync-time">{t('sync_time')}</th></tr></thead>
+        <thead><tr><th className="col-tid">{t('tid')}</th><th className="col-title">{t('title')}</th><th className="col-forum">{t('forum')}</th><th className="col-status">{t('archive_status')}</th><th className="col-replies">{t('reply_count')}</th><th className="col-pub-time">{t('pub_time')}</th><th className="col-last-reply-time">{t('last_reply_time')}</th></tr></thead>
         <tbody>
           {threads.map(t_ => (
             (() => {
               const liveStatus = liveStatuses[t_.tid]
               const status = liveStatus || t_.archive_status
+              const titleText = formatThreadListTitle(t_)
               return (
             <tr key={t_.tid}>
               <td className="mono col-tid"><Link to={`/threads/${t_.tid}`}>{t_.tid}</Link></td>
-              <td className="truncate col-title" title={t_.display_title || t_.raw_title}><Link to={`/threads/${t_.tid}`}>{t_.display_title || t_.raw_title}</Link></td>
+              <td className="truncate col-title" title={titleText}><Link to={`/threads/${t_.tid}`}>{titleText}</Link></td>
               <td className="col-forum">{forumNames[t_.forum_id ?? 0] || '-'}</td>
               <td className="col-status"><Badge status={status} /></td>
-              <td className="dashboard-time col-pub-time">{formatDateTime(t_.pub_time)}</td>
-              <td className="dashboard-time col-sync-time">{formatDateTime(t_.sync_time)}</td>
+              <td className="col-replies">{t_.reply_count ?? '-'}</td>
+              <td className="dashboard-time col-pub-time">{formatDateTimeStacked(t_.pub_time)}</td>
+              <td className="dashboard-time col-last-reply-time">{formatDateTimeStacked(t_.remote_last_reply_at)}</td>
             </tr>
               )
             })()

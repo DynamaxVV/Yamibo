@@ -18,6 +18,18 @@ def create_update_thread_job(*, tid: int, base_url: str | None = None) -> dict[s
     try:
         ensure_remote_access_allowed(conn)
         repo = JobsRepository(conn)
+        threads_repo = ThreadsRepository(conn)
+        thread = threads_repo.get_thread(tid)
+        if thread is None:
+            raise ValueError(f"thread {tid} not found")
+        forum_id = thread["forum_id"] if "forum_id" in thread.keys() else None
+        content_kind = thread["content_kind"] if "content_kind" in thread.keys() else None
+        forum = resolve_forum(forum_id) if forum_id is not None else None
+        if content_kind != "novel" and (forum is None or forum.content_kind != "novel"):
+            raise ValueError(
+                f"thread {tid} is not a novel thread; incremental update only supports "
+                f"novel forum (content_kind=novel), got forum_id={forum_id} content_kind={content_kind}"
+            )
         payload = {"tid": tid}
         if base_url:
             payload["base_url"] = base_url

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -169,3 +170,27 @@ class TestGetJobStatusPayload:
         assert result["execution_state"] == "terminal"
         assert result["needs_attention"] is True
         assert "download_images timed out" in result["diagnostic_summary"]
+
+    def test_direct_schema_payload_accepts_datetime_fields(self):
+        job = MagicMock()
+        now = datetime(2026, 7, 6, 0, 50, 0, tzinfo=timezone.utc)
+        job.job_id = "job-1"
+        job.job_type = "update_thread"
+        job.status = "running"
+        job.stage = "write_context"
+        job.progress_current = 1
+        job.progress_total = 2
+        job.worker_id = "worker-1"
+        job.error_code = None
+        job.error_message = None
+        job.artifacts = {}
+        job.created_at = now
+        job.updated_at = now
+        job.finished_at = None
+
+        with patch("yamibo_mcp.server.schemas.utc_now_iso", return_value="2026-07-06T00:50:10+00:00"):
+            payload = direct_job_status_payload(job)
+
+        assert payload["job_id"] == "job-1"
+        assert payload["execution_state"] == "normal"
+        assert payload["running_duration_seconds"] == 10

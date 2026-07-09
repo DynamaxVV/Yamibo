@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import logging
 from decimal import Decimal
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from yamibo_mcp.db.repositories.rag_chunks import RagChunksRepository
 from yamibo_mcp.domain.enums import JobStatus
@@ -22,6 +22,7 @@ from yamibo_mcp.web.routes.threads import (
     handle_threads_list,
     handle_thread_detail,
     handle_thread_update_check,
+    handle_update_chapter,
     handle_update_thread,
 )
 from yamibo_mcp.web.routes.jobs import (
@@ -40,7 +41,7 @@ from yamibo_mcp.web.routes.rag import (
     handle_rag_search,
     handle_rag_threads,
 )
-from yamibo_mcp.web.routes.review import handle_update_title
+from yamibo_mcp.web.routes.review import handle_merge_series, handle_update_title
 from yamibo_mcp.web.routes.settings import handle_settings_get, handle_settings_update
 from yamibo_mcp.web.routes.debug import handle_debug_info
 from yamibo_mcp.logging import configure_logging
@@ -66,7 +67,7 @@ class _CaptureHandler:
         pass
 
 
-def _make_snapshot(tid: int = 42) -> ThreadSnapshot:
+def _make_snapshot(tid: int = 42, *, floors: list[FloorSnapshot] | None = None) -> ThreadSnapshot:
     title = TitleSnapshot(
         raw_title="[组] 测试帖子",
         display_title="测试帖子",
@@ -96,6 +97,7 @@ def _make_snapshot(tid: int = 42) -> ThreadSnapshot:
         has_images=True,
         image_urls=["https://img.example.com/a.jpg"],
     )
+    resolved_floors = floors or [floor]
     return ThreadSnapshot(
         tid=tid,
         url=f"https://bbs.yamibo.com/forum.php?mod=viewthread&tid={tid}&authorid=100",
@@ -107,8 +109,21 @@ def _make_snapshot(tid: int = 42) -> ThreadSnapshot:
         publisher_uid="100",
         pub_time="2025-01-01 00:00",
         permission=0,
-        floors=[floor],
+        floors=resolved_floors,
         image_count=1,
+    )
+
+
+def _make_floor(pid: int, tid: int, floor_no: int, *, pub_time: str, publisher: str) -> FloorSnapshot:
+    return FloorSnapshot(
+        pid=pid,
+        tid=tid,
+        floor_no=floor_no,
+        publisher=publisher,
+        content="正文",
+        pub_time=pub_time,
+        has_images=False,
+        image_urls=[],
     )
 
 
@@ -300,8 +315,13 @@ def test_threads_list_returns_paginated_payload(db):
     for tid, sync_time, archive_status in seeded:
         repo.upsert_snapshot(_make_snapshot(tid=tid), forum_id=55)
         db.execute(
-            "UPDATE threads SET sync_time = ?, pub_time = ?, archive_status = ?, forum_id = ? WHERE tid = ?",
-            (sync_time, sync_time, archive_status, 55, tid),
+            """
+            UPDATE threads
+            SET sync_time = ?, pub_time = ?, archive_status = ?, forum_id = ?,
+                local_reply_count = ?, remote_last_reply_at = ?, remote_reply_count = ?, remote_last_replier = ?
+            WHERE tid = ?
+            """,
+            (sync_time, sync_time, archive_status, 55, tid + 10, f"2026-07-{tid - 100:02d}T08:00:00+00:00", tid + 20, f"user-{tid}", tid),
         )
     db.commit()
 
@@ -324,6 +344,51 @@ def test_threads_list_returns_paginated_payload(db):
     assert payload["total_count"] == 4
     assert payload["total_pages"] == 2
     assert [item["tid"] for item in payload["items"]] == [103, 104]
+    assert payload["items"][0]["remote_last_reply_at"] == "2026-07-03T08:00:00+00:00"
+    assert payload["items"][0]["remote_reply_count"] == 123
+    assert payload["items"][0]["local_reply_count"] == 113
+    assert payload["items"][0]["reply_count"] == 123
+    assert payload["items"][0]["author_guess"] == "作者"
+    assert payload["items"][0]["group_name"] == "组"
+
+
+def test_threads_list_falls_back_to_last_floor_time_and_floor_reply_count(db):
+    repo = ThreadsRepository(db)
+    repo.upsert_snapshot(
+        _make_snapshot(
+            tid=201,
+            floors=[
+                _make_floor(pid=2011, tid=201, floor_no=1, pub_time="2025-01-01 08:00:00", publisher="user-a"),
+                _make_floor(pid=2012, tid=201, floor_no=2, pub_time="2025-01-02 09:30:00", publisher="user-b"),
+            ],
+        ),
+        forum_id=55,
+    )
+    db.execute(
+        """
+        UPDATE threads
+        SET sync_time = ?, pub_time = ?, local_reply_count = NULL,
+            remote_last_reply_at = NULL, remote_last_reply_at_raw = NULL, remote_reply_count = NULL, remote_last_replier = NULL
+        WHERE tid = ?
+        """,
+        ("2025-01-02 10:00:00", "2025-01-01 08:00:00", 201),
+    )
+    db.commit()
+
+    handler = _CaptureHandler()
+    handle_threads_list(
+        handler,
+        {"forum_id": ["55"], "page": ["1"], "page_size": ["10"]},
+        db,
+    )
+
+    payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
+    item = next(row for row in payload["items"] if row["tid"] == 201)
+    assert item["local_reply_count"] == 1
+    assert item["reply_count"] == 1
+    assert item["remote_last_reply_at"] == "2025-01-02 09:30:00"
+    assert item["remote_last_reply_at_raw"] == "2025-01-02 09:30:00"
+    assert item["remote_last_replier"] == "user-b"
 
 
 def test_thread_update_check_endpoint_returns_json(db):
@@ -826,15 +891,37 @@ def test_settings_update_rejects_locked_fields(tmp_path: Path, monkeypatch):
 
 
 def test_thread_update_endpoint_creates_update_job(db):
+    ThreadsRepository(db).upsert_snapshot(_make_snapshot(tid=42), forum_id=55)
     handler = _CaptureHandler()
     body = {"tid": 42, "base_url": "https://bbs.yamibo.com"}
     handler.headers["Content-Length"] = str(len(json.dumps(body)))
     handler.rfile = io.BytesIO(json.dumps(body).encode("utf-8"))
-    handle_update_thread(handler, db)
+    # create_update_thread_job 内部 finally 会 conn.close()；用 wraps 代理真实 db 但让 close 变 no-op
+    conn_mock = MagicMock(wraps=db)
+    conn_mock.close = lambda: None
+    with patch("yamibo_mcp.application.update_commands.connect", return_value=conn_mock), \
+         patch("yamibo_mcp.application.update_commands.load_settings", return_value=SimpleNamespace(db_path=Path("test"))):
+        handle_update_thread(handler, db)
     payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
     assert payload["ok"] is True
     job = JobsRepository(db).get(payload["job_id"])
     assert job.job_type == "update_thread"
+
+
+def test_thread_update_endpoint_rejects_non_novel_thread(db):
+    ThreadsRepository(db).upsert_snapshot(_make_snapshot(tid=42), forum_id=5)
+    handler = _CaptureHandler()
+    body = {"tid": 42, "base_url": "https://bbs.yamibo.com"}
+    handler.headers["Content-Length"] = str(len(json.dumps(body)))
+    handler.rfile = io.BytesIO(json.dumps(body).encode("utf-8"))
+    conn_mock = MagicMock(wraps=db)
+    conn_mock.close = lambda: None
+    with patch("yamibo_mcp.application.update_commands.connect", return_value=conn_mock), \
+         patch("yamibo_mcp.application.update_commands.load_settings", return_value=SimpleNamespace(db_path=Path("test"))):
+        handle_update_thread(handler, db)
+    payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
+    assert "error" in payload
+    assert "not a novel thread" in payload["error"]
 
 
 def test_update_title_defaults_missing_fields_from_existing_title(db):
@@ -853,6 +940,124 @@ def test_update_title_defaults_missing_fields_from_existing_title(db):
     assert payload["ok"] is True
     refreshed = ThreadsRepository(db).get_thread(42)
     assert refreshed["display_title"] == "新的标题"
+
+
+def test_update_chapter_updates_archive_metadata_without_review_route(db):
+    snapshot = _make_snapshot()
+    ThreadsRepository(db).upsert_snapshot(snapshot, forum_id=55)
+
+    handler = _CaptureHandler()
+    body = {
+        "tid": 42,
+        "display_title": "手动改标题",
+        "chapter_name": "番外",
+        "chapter_index": 1.5,
+        "author_guess": "作者乙",
+        "group_name": "B组",
+    }
+    handler.headers["Content-Length"] = str(len(json.dumps(body)))
+    handler.rfile = io.BytesIO(json.dumps(body).encode("utf-8"))
+
+    handle_update_chapter(handler, db)
+
+    payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
+    assert payload["ok"] is True
+    refreshed_thread = ThreadsRepository(db).get_thread(42)
+    refreshed_title = ThreadsRepository(db).get_title_parse(42)
+    assert refreshed_thread["display_title"] == "手动改标题"
+    assert refreshed_title["chapter_name"] == "番外"
+    assert refreshed_title["author_guess"] == "作者乙"
+
+
+def test_merge_series_endpoint_moves_threads_and_deletes_source(db):
+    from yamibo_mcp.db.repositories.series import SeriesRepository
+
+    repo = ThreadsRepository(db)
+    source_title = TitleSnapshot(
+        raw_title="[组] 源系列",
+        display_title="源系列",
+        group_name="组",
+        author_guess="作者",
+        core_title_guess="源系列",
+        normalized_core_title="源系列",
+        series_key="源系列",
+        title_aliases=[],
+        chapter_name=None,
+        chapter_index=None,
+        chapter_index_end=None,
+        chapter_title=None,
+        subtitle=None,
+        tags=[],
+        confidence=0.9,
+        needs_review=False,
+        parser_version="title-v1",
+    )
+    target_title = TitleSnapshot(
+        raw_title="[组] 目标系列",
+        display_title="目标系列",
+        group_name="组",
+        author_guess="作者",
+        core_title_guess="目标系列",
+        normalized_core_title="目标系列",
+        series_key="目标系列",
+        title_aliases=[],
+        chapter_name=None,
+        chapter_index=None,
+        chapter_index_end=None,
+        chapter_title=None,
+        subtitle=None,
+        tags=[],
+        confidence=0.9,
+        needs_review=False,
+        parser_version="title-v1",
+    )
+    source_snapshot = ThreadSnapshot(
+        tid=501,
+        url="https://bbs.yamibo.com/forum.php?mod=viewthread&tid=501",
+        page_type="thread_detail",
+        raw_title="源系列",
+        display_title="源系列",
+        title=source_title,
+        publisher="u1",
+        publisher_uid="100",
+        pub_time="2025-01-01 00:00",
+        permission=0,
+        floors=[_make_floor(pid=501001, tid=501, floor_no=1, pub_time="2025-01-01 00:00", publisher="u1")],
+        image_count=0,
+    )
+    target_snapshot = ThreadSnapshot(
+        tid=502,
+        url="https://bbs.yamibo.com/forum.php?mod=viewthread&tid=502",
+        page_type="thread_detail",
+        raw_title="目标系列",
+        display_title="目标系列",
+        title=target_title,
+        publisher="u1",
+        publisher_uid="100",
+        pub_time="2025-01-01 00:00",
+        permission=0,
+        floors=[_make_floor(pid=502001, tid=502, floor_no=1, pub_time="2025-01-01 00:00", publisher="u1")],
+        image_count=0,
+    )
+    repo.upsert_snapshot(source_snapshot, forum_id=55)
+    repo.upsert_snapshot(target_snapshot, forum_id=55)
+
+    series_repo = SeriesRepository(db)
+    source_id = repo.get_thread(501)["series_id"]
+    target_id = repo.get_thread(502)["series_id"]
+
+    handler = _CaptureHandler()
+    body = {"source_series_id": source_id, "target_series_id": target_id}
+    handler.headers["Content-Length"] = str(len(json.dumps(body)))
+    handler.rfile = io.BytesIO(json.dumps(body).encode("utf-8"))
+
+    handle_merge_series(handler, db, SimpleNamespace())
+
+    payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
+    assert payload["ok"] is True
+    assert payload["target_series_id"] == target_id
+    assert series_repo.get_series(source_id) is None
+    assert repo.get_thread(501)["series_id"] == target_id
 
 
 def test_batch_delete_threads_endpoint_deletes_requested_threads(db):
@@ -945,39 +1150,21 @@ def _seed_rag_thread(db):
     RagChunksRepository(db).replace_thread_chunks(
         tid=42,
         chunks=[
-            RagChunk(
+            _rag_chunk(
                 chunk_id="thread:42:title",
-                tid=42,
                 pid=None,
                 floor_no=None,
                 chunk_type="thread_title",
-                forum_id=55,
-                content_kind="novel",
-                series_id=1,
-                series_key="测试帖子",
-                chapter_index=1.0,
-                publisher="u1",
-                pub_time="2025-01-01 00:00",
-                title="测试帖子",
                 metadata_text="作者\n测试帖子",
                 text="测试帖子 第一章",
                 text_hash="hash-1",
                 source_uri="yamibo://threads/42/summary",
             ),
-            RagChunk(
+            _rag_chunk(
                 chunk_id="thread:42:floor:1:part:1",
-                tid=42,
                 pid=1001,
                 floor_no=1,
                 chunk_type="floor",
-                forum_id=55,
-                content_kind="novel",
-                series_id=1,
-                series_key="测试帖子",
-                chapter_index=1.0,
-                publisher="u1",
-                pub_time="2025-01-01 00:00",
-                title="测试帖子",
                 metadata_text="作者\n测试帖子",
                 text="星空下的告白",
                 text_hash="hash-2",
@@ -990,6 +1177,47 @@ def _seed_rag_thread(db):
     db.execute("UPDATE rag_chunks SET embedding_status = 'indexed' WHERE chunk_id = 'thread:42:title'")
     db.execute("UPDATE rag_chunks SET embedding_status = 'failed' WHERE chunk_id = 'thread:42:floor:1:part:1'")
     db.commit()
+
+
+def _rag_chunk(
+    *,
+    chunk_id: str,
+    pid: int | None,
+    floor_no: int | None,
+    chunk_type: str,
+    metadata_text: str,
+    text: str,
+    text_hash: str,
+    source_uri: str,
+) -> RagChunk:
+    return RagChunk(
+        chunk_id=chunk_id,
+        tid=42,
+        pid=pid,
+        floor_no=floor_no,
+        chunk_type=chunk_type,
+        forum_id=55,
+        content_kind="novel",
+        series_id=1,
+        series_key="测试帖子",
+        chapter_index=1.0,
+        publisher="u1",
+        pub_time="2025-01-01 00:00",
+        title="测试帖子",
+        metadata_text=metadata_text,
+        text=text,
+        text_hash=text_hash,
+        source_uri=source_uri,
+        source_tid=42,
+        source_pid=pid,
+        source_floor_no=floor_no,
+        cleaner_version="anime-cleaner-1.2",
+        chunker_version="anime-chunker-1.2",
+        materializer_version="anime-rag-materializer-1.2",
+        source_hash="test-source-hash",
+        generated_at="2025-01-01T00:00:00+00:00",
+        quality_flags=[],
+    )
 
 
 def test_rag_overview_exposes_counts_and_meta(db):

@@ -40,8 +40,9 @@ class TestWriteStagingSnapshot:
 
     def test_creates_parent_directories(self, tmp_path):
         paths = StoragePaths(tmp_path)
-        write_staging_snapshot(paths, "deep/job/002", _make_snapshot())
-        path = tmp_path / "staging" / "jobs" / "deep" / "job" / "002" / "snapshot.json"
+        # 真实 job_id 格式为 {job_type}_{uuid_hex}，不含路径分隔符
+        write_staging_snapshot(paths, "sync_thread_abc123def4567890", _make_snapshot())
+        path = tmp_path / "staging" / "jobs" / "sync_thread_abc123def4567890" / "snapshot.json"
         assert path.exists()
 
 

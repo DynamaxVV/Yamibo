@@ -6,6 +6,37 @@ from yamibo_mcp.rag.chunker import RagChunk
 from yamibo_mcp.domain.models import FloorSnapshot, ThreadSnapshot, TitleSnapshot
 
 
+def _make_rag_chunk(*, tid: int, pid: int | None, floor_no: int | None, chunk_id: str, text_hash: str) -> RagChunk:
+    return RagChunk(
+        chunk_id=chunk_id,
+        tid=tid,
+        pid=pid,
+        floor_no=floor_no,
+        chunk_type="floor",
+        forum_id=55,
+        content_kind="comic",
+        series_id=1,
+        series_key="测试漫画",
+        chapter_index=1.0,
+        publisher="user1",
+        pub_time="2025-01-01T00:00:00",
+        title="测试漫画 第1话",
+        metadata_text="测试漫画",
+        text="测试内容",
+        text_hash=text_hash,
+        source_uri=f"yamibo://threads/{tid}/posts#floor={floor_no}" if floor_no is not None else f"yamibo://threads/{tid}",
+        source_tid=tid,
+        source_pid=pid,
+        source_floor_no=floor_no,
+        cleaner_version="anime-cleaner-1.2",
+        chunker_version="anime-chunker-1.2",
+        materializer_version="anime-rag-materializer-1.2",
+        source_hash=f"hash:{tid}",
+        generated_at="2025-01-01T00:00:00Z",
+        quality_flags=[],
+    )
+
+
 def _make_title(**overrides) -> TitleSnapshot:
     defaults = dict(
         raw_title="[A组] 测试漫画 第1话",
@@ -113,6 +144,29 @@ class TestUpsertAndGetThread:
         assert row["content_kind"] == "novel"
         assert row["primary_media_type"] == "text"
 
+    def test_update_archive_metadata_creates_missing_title_parse_row(self, db):
+        repo = ThreadsRepository(db)
+        snapshot = _make_snapshot(tid=1100)
+        repo.upsert_snapshot(snapshot, forum_id=55)
+        db.execute("DELETE FROM title_parse WHERE tid = ?", (1100,))
+
+        repo.update_archive_metadata(
+            1100,
+            display_title="人工标题",
+            chapter_name="特别篇",
+            chapter_index=2.0,
+            author_guess="作者B",
+            group_name="C组",
+        )
+
+        thread_row = repo.get_thread(1100)
+        title_row = repo.get_title_parse(1100)
+        assert thread_row["display_title"] == "人工标题"
+        assert title_row is not None
+        assert title_row["display_title"] == "人工标题"
+        assert title_row["chapter_name"] == "特别篇"
+        assert title_row["series_key"] == "测试漫画"
+
 
 class TestTitleParseAndFloors:
     def test_upsert_creates_title_parse(self, db):
@@ -176,24 +230,12 @@ class TestDeleteThread:
         RagChunksRepository(db).replace_thread_chunks(
             tid=4001,
             chunks=[
-                RagChunk(
-                    chunk_id="thread:4001:floor:1:part:1",
+                _make_rag_chunk(
                     tid=4001,
                     pid=4002,
                     floor_no=1,
-                    chunk_type="floor",
-                    forum_id=55,
-                    content_kind="comic",
-                    series_id=1,
-                    series_key="测试漫画",
-                    chapter_index=1.0,
-                    publisher="user1",
-                    pub_time="2025-01-01T00:00:00",
-                    title="测试漫画 第1话",
-                    metadata_text="测试漫画",
-                    text="测试内容",
+                    chunk_id="thread:4001:floor:1:part:1",
                     text_hash="hash-1",
-                    source_uri="yamibo://threads/4001/posts#floor=1",
                 ),
             ],
             embedding_model="text-embedding-3-small",
@@ -240,24 +282,12 @@ class TestDeleteThread:
         RagChunksRepository(db).replace_thread_chunks(
             tid=4010,
             chunks=[
-                RagChunk(
-                    chunk_id="thread:4010:floor:1:part:1",
+                _make_rag_chunk(
                     tid=4010,
                     pid=4011,
                     floor_no=1,
-                    chunk_type="floor",
-                    forum_id=55,
-                    content_kind="comic",
-                    series_id=1,
-                    series_key="测试漫画",
-                    chapter_index=1.0,
-                    publisher="user1",
-                    pub_time="2025-01-01T00:00:00",
-                    title="测试漫画 第1话",
-                    metadata_text="测试漫画",
-                    text="测试内容",
+                    chunk_id="thread:4010:floor:1:part:1",
                     text_hash="hash-4010",
-                    source_uri="yamibo://threads/4010/posts#floor=1",
                 ),
             ],
             embedding_model="text-embedding-3-small",
@@ -342,6 +372,164 @@ class TestListThreadsPage:
         assert [row["tid"] for row in page2["items"]] == [6002, 6003]
         assert complete_only["total_count"] == 3
         assert [row["tid"] for row in complete_only["items"]] == [6004, 6001, 6002]
+
+    def test_list_threads_page_sorts_by_remote_last_reply_and_exposes_remote_fields(self, db):
+        repo = ThreadsRepository(db)
+        for tid in (6101, 6102):
+            repo.upsert_snapshot(_make_snapshot(tid=tid))
+        db.execute(
+            """
+            UPDATE threads
+            SET forum_id = ?, sync_time = ?, pub_time = ?, local_reply_count = ?,
+                remote_last_reply_at = ?, remote_reply_count = ?, remote_last_replier = ?
+            WHERE tid = ?
+            """,
+            (55, "2025-01-03 10:00:00", "2025-01-03 10:00:00", 3, "2026-07-05T10:00:00+00:00", 4, "user-a", 6101),
+        )
+        db.execute(
+            """
+            UPDATE threads
+            SET forum_id = ?, sync_time = ?, pub_time = ?, local_reply_count = ?,
+                remote_last_reply_at = ?, remote_reply_count = ?, remote_last_replier = ?
+            WHERE tid = ?
+            """,
+            (55, "2025-01-04 10:00:00", "2025-01-04 10:00:00", 5, "2026-07-06T10:00:00+00:00", 6, "user-b", 6102),
+        )
+        db.commit()
+
+        page = repo.list_threads_page(page=1, page_size=10, forum_id=55, sort_key="remote_last_reply_at", sort_dir="desc")
+
+        assert [row["tid"] for row in page["items"]] == [6102, 6101]
+        assert page["items"][0]["remote_reply_count"] == 6
+        assert page["items"][0]["local_reply_count"] == 5
+        assert page["items"][0]["floor_count"] == 1
+
+    def test_list_threads_page_sorts_by_reply_count_with_fallback_counts(self, db):
+        repo = ThreadsRepository(db)
+        repo.upsert_snapshot(
+            _make_snapshot(
+                tid=6201,
+                floors=[
+                    _make_floor(pid=62011, tid=6201, floor_no=1),
+                    _make_floor(pid=62012, tid=6201, floor_no=2),
+                    _make_floor(pid=62013, tid=6201, floor_no=3),
+                ],
+            )
+        )
+        repo.upsert_snapshot(_make_snapshot(tid=6202))
+        repo.upsert_snapshot(_make_snapshot(tid=6203))
+        db.execute(
+            """
+            UPDATE threads
+            SET forum_id = ?, sync_time = ?, pub_time = ?, local_reply_count = ?, remote_reply_count = ?
+            WHERE tid = ?
+            """,
+            (55, "2025-01-03 10:00:00", "2025-01-03 10:00:00", None, None, 6201),
+        )
+        db.execute(
+            """
+            UPDATE threads
+            SET forum_id = ?, sync_time = ?, pub_time = ?, local_reply_count = ?, remote_reply_count = ?
+            WHERE tid = ?
+            """,
+            (55, "2025-01-04 10:00:00", "2025-01-04 10:00:00", 5, None, 6202),
+        )
+        db.execute(
+            """
+            UPDATE threads
+            SET forum_id = ?, sync_time = ?, pub_time = ?, local_reply_count = ?, remote_reply_count = ?
+            WHERE tid = ?
+            """,
+            (55, "2025-01-05 10:00:00", "2025-01-05 10:00:00", 1, 8, 6203),
+        )
+        db.commit()
+
+        asc_page = repo.list_threads_page(page=1, page_size=10, forum_id=55, sort_key="reply_count", sort_dir="asc")
+        desc_page = repo.list_threads_page(page=1, page_size=10, forum_id=55, sort_key="reply_count", sort_dir="desc")
+
+        assert [row["tid"] for row in asc_page["items"]] == [6201, 6202, 6203]
+        assert [row["tid"] for row in desc_page["items"]] == [6203, 6202, 6201]
+
+    def test_list_threads_page_exposes_last_floor_fallback_for_last_reply_time(self, db):
+        repo = ThreadsRepository(db)
+        repo.upsert_snapshot(
+            _make_snapshot(
+                tid=6301,
+                floors=[
+                    _make_floor(pid=63011, tid=6301, floor_no=1, pub_time="2025-01-01 10:00:00", publisher="u1"),
+                    _make_floor(pid=63012, tid=6301, floor_no=2, pub_time="2025-01-03 12:00:00", publisher="u2"),
+                ],
+            )
+        )
+        db.execute(
+            """
+            UPDATE threads
+            SET forum_id = ?, remote_last_reply_at = NULL, remote_last_reply_at_raw = NULL, remote_last_replier = NULL
+            WHERE tid = ?
+            """,
+            (55, 6301),
+        )
+        db.commit()
+
+        page = repo.list_threads_page(page=1, page_size=10, forum_id=55, sort_key="sync_time", sort_dir="desc")
+
+        assert page["items"][0]["last_floor_pub_time"] == "2025-01-03 12:00:00"
+        assert page["items"][0]["last_floor_publisher"] == "u2"
+
+    def test_upsert_snapshot_persists_last_floor_reply_defaults(self, db):
+        repo = ThreadsRepository(db)
+        repo.upsert_snapshot(
+            _make_snapshot(
+                tid=6351,
+                floors=[
+                    _make_floor(pid=63511, tid=6351, floor_no=1, pub_time="2025-01-01 10:00:00", publisher="u1"),
+                    _make_floor(pid=63512, tid=6351, floor_no=2, pub_time="2025-01-03 12:00:00", publisher="u2"),
+                ],
+            ),
+            forum_id=55,
+        )
+        db.commit()
+
+        row = repo.get_thread(6351)
+
+        assert row["local_reply_count"] == 1
+        assert row["remote_last_reply_at_raw"] == "2025-01-03 12:00:00"
+        assert row["remote_last_reply_at"] == "2025-01-03 12:00:00"
+        assert row["remote_last_replier"] == "u2"
+
+    def test_backfill_local_reply_metadata_uses_floor_defaults(self, db):
+        repo = ThreadsRepository(db)
+        repo.upsert_snapshot(
+            _make_snapshot(
+                tid=6401,
+                floors=[
+                    _make_floor(pid=64011, tid=6401, floor_no=1, pub_time="2025-01-01 10:00:00", publisher="u1"),
+                    _make_floor(pid=64012, tid=6401, floor_no=2, pub_time="2025-01-03 12:00:00", publisher="u2"),
+                    _make_floor(pid=64013, tid=6401, floor_no=3, pub_time="2025-01-04 13:00:00", publisher="u3"),
+                ],
+            )
+        )
+        db.execute(
+            """
+            UPDATE threads
+            SET local_reply_count = NULL, remote_last_reply_at_raw = NULL, remote_last_reply_at = NULL, remote_last_replier = NULL
+            WHERE tid = ?
+            """,
+            (6401,),
+        )
+        db.commit()
+
+        result = repo.backfill_local_reply_metadata()
+        db.commit()
+        row = repo.get_thread(6401)
+
+        assert result["thread_count"] >= 1
+        assert result["local_reply_count_updates"] >= 1
+        assert result["last_reply_updates"] >= 1
+        assert row["local_reply_count"] == 2
+        assert row["remote_last_reply_at_raw"] == "2025-01-04 13:00:00"
+        assert row["remote_last_reply_at"] == "2025-01-04 13:00:00"
+        assert row["remote_last_replier"] == "u3"
 
 
 class TestSearchThreads:

@@ -36,20 +36,15 @@ def error_to_wire(error: AgentError) -> dict[str, Any]:
 
 
 def to_wire(result: AgentResult) -> dict[str, Any]:
-    payload: dict[str, Any] = {"ok": result.ok}
-    if result.data is not None:
-        payload["data"] = result.data
-    if result.error is not None:
-        payload["error"] = error_to_wire(result.error)
-    if result.resources:
-        payload["resources"] = result.resources
-    if result.next_actions:
-        payload["next_actions"] = [action_to_wire(action) for action in result.next_actions]
-    if result.warnings:
-        payload["warnings"] = result.warnings
-    if result.side_effects:
-        payload["side_effects"] = result.side_effects
-    return payload
+    return {
+        "ok": result.ok,
+        "data": result.data,
+        "error": None if result.error is None else error_to_wire(result.error),
+        "resources": result.resources,
+        "next_actions": [action_to_wire(action) for action in result.next_actions],
+        "warnings": result.warnings,
+        "side_effects": result.side_effects,
+    }
 
 
 def map_exception(exc: Exception) -> AgentResult:

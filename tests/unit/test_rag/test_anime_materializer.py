@@ -65,5 +65,5 @@ def test_thread_materializer_writes_cleaned_json_markdown_and_preview(tmp_path):
     assert preview_rows
     assert marker["complete"] is True
     assert set(marker["artifacts"]) == {json_path.name, md_path.name, preview_path.name}
-    assert preview_rows[0]["schema_version"] == 1
+    assert preview_rows[0]["schema_version"] == 2
     assert "官网资料" in md_path.read_text(encoding="utf-8")

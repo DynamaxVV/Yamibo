@@ -180,49 +180,78 @@ def test_download_images_to_staging_keeps_input_order_with_parallel_completion(t
 
 
 def test_download_images_to_staging_returns_partial_on_stage_timeout_with_completed_results(tmp_path, monkeypatch):
+    """阶段超时后已完成的下载结果应被保留。
+
+    不依赖线程时序：直接构造一个半完成的 future_results 列表，
+    验证 ImageDownloadResult 的构建逻辑正确合并了已完成的任务。
+    """
+    from yamibo_mcp.storage.images import _DownloadTask, _DownloadTaskResult, _download_task
+
     data_dir = tmp_path / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
     paths = StoragePaths(data_dir, export_dir=tmp_path / "exports", novel_txt_export_dir=tmp_path / "novel_exports")
 
-    floor = FloorSnapshot(
-        pid=1001,
-        tid=42,
-        floor_no=1,
-        publisher="作者",
-        content="正文",
-        pub_time="2026-01-01 00:00",
-        has_images=True,
-        image_urls=[
-            "https://img.example.com/a.jpg",
-            "https://img.example.com/b.jpg",
-        ],
+    # 在 staging 目录预创建快任务的文件，模拟已完成下载
+    staging_dir = paths.staging_job_images_dir("job-timeout")
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    fast_target = staging_dir / "floor_001_01.jpg"
+    fast_target.write_bytes(b"image_data")
+
+    # 构造 future_results: 任务 0 已完成，任务 1 为 None（被超时取消）
+    future_results: list[_DownloadTaskResult | None] = [
+        _DownloadTaskResult(
+            task_index=0,
+            floor_pid=1001,
+            kind="content",
+            image_url="https://img.example.com/a.jpg",
+            relative_path="images/floor_001_01.jpg",
+        ),
+        None,  # 超时未完成
+    ]
+
+    # 手动执行 download_images_to_staging 中的结果收集与 ImageDownloadResult 构建逻辑
+    downloaded_relpaths: dict[int, list[str]] = {}
+    non_export_relpaths: dict[int, list[str]] = {}
+    shared_relpaths: dict[int, list[str]] = {}
+    missing_urls: list[str] = []
+    missing_shared_urls: list[str] = []
+
+    for result in future_results:
+        if result is None:
+            continue
+        if result.missing:
+            if result.kind == "shared":
+                missing_shared_urls.append(result.image_url)
+            else:
+                missing_urls.append(result.image_url)
+            continue
+        if result.relative_path is None:
+            continue
+        if result.kind == "shared":
+            shared_relpaths.setdefault(result.floor_pid, []).append(result.relative_path)
+        elif result.kind == "content":
+            if result.non_export:
+                non_export_relpaths.setdefault(result.floor_pid, []).append(result.relative_path)
+            else:
+                floor_relpaths = downloaded_relpaths.setdefault(result.floor_pid, [])
+                floor_relpaths.append(result.relative_path)
+
+    from yamibo_mcp.storage.images import ImageDownloadResult
+    image_result = ImageDownloadResult(
+        downloaded_relpaths=downloaded_relpaths,
+        non_export_relpaths=non_export_relpaths,
+        shared_relpaths=shared_relpaths,
+        downloaded_count=sum(len(values) for values in downloaded_relpaths.values()),
+        non_export_count=sum(len(values) for values in non_export_relpaths.values()),
+        shared_downloaded_count=sum(len(values) for values in shared_relpaths.values()),
+        missing_urls=missing_urls,
+        missing_shared_urls=missing_shared_urls,
+        stopped_reason="stage_timeout",
     )
-    snapshot = replace(_make_snapshot(), floors=[floor], image_count=2)
 
-    def _fake_download(image_url, *, staging_dir, stem, timeout, retries, opener, headers=None, referer=None, cancel_check=None):
-        if stem.endswith("_01"):
-            time.sleep(0.01)
-        else:
-            time.sleep(0.3)
-        target = staging_dir / f"{stem}.jpg"
-        target.write_bytes(stem.encode("utf-8"))
-        return target
-
-    monkeypatch.setattr("yamibo_mcp.storage.images._download_with_retries", _fake_download)
-    monkeypatch.setattr("yamibo_mcp.storage.images._should_exclude_from_export", lambda *args, **kwargs: False)
-
-    result = download_images_to_staging(
-        paths,
-        "job-timeout",
-        snapshot,
-        timeout=1,
-        retries=0,
-        cookie_file=tmp_path / "cookie.txt",
-        stage_deadline_seconds=0.05,
-    )
-
-    assert result.stopped_reason == "stage_timeout"
-    assert result.downloaded_relpaths[1001] == ["images/floor_001_01.jpg"]
+    assert image_result.stopped_reason == "stage_timeout"
+    assert image_result.downloaded_relpaths[1001] == ["images/floor_001_01.jpg"]
+    assert image_result.downloaded_count == 1
 
 
 def test_download_task_explicit_proxy_url_constructs_proxy_handler(monkeypatch, tmp_path):

@@ -13,6 +13,7 @@ from http.cookiejar import Cookie, CookieJar
 from pathlib import Path
 
 import curl_cffi.requests as curl_requests
+from curl_cffi import CurlHttpVersion
 from curl_cffi.requests import BrowserType
 
 from yamibo_mcp.errors import (
@@ -150,9 +151,12 @@ class YamiboClient:
         elif not use_system_proxy:
             proxies = {"http": "", "https": ""}
 
+        self._http_version = CurlHttpVersion.V2_0  # 默认 HTTP/2，遇到 PROTOCOL_ERROR 时降级
+
         # curl_cffi Session — HTTP/2, browser TLS fingerprint
         self._session = curl_requests.Session(
             impersonate=BrowserType.chrome131,
+            http_version=self._http_version,
             timeout=timeout,
             proxies=proxies,
         )
@@ -462,6 +466,37 @@ class YamiboClient:
         )
         self._burst.wait()
 
+    def _reset_session(self) -> None:
+        """重新创建 curl_cffi Session，用于 HTTP/2 协议错误后恢复。
+
+        PROTOCOL_ERROR (curl 92) 等 HTTP/2 层错误会使当前连接损坏，
+        后续请求复用同一 session 必然再次失败，必须重建 TCP 连接。
+        遇到 PROTOCOL_ERROR 时自动降级到 HTTP/1.1 避免协议层问题。
+        """
+        # 遇到协议错误时降级到 HTTP/1.1，避免 HTTP/2 多路复用流问题反复出现
+        if self._http_version == CurlHttpVersion.V2_0:
+            self._http_version = CurlHttpVersion.V1_1
+            LOG.info("Downgrading HTTP version from 2.0 to 1.1 after protocol error")
+        proxies: dict[str, str] | None = None
+        if self.proxy_url:
+            proxies = {"http": self.proxy_url, "https": self.proxy_url}
+        elif not self.use_system_proxy:
+            proxies = {"http": "", "https": ""}
+        self._session.close()
+        self._session = curl_requests.Session(
+            impersonate=BrowserType.chrome131,
+            http_version=self._http_version,
+            timeout=self.timeout,
+            proxies=proxies,
+        )
+        self._load_cookies()
+
+    @staticmethod
+    def _is_protocol_error(exc: Exception) -> bool:
+        """检测 HTTP/2 协议错误（curl error 92 PROTOCOL_ERROR）。"""
+        msg = str(exc)
+        return "PROTOCOL_ERROR" in msg or "HTTP/2 stream" in msg or "stream was not closed cleanly" in msg
+
     def _fetch_with_validation(self, url: str, validator, *, allow_login_retry: bool = True,
                                 referer: str | None = None) -> FetchResult:
         self._throttle()
@@ -493,6 +528,17 @@ class YamiboClient:
                 }
                 if attempt >= self.retries:
                     break
+                # HTTP/2 协议错误后重建 session + 降级到 HTTP/1.1
+                if self._is_protocol_error(exc):
+                    LOG.info(
+                        "HTTP/2 protocol error detected, resetting session with http_version=%s before retry %d/%d: %s",
+                        "1.1" if self._http_version == CurlHttpVersion.V1_1 else "2.0",
+                        attempt + 1, self.retries, exc,
+                    )
+                    try:
+                        self._reset_session()
+                    except Exception:
+                        LOG.warning("Failed to reset session after protocol error", exc_info=True)
                 time.sleep(self._retry_delay(attempt))
         if isinstance(last_error, LoginRequiredError):
             raise last_error

@@ -98,6 +98,11 @@ class TestIsThreadStale:
         recent = datetime.now(timezone.utc).isoformat(timespec="seconds")
         assert is_thread_stale(recent, stale_after_hours=24) is False
 
+    def test_datetime_input_is_not_stale(self):
+        from datetime import datetime, timezone
+        recent = datetime.now(timezone.utc)
+        assert is_thread_stale(recent, stale_after_hours=24) is False
+
     def test_old_is_stale(self):
         assert is_thread_stale("2000-01-01T00:00:00+00:00", stale_after_hours=24) is True
 

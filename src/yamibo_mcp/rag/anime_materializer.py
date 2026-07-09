@@ -30,10 +30,10 @@ from yamibo_mcp.storage.atomic import atomic_write_text
 from yamibo_mcp.storage.paths import StoragePaths
 
 
-MATERIALIZER_VERSION = "1.1"
-CLEANER_VERSION = "anime-cleaner-1.1"
-CHUNKER_VERSION = "anime-chunker-1.1"
-REPORT_BASENAME = "anime-rag-cleaned-corpus-stats.1.1"
+MATERIALIZER_VERSION = "1.2"
+CLEANER_VERSION = "anime-cleaner-1.2"
+CHUNKER_VERSION = "anime-chunker-1.2"
+REPORT_BASENAME = "anime-rag-cleaned-corpus-stats.1.2"
 SUPPORTED_MATERIALIZER_VERSIONS = ("1.1", "1.2")
 _VALID_STATUS_SQL = "('complete', 'partial')"
 _THREAD_BATCH_SIZE = 500
@@ -99,9 +99,11 @@ def materialize_anime_cleaned_corpus(
                 thread_row=thread_row,
                 floor_rows=floors_by_tid.get(int(thread_row["tid"]), []),
                 include_low_signal=False,
-                structured_cleaning=version == "1.2",
+                structured_cleaning=True,
             )
             materialized = _build_thread_materialization(result=result, thread_row=thread_row, version=version)
+            if materialized.get("source_hash") != result.source_hash:
+                raise ValueError(f"materialized source hash mismatch for tid={result.tid}")
             _write_thread_artifacts(paths=paths, tid=result.tid, materialized=materialized)
             _accumulate_totals(totals, materialized, examples)
 
@@ -385,6 +387,11 @@ def _write_thread_artifacts(*, paths: StoragePaths, tid: int, materialized: dict
     preview_path = paths.thread_rag_chunks_preview_jsonl(tid, version)
     marker_path = paths.thread_rag_materialized_marker(tid, version)
     if marker_path.exists():
+        existing_marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        if existing_marker.get("artifacts") and existing_marker.get("artifacts") != {}:
+            existing_hash = existing_marker.get("source_hash")
+            if existing_hash and existing_hash != materialized.get("source_hash"):
+                raise ValueError(f"refusing to overwrite stale RAG materialization for tid={tid}")
         marker_path.unlink()
     json_content = json.dumps(materialized, ensure_ascii=False, indent=2, default=_json_default) + "\n"
     md_content = render_thread_markdown(materialized)
@@ -403,6 +410,7 @@ def _write_thread_artifacts(*, paths: StoragePaths, tid: int, materialized: dict
         "chunker_version": materialized["chunker_version"],
         "generated_at": _utc_now(),
         "tid": tid,
+        "source_hash": materialized.get("source_hash"),
         "complete": True,
         "artifacts": {
             json_path.name: {"sha256": _sha256_text(json_content), "bytes": len(json_content.encode("utf-8"))},
@@ -763,11 +771,14 @@ def _is_quote_heavy(original_text: str, cleaned_text: str) -> bool:
 def _chunk_record(chunk: AnimeDryRunChunk, *, floor_flags: list[str], version: str = MATERIALIZER_VERSION) -> dict[str, Any]:
     materializer_version, cleaner_version, chunker_version = _version_labels(version)
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "materializer_version": materializer_version,
         "cleaner_version": cleaner_version,
         "chunker_version": chunker_version,
         "chunk_id": chunk.chunk_id.replace("anime-evidence-lane-dry-run-v1", chunker_version),
+        "source_tid": chunk.tid,
+        "source_pid": chunk.pid,
+        "source_floor_no": chunk.floor_no,
         "tid": chunk.tid,
         "pid": chunk.pid,
         "floor_no": chunk.floor_no,
@@ -781,6 +792,8 @@ def _chunk_record(chunk: AnimeDryRunChunk, *, floor_flags: list[str], version: s
         "chunk_chars": len(chunk.text),
         "clean_rules": list(chunk.clean_rules),
         "text": chunk.text,
+        "source_hash": getattr(chunk, "source_hash", ""),
+        "generated_at": getattr(chunk, "generated_at", ""),
     }
 
 

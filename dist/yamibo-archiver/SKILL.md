@@ -7,7 +7,7 @@ description: 使用 YamiboArchiver 检索、浏览、归档、批量归档、检
 
 把 YamiboArchiver 当作“百合会论坛检索、归档、任务状态读取和历史讨论分析接口”来使用。
 
-只通过公开 MCP Tools 和 Resources 完成任务，不描述内部实现，不假设底层数据来源。
+作为 LLM skill 执行任务时，只通过公开 MCP Tools 和 Resources 完成任务，不描述内部实现，不假设底层数据来源。CLI 示例只用于给用户或脚本说明等价入口。
 
 ## 基本原则
 
@@ -20,6 +20,26 @@ description: 使用 YamiboArchiver 检索、浏览、归档、批量归档、检
 - 长任务优先读 `read_job`；需要阻塞等待时直接用 `wait_for_job`，排障再读 `read_job_events` 或 `yamibo://jobs/{job_id}/events`。
 - 批量任务优先使用批量接口，不要循环创建单贴任务模拟批量提交。
 - Discussion Trend V1 仅支持 PostgreSQL；如果后端不是 PostgreSQL，不要承诺趋势查询、topic evidence、forum evidence pack 或 report artifact 一定可用。
+
+## Tool / Resource / CLI 边界
+
+- MCP Tool 负责结构化操作：远端只读查询、创建后台 job、轮询 job、按参数读取本地归档视图，以及 `read_archived_thread(content)` 的 `cursor` / `chunk_size` 分页。
+- MCP Resource 负责稳定 URI 下的大文本、文件和只读快照：归档正文、帖子列表、诊断、资产、导出包、job status/events、guide 和 schema。
+- Resource 只读取稳定内容，不创建 job，不触发远程抓取。
+- CLI 用于人类操作和脚本；MCP Tool / Resource 用于 LLM 客户端。两者共享 application 层，但返回面和适用场景不同。
+
+当前 CLI 对齐入口：
+
+```bash
+uv run yamibo-archiver create-thread-archive-job --tid <tid>
+uv run yamibo-archiver inspect-remote-thread --tid <tid>
+uv run yamibo-archiver probe-archived-threads --tid <tid1> --tid <tid2>
+uv run yamibo-archiver ensure-thread-archived --tid <tid>
+uv run yamibo-archiver wait-for-job <job_id>
+uv run yamibo-archiver read-job-events <job_id>
+```
+
+`create-sync-thread-job` / `create-sync-thread-batch-jobs` 仍可作为兼容入口使用；单帖归档文档和新工作流优先写 `create-thread-archive-job`。
 
 ## 当前公共 MCP Tools
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date
 
 import pytest
@@ -22,9 +23,11 @@ from yamibo_mcp.application.discussion_trend_queries import (
 from yamibo_mcp.db.connection import DatabaseConnection
 from yamibo_mcp.db.migrations import migrate
 from yamibo_mcp.db.repositories.discussion_trends import DiscussionTrendRepository, ensure_postgres
+from yamibo_mcp.db.repositories.rag_chunks import RagChunksRepository
 from yamibo_mcp.db.repositories.rebuild_search_indexes import rebuild_search_indexes
 from yamibo_mcp.db.repositories.rag_vectors import get_vector_repository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
+from yamibo_mcp.rag.chunker import RagChunk
 from yamibo_mcp.rag.scoring import normalize_vector_distance
 
 
@@ -73,6 +76,130 @@ def test_postgres_migration_creates_baseline_schema(pg_engine):
         assert "idx_discussion_topic_assignments_run_topic" in topic_assign_indexes
 
 
+def test_postgres_migration_exposes_remote_observation_and_traceability_columns(pg_engine):
+    with pg_engine.connect() as raw_conn:
+        migrate(DatabaseConnection(raw_conn, backend="postgres"), schema="public")
+        inspector = inspect(raw_conn)
+
+        thread_columns = {column["name"] for column in inspector.get_columns("threads", schema="public")}
+        rag_columns = {column["name"] for column in inspector.get_columns("rag_chunks", schema="public")}
+
+        assert {
+            "local_reply_count",
+            "remote_last_reply_at_raw",
+            "remote_last_reply_at",
+            "remote_last_replier",
+            "remote_reply_count",
+            "remote_observed_at",
+            "remote_observed_from",
+        }.issubset(thread_columns)
+        assert {
+            "source_tid",
+            "source_pid",
+            "source_floor_no",
+            "cleaner_version",
+            "chunker_version",
+            "materializer_version",
+            "source_hash",
+            "generated_at",
+            "quality_flags",
+        }.issubset(rag_columns)
+
+
+def test_postgres_rag_chunk_traceability_columns_round_trip(pg_engine):
+    with pg_engine.connect() as raw_conn:
+        conn = DatabaseConnection(raw_conn, backend="postgres")
+        migrate(conn, schema="public")
+        _cleanup_tid(raw_conn, 910001)
+        raw_conn.execute(
+            text(
+                """
+                INSERT INTO threads (
+                  tid, page_type, raw_title, display_title, publisher, pub_time, sync_time,
+                  archive_status, validation_status, forum_id, content_kind, primary_media_type,
+                  local_reply_count, remote_last_reply_at_raw, remote_last_reply_at, remote_last_replier,
+                  remote_reply_count, remote_observed_at, remote_observed_from
+                ) VALUES (
+                  910001, 'thread_detail', '可追溯性测试', '可追溯性测试', '作者',
+                  TIMESTAMPTZ '2026-01-01 00:00:00+08', TIMESTAMPTZ '2026-01-01 01:00:00+08',
+                  'complete', 'valid', 55, 'novel', 'text',
+                  12, '2026-01-02T03:04:05+08:00', TIMESTAMPTZ '2026-01-02 03:04:05+08',
+                  'remote-user', 14, TIMESTAMPTZ '2026-01-02 03:05:00+08', 'forum-page'
+                )
+                """
+            )
+        )
+
+        chunk = RagChunk(
+            chunk_id="thread:910001:floor:3:part:1",
+            tid=910001,
+            pid=910003,
+            floor_no=3,
+            chunk_type="floor",
+            forum_id=55,
+            content_kind="novel",
+            series_id=None,
+            series_key="可追溯性测试",
+            chapter_index=3.0,
+            publisher="作者",
+            pub_time="2026-01-01T00:00:00+08:00",
+            title="可追溯性测试",
+            metadata_text="测试元数据",
+            text="测试正文",
+            text_hash="trace-hash-1",
+            source_uri="yamibo://threads/910001/posts#floor=3",
+            source_tid=910001,
+            source_pid=910003,
+            source_floor_no=3,
+            cleaner_version="anime-cleaner-1.2",
+            chunker_version="anime-chunker-1.2",
+            materializer_version="anime-rag-materializer-1.2",
+            source_hash="source-hash-1",
+            generated_at="2026-01-02T03:06:00+08:00",
+            quality_flags=["quote_removed", "emoji_normalized"],
+        )
+
+        rows = RagChunksRepository(conn).replace_thread_chunks(
+            tid=910001,
+            chunks=[chunk],
+            embedding_model="text-embedding-3-small",
+            embedding_dimensions=1536,
+        )
+
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["chunk_id"] == "thread:910001:floor:3:part:1"
+        assert row["source_tid"] == 910001
+        assert row["source_pid"] == 910003
+        assert row["source_floor_no"] == 3
+        assert row["cleaner_version"] == "anime-cleaner-1.2"
+        assert row["chunker_version"] == "anime-chunker-1.2"
+        assert row["materializer_version"] == "anime-rag-materializer-1.2"
+        assert row["source_hash"] == "source-hash-1"
+        assert row["generated_at"] == "2026-01-02T03:06:00+08:00"
+        assert json.loads(row["quality_flags"]) == ["quote_removed", "emoji_normalized"]
+
+        thread_row = raw_conn.execute(
+            text(
+                """
+                SELECT
+                  local_reply_count,
+                  remote_last_reply_at_raw,
+                  remote_last_replier,
+                  remote_reply_count,
+                  remote_observed_from
+                FROM threads
+                WHERE tid = 910001
+                """
+            )
+        ).one()._mapping
+        assert thread_row["local_reply_count"] == 12
+        assert thread_row["remote_last_reply_at_raw"] == "2026-01-02T03:04:05+08:00"
+        assert thread_row["remote_last_replier"] == "remote-user"
+        assert thread_row["remote_reply_count"] == 14
+        assert thread_row["remote_observed_from"] == "forum-page"
+
+
 def test_postgres_thread_search_uses_fts_and_ilike_fallback(pg_engine):
     with pg_engine.connect() as raw_conn:
         conn = DatabaseConnection(raw_conn, backend="postgres")
@@ -116,6 +243,47 @@ def test_postgres_thread_search_uses_fts_and_ilike_fallback(pg_engine):
 
         assert exact[0]["tid"] == 900001
         assert partial[0]["tid"] == 900001
+
+
+def test_postgres_thread_list_reply_count_sort_does_not_reference_select_alias(pg_engine):
+    with pg_engine.connect() as raw_conn:
+        conn = DatabaseConnection(raw_conn, backend="postgres")
+        migrate(conn, schema="public")
+        repo = ThreadsRepository(conn)
+        for tid in (920001, 920002, 920003):
+            _cleanup_tid(raw_conn, tid)
+
+        raw_conn.execute(
+            text(
+                """
+                INSERT INTO threads (
+                  tid, page_type, raw_title, display_title, publisher, pub_time, sync_time,
+                  archive_status, validation_status, forum_id, content_kind, primary_media_type,
+                  local_reply_count, remote_reply_count
+                ) VALUES
+                  (920001, 'thread_detail', 'A', 'A', 'u', TIMESTAMPTZ '2026-01-01 00:00:00+08', TIMESTAMPTZ '2026-01-01 00:00:00+08', 'complete', 'valid', 5, 'novel', 'text', NULL, NULL),
+                  (920002, 'thread_detail', 'B', 'B', 'u', TIMESTAMPTZ '2026-01-01 00:00:00+08', TIMESTAMPTZ '2026-01-01 00:00:00+08', 'complete', 'valid', 5, 'novel', 'text', 5, NULL),
+                  (920003, 'thread_detail', 'C', 'C', 'u', TIMESTAMPTZ '2026-01-01 00:00:00+08', TIMESTAMPTZ '2026-01-01 00:00:00+08', 'complete', 'valid', 5, 'novel', 'text', 1, 8)
+                """
+            )
+        )
+        raw_conn.execute(
+            text(
+                """
+                INSERT INTO floors (pid, tid, floor_no, publisher, content, pub_time, has_images)
+                VALUES
+                  (9200011, 920001, 1, 'u', 'f1', TIMESTAMPTZ '2026-01-01 00:00:00+08', FALSE),
+                  (9200012, 920001, 2, 'u', 'f2', TIMESTAMPTZ '2026-01-01 00:01:00+08', FALSE),
+                  (9200013, 920001, 3, 'u', 'f3', TIMESTAMPTZ '2026-01-01 00:02:00+08', FALSE)
+                """
+            )
+        )
+
+        asc_page = repo.list_threads_page(page=1, page_size=10, forum_id=5, sort_key="reply_count", sort_dir="asc")
+        desc_page = repo.list_threads_page(page=1, page_size=10, forum_id=5, sort_key="reply_count", sort_dir="desc")
+
+        assert [row["tid"] for row in asc_page["items"]] == [920001, 920002, 920003]
+        assert [row["tid"] for row in desc_page["items"]] == [920003, 920002, 920001]
 
 
 def test_postgres_rebuild_search_indexes_handles_long_content(pg_engine):

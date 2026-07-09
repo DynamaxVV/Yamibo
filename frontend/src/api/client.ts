@@ -78,6 +78,18 @@ export interface ThreadSummary {
   core_title_guess: string | null
   series_key: string | null
   chapter_name: string | null
+  author_guess: string | null
+  group_name: string | null
+  floor_count: number
+  local_reply_count: number | null
+  reply_count_checked_at: string | null
+  reply_count_mismatch_reason: string | null
+  remote_last_reply_at_raw: string | null
+  remote_last_reply_at: string | null
+  remote_last_replier: string | null
+  remote_reply_count: number | null
+  remote_observed_at: string | null
+  remote_observed_from: string | null
   reply_count: number
 }
 
@@ -114,7 +126,6 @@ export interface ThreadDetail extends ThreadSummary {
   archive_summary?: ArchiveSummary
   missing_image_urls?: string[]
   floors: FloorSummary[]
-  floor_count?: number
   floor_page?: number | null
   floor_page_size?: number | null
   floor_total_pages?: number | null
@@ -375,6 +386,7 @@ export interface SettingsUpdateResponse extends SettingsResponse {
 
 export interface SettingsModelsResponse {
   models: string[]
+  disabled?: boolean
 }
 
 export interface RagThreadRow {
@@ -387,6 +399,10 @@ export interface RagThreadRow {
   forum_id: number | null
   content_kind: string | null
   category: string | null
+  core_title_guess: string | null
+  chapter_name: string | null
+  author_guess: string | null
+  group_name: string | null
   rag_chunk_count: number
   rag_indexed_chunk_count: number
   rag_pending_chunk_count: number
@@ -512,6 +528,11 @@ export interface RemoteForumThread {
   posted_at: string | null
   last_reply_at: string | null
   reply_count: number | null
+  content_kind: string | null
+  core_title_guess: string | null
+  chapter_name: string | null
+  author_guess: string | null
+  group_name: string | null
   url: string
   archive_status: string | null
   local_thread: RemoteForumThreadLocal | null
@@ -555,6 +576,89 @@ export interface BackfillStatus {
   today_count: number
   last_enqueued_at: string | null
   last_reason: string | null
+}
+
+export interface ChatTransportOption {
+  id: string
+  label: string
+  description: string
+}
+
+export interface ChatContextResponse {
+  model: string
+  transport: string
+  status: {
+    connected: boolean
+    kind: string
+    endpoint: string
+    label: string
+  }
+  transports: ChatTransportOption[]
+  daemon_connected: boolean
+  runtime_files: {
+    sessions: string
+  }
+  sessions: ChatSessionSummary[]
+  hermes: {
+    api_key: string | null
+    model: string
+    host: string
+    port: number
+    endpoint: string
+    stream?: boolean
+  }
+}
+
+export interface ChatSessionSummary {
+  id: string
+  title: string
+  created_at: string
+  updated_at: string
+  messages: Array<{
+    role: 'user' | 'assistant'
+    content: string
+    created_at: string
+  }>
+}
+
+export interface ChatTurnCommandResult {
+  command: string
+  args: Record<string, unknown>
+  reason: string
+  transport: string
+  executed: boolean
+  ok: boolean
+  argv?: string[]
+  invocation?: string
+  stdout?: string
+  stderr?: string
+  output?: unknown
+  returncode?: number
+  warning?: string
+}
+
+export interface ChatTurnResponse {
+  assistant_message: string
+  model: string
+  transport: string
+  stream: boolean
+  commands: ChatTurnCommandResult[]
+  warnings: string[]
+  runtime_files: {
+    agent: string
+    skill: string
+    prompt: string
+  }
+}
+
+export interface ChatStreamEvent {
+  type: 'delta' | 'done' | 'error' | 'meta'
+  content?: string
+  assistant_message?: string
+  error?: string
+  done?: boolean
+  raw_output?: unknown
+  command?: unknown
 }
 
 // API methods
@@ -627,6 +731,7 @@ export const api = {
   settings: () => fetchJson<SettingsResponse>('/settings'),
   settingsModels: () => fetchJson<SettingsModelsResponse>('/settings/models'),
   updateSettings: (values: Record<string, unknown>) => postJson<SettingsUpdateResponse>('/settings', { values }),
+  testHermesConnection: () => postJson<{ connected: boolean; endpoint: string; label: string; status: number; stdout: string; stderr: string; request?: unknown }>('/settings/hermes-test', {}),
   ragThreads: (params?: { q?: string; forum_id?: number | 'all'; index_state?: string; rag_status?: string; page?: number; page_size?: number }) => {
     const qs = new URLSearchParams()
     if (params?.q) qs.set('q', params.q)
@@ -667,7 +772,14 @@ export const api = {
   retryJob: (jobId: string) => postJson<{ ok: boolean; job_id: string; source_job_id: string; status: string }>('/jobs/retry', { job_id: jobId }),
   pauseJob: (jobId: string) => postJson<{ ok: boolean; job_id: string; status: string }>('/jobs/pause', { job_id: jobId }),
   resumeJob: (jobId: string) => postJson<{ ok: boolean; job_id: string; status: string }>('/jobs/resume', { job_id: jobId }),
-  updateChapter: (tid: number, chapter_name: string | null, chapter_index: number | null, author_guess?: string | null, group_name?: string | null) => postJson<{ ok: boolean }>('/threads/update-chapter', { tid, chapter_name, chapter_index, author_guess, group_name }),
+  updateChapter: (
+    tid: number,
+    display_title: string | null,
+    chapter_name: string | null,
+    chapter_index: number | null,
+    author_guess?: string | null,
+    group_name?: string | null,
+  ) => postJson<{ ok: boolean }>('/threads/update-chapter', { tid, display_title, chapter_name, chapter_index, author_guess, group_name }),
   remoteForums: () => fetchJson<RemoteForum[]>('/remote/forums'),
   remoteForum: (params: { forum_id?: number; page?: number; order?: string }) => {
     const qs = new URLSearchParams()
@@ -683,5 +795,48 @@ export const api = {
     if (params?.page) qs.set('page', String(params.page))
     const s = qs.toString()
     return fetchJson<RemoteThreadDetail>(`/remote/threads/${tid}${s ? `?${s}` : ''}`)
+  },
+  chatContext: () => fetchJson<ChatContextResponse>('/chat/context'),
+  chatTurn: async (data: {
+    session_id?: string | null
+    message: string
+    history?: Array<{ role: 'user' | 'assistant'; content: string }>
+    stream?: boolean
+  }): Promise<ChatTurnResponse> => {
+    const res = await fetch(`${BASE}/chat/turn`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: data.stream ? 'text/event-stream' : 'application/json' },
+      body: JSON.stringify(data),
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }))
+      throw new Error(err.error || `${res.status} ${res.statusText}`)
+    }
+    return res.json() as Promise<ChatTurnResponse>
+  },
+  chatTurnStream: async (data: {
+    session_id?: string | null
+    message: string
+    history?: Array<{ role: 'user' | 'assistant'; content: string }>
+    stream: true
+  }) => {
+    const res = await fetch(`${BASE}/chat/turn`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+      body: JSON.stringify(data),
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }))
+      throw new Error(err.error || `${res.status} ${res.statusText}`)
+    }
+    return res.body
+  },
+  deleteChatSession: async (sessionId: string) => {
+    const res = await fetch(`${BASE}/chat/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }))
+      throw new Error(err.error || `${res.status} ${res.statusText}`)
+    }
+    return res.json() as Promise<{ ok: boolean; deleted: number }>
   },
 }

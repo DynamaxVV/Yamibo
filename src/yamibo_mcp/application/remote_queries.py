@@ -3,12 +3,13 @@ from __future__ import annotations
 import re
 import logging
 from contextlib import contextmanager
+from datetime import datetime, timezone
 
 from yamibo_mcp.config import load_settings
 from yamibo_mcp.db.connection import connect
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
 from yamibo_mcp.server.schemas import build_series_summary, thread_summary_payload
-from yamibo_mcp.yamibo.anti_bot import activate_remote_access_pause, ensure_remote_access_allowed, is_http_444_error
+from yamibo_mcp.yamibo.anti_bot import ensure_remote_access_allowed, is_http_444_error
 from yamibo_mcp.yamibo.account_pool import borrow_yamibo_client, has_configured_account_pool, next_permission_threshold
 from yamibo_mcp.yamibo.client import YamiboClient
 from yamibo_mcp.yamibo.proxy_pool import select_random_proxy
@@ -69,11 +70,25 @@ def _open_remote_client(
 def _run_remote_action_with_permission_retry(
     settings,
     *,
+    conn,
     cookie_file: str | None = None,
     prefer_high_permission: bool = False,
     action,
+    source: str = "remote_queries",
 ):
+    """执行远程动作，按需重试权限提升与 HTTP 444 换节点。
+
+    444 策略与 daemon 对齐：第一次 444 清代理缓存换节点重试一次，仍 444
+    才计入阈值；5 分钟内累计 3 次则触发全局暂停并抛 RemoteAccessPausedError。
+
+    Args:
+        conn: 调用方已打开的 DatabaseConnection，444 计数/暂停复用它，不再自开。
+    """
+    from yamibo_mcp.errors import RemoteAccessPausedError
+    from yamibo_mcp.yamibo.anti_bot import handle_http_444
+
     min_permission: int | None = None
+    retried_444 = False
     while True:
         try:
             with _open_remote_client(
@@ -94,6 +109,17 @@ def _run_remote_action_with_permission_retry(
                 prefer_high_permission,
             )
             min_permission = next_min_permission
+        except Exception as exc:
+            if not is_http_444_error(exc) or retried_444:
+                raise
+            retried_444 = True
+            paused = handle_http_444(conn, source=source, exc=exc)
+            if paused:
+                raise RemoteAccessPausedError(
+                    "HTTP 444 threshold exceeded, remote access paused",
+                    details={"source": source},
+                ) from exc
+            LOG.info("HTTP 444 from %s — retrying once with different proxy node", source)
 
 
 def browse_forum_page(
@@ -124,18 +150,13 @@ def browse_forum_page(
 
             result, items, total_pages = _run_remote_action_with_permission_retry(
                 settings,
+                conn=conn,
                 cookie_file=cookie_file,
                 prefer_high_permission=True,
                 action=_browse,
+                source="remote_queries:browse_forum_page",
             )
         except Exception as exc:
-            if is_http_444_error(exc):
-                activate_remote_access_pause(
-                    conn,
-                    source="remote_queries:browse_forum_page",
-                    message="Yamibo returned HTTP 444. Remote browse/search/access has been paused.",
-                    context={"page": page, "forum_id": forum_id, "order": order},
-                )
             raise
         repo = ThreadsRepository(conn)
         filtered: list[dict[str, object]] = []
@@ -207,18 +228,16 @@ def search_threads(
 
             remote_items, scanned_pages, total_result_pages = _run_remote_action_with_permission_retry(
                 settings,
+                conn=conn,
                 cookie_file=cookie_file,
                 prefer_high_permission=True,
                 action=_search,
+                source="remote_queries:search_threads",
             )
         except Exception as exc:  # noqa: BLE001 - remote search falls back to local FTS
-            if is_http_444_error(exc):
-                activate_remote_access_pause(
-                    conn,
-                    source="remote_queries:search_threads",
-                    message="Yamibo returned HTTP 444. Remote browse/search/access has been paused.",
-                    context={"query": query, "forum_id": forum_id, "start_page": start_page, "end_page": end_page},
-                )
+            from yamibo_mcp.errors import RemoteAccessPausedError
+            if isinstance(exc, (RemoteAccessPausedError,)) or is_http_444_error(exc):
+                # 444 已在 wrapper 内换节点重试 / 触发暂停；走到这里说明已暂停，直接上抛。
                 raise
             remote_items = []
             scanned_pages = []
@@ -270,6 +289,107 @@ def search_threads(
         conn.close()
 
 
+def refresh_forum_remote_observations(
+    *,
+    forum_id: int = 30,
+    page_start: int = 1,
+    page_end: int | None = None,
+    order: str = "default",
+    base_url: str = "https://bbs.yamibo.com",
+    cookie_file: str | None = None,
+    include_sticky: bool = False,
+    include_announcements: bool = False,
+    dry_run: bool = False,
+) -> dict[str, object]:
+    if page_start <= 0 or (page_end is not None and page_end <= 0) or (page_end is not None and page_end < page_start):
+        raise ValueError("invalid forum page range")
+
+    settings = load_settings()
+    conn = connect(settings.db_path)
+    try:
+        ensure_remote_access_allowed(conn)
+        repo = ThreadsRepository(conn)
+        updated: list[dict[str, object]] = []
+        seen_tids: set[int] = set()
+        effective_end = page_end or page_start
+        observed_at = datetime.now(timezone.utc).isoformat()
+
+        for page in range(page_start, effective_end + 1):
+            def _browse(_identity, client):
+                if order == "dateline":
+                    return client.fetch_forum_threads_dateline(page=page, base_url=base_url, forum_id=forum_id)
+                return client.fetch_forum_threads(page=page, base_url=base_url, forum_id=forum_id)
+
+            result, items, _total_pages = _run_remote_action_with_permission_retry(
+                settings,
+                conn=conn,
+                cookie_file=cookie_file,
+                prefer_high_permission=True,
+                action=_browse,
+                source="remote_queries:scan_forum_remote_observations",
+            )
+            for item in items:
+                if item.tid in seen_tids:
+                    continue
+                seen_tids.add(item.tid)
+                if not include_sticky and item.is_sticky:
+                    continue
+                if not include_announcements and (item.category or "").strip() == "公告":
+                    continue
+                observation = {
+                    "tid": item.tid,
+                    "forum_id": forum_id,
+                    "page": page,
+                    "source_kind": "forum_list",
+                    "observation_type": "latest_tail",
+                    "remote_title": item.title,
+                    "remote_category": item.category,
+                    "remote_publisher": item.publisher,
+                    "remote_posted_at_raw": item.posted_at,
+                    "remote_posted_at": item.posted_at,
+                    "remote_last_reply_at_raw": item.last_reply_at,
+                    "remote_last_reply_at": item.last_reply_at,
+                    "remote_last_replier": getattr(item, "last_replier", None),
+                    "remote_reply_count": item.reply_count,
+                    "observed_at": observed_at,
+                    "observed_from": result.final_url,
+                }
+                updated.append(observation)
+                if not dry_run:
+                    repo.update_remote_observation_snapshot(
+                        tid=item.tid,
+                        forum_id=forum_id,
+                        source_kind="forum_list",
+                        observation_type="latest_tail",
+                        remote_title=item.title,
+                        remote_category=item.category,
+                        remote_publisher=item.publisher,
+                        remote_posted_at_raw=item.posted_at,
+                        remote_posted_at=item.posted_at,
+                        remote_last_reply_at_raw=item.last_reply_at,
+                        remote_last_reply_at=item.last_reply_at,
+                        remote_last_replier=getattr(item, "last_replier", None),
+                        remote_reply_count=item.reply_count,
+                        observed_at=observed_at,
+                        observed_from=result.final_url,
+                    )
+        if not dry_run:
+            conn.commit()
+        return {
+            "source": "forum_remote_observations",
+            "forum_id": forum_id,
+            "page_start": page_start,
+            "page_end": effective_end,
+            "order": order,
+            "count": len(updated),
+            "dry_run": dry_run,
+            "observed_at": observed_at,
+            "items": updated,
+        }
+    finally:
+        conn.close()
+
+
 def inspect_remote_thread(
     *,
     tid: int,
@@ -286,17 +406,12 @@ def inspect_remote_thread(
 
             fetched = _run_remote_action_with_permission_retry(
                 settings,
+                conn=conn,
                 prefer_high_permission=True,
                 action=_inspect,
+                source="remote_queries:inspect_remote_thread",
             )
         except Exception as exc:
-            if is_http_444_error(exc):
-                activate_remote_access_pause(
-                    conn,
-                    source="remote_queries:inspect_remote_thread",
-                    message="Yamibo returned HTTP 444. Remote browse/search/access has been paused.",
-                    context={"tid": tid, "forum_id": forum_id},
-                )
             raise
         snapshot = parse_thread_snapshot(fetched.html, url=fetched.final_url, tid=tid)
         resolved_forum_id = forum_id if forum_id is not None else extract_forum_id_from_html(fetched.html)
@@ -530,6 +645,7 @@ def _search_item_from_remote(item: ForumThreadItem | SearchResultItem, thread_ro
         "publisher": item.publisher,
         "posted_at": item.posted_at,
         "last_reply_at": getattr(item, "last_reply_at", None),
+        "last_replier": getattr(item, "last_replier", None),
         "reply_count": item.reply_count,
         "row_kind": getattr(item, "row_kind", "search_result"),
         "excerpt": getattr(item, "excerpt", None),
