@@ -2,7 +2,7 @@
 
 百合会 (yamibo.com) 论坛本地归档系统。通过 MCP 协议让 LLM 客户端浏览、搜索、归档、检查更新和导出论坛贴子；内嵌 React WebUI 控制台，支持多主题切换。
 
-> 当前版本：`0.12.1`
+> 当前版本：`0.12.2`
 
 ## 功能特性
 
@@ -27,6 +27,8 @@
 - **CLI** — 所有工具均可通过命令行直接调用
 
 ## 快速开始
+
+更细的文档入口见 [docs/README.md](/Users/vv/Code/Yamibo/docs/README.md)。
 
 ### 安装
 
@@ -109,9 +111,34 @@ uv sync --extra dev
 
 所有配置项均可通过 `YAMIBO_*` 环境变量覆盖。详见 [`.env.example`](.env.example)。
 
-数据库后端默认使用 PostgreSQL（`pgvector`），同时保留 SQLite 支持用于本地开发和单机部署。通过 `database.backend` 配置切换。
+数据库后端默认使用 PostgreSQL（`pgvector`）。SQLite 相关路径仅保留给历史迁移、测试和少量兼容代码，不再作为后续主支持方向。通过 `database.backend` 配置切换。
 
 其中轻小说 TXT 导出目录对应 `YAMIBO_NOVEL_TXT_EXPORT_DIR`，轻小说只看楼主更新检测阈值对应 `YAMIBO_NOVEL_AUTHOR_ONLY_MAX_PAGES` 和 `YAMIBO_NOVEL_AUTHOR_ONLY_PAGE_DELAY_SECONDS`。
+
+### Docker 部署
+
+推荐 Docker 部署时使用 PostgreSQL/pgvector + Yamibo Daemon，并将 `data/` 挂载到宿主机；Cookie 放在 `data/cookies/` 下：
+
+```bash
+cp .env.docker.example .env
+mkdir -p data data/exports data/novel_exports data/cookies data/backups
+docker compose build
+docker compose up -d postgres
+docker compose run --rm yamibo yamibo-init-db
+docker compose up -d yamibo
+```
+
+默认 Web 控制台地址：`http://localhost:8765`。
+
+对话页默认按外接 OpenAI-compatible Hermes 容器设计，可在 `.env` 中配置：
+
+```env
+YAMIBO_LLM_BASE_URL=http://hermes:8000/v1
+YAMIBO_LLM_API_KEY=dummy
+YAMIBO_LLM_MODEL=hermes
+```
+
+如果 Hermes 运行在宿主机，改用 `http://host.docker.internal:8000/v1`。更完整的 data 外挂、Hermes Docker 网络、PostgreSQL 备份恢复和迁移说明见 [`docs/deployment-guide.md`](docs/deployment-guide.md)。
 
 ## 运行期行为
 
@@ -140,7 +167,7 @@ MCP Server 无需手动启动，由 LLM 客户端自动调用。
 LLM Client (Claude Desktop / Cursor)
     │ MCP Protocol (stdio)
     ▼
-yamibo-archiver ──创建任务──▶ PostgreSQL / SQLite (jobs + job_events)
+yamibo-archiver ──创建任务──▶ PostgreSQL (jobs + job_events)
     │                               ▲
     │ application layer             │ 轮询 + 抢占
     │ (archive, update_thread)      │
@@ -222,14 +249,24 @@ uv run yamibo-archiver browse-forum-page --page 1 --forum-id 55
 # 搜索帖子
 uv run yamibo-archiver search-threads --query "星灵感应"
 
+# 远端只读预览单帖
+uv run yamibo-archiver inspect-remote-thread --tid 572313
+
 # 检查轻小说更新
 uv run yamibo-archiver check-thread-updates --tid 544422
 
 # 创建轻小说追加更新任务
 uv run yamibo-archiver update-thread --tid 544422
 
+# 创建单帖归档任务
+uv run yamibo-archiver create-thread-archive-job --tid 572313
+
 # 批量创建归档任务
 uv run yamibo-archiver create-sync-thread-batch-jobs --tid 572313 --tid 572314
+
+# 批量重同步“磁盘有归档、DB 无 thread row”的历史帖子，并顺便回填 PG
+uv run python scripts/enqueue_missing_db_thread_sync.py --dry-run --batch-size 100 --max-batches 2
+uv run python scripts/enqueue_missing_db_thread_sync.py --batch-size 100 --max-batches 2
 
 # 批量同步
 uv run yamibo-archiver create-sync-forum-range-jobs --start-page 1 --end-page 5
@@ -262,6 +299,8 @@ uv run yamibo-archiver create-forum-research-report-job --forum-id 33 --start-da
 
 # 查看任务状态
 uv run yamibo-archiver job-status <job_id>
+uv run yamibo-archiver wait-for-job <job_id>
+uv run yamibo-archiver read-job-events <job_id>
 
 # 读取帖子摘要（紧凑 JSON，适合 Agent）
 uv run yamibo-archiver read-resource "yamibo://threads/572313/summary"
@@ -276,6 +315,13 @@ uv run yamibo-archiver read-resource "yamibo://threads/544422/update-check"
 uv run yamibo-backup-db
 ```
 
+历史 file-only 归档说明：
+
+- 一部分 2011–2012 老帖可能在 `data/threads/<tid>/` 下已有 `metadata.json + context.md`，但当前数据库里没有对应 `threads` 记录
+- 这类帖子优先建议走远端 `sync_thread` 重同步，让系统自动补齐 `forum_id`、`title_parse`、`floors`、`local_reply_count` 和新版 `context.md`
+- [scripts/enqueue_missing_db_thread_sync.py](/Users/vv/Code/Yamibo/scripts/enqueue_missing_db_thread_sync.py) 会自动扫描这类缺失 tid 并按批次创建同步任务
+- 在这批帖子处理完成前，不要执行 `cleanup-orphan-thread-dirs`，否则可能误删这些历史归档目录
+
 ## 项目结构
 
 ```
@@ -287,7 +333,7 @@ src/yamibo_mcp/
 ├── web/             # 旧 Web 实现与已打包静态资源
 ├── yamibo/          # 论坛 HTTP 客户端、HTML 解析器、标题解析
 ├── storage/         # 文件 I/O（staging、归档、导出、图片）
-├── db/              # SQLite schema、迁移、Repository
+├── db/              # PostgreSQL schema、迁移、Repository（含少量 SQLite 兼容层）
 │   └── repositories/  # jobs, threads, series, content_blocks, assets, job_events
 ├── services/        # LLM 客户端、标题提示词
 ├── domain/          # 领域模型、枚举、校验、内容类型
@@ -320,9 +366,9 @@ scripts/run_hermes_benchmark.sh
 | [Agent 能力验收标准](docs/agent-evaluation.md) | OpenClaw/Hermes 类 Agent 的验收场景、评分维度与证据要求 |
 | [数据库设计](docs/database-design.md) | 表结构、文件存储格式、PostgreSQL JSONB 决策 |
 | [账号池设计](docs/account-pool-design.md) | 多账号权限分配与 Cookie 管理 |
-| [SQLite-Vec RAG 设计](docs/rag-sqlite-vec-design.md) | 本地归档检索、chunk、embedding 与 `sqlite-vec` 方案 |
+| [SQLite-Vec RAG 设计](docs/history/rag-sqlite-vec-design.md) | 历史 SQLite-first RAG 设计，保留作演化参考 |
 | [核心模块开发说明](docs/development-guide.md) | 标题解析、Job 系统、配置 |
-| [FastAPI 迁移方案](docs/design/fastapi-migration-plan.md) | Web 层迁移决策、构建自动化与路由收敛背景 |
+| [FastAPI 迁移方案](docs/history/fastapi-migration-plan.md) | Web 层迁移决策、构建自动化与路由收敛背景 |
 | [部署指南 & 运维手册](docs/deployment-guide.md) | 安装、配置、运维操作 |
 | [用户操作手册](docs/user-manual.md) | MCP/Web/CLI 使用方式 |
 | [测试方案](docs/testing-strategy.md) | 测试原则、规范、数据与回归策略 |
