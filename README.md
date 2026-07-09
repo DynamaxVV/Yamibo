@@ -2,7 +2,7 @@
 
 百合会 (yamibo.com) 论坛本地归档系统。通过 MCP 协议让 LLM 客户端浏览、搜索、归档、检查更新和导出论坛贴子；内嵌 React WebUI 控制台，支持多主题切换。
 
-> 当前版本：`0.12.2`
+> 当前版本：`0.13.0`
 
 ## 功能特性
 
@@ -117,7 +117,7 @@ uv sync --extra dev
 
 ### Docker 部署
 
-推荐 Docker 部署时使用 PostgreSQL/pgvector + Yamibo Daemon，并将 `data/` 挂载到宿主机；Cookie 放在 `data/cookies/` 下：
+推荐 Docker 部署时使用 PostgreSQL/pgvector，并将 `data/` 挂载到宿主机；Cookie 放在 `data/cookies/` 下。默认会同时启动 Web UI、后台 daemon 和独立的 MCP SSE 服务：
 
 ```bash
 cp .env.docker.example .env
@@ -125,12 +125,13 @@ mkdir -p data data/exports data/novel_exports data/cookies data/backups
 docker compose build
 docker compose up -d postgres
 docker compose run --rm yamibo yamibo-init-db
-docker compose up -d yamibo
+docker compose up -d yamibo yamibo-mcp
 ```
 
 默认 Web 控制台地址：`http://localhost:8765`。
+MCP SSE 入口默认地址：`http://localhost:8000/sse`。
 
-对话页默认按外接 OpenAI-compatible Hermes 容器设计，可在 `.env` 中配置：
+对话页默认接入外部 OpenAI-compatible Hermes 容器；Yamibo 只提供对话入口、上下文与 MCP 工具，不在本地实现模型推理。可在 `.env` 中配置：
 
 ```env
 YAMIBO_LLM_BASE_URL=http://hermes:8000/v1
@@ -185,24 +186,20 @@ yamibo-daemon ──────────────────────
 
 ### SSE 模式
 
-如果你的 LLM 客户端支持 URL 形式的 MCP 连接，可以把服务端改为 SSE：
-
-```bash
-uv run yamibo-archiver stdio --transport sse
-```
-
-客户端一般需要配置为指向 SSE 入口，例如：
+如果你的 LLM 客户端支持 URL 形式的 MCP 连接，Docker 部署时建议直接连到暴露出来的 SSE 入口：
 
 ```json
 {
   "mcpServers": {
     "yamibo": {
       "transport": "sse",
-      "url": "http://127.0.0.1:8000/sse"
+      "url": "http://localhost:8000/sse"
     }
   }
 }
 ```
+
+如果客户端不在宿主机，而是在另一台机器上，把 `localhost` 换成 Docker 宿主机的地址，例如 `http://192.168.1.10:8000/sse`。
 
 SSE 模式适合需要保持一个常驻 MCP 服务进程的场景；如果客户端只支持本地进程启动，继续用下面的 `stdio` 配置。
 
