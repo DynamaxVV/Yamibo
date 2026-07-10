@@ -5,7 +5,7 @@ import logging
 
 from yamibo_mcp.logging import configure_logging
 from yamibo_mcp.structured_logging import StructuredJSONFormatter, StructuredLogEvent
-from yamibo_mcp.web.log_buffer import get_log_buffer
+from yamibo_mcp.web_fastapi.log_buffer import get_log_buffer
 
 
 def test_structured_json_formatter_serializes_event() -> None:
