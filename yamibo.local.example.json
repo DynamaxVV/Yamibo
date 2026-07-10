@@ -1,0 +1,13 @@
+{
+  "yamibo": {
+    "cookie_file": "./data/cookies/primary.cookie",
+    "novel_author_only_max_pages": 50,
+    "novel_author_only_page_delay_seconds": 0.5
+  },
+  "export": {
+    "dir": "./data/exports",
+    "novel_txt_dir": "./data/novel_exports",
+    "novel_txt_include_filtered_notes": false,
+    "novel_txt_debug_markers": false
+  }
+}

@@ -1,6 +1,6 @@
 # 部署指南 & 运维手册
 
-> 版本：0.12.1 | 更新日期：2026-07-06
+> 版本：0.13.0 | 更新日期：2026-07-11
 
 ## 1. 环境要求
 
@@ -19,8 +19,8 @@ RAG 相关补充：
 
 数据库说明：
 
-- 当前默认后端是 PostgreSQL，使用 `YAMIBO_DB_BACKEND=postgres` / `YAMIBO_DB_URL=...`
-- SQLite 仅保留给历史迁移输入、测试和少量兼容逻辑，不再作为后续部署推荐方案
+- 本地空配置默认 SQLite，适合快速启动和轻量单机归档
+- Docker 与生产环境推荐 PostgreSQL；设置 `YAMIBO_DB_BACKEND=postgres` 时必须同时设置 `YAMIBO_DB_URL=...`
 
 ---
 
@@ -40,7 +40,7 @@ uv sync --extra dev
 
 #### 方式一：配置文件
 
-创建 `yamibo.local.json`（不提交到版本控制）：
+复制 `yamibo.local.example.json` 为 `yamibo.local.json`（不提交后者到版本控制）：
 
 ```json
 {
@@ -160,6 +160,7 @@ Docker 部署会启动 PostgreSQL/pgvector 与 Yamibo Daemon。Daemon 同时负�
 
 ```bash
 cp .env.docker.example .env
+cp yamibo.local.example.json data/yamibo.local.json
 mkdir -p data data/exports data/novel_exports data/cookies data/backups
 ```
 

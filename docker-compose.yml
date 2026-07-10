@@ -57,7 +57,7 @@ services:
       - "${YAMIBO_WEB_PORT:-8765}:8765"
     volumes:
       - ${YAMIBO_DATA_BIND:-./data}:/app/data
-      - ${YAMIBO_CONFIG_BIND:-./data/yamibo.local.json}:/app/yamibo.local.json
+      - ${YAMIBO_CONFIG_BIND:-./data/yamibo.local.json}:/app/data/yamibo.local.json
       - ${YAMIBO_COMIC_EXPORT_BIND:-/Volumes/comic/百合会}:/Volumes/comic/百合会
       - ${YAMIBO_NOVEL_EXPORT_BIND:-/Volumes/personal_folder/novel}:/Volumes/personal_folder/novel
     extra_hosts:
@@ -85,7 +85,7 @@ services:
     command: ["yamibo-archiver", "stdio", "--transport", "sse", "--host", "0.0.0.0", "--port", "8000", "--path", "/sse"]
     environment:
       YAMIBO_DATA_DIR: /app/data
-      YAMIBO_CONFIG_PATH: /app/yamibo.local.json
+      YAMIBO_CONFIG_PATH: /app/data/yamibo.local.json
       YAMIBO_ALEMBIC_SCRIPT_LOCATION: /app/alembic
       YAMIBO_COOKIE_FILE: /app/data/cookies/primary.cookie
       YAMIBO_DB_BACKEND: postgres

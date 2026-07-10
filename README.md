@@ -42,7 +42,7 @@ uv sync --extra dev
 
 在浏览器中登录 bbs.yamibo.com，复制 Cookie 到 `.cookie` 文件。
 
-如需 LLM 辅助标题解析和本地 RAG embedding，创建 `yamibo.local.json`：
+如需 LLM 辅助标题解析和本地 RAG embedding，复制 `yamibo.local.example.json` 为 `yamibo.local.json` 后再按需修改：
 
 ```json
 {
@@ -111,7 +111,7 @@ uv sync --extra dev
 
 所有配置项均可通过 `YAMIBO_*` 环境变量覆盖。详见 [`.env.example`](.env.example)。
 
-数据库后端默认使用 PostgreSQL（`pgvector`）。SQLite 相关路径仅保留给历史迁移、测试和少量兼容代码，不再作为后续主支持方向。通过 `database.backend` 配置切换。
+本地空配置默认使用 SQLite，开箱即可启动；Docker 和生产部署推荐 PostgreSQL（`pgvector`）。通过 `database.backend` 配置切换；选择 PostgreSQL 时必须同时提供 `database.url` 或 `YAMIBO_DB_URL`。
 
 其中轻小说 TXT 导出目录对应 `YAMIBO_NOVEL_TXT_EXPORT_DIR`，轻小说只看楼主更新检测阈值对应 `YAMIBO_NOVEL_AUTHOR_ONLY_MAX_PAGES` 和 `YAMIBO_NOVEL_AUTHOR_ONLY_PAGE_DELAY_SECONDS`。
 
@@ -121,6 +121,7 @@ uv sync --extra dev
 
 ```bash
 cp .env.docker.example .env
+cp yamibo.local.example.json data/yamibo.local.json
 mkdir -p data data/exports data/novel_exports data/cookies data/backups
 docker compose build
 docker compose up -d postgres
