@@ -44,11 +44,8 @@ COPY src ./src
 COPY alembic ./alembic
 COPY --from=frontend-build /app/src/yamibo_mcp/web/static ./src/yamibo_mcp/web/static
 
-# 【优化 3】：使用 uv + BuildKit 缓存挂载进行安装
-# 即使上面的 COPY 导致 Docker 层缓存失效，这里的 --mount 也会让 uv 直接读取宿主机的离线依赖缓存
-# 这样不仅省去了网络下载时间，uv 本身的安装速度也能让 130秒 缩减到几秒钟
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked --no-dev --no-editable
+# 兼容不支持 BuildKit cache mount 的旧版 Docker。
+RUN uv sync --locked --no-dev --no-editable
 
 RUN useradd --create-home --uid 10001 yamibo \
     && mkdir -p /app/data \
