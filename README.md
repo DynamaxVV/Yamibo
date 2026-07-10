@@ -327,7 +327,7 @@ src/yamibo_mcp/
 ├── application/     # Agent-facing commands/queries
 ├── daemon/          # 后台任务消费 + 处理器
 ├── web_fastapi/     # FastAPI 嵌入式 Web API / 静态资源服务（主路径）
-├── web/             # 旧 Web 实现与已打包静态资源
+├── web/             # 随 Python 包分发的已打包静态资源
 ├── yamibo/          # 论坛 HTTP 客户端、HTML 解析器、标题解析
 ├── storage/         # 文件 I/O（staging、归档、导出、图片）
 ├── db/              # PostgreSQL schema、迁移、Repository（含少量 SQLite 兼容层）

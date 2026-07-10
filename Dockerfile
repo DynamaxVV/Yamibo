@@ -18,6 +18,8 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
+    UV_PROJECT_ENVIRONMENT=/app/.venv \
+    PATH="/app/.venv/bin:${PATH}" \
     # 注意：使用 uv 时，不需要 PIP_NO_CACHE_DIR，因为我们要主动利用缓存
     YAMIBO_DATA_DIR=/app/data \
     YAMIBO_CONFIG_PATH=/app/data/yamibo.local.json \
@@ -35,7 +37,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # 先拷贝项目基础文件
-COPY pyproject.toml README.md ./
+COPY pyproject.toml uv.lock README.md ./
 
 # 【优化 2】：分层拷贝。先把最常变动的业务代码拷贝进来
 COPY src ./src
@@ -46,7 +48,7 @@ COPY --from=frontend-build /app/src/yamibo_mcp/web/static ./src/yamibo_mcp/web/s
 # 即使上面的 COPY 导致 Docker 层缓存失效，这里的 --mount 也会让 uv 直接读取宿主机的离线依赖缓存
 # 这样不仅省去了网络下载时间，uv 本身的安装速度也能让 130秒 缩减到几秒钟
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --system .
+    uv sync --locked --no-dev --no-editable
 
 RUN useradd --create-home --uid 10001 yamibo \
     && mkdir -p /app/data \

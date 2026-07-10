@@ -47,6 +47,12 @@ class _TestSettings:
     llm_base_url: str = "https://api.openai.com/v1"
     llm_api_key: str | None = None
     llm_model: str = "gpt-4.1-mini"
+    hermes_endpoint: str = "http://127.0.0.1:8642"
+    hermes_host: str = "127.0.0.1"
+    hermes_port: int = 8642
+    hermes_api_key: str | None = None
+    hermes_model: str = "hermes-agent"
+    hermes_stream: bool = False
     rag_enabled: bool = False
     rag_base_url: str = "https://api.openai.com/v1"
     rag_api_key: str | None = None

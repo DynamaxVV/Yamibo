@@ -8,6 +8,7 @@ from copy import deepcopy
 from fastapi import APIRouter, Depends, HTTPException
 
 from yamibo_mcp.config import Settings, load_settings, read_local_config, write_local_config
+from yamibo_mcp.services.web_chat import probe_hermes_chat_completions
 from yamibo_mcp.web_fastapi.deps import get_settings
 
 router = APIRouter(prefix="/api", tags=["settings"])
@@ -294,6 +295,11 @@ def settings_models_get(settings: Settings = Depends(get_settings)):
                 elif item:
                     models.append(str(item))
     return {"models": sorted(dict.fromkeys(models))}
+
+
+@router.post("/settings/hermes-test")
+def settings_hermes_test(settings: Settings = Depends(get_settings)):
+    return probe_hermes_chat_completions(settings)
 
 
 def persist_jobs_enabled(settings: Settings, enabled: bool) -> None:

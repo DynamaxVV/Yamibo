@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 from tests.fixtures.loader import load_thread, load_edge_case
-from yamibo_mcp.web.routes._converters import clean_rich_body_html
+from yamibo_mcp.web_fastapi.converters import clean_rich_body_html
 from yamibo_mcp.yamibo.parsers.thread_detail import _extract_post_meta, extract_author_only_total_pages, extract_forum_id_from_html, parse_thread_detail
 
 

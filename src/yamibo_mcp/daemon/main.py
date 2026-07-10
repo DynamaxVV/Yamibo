@@ -7,7 +7,7 @@ from pathlib import Path
 
 from yamibo_mcp.config import load_settings
 from yamibo_mcp.logging import configure_logging
-from yamibo_mcp.web.app import EmbeddedWebServer
+from yamibo_mcp.web_fastapi.app import EmbeddedWebServer
 from yamibo_mcp.daemon.runner import DaemonRunner
 
 

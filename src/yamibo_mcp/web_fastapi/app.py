@@ -12,6 +12,8 @@ from fastapi import FastAPI, Request, Query
 from fastapi.staticfiles import StaticFiles
 from starlette.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 
+from yamibo_mcp.config import load_settings
+
 
 def create_app(settings) -> FastAPI:
     app = FastAPI(title="Yamibo Archiver", version="0.12.1")
@@ -19,7 +21,7 @@ def create_app(settings) -> FastAPI:
 
     from yamibo_mcp.errors import JobNotFound
     from yamibo_mcp.web_fastapi.routers import (
-        daemon, dashboard, debug, forums, jobs, knowledge,
+        chat, daemon, dashboard, debug, forums, jobs, knowledge,
         rag, remote_forum, review, series, threads,
     )
     from yamibo_mcp.web_fastapi.routers import settings as settings_router
@@ -27,6 +29,14 @@ def create_app(settings) -> FastAPI:
     @app.exception_handler(JobNotFound)
     async def job_not_found_handler(request: Request, exc: JobNotFound):
         return JSONResponse(status_code=404, content={"error": str(exc)})
+
+    @app.get("/api/health")
+    def health():
+        return {
+            "ok": True,
+            "database": settings.db_backend,
+            "data_dir": str(settings.data_dir),
+        }
 
     app.include_router(dashboard.router)
     app.include_router(jobs.router)
@@ -40,6 +50,7 @@ def create_app(settings) -> FastAPI:
     app.include_router(debug.router)
     app.include_router(daemon.router)
     app.include_router(remote_forum.router)
+    app.include_router(chat.router)
 
     @app.get("/api/avatar-proxy")
     def avatar_proxy(uid: str = Query(...), size: str = Query(default="middle")):
@@ -181,3 +192,13 @@ class EmbeddedWebServer:
         if self._thread is not None:
             self._thread.join(timeout=5)
             self._thread = None
+
+
+def main() -> None:
+    settings = load_settings()
+    uvicorn.run(
+        create_app(settings),
+        host=settings.web_host,
+        port=settings.web_port,
+        log_level="warning",
+    )

@@ -127,7 +127,7 @@ MCP 客户端
 | `src/yamibo_mcp/storage/` | 文件路径、staging、归档物化、图片、导出 | 文件系统行为集中在这里 |
 | `src/yamibo_mcp/services/` | LLM 客户端与标题辅助逻辑 | 内部能力，不是公共 Agent 接口 |
 | `src/yamibo_mcp/web_fastapi/` | 嵌入式 FastAPI 服务、API routers、静态资源挂载 | Python 侧 Web 主路径改这里 |
-| `src/yamibo_mcp/web/` | 旧 Web 实现与 packaged static | 仅处理兼容/构建产物相关改动 |
+| `src/yamibo_mcp/web/` | Python 包内的已打包静态资源 | 只处理构建产物相关改动 |
 | `frontend/` | React/Vite 前端源码 | UI 改这里，再构建到 `web/static/` |
 | `src/yamibo_mcp/maintenance/` | 备份、清理、重置 | 运维脚本 |
 
@@ -145,9 +145,9 @@ MCP 客户端
 | 修改知识研究 API | `application/knowledge_queries.py`、`web_fastapi/routers/knowledge.py` | `uv run pytest tests/unit/test_application/test_knowledge_queries.py tests/unit/test_web_fastapi/` |
 | 修改更新检测/追加更新 | `application/update_queries.py`、`application/update_commands.py`、`daemon/handlers/update_thread.py` | `uv run pytest tests/unit/test_application/test_thread_update_use_cases.py tests/unit/test_daemon/test_update_thread_handler.py` |
 | 修改任务状态/事件 | `application/job_queries.py`、`db/repositories/jobs.py`、`db/repositories/job_events.py` | `uv run pytest tests/unit/test_application/test_job_use_cases.py tests/unit/test_db/` |
-| 修改 Web API | `web_fastapi/routers/*.py`、相关 `application/*` | `uv run pytest tests/unit/test_web_fastapi/ tests/unit/test_web/` |
-| 修改 Web UI | `frontend/src/*`、`frontend/public/*` | `npm --prefix frontend run build` 后 `uv run pytest tests/unit/test_web/` |
-| 修改静态资源路由 | `web_fastapi/app.py`、`src/yamibo_mcp/web/static/README.md` | `uv run pytest tests/unit/test_web_fastapi/ tests/unit/test_web/test_app.py` |
+| 修改 Web API | `web_fastapi/routers/*.py`、相关 `application/*` | `uv run pytest tests/unit/test_web_fastapi/` |
+| 修改 Web UI | `frontend/src/*`、`frontend/public/*` | `npm --prefix frontend run build` 后 `uv run pytest tests/unit/test_web_fastapi/` |
+| 修改静态资源路由 | `web_fastapi/app.py`、`src/yamibo_mcp/web/static/README.md` | `uv run pytest tests/unit/test_web_fastapi/` |
 | 修改迁移/Schema | `db/migrations.py`、repositories | `uv run pytest tests/unit/test_db/ tests/unit/test_application/` |
 
 ## 4. 简化约束
@@ -171,7 +171,7 @@ MCP 客户端
 1. 改 `frontend/src/` 或 `frontend/public/`
 2. 运行 `npm --prefix frontend run build`
 3. 检查 `src/yamibo_mcp/web/static/` 的生成 diff
-4. 运行 `uv run pytest tests/unit/test_web/`
+4. 运行 `uv run pytest tests/unit/test_web_fastapi/`
 
 默认不要去读 `src/yamibo_mcp/web/static/assets/` 里的压缩 JS/CSS，除非任务就是静态路由、打包或 cache busting。
 
@@ -183,7 +183,7 @@ MCP 客户端
 | MCP Resources | `uv run pytest tests/unit/test_server/test_resources.py` |
 | 应用层 | `uv run pytest tests/unit/test_application/` |
 | Server 层 | `uv run pytest tests/unit/test_server/` |
-| Web API / 静态路由 | `uv run pytest tests/unit/test_web_fastapi/ tests/unit/test_web/` |
+| Web API / 静态路由 | `uv run pytest tests/unit/test_web_fastapi/` |
 | 数据库 / Repository | `uv run pytest tests/unit/test_db/` |
 | Daemon handlers | `uv run pytest tests/unit/test_daemon/` |
 | 解析器 | `uv run pytest tests/unit/test_parsers/` |

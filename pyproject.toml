@@ -10,6 +10,8 @@ dependencies = [
   "pgvector>=0.3.0",
   "alembic>=1.13.0",
   "curl-cffi>=0.7.0",
+  "fastapi>=0.115.0",
+  "uvicorn>=0.30.0",
 ]
 
 [project.optional-dependencies]
@@ -22,7 +24,7 @@ dev = [
 [project.scripts]
 yamibo-init-db = "yamibo_mcp.db.migrations:main"
 yamibo-daemon = "yamibo_mcp.daemon.main:main"
-yamibo-web = "yamibo_mcp.web.app:main"
+yamibo-web = "yamibo_mcp.web_fastapi.app:main"
 yamibo-archiver = "yamibo_mcp.server.cli:main"
 yamibo-backup-db = "yamibo_mcp.maintenance.backup_db:main"
 yamibo-maintenance-cleanup = "yamibo_mcp.maintenance.cleanup_data:main"

@@ -232,7 +232,7 @@ class AgentResult:
 ### 3.3 Web 层现状
 
 - `src/yamibo_mcp/web_fastapi/` 是当前嵌入式 Web 的主实现，负责 `/api/*`、`/media/*`、`/fonts/*`、`/artifacts/*` 和 SPA fallback。
-- `src/yamibo_mcp/web/` 仍保留已打包静态资源和旧实现兼容层；前端构建产物继续输出到 `src/yamibo_mcp/web/static/`。
+- `src/yamibo_mcp/web/` 仅保留随 Python 包分发的已打包静态资源；前端构建产物继续输出到 `src/yamibo_mcp/web/static/`。
 - Jobs 页新增 `/api/jobs/backfill-status`，Knowledge 页对应 `/api/knowledge/research`、`/api/knowledge/trend-index`、`/api/knowledge/research-report`。
 
 ---
