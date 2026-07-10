@@ -55,6 +55,7 @@ def test_postgres_migration_creates_baseline_schema(pg_engine):
         thread_columns = {column["name"] for column in inspector.get_columns("threads", schema="public")}
         rag_columns = {column["name"] for column in inspector.get_columns("rag_chunks", schema="public")}
         trend_columns = {column["name"] for column in inspector.get_columns("discussion_current_indexes", schema="public")}
+        version_pk = inspector.get_pk_constraint("alembic_version", schema="public")
         current_pk = inspector.get_pk_constraint("discussion_current_indexes", schema="public")
         run_uniques = {
             tuple(constraint["column_names"])
@@ -68,8 +69,9 @@ def test_postgres_migration_creates_baseline_schema(pg_engine):
         assert "content_preview" in thread_columns
         assert "embedding" in rag_columns
         assert "is_current" not in trend_columns
+        assert version_pk["constrained_columns"] == ["version_num"]
         assert current_pk["constrained_columns"] == ["forum_id", "start_date", "end_date", "version"]
-        assert ("forum_id", "start_date", "end_date", "version") not in run_uniques
+        assert ("forum_id", "start_date", "end_date", "version") in run_uniques
         assert "idx_threads_search_vector" in thread_indexes
         assert "idx_threads_forum_pub_time" in thread_indexes
         assert "idx_floors_tid_pub_time" in floor_indexes

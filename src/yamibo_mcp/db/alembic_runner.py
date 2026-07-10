@@ -59,7 +59,7 @@ def upgrade_postgres_schema(connection: Any, *, schema: str = "public") -> None:
         raw_connection.execute(
             text(
                 f'CREATE TABLE IF NOT EXISTS "{schema}".alembic_version ('
-                "version_num VARCHAR(255) NOT NULL"
+                "version_num VARCHAR(255) NOT NULL PRIMARY KEY"
                 ")"
             )
         )

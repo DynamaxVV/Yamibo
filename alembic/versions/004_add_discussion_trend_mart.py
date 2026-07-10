@@ -40,6 +40,7 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")),
         sa.ForeignKeyConstraint(["forum_id"], [f"{schema}.forums.forum_id"], name="fk_discussion_index_runs_forum_id_forums"),
         sa.CheckConstraint("start_date <= end_date", name="ck_discussion_index_runs_window_order"),
+        sa.UniqueConstraint("forum_id", "start_date", "end_date", "version", name="uq_discussion_index_runs_window_version"),
         **_table_kwargs(),
     )
 
