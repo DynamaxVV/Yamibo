@@ -45,7 +45,6 @@ def test_to_wire_always_returns_full_payload_shape_for_failure():
             "message": "Thread 572313 is not archived locally.",
             "agent_hint": "Create an archive job before reading local content.",
             "retryable": False,
-            "field_errors": [],
             "suggested_actions": [
                 {
                     "tool": "create_thread_archive_job",

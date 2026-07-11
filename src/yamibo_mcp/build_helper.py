@@ -7,10 +7,10 @@ from pathlib import Path
 
 def build_frontend() -> bool:
     """Run npm ci && npm run build; return True on success, False on failure."""
-    frontend_dir = Path(__file__).resolve().parents[2] / "frontend"
+    frontend_dir = Path(__file__).resolve().parents[2] / "c"
     package_json = frontend_dir / "package.json"
     if not package_json.exists():
-        print("[yamibo-build-frontend] frontend/package.json not found, skipping")
+        print("[yamibo-build-frontend] c/package.json not found, skipping")
         return True
 
     static_dir = Path(__file__).resolve().parent / "web" / "static"

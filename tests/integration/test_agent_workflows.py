@@ -125,7 +125,7 @@ def test_archive_job_workflow_exposes_reusable_polling_surface(tmp_path):
     assert created["data"]["created"] is True
     assert created["data"]["status"] == "queued"
     assert created["next_actions"][0]["tool"] == "read_job"
-    assert "sqlite_job_created" in created["side_effects"]
+    assert "job_created" in created["side_effects"]
 
     assert status["ok"] is True
     assert status["data"]["status"] == "queued"
@@ -150,7 +150,7 @@ def test_archive_job_workflow_reuses_existing_live_job(tmp_path):
     assert created["ok"] is True
     assert created["data"]["job_id"] == existing.job_id
     assert created["data"]["created"] is False
-    assert "sqlite_job_reused" in created["side_effects"]
+    assert "job_reused" in created["side_effects"]
 
 
 def test_export_job_workflow_does_not_reuse_when_strategy_changes(tmp_path):
@@ -165,7 +165,7 @@ def test_export_job_workflow_does_not_reuse_when_strategy_changes(tmp_path):
     assert created["ok"] is True
     assert created["data"]["job_id"] != existing.job_id
     assert created["data"]["created"] is True
-    assert "sqlite_job_created" in created["side_effects"]
+    assert "job_created" in created["side_effects"]
 
 
 def test_local_archive_workflow_moves_from_missing_to_summary_read(tmp_path):

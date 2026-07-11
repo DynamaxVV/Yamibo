@@ -82,7 +82,7 @@ def create_thread_archive_job(
             AgentAction(tool="read_job", args={"job_id": job_id}, reason="Poll the queued archive job."),
         ],
         side_effects=[
-            "sqlite_job_created" if created else "sqlite_job_reused",
+            "job_created" if created else "job_reused",
             "daemon_required",
         ],
     )
@@ -134,7 +134,7 @@ def create_thread_archive_batch_jobs(
             "reused_job_ids": reused_job_ids,
             "tids": normalized_tids,
         },
-        side_effects=["sqlite_job_created" if created_job_ids else "sqlite_job_reused", "daemon_required"],
+        side_effects=["job_created" if created_job_ids else "job_reused", "daemon_required"],
     )
 
 
@@ -197,7 +197,7 @@ def create_thread_export_job(*, tid: int, strategy: str | None = None) -> AgentR
             AgentAction(tool="read_job", args={"job_id": job.job_id}, reason="Poll the export job until it finishes."),
         ],
         side_effects=[
-            "sqlite_job_created" if created else "sqlite_job_reused",
+            "job_created" if created else "job_reused",
             "daemon_required",
         ],
     )
@@ -215,7 +215,7 @@ def create_thread_update_job(*, tid: int, base_url: str | None = None) -> AgentR
             AgentAction(tool="read_job", args={"job_id": job_id}, reason="Poll the update job until it finishes."),
         ],
         side_effects=[
-            "sqlite_job_created" if created else "sqlite_job_reused",
+            "job_created" if created else "job_reused",
             "daemon_required",
         ],
     )

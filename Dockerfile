@@ -2,10 +2,10 @@ ARG PYTHON_IMAGE=python:3.12-slim
 
 # --- 前端构建阶段 (保持原样，这部分通常缓存良好) ---
 FROM node:20-slim AS frontend-build
-WORKDIR /app/frontend
-COPY frontend/package.json frontend/package-lock.json* ./
-RUN npm install
-COPY frontend ./
+WORKDIR /app/c
+COPY c/package.json c/package-lock.json ./
+RUN npm ci
+COPY c ./
 COPY src/yamibo_mcp/web/static ./src/yamibo_mcp/web/static
 RUN npm run build
 

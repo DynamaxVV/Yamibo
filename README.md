@@ -2,7 +2,7 @@
 
 百合会 (yamibo.com) 论坛本地归档系统。通过 MCP 协议让 LLM 客户端浏览、搜索、归档、检查更新和导出论坛贴子；内嵌 React WebUI 控制台，支持多主题切换。
 
-> 当前版本：`0.13.0`
+> 当前版本：`1.0.0`
 
 ## 功能特性
 
@@ -28,7 +28,9 @@
 
 ## 快速开始
 
-更细的文档入口见 [docs/README.md](/Users/vv/Code/Yamibo/docs/README.md)。
+更细的文档入口见 [docs/README.md](docs/README.md)。
+
+1.0 之后的 capability manifest、受控 tool loop、策略审批、运行轨迹和证据引用方案见 [Agent 友好型 LLM 原生运行时路线图](docs/llm-native-runtime-roadmap.md)。该路线图是后续规划，不代表当前已经内建自主 Agent。
 
 ### 安装
 
@@ -132,7 +134,9 @@ docker compose up -d yamibo yamibo-mcp
 默认 Web 控制台地址：`http://localhost:8765`。
 MCP SSE 入口默认地址：`http://localhost:8000/sse`。
 
-对话页默认接入外部 OpenAI-compatible Hermes 容器；Yamibo 只提供对话入口、上下文与 MCP 工具，不在本地实现模型推理。可在 `.env` 中配置：
+1.0 的 Compose 默认只将 Web、MCP 和 PostgreSQL 绑定到 `127.0.0.1`。Web/MCP 尚未内置互联网身份认证；远程访问必须放在 TLS 反向代理、VPN 或 identity-aware proxy 后面，不能直接开放端口。
+
+对话页默认接入外部 OpenAI-compatible Hermes 容器；Yamibo 1.0 只转发对话消息，不在 Chat 后端实现模型推理或 MCP tool loop。若要让 Hermes 调用 Yamibo MCP，需要在外部 Hermes 运行时中单独配置。可在 `.env` 中配置：
 
 ```env
 YAMIBO_LLM_BASE_URL=http://hermes:8000/v1
@@ -317,7 +321,7 @@ uv run yamibo-backup-db
 
 - 一部分 2011–2012 老帖可能在 `data/threads/<tid>/` 下已有 `metadata.json + context.md`，但当前数据库里没有对应 `threads` 记录
 - 这类帖子优先建议走远端 `sync_thread` 重同步，让系统自动补齐 `forum_id`、`title_parse`、`floors`、`local_reply_count` 和新版 `context.md`
-- [scripts/enqueue_missing_db_thread_sync.py](/Users/vv/Code/Yamibo/scripts/enqueue_missing_db_thread_sync.py) 会自动扫描这类缺失 tid 并按批次创建同步任务
+- [scripts/enqueue_missing_db_thread_sync.py](scripts/enqueue_missing_db_thread_sync.py) 会自动扫描这类缺失 tid 并按批次创建同步任务
 - 在这批帖子处理完成前，不要执行 `cleanup-orphan-thread-dirs`，否则可能误删这些历史归档目录
 
 ## 项目结构
@@ -337,7 +341,7 @@ src/yamibo_mcp/
 ├── domain/          # 领域模型、枚举、校验、内容类型
 └── maintenance/     # 备份、清理、重置命令
 
-frontend/            # React + Vite 前端源码，构建产物输出到 src/yamibo_mcp/web/static/
+c/                   # React + Vite 前端源码，构建产物输出到 src/yamibo_mcp/web/static/
 ```
 
 ## 测试

@@ -79,6 +79,7 @@ def test_update_remote_observation_snapshot_persists_latest_tail(db):
 def test_update_remote_observation_snapshot_ignores_non_latest_tail(db):
     repo = ThreadsRepository(db)
     repo.upsert_snapshot(_make_snapshot(3502))
+    before = repo.get_thread(3502)
 
     repo.update_remote_observation_snapshot(
         tid=3502,
@@ -94,11 +95,15 @@ def test_update_remote_observation_snapshot_ignores_non_latest_tail(db):
     )
 
     row = repo.get_thread(3502)
-    assert row["remote_last_reply_at_raw"] is None
-    assert row["remote_last_reply_at"] is None
-    assert row["remote_last_replier"] is None
-    assert row["remote_reply_count"] is None
-    assert row["remote_observed_at"] is None
+    for field in (
+        "remote_last_reply_at_raw",
+        "remote_last_reply_at",
+        "remote_last_replier",
+        "remote_reply_count",
+        "remote_observed_at",
+        "remote_observed_from",
+    ):
+        assert row[field] == before[field]
 
 
 def test_probe_archive_states_returns_remote_observation_fields(db):

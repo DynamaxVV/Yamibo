@@ -7,10 +7,17 @@ __pycache__/
 .venv/
 .venv_mcp/
 node_modules/
+c/node_modules/
+c/dist/
 
 # Sensitive files
 .cookie
+*.cookie
 yamibo.local.json
+.env
+.env.*
+!.env.example
+!.env.docker.example
 
 # System files
 .DS_Store
@@ -19,8 +26,14 @@ yamibo.local.json
 tests/unit/_backup_*/
 
 # Agent config
-AGENTS.md
 .omx/
+.omc/
+.mimocode/
+.tokensave/
+.understand-anything/
+.serena/
+.vscode/
+.idea/
 .codex/*
 !.codex/agents/
 !.codex/agents/**
@@ -29,3 +42,10 @@ AGENTS.md
 .codex/skills/.system/**
 !.codex/prompts/
 !.codex/prompts/**
+
+# Local database exports and migration scratch files
+*.dump
+*.dum
+/migration/
+/schema.sql
+/schema2.sql

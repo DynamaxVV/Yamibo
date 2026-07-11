@@ -7,7 +7,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-yamibo}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-yamibo}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "${POSTGRES_BIND_HOST:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - ${YAMIBO_POSTGRES_DATA:-yamibo_postgres_data}:/var/lib/postgresql/data
     healthcheck:
@@ -54,12 +54,9 @@ services:
       postgres:
         condition: service_healthy
     ports:
-      - "${YAMIBO_WEB_PORT:-8765}:8765"
+      - "${YAMIBO_WEB_BIND_HOST:-127.0.0.1}:${YAMIBO_WEB_PORT:-8765}:8765"
     volumes:
       - ${YAMIBO_DATA_BIND:-./data}:/app/data
-      - ${YAMIBO_CONFIG_BIND:-./data/yamibo.local.json}:/app/data/yamibo.local.json
-      - ${YAMIBO_COMIC_EXPORT_BIND:-/Volumes/comic/百合会}:/Volumes/comic/百合会
-      - ${YAMIBO_NOVEL_EXPORT_BIND:-/Volumes/personal_folder/novel}:/Volumes/personal_folder/novel
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
@@ -110,12 +107,9 @@ services:
       postgres:
         condition: service_healthy
     ports:
-      - "${YAMIBO_MCP_PORT:-8000}:8000"
+      - "${YAMIBO_MCP_BIND_HOST:-127.0.0.1}:${YAMIBO_MCP_PORT:-8000}:8000"
     volumes:
       - ${YAMIBO_DATA_BIND:-./data}:/app/data
-      - ${YAMIBO_CONFIG_BIND:-./data/yamibo.local.json}:/app/data/yamibo.local.json:ro
-      - ${YAMIBO_COMIC_EXPORT_BIND:-/Volumes/comic/百合会}:/Volumes/comic/百合会
-      - ${YAMIBO_NOVEL_EXPORT_BIND:-/Volumes/personal_folder/novel}:/Volumes/personal_folder/novel
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:

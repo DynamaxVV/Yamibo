@@ -40,7 +40,7 @@ def test_parse_sse_event_handles_done_marker():
     assert _parse_sse_event('data: [DONE]') == {'type': 'done'}
 
 
-def test_parse_sse_event_merges_multiline_data_blocks():
+def test_parse_sse_event_keeps_invalid_multiline_payload_as_raw():
     event = _parse_sse_event(
         'data: {"choices":[{"delta":{"content":"Hello"}}]}\n' \
         'data: {"choices":[{"delta":{"content":" world"}}]}'
@@ -48,13 +48,7 @@ def test_parse_sse_event_merges_multiline_data_blocks():
 
     assert event == {
         'type': 'meta',
-        'raw_output': {
-            'choices': [
-                {
-                    'delta': {'content': ' world'},
-                }
-            ],
-        },
+        'raw': '{"choices":[{"delta":{"content":"Hello"}}]}\n{"choices":[{"delta":{"content":" world"}}]}',
     }
 
 

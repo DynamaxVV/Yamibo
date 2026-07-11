@@ -27,7 +27,7 @@ from yamibo_mcp.services.title_hints import update_title_hints
 from yamibo_mcp.services.title_llm import refine_title_parse_with_llm, title_parse_to_dict
 from yamibo_mcp.daemon.heartbeat import HeartbeatPacer
 from yamibo_mcp.yamibo.account_pool import borrow_yamibo_client, has_configured_account_pool, next_permission_threshold
-from yamibo_mcp.errors import ThreadPermissionRequiredError, UnexpectedPageError, _extract_permission_code
+from yamibo_mcp.errors import LoginRequiredError, ThreadPermissionRequiredError, UnexpectedPageError, _extract_permission_code
 from yamibo_mcp.yamibo.client import YamiboClient
 from yamibo_mcp.yamibo.parsers.thread_detail import parse_thread_snapshot
 from yamibo_mcp.yamibo.proxy_pool import activate_proxy_binding, select_thread_proxy
@@ -55,6 +55,25 @@ def _check_paused(repo: JobsRepository, job_id: str) -> None:
         raise JobPaused(f"Job {job_id} was paused")
 
 
+def _proxy_pool_artifacts(settings: Settings, tid: int | None, job_id: str) -> tuple[object | None, dict[str, object]]:
+    binding = select_thread_proxy(settings, tid=tid, job_id=job_id)
+    if binding:
+        return binding, {
+            "proxy_pool.enabled": True,
+            "proxy_pool.group": binding.group,
+            "proxy_pool.node": binding.node,
+            "proxy_pool.best_effort": binding.best_effort,
+            "proxy_pool.diagnostics": binding.diagnostics,
+        }
+    if getattr(settings, "proxy_pool", None) and settings.proxy_pool.enabled:
+        return None, {
+            "proxy_pool.enabled": True,
+            "proxy_pool.fallback": True,
+            "proxy_pool.error": "no_usable_nodes",
+        }
+    return None, {}
+
+
 def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_seconds: int, settings: Settings) -> None:
     paths = StoragePaths(
         settings.data_dir,
@@ -74,24 +93,9 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
     client_stack = ExitStack()
     proxy_stack = ExitStack()
 
-    # Select proxy binding (no-op when disabled or not configured)
-    proxy_binding = select_thread_proxy(settings, tid=tid, job_id=job.job_id)
+    # Select proxy binding (no-op when disabled or not configured).
+    proxy_binding, proxy_pool_artifacts = _proxy_pool_artifacts(settings, tid, job.job_id)
     proxy_url = proxy_binding.proxy_url if proxy_binding else None
-    proxy_pool_artifacts: dict[str, object] = {}
-    if proxy_binding:
-        proxy_pool_artifacts = {
-            "proxy_pool.enabled": True,
-            "proxy_pool.group": proxy_binding.group,
-            "proxy_pool.node": proxy_binding.node,
-            "proxy_pool.best_effort": proxy_binding.best_effort,
-            "proxy_pool.diagnostics": proxy_binding.diagnostics,
-        }
-    elif getattr(settings, "proxy_pool", None) and settings.proxy_pool.enabled:
-        proxy_pool_artifacts = {
-            "proxy_pool.enabled": True,
-            "proxy_pool.fallback": True,
-            "proxy_pool.error": "no_usable_nodes",
-        }
 
     try:
         proxy_stack.enter_context(activate_proxy_binding(settings, proxy_binding))
@@ -185,6 +189,23 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
                             stack = client_stack
                             min_permission = next_min_permission
                             # 循环回到顶部以更高的 min_permission 重试借号
+                        except LoginRequiredError:
+                            account_id = getattr(identity, "account_id", "unknown")
+                            current_level = getattr(identity, "permission_level", "unknown")
+                            next_min = (min_permission or 0) + 1
+                            LOG.warning(
+                                "sync_thread job=%s login required; escalating account_id=%s current_level=%s "
+                                "min_permission=%s next_min_permission=%s",
+                                job.job_id,
+                                account_id,
+                                current_level,
+                                min_permission,
+                                next_min,
+                            )
+                            stack.close()
+                            client_stack = ExitStack()
+                            stack = client_stack
+                            min_permission = next_min
                         except UnexpectedPageError as exc:
                             # 「错误权限代码 30/40/50/100」实际是权限不足，尝试升级账号
                             code = _extract_permission_code(str(exc))

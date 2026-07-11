@@ -96,5 +96,5 @@ def create_update_thread_batch_jobs(
             "tids": normalized_tids,
         },
         warnings=[f"skipped tid {row['tid']}: {row['reason']}" for row in skipped],
-        side_effects=["sqlite_job_created" if created_job_ids else "sqlite_job_reused", "daemon_required"],
+        side_effects=["job_created" if created_job_ids else "job_reused", "daemon_required"],
     )

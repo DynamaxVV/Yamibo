@@ -1,6 +1,6 @@
 # 百合会归档助手 WebUI 功能与设计文档
 
-> 版本：0.12.1 | 更新日期：2026-07-05
+> 版本：1.0.0 | 更新日期：2026-07-12
 
 ## 1. 技术架构
 
@@ -14,14 +14,14 @@
 
 ### 1.2 后端
 
-- **API 层**：`src/yamibo_mcp/web/api.py` — 基于 Python http.server 的 JSON API
-- **静态服务**：`src/yamibo_mcp/web/app.py` — 生产模式下由 Python 服务器同时提供 API 和静态文件
-- **开发模式**：Vite dev server 代理 `/api` 到 Python 后端
+- **API 层**：`src/yamibo_mcp/web_fastapi/` — FastAPI 路由与依赖注入
+- **静态服务**：`src/yamibo_mcp/web_fastapi/app.py` — 生产模式下由 FastAPI 提供 API 和静态文件
+- **开发模式**：Vite dev server 代理 `/api` 到 FastAPI 后端
 
 ### 1.3 构建产物
 
 ```
-frontend/
+c/
 ├── src/
 │   ├── api/client.ts          # 类型安全的 fetch wrapper
 │   ├── themes/                # 主题定义
@@ -32,7 +32,7 @@ frontend/
 └── vite.config.ts
 ```
 
-构建后输出到 `src/yamibo_mcp/web/static/`，由 Python 服务器在生产模式下直接服务。
+构建后输出到 `src/yamibo_mcp/web/static/`，由 FastAPI 在生产模式下直接服务。
 
 ---
 

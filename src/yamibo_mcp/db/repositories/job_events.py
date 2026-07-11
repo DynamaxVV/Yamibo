@@ -13,10 +13,10 @@ LOG = logging.getLogger(__name__)
 
 def _event_from_row(row: sqlite3.Row) -> JobEvent:
     payload_raw = row["payload_json"]
-    if payload_raw in {None, ""}:
-        payload = {}
-    elif isinstance(payload_raw, dict):
+    if isinstance(payload_raw, dict):
         payload = payload_raw
+    elif payload_raw is None or payload_raw == "":
+        payload = {}
     else:
         payload = json.loads(payload_raw)
     return JobEvent(

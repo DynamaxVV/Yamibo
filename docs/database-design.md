@@ -1,25 +1,24 @@
 # 数据字典 / 数据库设计文档
 
-> 历史说明：本文最初按 SQLite-first 写成。当前运行时默认数据库已经切到 PostgreSQL。文中涉及 `data/forum.db`、`schema_migrations`、SQLite FTS/WAL 的部分应视为历史基线或兼容层说明，不再代表主部署方案。
+> 范围说明：本文以逻辑实体和数据挖掘用途为主。生产物理 schema 的唯一真相源是 `alembic/versions/` 与 `db/repositories/`；SQLite 兼容 schema 的真相源是 `db/migrations.py`。不要仅依据本文手工修改生产数据库。
 
-> 版本：0.9.3 | 更新日期：2026-06-26
+> 版本：1.0.0 | 更新日期：2026-07-12
 
 ## 1. 概述
 
-- **数据库引擎**：SQLite >= 3.35
-- **存储路径**：`data/forum.db`（可通过 `YAMIBO_DB_PATH` 覆盖）
-- **Journal 模式**：WAL（Write-Ahead Logging）
-- **外键约束**：启用（`PRAGMA foreign_keys = ON`）
-- **Busy Timeout**：5000ms
-- **Schema 迁移**：`db/migrations.py` 中的 `migrate()` 函数，通过 `schema_migrations` 表跟踪版本
+- **生产主引擎**：PostgreSQL >= 15，向量检索使用 pgvector
+- **本地兼容引擎**：SQLite >= 3.35，默认路径 `data/forum.db`，使用 WAL/FTS5，可选 sqlite-vec
+- **生产迁移**：`yamibo-init-db` 调用 Alembic runner，版本由 `alembic_version` 跟踪
+- **SQLite 迁移**：`db/migrations.py`，版本由 `schema_migrations` 跟踪
+- **访问方式**：`DatabaseConnection` + 手写 Repository SQL，不使用 ORM domain model
 
 ---
 
 ## 2. 表结构
 
-### 2.1 schema_migrations
+### 2.1 迁移元数据（后端特定）
 
-Schema 版本跟踪表。
+PostgreSQL 使用 Alembic 的 `alembic_version`；SQLite 使用 `schema_migrations`。下表仅描述 SQLite 兼容表。
 
 | 列名 | 类型 | 约束 | 说明 |
 |------|------|------|------|
@@ -326,11 +325,43 @@ Schema 版本跟踪表。
 
 ---
 
+### 2.15 扩展数据域
+
+上面的逐表字典覆盖核心归档与任务实体。1.0 还包含以下扩展数据域；其精确列、索引和约束以 Alembic 与 Repository 为准：
+
+| 数据域 | 核心表 | 用途 |
+|------|--------|------|
+| 系统状态 | `system_state` | 全局暂停、维护和运行时状态 |
+| RAG | `rag_index_meta`、`rag_chunks` | 分块、embedding 追踪、关键词/向量/混合检索 |
+| 趋势运行 | `discussion_index_runs`、`discussion_current_indexes` | 固化论坛时间窗、版本和 current pointer |
+| Topic | `discussion_topics`、`discussion_topic_assignments`、`discussion_rag_chunk_topics` | topic 定义、楼层/帖子分配与 RAG 关联 |
+| 分析 Mart | `discussion_partition_daily`、`discussion_topic_daily`、`discussion_user_daily` | 分区、主题和用户日粒度聚合 |
+| 研究产物 | `discussion_report_runs` | 趋势报告和论坛研究报告 artifact |
+
+Discussion 数据域的构建、质量阈值和查询契约见 [discussion-trend-v1.md](discussion-trend-v1.md)。
+
+### 2.16 数据集分层与挖掘边界
+
+| 层级 | 主要实体 | 数据性质 | 推荐用途 |
+|------|---------|---------|---------|
+| Source/Archive | `threads`、`floors`、`content_blocks`、`assets`、物化文件 | 接近论坛事实的归档快照 | 回溯、全文读取、重新派生 |
+| Semantic | `forums`、`title_parse`、`series`、`catalog` | 规则或模型派生的规范化元数据 | 分类、系列聚合、质量复核 |
+| Retrieval | `rag_chunks`、向量/全文索引 | 可重建的检索派生数据 | RAG、证据候选召回 |
+| Analytical Mart | `discussion_*_daily`、topic assignment | 带版本和时间窗的聚合数据 | 趋势、用户与主题分析 |
+| Operations | `jobs`、`job_events`、`sync_runs`、`audit_events` | 运行和审计事实 | 稳定性、吞吐和失败分析 |
+| Artifact | report、export、context、metadata | 面向消费的输出 | 发布、引用、离线研究 |
+
+数据挖掘应从 Source/Archive 重建派生层，并记录 index/parser/model 版本；不能把 RAG chunk、topic 标签或 LLM 摘要当作不可更改的原始事实。未来 research run、lineage 和 citation 方案见 [LLM 原生运行时路线图](llm-native-runtime-roadmap.md#7-与数据挖掘的协同)。
+
+---
+
 ## 3. 文件存储结构
+
+PostgreSQL 数据由数据库服务持久化，不位于 `YAMIBO_DATA_DIR`。下列 `forum.db` 仅在 SQLite 模式存在，其余归档、导出和运行时文件由两种后端共享。
 
 ```
 data/
-├── forum.db                    # SQLite 数据库
+├── forum.db                    # 仅 SQLite 模式
 ├── title_hints.json            # 标题提示词（汉化组、作者列表）
 ├── threads/                    # 帖子归档
 │   └── {tid}/
@@ -448,4 +479,4 @@ parser_version: "title-v1+llm"
 | rag_chunks | `metadata_text` | `TEXT` | 自由文本搜索元数据 |
 | rag_index_meta | `value` | `TEXT` | 透明 key/value 元数据 |
 
-Alembic 基线：从当前 SQLite schema 生成第一版 PostgreSQL revision，后续由 Alembic 接管。过渡期内两套迁移历史独立。`schema_migrations` 继续作为 SQLite 版本表，PostgreSQL 使用 `alembic_version`。仅存储、不按结构化查询的列保留 `TEXT`。
+PostgreSQL 已由 Alembic revisions 管理，SQLite 兼容迁移继续由 `schema_migrations` 管理；两套迁移历史独立。JSONB 决策如需变化，必须新增 Alembic revision 并同步 repository 与跨后端测试，不能直接修改既有基线。

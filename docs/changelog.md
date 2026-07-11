@@ -1,5 +1,23 @@
 # 百合会归档助手 — 版本更新日志
 
+## v1.0.0 (2026-07-12)
+
+### 发布收敛
+
+- 前端源码目录统一为 `c/`，Docker、CI 和开发文档使用同一构建路径
+- Python 包、FastAPI 和前端版本统一为 `1.0.0`
+- Docker Compose 默认仅将 PostgreSQL、Web 和 MCP 绑定到 loopback，公网部署必须显式配置反向代理与访问控制
+- Agent 工具描述改为数据库后端中立，不再把 PostgreSQL 生产路径误写为 SQLite
+- 增加后端、前端和容器构建 CI，以及独立的 1.0 发布门禁文档
+- 扩充忽略规则，排除凭据、数据库 dump、迁移草稿和本地 Agent/编辑器状态
+- 新增 Agent 友好型 LLM 原生运行时路线图，明确 capability、run/step、policy、citation、评测与数据挖掘协同的 1.1-2.0 阶段
+- 重新校准 Agent、Chat、PRD 和数据库文档，区分 1.0 当前能力与后续内建 tool loop，并补全数据集分层
+
+### 已知限制
+
+- Web Chat 尚未内置 MCP tool loop
+- Web/MCP 的互联网身份认证、无状态 worker 和对象存储安排在 1.x/2.0 路线
+
 ## v0.13.0 (2026-07-10)
 
 ### 新增

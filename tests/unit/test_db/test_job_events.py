@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from yamibo_mcp.db.repositories.job_events import JobEventsRepository
+from yamibo_mcp.db.repositories.job_events import JobEventsRepository, _event_from_row
 from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.domain.enums import JobStatus
 
@@ -22,17 +22,20 @@ class TestCreateAppendsEvent:
         assert events[0].job_id == job.job_id
 
 
-def test_job_events_jsonb_dict_round_trip(db):
-    events_repo = JobEventsRepository(db)
-    job_id = "job_1"
-    db.execute(
-        "INSERT INTO jobs (job_id, job_type, status, payload_json, artifacts_json) VALUES (?, ?, ?, ?, ?)",
-        (job_id, "noop", "queued", '{"key":"value"}', "{}"),
+def test_event_from_row_accepts_postgres_jsonb_dict():
+    event = _event_from_row(
+        {
+            "event_id": 1,
+            "job_id": "job_1",
+            "event_type": "job.created",
+            "status": "queued",
+            "stage": None,
+            "payload_json": {"worker_id": "worker-1"},
+            "created_at": "2026-07-11T00:00:00+00:00",
+        }
     )
-    db.commit()
-    events_repo.append(job_id=job_id, event_type="job.created", payload={"worker_id": "worker-1"})
-    event = events_repo.list(job_id=job_id)[0]
-    assert event.payload["worker_id"] == "worker-1"
+
+    assert event.payload == {"worker_id": "worker-1"}
 
 
 class TestUpdateStageAppendsEvent:

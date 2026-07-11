@@ -36,9 +36,14 @@ yamibo.local.json
 .idea
 
 # Frontend local build/dependency caches
-frontend/node_modules
-frontend/dist
+c/node_modules
+c/dist
 
 # Misc local artifacts
 empty_ai_summary_files.txt
 iTerm2
+*.dump
+*.dum
+migration
+schema.sql
+schema2.sql

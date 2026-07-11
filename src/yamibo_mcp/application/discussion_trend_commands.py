@@ -90,7 +90,7 @@ def create_discussion_trend_index_job(
                 reason="Poll the queued discussion trend index job until terminal state.",
             ),
         ],
-        side_effects=["sqlite_job_created"],
+        side_effects=["job_created"],
     )
 
 

@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from yamibo_mcp.db.repositories.series import SeriesRepository
@@ -63,10 +65,43 @@ class TestResolveForTitle:
         title2 = _make_title(series_key="漫画别名", title_aliases=["别名2"])
         repo.resolve_for_title(title2)
         series = repo.get_series(1)
-        import json
         aliases = json.loads(series["aliases_json"])
         assert "别名1" in aliases
         assert "别名2" in aliases
+
+    def test_reuses_existing_series_when_json_columns_are_already_lists(self, db):
+        repo = SeriesRepository(db)
+        title1 = _make_title(series_key="postgres_jsonb", title_aliases=["别名1"])
+        series_id, _ = repo.resolve_for_title(title1)
+        title2 = _make_title(series_key="postgres_jsonb", title_aliases=["别名2"])
+        db.execute(
+            "UPDATE series SET alias_keys_json = ?, aliases_json = ? WHERE series_id = ?",
+            (json.dumps(["别名1"]), json.dumps(["别名1"]), series_id),
+        )
+        db.commit()
+        row = db.execute(
+            "SELECT * FROM series WHERE series_id = ?",
+            (series_id,),
+        ).fetchone()
+
+        class _RowAdapter(dict):
+            def __getitem__(self, key):
+                return super().__getitem__(key)
+
+        adapted = _RowAdapter(dict(row))
+        adapted["alias_keys_json"] = ["别名1"]
+        adapted["aliases_json"] = ["别名1"]
+
+        updated_id = repo._update_series(
+            adapted,
+            title2,
+            ["别名2"],
+            ["别名2"],
+            False,
+            title2.author_guess,
+        )
+
+        assert updated_id == series_id
 
 
 class TestListSeries:

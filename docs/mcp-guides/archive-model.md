@@ -15,7 +15,7 @@ uv run yamibo-archiver search-threads --query "..."
 uv run yamibo-archiver check-thread-updates --tid <tid>
 ```
 
-**约束**：可读取本地 SQLite 补充"是否已归档"提示。不写 thread/floor/content_blocks/assets。不下载图片。
+**约束**：可读取本地归档数据库补充"是否已归档"提示。不写 thread/floor/content_blocks/assets。不下载图片。
 
 ### 第二层：本地只读（Local Read-Only）
 

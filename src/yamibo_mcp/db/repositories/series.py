@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from typing import Any
 
 from yamibo_mcp.domain.models import TitleSnapshot
 from yamibo_mcp.yamibo.series_matcher import build_series_match_decision
 from yamibo_mcp.yamibo.title.normalizer import normalize_series_key
 
 
-def _loads_list(value: str | None) -> list[str]:
+def _loads_list(value: Any) -> list[str]:
     if not value:
         return []
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, str)]
     loaded = json.loads(value)
     return loaded if isinstance(loaded, list) else []
 

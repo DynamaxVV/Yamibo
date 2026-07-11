@@ -1,22 +1,24 @@
 # 产品需求文档 (PRD) & 系统架构设计
 
-> 版本：0.9.3 | 更新日期：2026-06-26
+> 版本：1.0.0 | 更新日期：2026-07-12
 
 ## 1. 产品概述
 
 ### 1.1 产品名称
 
-Yamibo Archive — 百合会漫画本地归档系统
+Yamibo Archive — 百合会论坛归档与研究系统
 
 ### 1.2 产品定位
 
-面向 yamibo.com（百合会）论坛用户的本地归档工具。支持多论坛分区（漫画区、轻小说区、动漫区、水区），通过 MCP（Model Context Protocol）协议，使 LLM 客户端能够浏览、搜索、归档和导出论坛帖子。
+面向 yamibo.com（百合会）论坛用户、资料整理者和研究者的本地归档工具。支持多论坛分区（漫画区、轻小说区、动漫区、水区），通过 CLI、Web 和 MCP 使人类与 LLM 客户端能够浏览、搜索、归档、检索和分析论坛内容。
 
 ### 1.3 目标用户
 
 - 百合会论坛活跃用户
 - 希望本地备份漫画帖子的用户
 - 使用 MCP 客户端（如 Claude Desktop、Cursor 等）的 LLM 用户
+- 需要对历史讨论进行可追溯检索、趋势分析和证据抽样的研究者
+- 集成 Yamibo tool/resource 的 Agent 开发者
 
 ### 1.4 核心价值
 
@@ -30,6 +32,7 @@ Yamibo Archive — 百合会漫画本地归档系统
 | 标准化导出 | 生成包含 context.md + metadata.json + 图片的 ZIP 导出包 |
 | Agent Resources | 紧凑 summary/diagnostics/posts/assets 资源，低 token 开销 |
 | MCP 集成 | 通过标准 MCP 协议暴露工具和资源，LLM 可直接调用 |
+| 研究能力 | 基于 PostgreSQL trend mart、RAG 和 evidence artifact 分析历史讨论 |
 
 ---
 
@@ -58,7 +61,7 @@ Yamibo Archive — 百合会漫画本地归档系统
 | F-017 | 校验归档完整性（图片、楼层） | P1 |
 | F-018 | 内容类型分类（comic/novel/discussion/mixed） | P1 |
 
-### 2.5 Agent 资源
+### 2.3 Agent 资源
 
 | ID | 需求 | 优先级 |
 |----|------|--------|
@@ -69,7 +72,7 @@ Yamibo Archive — 百合会漫画本地归档系统
 | F-054 | 论坛分区列表和摘要资源 | P1 |
 | F-055 | 任务事件时间线资源 | P1 |
 
-### 2.3 导出
+### 2.4 导出
 
 | ID | 需求 | 优先级 |
 |----|------|--------|
@@ -77,7 +80,7 @@ Yamibo Archive — 百合会漫画本地归档系统
 | F-021 | 支持三种导出策略：cache_only / sync_if_stale / force_resync | P1 |
 | F-022 | 导出包按系列分目录组织 | P1 |
 
-### 2.4 Web 控制台
+### 2.5 Web 控制台
 
 | ID | 需求 | 优先级 |
 |----|------|--------|
@@ -88,7 +91,7 @@ Yamibo Archive — 百合会漫画本地归档系统
 | F-034 | 标题复核（手动修正解析结果） | P1 |
 | F-035 | 中英文双语界面 | P1 |
 
-### 2.5 系统管理
+### 2.6 系统管理
 
 | ID | 需求 | 优先级 |
 |----|------|--------|
@@ -96,9 +99,22 @@ Yamibo Archive — 百合会漫画本地归档系统
 | F-041 | 过期 staging 清理 | P1 |
 | F-042 | 数据目录重置（调试用） | P2 |
 
+### 2.7 后续 Agent / LLM 运行时（非 1.0）
+
+| ID | 需求 | 建议阶段 |
+|----|------|---------|
+| F-060 | 机器可读 capability manifest，声明副作用、风险、幂等性和后继工具 | 1.1 |
+| F-061 | 持久化 Agent run/step/event，与 conversation 和业务 Job 分离 | 1.2 |
+| F-062 | capability 级 policy、审批、预算和审计 | 1.2 |
+| F-063 | 可暂停恢复的受控 tool loop 和 Job 等待 | 1.x |
+| F-064 | resource snapshot、citation 和 research artifact 闭环 | 1.x |
+| F-065 | transcript 回归、故障恢复和 prompt injection 评测门禁 | 1.x |
+
+完整目标架构与验收边界见 [Agent 友好型 LLM 原生运行时路线图](llm-native-runtime-roadmap.md)。这些需求不得被描述为 1.0 已实现能力。
+
 ---
 
-> 历史说明：本文部分章节写于 SQLite-first 阶段。当前实现已转向 PostgreSQL-primary；文中出现的 SQLite job queue / forum.db / FTS5 描述应按历史背景理解，而不是当前部署推荐。
+> 当前基线：本地空配置可使用 SQLite，Docker/生产环境以 PostgreSQL + pgvector 为主路径。数据库实现细节以 Alembic migration、`db/migrations.py` 和 repository 为准。
 
 ## 3. 非功能需求
 
@@ -108,7 +124,7 @@ Yamibo Archive — 百合会漫画本地归档系统
 | 可靠性 | Daemon 崩溃后自动恢复中断任务 |
 | 并发 | 支持多 Daemon 实例并行消费 |
 | 安全 | Cookie 文件不入库、不入导出包 |
-| 兼容性 | Python >= 3.11，SQLite >= 3.35 |
+| 兼容性 | Python >= 3.11；PostgreSQL >= 15；SQLite >= 3.35（本地轻量/测试） |
 
 ---
 
@@ -132,7 +148,7 @@ Yamibo Archive — 百合会漫画本地归档系统
 │  │  Application Layer (ensure_thread, archive_thread_job)   │  │
 │  └──────────────────────────────────────────────────────────┘  │
 └──────────────────────────┬──────────────────────────────────────┘
-                           │ SQLite (jobs + job_events)
+                           │ Database (jobs + job_events)
                            ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                     yamibo-daemon                                │
@@ -143,8 +159,8 @@ Yamibo Archive — 百合会漫画本地归档系统
          │              │              │
          ▼              ▼              ▼
 ┌────────────┐  ┌────────────┐  ┌────────────┐
-│   SQLite   │  │  Yamibo    │  │  Storage   │
-│  forum.db  │  │  Forum     │  │  Files     │
+│ PostgreSQL │  │  Yamibo    │  │  Storage   │
+│ / SQLite   │  │  Forum     │  │  Files     │
 └────────────┘  └────────────┘  └────────────┘
 
 ┌─────────────────────────────────────────────────────────────────┐
@@ -157,15 +173,15 @@ Yamibo Archive — 百合会漫画本地归档系统
 
 | 组件 | 入口 | 职责 |
 |------|------|------|
-| MCP Server | `yamibo-archiver stdio` | 接收 LLM 客户端请求，创建任务到 SQLite |
-| Daemon | `yamibo-daemon` | 轮询 SQLite，抢占任务并执行处理器 |
-| Web Console | 嵌入 Daemon | HTTP 管理界面 |
+| MCP Server | `yamibo-archiver stdio` | 暴露结构化 tool/resource，查询或创建后台任务 |
+| Daemon | `yamibo-daemon` | 轮询当前配置数据库，基于 lease 抢占任务并执行处理器 |
+| Web Console | 嵌入 Daemon 或独立 `yamibo-web` | FastAPI 管理界面与静态前端 |
 | Yamibo Client | `yamibo/client.py` | 论坛 HTTP 客户端，含登录、Cookie 管理 |
 | Parsers | `yamibo/parsers/` | HTML 解析（帖子详情、列表页、搜索结果） |
 | Title Parser | `yamibo/title/parser.py` | 标题规则引擎 |
 | Title LLM | `services/title_llm.py` | LLM 辅助标题解析 |
 | Storage | `storage/` | 文件 I/O（staging、归档、导出、图片） |
-| DB | `db/` | SQLite 连接、迁移、Repository |
+| DB | `db/` | PostgreSQL/SQLite 连接、Alembic/本地迁移、Repository |
 
 ### 4.3 Job 生命周期
 
@@ -223,7 +239,7 @@ validate_thread_snapshot → 校验完整性
 download_images_to_staging → 图片下载到 staging
   │
   ▼
-upsert_snapshot → 写入 SQLite（threads/floors/title_parse/series/FTS）
+upsert_snapshot → 写入当前数据库（threads/floors/title_parse/series/search index）
   │
   ▼
 materialize_thread → 写入正式归档目录（context.md + metadata.json + images）
@@ -239,11 +255,12 @@ export_thread_zip → 打包导出（可选）
 | 语言 | Python >= 3.11 |
 | 包管理 | uv (setuptools build backend) |
 | MCP SDK | `mcp` >= 1.27.2 (FastMCP) |
-| 数据库 | SQLite (WAL mode, FTS5) |
-| HTTP 客户端 | urllib (stdlib) |
-| HTML 解析 | html.parser (stdlib, 纯正则) |
-| Web 服务器 | http.server.ThreadingHTTPServer (stdlib) |
-| LLM 集成 | OpenAI-compatible API (urllib 直调) |
+| 数据库 | PostgreSQL 15 + pgvector（生产）；SQLite/FTS5/sqlite-vec（本地兼容） |
+| 数据访问 | SQLAlchemy Core connection wrapper + 手写 Repository SQL |
+| HTTP 客户端 | curl_cffi（论坛访问）+ 标准库 HTTP（部分服务适配） |
+| HTML 解析 | 项目内解析器与页面分类器 |
+| Web 服务器 | FastAPI + Uvicorn |
+| LLM 集成 | OpenAI-compatible API / 外部 Hermes |
 | 测试框架 | pytest >= 8.0 |
 
 ---
@@ -286,8 +303,8 @@ yamibo/
 │   │       ├── cleanup_job.py  # 清理
 │   │       ├── title_refine.py # 标题精炼
 │   │       └── noop.py         # 空操作
-│   ├── web/                    # Web 控制台
-│   │   └── app.py              # HTTP Handler + 嵌入式服务器
+│   ├── web_fastapi/            # FastAPI API、Chat、静态资源挂载
+│   ├── web/                    # Python 包内静态构建产物
 │   ├── yamibo/                 # 论坛交互层
 │   │   ├── client.py           # HTTP 客户端（Cookie、登录、重试）
 │   │   ├── page_classifier.py  # 页面类型识别
@@ -304,8 +321,9 @@ yamibo/
 │   │   └── cleaners/           # 内容清洗
 │   │       └── content_cleaner.py
 │   ├── db/                     # 数据层
-│   │   ├── connection.py       # SQLite 连接管理
-│   │   ├── migrations.py       # Schema DDL + 迁移
+│   │   ├── connection.py       # PostgreSQL/SQLite 连接封装
+│   │   ├── alembic_runner.py   # PostgreSQL Alembic 入口
+│   │   ├── migrations.py       # SQLite 兼容迁移
 │   │   └── repositories/       # Repository 模式
 │   │       ├── jobs.py         # Job CRUD + 租约抢占
 │   │       ├── threads.py      # 帖子 + 标题 + 楼层 + FTS
@@ -342,6 +360,7 @@ yamibo/
 │   ├── fixtures/               # 测试数据
 │   └── unit/                   # 单元测试
 ├── scripts/                    # 辅助脚本
+├── c/                          # React/Vite 前端源码
 ├── data/                       # 运行时数据（不提交）
 └── docs/                       # 文档
 ```

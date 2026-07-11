@@ -92,6 +92,7 @@ def _make_settings(tmp_path: Path) -> Settings:
         hermes_model='hermes-agent',
         hermes_host='localhost',
         hermes_port=8642,
+        hermes_stream=False,
         rag_enabled=False,
         rag_base_url='http://example.com/v1',
         rag_api_key=None,
@@ -136,7 +137,7 @@ def test_run_chat_turn_stream_persists_final_message(tmp_path, monkeypatch):
 
     assert result['stream'] is True
     assert result['assistant_message'] == 'Hello'
-    sessions = json.loads((tmp_path / '.yamibo' / 'chat' / 'sessions.json').read_text(encoding='utf-8'))
+    sessions = json.loads((tmp_path / 'data' / 'chat' / 'sessions.json').read_text(encoding='utf-8'))
     assert len(sessions) == 1
     assert sessions[0]['messages'][-1]['content'] == 'Hello'
 

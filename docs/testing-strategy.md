@@ -501,24 +501,13 @@ uv run pytest tests/unit/test_parsers/ -v
 
 ### 10.1 GitHub Actions
 
-```yaml
-# .github/workflows/test.yml
-name: Tests
-on: [push, pull_request]
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ['3.13']
-    steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
-        with:
-          python-version: ${{ matrix.python-version }}
-      - run: uv sync --extra dev
-      - run: uv run pytest --cov=yamibo_mcp --cov-report=xml
-```
+仓库使用 `.github/workflows/ci.yml` 执行三个发布门禁：
+
+- Python 3.13 + PostgreSQL/pgvector 全量测试
+- `c/` 前端 TypeScript 与 Vite 生产构建
+- Docker 生产镜像构建
+
+CI 使用 `uv sync --locked --extra dev`，依赖必须与 `uv.lock` 一致。
 
 ### 10.2 本地开发
 

@@ -13,10 +13,11 @@ from fastapi.staticfiles import StaticFiles
 from starlette.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 
 from yamibo_mcp.config import load_settings
+from yamibo_mcp import __version__
 
 
 def create_app(settings) -> FastAPI:
-    app = FastAPI(title="Yamibo Archiver", version="0.12.1")
+    app = FastAPI(title="Yamibo Archiver", version=__version__)
     app.state.settings = settings
 
     from yamibo_mcp.errors import JobNotFound

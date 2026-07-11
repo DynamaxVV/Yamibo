@@ -62,7 +62,7 @@ def test_create_job_happy_path_persists_job_and_returns_agent_result():
     assert result.data["end_date"] == "2014-11-30"
     assert result.data["version"] == "trend-v1"
     assert result.data["retention_success_runs"] == 3
-    assert result.side_effects == ["sqlite_job_created"]
+    assert result.side_effects == ["job_created"]
 
     fake_jobs_repo.create.assert_called_once()
     args, kwargs = fake_jobs_repo.create.call_args

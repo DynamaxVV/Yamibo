@@ -1,6 +1,6 @@
 # Agent 能力验收标准
 
-> 版本：0.9.3 | 更新日期：2026-06-26
+> 版本：1.0.0 | 更新日期：2026-07-12
 
 本文定义 Yamibo Archive 在 OpenClaw、Hermes 一类多步 Agent 框架上的最小验收标准。目标不是验证“函数能不能跑”，而是验证“Agent 能不能稳定完成任务而不把状态搞乱”。
 
@@ -22,7 +22,7 @@ Agent 通过验收，应同时满足以下条件：
 1. 读取 forum profile。
 2. 浏览 forum page 或执行 remote-first search。
 3. 预览 remote thread。
-4. 验证上述调用不会写入 SQLite job，也不会误触发本地归档。
+4. 验证上述调用不会写入任务队列，也不会误触发本地归档。
 
 ### 2.2 归档闭环
 
@@ -154,3 +154,9 @@ scripts/run_hermes_benchmark.sh --tasks archive_job_launch_and_poll multi_thread
 - transcript 解析后的 tool call / tool result 报告
 - 每个任务的可打分结论
 - 汇总 Markdown 报告与 JSON 原始报告
+
+## 7. 后续 LLM 原生运行时评测
+
+以上标准验收的是“外部 Agent 能否正确使用 1.0 MCP 接口”。未来 Yamibo 内建受控运行时后，还必须增加 run/step 级验收：capability 选择、预算耗尽、审批拒绝、Job 等待恢复、citation 真实性、prompt injection 隔离和 transcript 可重放。
+
+未来评测范围和分阶段门禁见 [Agent 友好型 LLM 原生运行时路线图](llm-native-runtime-roadmap.md)。在 run/step/citation 契约落地前，不应把现有 Hermes benchmark 宣称为内建运行时验收。

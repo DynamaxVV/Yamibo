@@ -1,6 +1,6 @@
 # 核心模块开发说明
 
-> 版本：0.12.1 | 更新日期：2026-07-05
+> 版本：1.0.0 | 更新日期：2026-07-12
 
 ## 1. 标题解析引擎
 
@@ -162,7 +162,7 @@ Daemon B: recover_expired_jobs()
 | `staging` | 2/6 | 写入 staging/snapshot.json |
 | `validate` | 3/6 | 校验快照完整性 |
 | `download_images` | 4/6 | 下载图片到 staging |
-| `db_commit` | 5/6 | 写入 SQLite（事务） |
+| `db_commit` | 5/6 | 写入归档数据库（事务） |
 | `materialize` | 6/6 | 物化到正式归档目录 |
 
 ### 2.4 错误处理

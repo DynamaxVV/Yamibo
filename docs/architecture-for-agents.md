@@ -1,6 +1,6 @@
 # Agent 架构导航
 
-> 版本：0.12.1 | 更新日期：2026-07-05
+> 版本：1.0.0 | 更新日期：2026-07-12
 
 本文回答的是“AI 编码代理应该改哪里”。它不是产品说明，而是面向改代码、补测试、做集成的操作性文档。
 
@@ -27,7 +27,7 @@ MCP 客户端
 
 约束：
 
-- 允许读取本地 SQLite，为远端结果补充“是否已归档”等提示
+- 允许读取本地归档数据库，为远端结果补充“是否已归档”等提示
 - 不允许写入 thread/floor/content_blocks/assets
 - 不允许下载图片、物化归档文件、伪装成本地归档读取
 
@@ -47,7 +47,7 @@ MCP 客户端或 CLI
 
 约束：
 
-- 命令层只创建 SQLite job
+- 命令层只创建任务队列记录
 - 真正执行和恢复由 daemon 负责
 - 长任务结果通过 `read_job` / `read_job_events` 或资源读取回看
 
@@ -96,7 +96,7 @@ MCP 客户端
   -> db.repositories / storage
 ```
 
-前端源码位于 `frontend/`，包内静态产物位于 `src/yamibo_mcp/web/static/`。
+前端源码位于 `c/`，包内静态产物位于 `src/yamibo_mcp/web/static/`。
 
 ## 2. 目录职责
 
@@ -114,7 +114,7 @@ MCP 客户端
 | `src/yamibo_mcp/application/knowledge_queries.py` | 研究问句参数推断、trend/evidence 聚合 | 只读；不要在这里写 job，写 job 走 commands |
 | `src/yamibo_mcp/application/update_queries.py` | 更新检测 | 可做远端比对，不创建 job |
 | `src/yamibo_mcp/application/update_commands.py` | 增量更新任务创建 | 副作用仅是写入 queued job |
-| `src/yamibo_mcp/application/job_queries.py` | 任务状态与事件读取 | 只读 SQLite |
+| `src/yamibo_mcp/application/job_queries.py` | 任务状态与事件读取 | 只读当前配置数据库；生产主路径为 PostgreSQL |
 | `src/yamibo_mcp/daemon/runner.py` | 轮询、抢占、执行调度 | 任务生命周期变更改这里 |
 | `src/yamibo_mcp/daemon/handlers/` | 具体任务实现 | 长任务实现放这里 |
 | `src/yamibo_mcp/daemon/image_backfill_scheduler.py` | 队列空闲时的自动 `image_backfill` 入队策略 | 改预算、候选 SQL、去重逻辑时看这里 |
@@ -128,7 +128,7 @@ MCP 客户端
 | `src/yamibo_mcp/services/` | LLM 客户端与标题辅助逻辑 | 内部能力，不是公共 Agent 接口 |
 | `src/yamibo_mcp/web_fastapi/` | 嵌入式 FastAPI 服务、API routers、静态资源挂载 | Python 侧 Web 主路径改这里 |
 | `src/yamibo_mcp/web/` | Python 包内的已打包静态资源 | 只处理构建产物相关改动 |
-| `frontend/` | React/Vite 前端源码 | UI 改这里，再构建到 `web/static/` |
+| `c/` | React/Vite 前端源码 | UI 改这里，再构建到 `web/static/` |
 | `src/yamibo_mcp/maintenance/` | 备份、清理、重置 | 运维脚本 |
 
 ## 3. 常见任务修改路径
@@ -146,7 +146,7 @@ MCP 客户端
 | 修改更新检测/追加更新 | `application/update_queries.py`、`application/update_commands.py`、`daemon/handlers/update_thread.py` | `uv run pytest tests/unit/test_application/test_thread_update_use_cases.py tests/unit/test_daemon/test_update_thread_handler.py` |
 | 修改任务状态/事件 | `application/job_queries.py`、`db/repositories/jobs.py`、`db/repositories/job_events.py` | `uv run pytest tests/unit/test_application/test_job_use_cases.py tests/unit/test_db/` |
 | 修改 Web API | `web_fastapi/routers/*.py`、相关 `application/*` | `uv run pytest tests/unit/test_web_fastapi/` |
-| 修改 Web UI | `frontend/src/*`、`frontend/public/*` | `npm --prefix frontend run build` 后 `uv run pytest tests/unit/test_web_fastapi/` |
+| 修改 Web UI | `c/src/*`、`c/public/*` | `npm --prefix c run build` 后 `uv run pytest tests/unit/test_web_fastapi/` |
 | 修改静态资源路由 | `web_fastapi/app.py`、`src/yamibo_mcp/web/static/README.md` | `uv run pytest tests/unit/test_web_fastapi/` |
 | 修改迁移/Schema | `db/migrations.py`、repositories | `uv run pytest tests/unit/test_db/ tests/unit/test_application/` |
 
@@ -156,20 +156,20 @@ MCP 客户端
 
 - 不要重新暴露 `llm_transform_text` 或 `parse_thread_title` 为公共 Agent 工具
 - 不要给公共 Agent 工具重新加 `limit`
-- 不要让远端预览写 SQLite、下载图片、物化归档
+- 不要让远端预览写本地数据库、下载图片、物化归档
 - 不要让本地归档查询抓远端页面
 
 ## 5. 前端源码与静态产物
 
 当前结构已经拆分清楚：
 
-- `frontend/` 是可编辑前端源码
+- `c/` 是可编辑前端源码
 - `src/yamibo_mcp/web/static/` 是 Vite 构建产物，也是 Python 包内随 wheel 分发的静态资源
 
 修改 UI 的正确流程：
 
-1. 改 `frontend/src/` 或 `frontend/public/`
-2. 运行 `npm --prefix frontend run build`
+1. 改 `c/src/` 或 `c/public/`
+2. 运行 `npm --prefix c run build`
 3. 检查 `src/yamibo_mcp/web/static/` 的生成 diff
 4. 运行 `uv run pytest tests/unit/test_web_fastapi/`
 
@@ -187,7 +187,7 @@ MCP 客户端
 | 数据库 / Repository | `uv run pytest tests/unit/test_db/` |
 | Daemon handlers | `uv run pytest tests/unit/test_daemon/` |
 | 解析器 | `uv run pytest tests/unit/test_parsers/` |
-| 前端构建 | `npm --prefix frontend run build` |
+| 前端构建 | `npm --prefix c run build` |
 | 全量 Python 测试 | `uv run pytest` |
 
 当前 Python 包没有单独配置 lint/typecheck；前端构建会先跑 TypeScript 编译再执行 Vite build。
@@ -253,3 +253,9 @@ Yamibo 的长任务不是“tool 内同步执行”，而是“tool 创建 job�
 - `yamibo://jobs/{job_id}/events` 让“不方便继续调 tool 的客户端”也能读取任务时间线
 
 这个边界对 OpenClaw、Hermes 这类会自己规划多步工具调用的 Agent 框架尤其重要，因为它减少了“隐式副作用”和“状态混叠”。
+
+## 8. 后续架构方向
+
+当前分层解决的是“Agent 如何可靠调用现有业务能力”，尚未提供 Yamibo 内建的规划、策略审批、tool loop、运行轨迹和证据闭环。后续演进必须继续依赖 application 层和 Job 状态机，不能在 Chat router 或模型适配器中复制业务逻辑。
+
+目标分层、接口草案和迁移阶段见 [Agent 友好型 LLM 原生运行时路线图](llm-native-runtime-roadmap.md)。其中所有标注为规划的模块均不属于 1.0 公共契约。

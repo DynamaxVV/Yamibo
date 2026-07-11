@@ -16,7 +16,7 @@ from yamibo_mcp.server.agent_tools import (
     read_archived_thread,
     read_job,
     wait_for_job,
-    search_threads,
+    search_forum_threads,
 )
 from yamibo_mcp.server.mcp_registry import register_agent_tools
 
@@ -92,7 +92,7 @@ class TestPublicAgentTools:
         assert missing == []
 
     def test_public_search_tool_signature_does_not_expose_limit(self):
-        signature = inspect.signature(search_threads)
+        signature = inspect.signature(search_forum_threads)
 
         assert "limit" not in signature.parameters
 
@@ -242,8 +242,8 @@ class TestAgentStatusHints:
         assert result["ok"] is True
         assert result["data"]["job_id"] == existing.job_id
         assert result["data"]["created"] is False
-        assert "sqlite_job_reused" in result["side_effects"]
-        assert "sqlite_job_created" not in result["side_effects"]
+        assert "job_reused" in result["side_effects"]
+        assert "job_created" not in result["side_effects"]
 
     def test_create_thread_archive_batch_jobs_returns_created_and_reused_counts(self, tmp_path, db):
         settings = _fake_settings(tmp_path)

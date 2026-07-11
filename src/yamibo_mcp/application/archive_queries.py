@@ -256,44 +256,11 @@ def _plan_thread_resync_item(item: dict[str, Any], *, force: bool, include_unkno
     }
 
 
-def _decide_thread_resync(item: dict[str, Any], *, force: bool, include_unknown: bool) -> tuple[str, list[str], dict[str, object]]:
-    if force:
-        return "force_resync", ["force"], {"create_sync_thread": True}
-    if not item.get("archived"):
-        return "needs_resync", ["not_archived"], {"create_sync_thread": True}
-    archive_status = item.get("archive_status")
-    if archive_status in {"partial", "failed"}:
-        return "needs_resync", [f"{archive_status}_archive"], {"create_sync_thread": True}
-    remote_reply_count = item.get("remote_reply_count")
-    local_reply_count = int(item.get("local_reply_count") or 0)
-    remote_last_reply_at = item.get("remote_last_reply_at")
-    local_last_floor_pub_time = item.get("local_last_floor_pub_time")
-    if remote_reply_count is None and remote_last_reply_at is None:
-        return ("unknown" if include_unknown else "skip"), ["missing_observation"], {"create_sync_thread": include_unknown}
-    if isinstance(remote_reply_count, int) and remote_reply_count > local_reply_count:
-        return "needs_resync", ["remote_reply_count_gt_local"], {"create_sync_thread": True}
-    if isinstance(remote_reply_count, int) and remote_reply_count < local_reply_count:
-        return "unknown", ["reply_count_mismatch"], {"create_sync_thread": include_unknown}
-    remote_dt = _parse_iso_datetime(remote_last_reply_at)
-    local_dt = _parse_iso_datetime(local_last_floor_pub_time)
-    if remote_dt is not None and local_dt is not None and remote_dt > local_dt:
-        return "needs_resync", ["remote_last_reply_newer"], {"create_sync_thread": True}
-    return "skip", ["up_to_date"], {"create_sync_thread": False}
-
-
 def _plan_sort_key(item: dict[str, object]) -> tuple[int, str, int]:
     order = {"force_resync": 0, "needs_resync": 1, "unknown": 2, "maybe_changed": 3, "skip": 4}
-    return (order.get(str(item.get("decision")), 99), str(item.get("remote_observation", {}).get("remote_last_reply_at") or ""), int(item.get("tid") or 0))
-
-
-def _parse_iso_datetime(value: object) -> datetime | None:
-    if value in {None, ""}:
-        return None
-    text = str(value).replace("Z", "+00:00")
-    try:
-        return datetime.fromisoformat(text.replace(" ", "T"))
-    except ValueError:
-        return None
+    remote_observation = item.get("remote_observation")
+    observed_at = remote_observation.get("remote_last_reply_at") if isinstance(remote_observation, dict) else None
+    return (order.get(str(item.get("decision")), 99), str(observed_at or ""), int(item.get("tid") or 0))
 
 
 def probe_archived_threads(*, tids: list[int]) -> AgentResult:

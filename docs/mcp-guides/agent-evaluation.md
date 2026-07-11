@@ -2,7 +2,7 @@
 
 > Agent 能力验收场景与评分维度。
 
-完整评估标准见 [docs/agent-evaluation.md](../agent-evaluation.md)。
+完整评估标准见 [agent-evaluation.md](../agent-evaluation.md)。
 
 ## 核心验收场景
 

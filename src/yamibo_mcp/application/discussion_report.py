@@ -316,7 +316,7 @@ def create_discussion_trend_report_job(
                 reason="Poll the queued discussion trend report job until terminal state.",
             ),
         ],
-        side_effects=["sqlite_job_created"],
+        side_effects=["job_created"],
     )
 
 
@@ -389,7 +389,7 @@ def create_forum_research_report_job(
                 reason="Poll the queued forum research report job until terminal state.",
             ),
         ],
-        side_effects=["sqlite_job_created"],
+        side_effects=["job_created"],
     )
 
 

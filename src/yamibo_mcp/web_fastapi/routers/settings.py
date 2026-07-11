@@ -14,7 +14,7 @@ from yamibo_mcp.web_fastapi.deps import get_settings
 router = APIRouter(prefix="/api", tags=["settings"])
 
 SETTINGS_FIELD_SPECS = {
-    "db_backend": {"section": "database", "key": "backend", "type": "string", "default": "postgres", "env": "YAMIBO_DB_BACKEND", "effect": "restart_daemon_web"},
+    "db_backend": {"section": "database", "key": "backend", "type": "string", "default": "sqlite", "env": "YAMIBO_DB_BACKEND", "effect": "restart_daemon_web"},
     "db_url": {"section": "database", "key": "url", "type": "string", "default": None, "env": "YAMIBO_DB_URL", "sensitive": True, "effect": "restart_daemon_web"},
     "db_pool_min": {"section": "database", "key": "pool_min", "type": "int", "default": 1, "env": "YAMIBO_DB_POOL_MIN", "effect": "restart_daemon_web"},
     "db_pool_max": {"section": "database", "key": "pool_max", "type": "int", "default": 5, "env": "YAMIBO_DB_POOL_MAX", "effect": "restart_daemon_web"},

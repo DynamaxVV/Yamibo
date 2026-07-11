@@ -1,6 +1,6 @@
 # Agent 接口说明
 
-> 版本：0.12.1 | 更新日期：2026-07-05
+> 版本：1.0.0 | 更新日期：2026-07-12
 
 ## 概览
 
@@ -44,6 +44,7 @@ CLI 是主要操作方式，核心 Agent-facing 工具可通过 `uv run yamibo-a
 | `inspect_remote_thread` | `uv run yamibo-archiver inspect-remote-thread --tid <tid>` |
 | `create_thread_archive_job` | `uv run yamibo-archiver create-thread-archive-job --tid <tid>` |
 | `create_thread_archive_batch_jobs` | `uv run yamibo-archiver create-sync-thread-batch-jobs --tid ... --tid ...` |
+| `ensure_thread_archived` | `uv run yamibo-archiver ensure-thread-archived --tid <tid>` |
 | `check_thread_updates` | `uv run yamibo-archiver check-thread-updates --tid <tid>` |
 | `create_thread_update_job` | `uv run yamibo-archiver update-thread --tid <tid>` |
 | `create_thread_export_job` | `uv run yamibo-archiver create-export-thread-job --tid <tid>` |
@@ -55,6 +56,7 @@ CLI 是主要操作方式，核心 Agent-facing 工具可通过 `uv run yamibo-a
 | `read_job_events` | `uv run yamibo-archiver read-job-events <job_id>` |
 | `read_archived_thread` | `uv run yamibo-archiver read-resource "yamibo://threads/<tid>/summary"` |
 | `probe_archived_threads` | `uv run yamibo-archiver probe-archived-threads --tid ... --tid ...` |
+| `read_forum_profiles` | `uv run yamibo-archiver read-resource "yamibo://forums"` |
 | `create_discussion_trend_index_job` | `uv run yamibo-archiver create-discussion-trend-index-job --forum-id 5 --start-date 2014-11-01 --end-date 2014-11-30` |
 | `get_discussion_partition_trends` | `uv run yamibo-archiver discussion-partition-trends --forum-id 5 --start-date 2014-11-01 --end-date 2014-11-30` |
 | `get_discussion_topic_trends` | `uv run yamibo-archiver discussion-topic-trends --forum-id 5 --start-date 2014-11-01 --end-date 2014-11-30` |
@@ -181,7 +183,7 @@ uv run yamibo-archiver job-status <job_id>
 
 ## 任务状态机
 
-长任务通过 SQLite `jobs` 表落地，由 daemon 消费；Agent 不直接执行归档、更新或导出本体，只负责创建任务和回读结果。
+长任务通过当前配置数据库中的 `jobs` 表落地，由 daemon 消费；生产主路径使用 PostgreSQL，SQLite 仅保留给本地轻量和测试场景。Agent 不直接执行归档、更新或导出本体，只负责创建任务和回读结果。
 
 | 状态 | 含义 | Agent 建议动作 |
 |------|------|----------------|
@@ -241,8 +243,16 @@ MCP 侧 `read_job` 是主入口，适合低成本轮询。`wait_for_job` 适合�
 - `LOCAL_ARCHIVE_NOT_FOUND`
 - `REMOTE_LOGIN_REQUIRED`
 - `REMOTE_MAINTENANCE`
+- `REMOTE_ACCESS_PAUSED`
+- `REMOTE_THREAD_PERMISSION_REQUIRED`
 - `REMOTE_FETCH_FAILED`
 - `UNEXPECTED_REMOTE_PAGE`
 - `JOB_NOT_FOUND`
 - `EXPORT_PRECHECK_FAILED`
 - `INTERNAL_ERROR`
+
+## 后续运行时演进
+
+1.0 的公共基础是结构化 `AgentResult`、MCP tool/resource 和可恢复 Job 状态机；Web Chat 仍是外部 OpenAI-compatible/Hermes 对话入口，不包含 Yamibo 内建的自主 tool loop。
+
+后续的 capability manifest、受控执行循环、策略审批、证据引用、运行轨迹和评测门禁统一见 [Agent 友好型 LLM 原生运行时路线图](llm-native-runtime-roadmap.md)。该文档描述未来目标，不改变本页记录的 1.0 接口事实。

@@ -1,6 +1,6 @@
 # 部署指南 & 运维手册
 
-> 版本：0.13.0 | 更新日期：2026-07-11
+> 版本：1.0.0 | 更新日期：2026-07-12
 
 ## 1. 环境要求
 
@@ -156,6 +156,26 @@ uv run yamibo-init-db
 
 Docker 部署会启动 PostgreSQL/pgvector 与 Yamibo Daemon。Daemon 同时负责后台任务消费和 Web 控制台。项目运行数据建议通过宿主机 `data/` 目录外挂，PostgreSQL 数据默认使用 Docker named volume，也可以切换为宿主机目录。
 
+### 3.0 安全边界
+
+1.0 默认将 PostgreSQL、Web 和 MCP 端口绑定到 `127.0.0.1`。Web 控制台包含配置修改、任务创建和数据删除能力，MCP 也可以创建有副作用的后台任务；两者都不能在没有额外访问控制时直接暴露到互联网。
+
+远程部署应使用以下拓扑：
+
+```text
+Internet -> TLS reverse proxy / VPN / identity-aware proxy -> Yamibo loopback ports
+                                                    \-> PostgreSQL remains private
+```
+
+只有在外部安全层已经就绪时，才可在 `.env` 中显式修改绑定地址：
+
+```env
+YAMIBO_WEB_BIND_HOST=0.0.0.0
+YAMIBO_MCP_BIND_HOST=0.0.0.0
+```
+
+不要把 `POSTGRES_BIND_HOST` 改为 `0.0.0.0`。跨主机数据库连接应使用私有网络、TLS 和独立的高强度凭据。
+
 ### 3.1 准备目录和配置
 
 ```bash
@@ -206,6 +226,8 @@ YAMIBO_DATA_BIND=./data
 |----------|------------|------|
 | `/app/data/exports` | `./data/exports` | 通用导出 |
 | `/app/data/novel_exports` | `./data/novel_exports` | 轻小说 TXT 导出 |
+
+Compose 默认只挂载 `YAMIBO_DATA_BIND` 到 `/app/data`，不假设宿主机存在特定的 macOS 或 Linux 目录。如需将导出同步到其他磁盘，应在本地 `docker-compose.override.yml` 中增加显式挂载，不要将机器专用路径写入主 Compose 文件。
 | `/app/data/cookies` | `./data/cookies` | 多账号 cookie |
 | `/app/data/backups` | `./data/backups` | 备份输出 |
 | `/app/data/staging` | `./data/staging` | 临时归档工作区 |
@@ -239,6 +261,8 @@ docker compose up -d yamibo
 ```text
 http://localhost:8765
 ```
+
+该地址默认只能从 Docker 宿主机访问。需要远程访问时，按 3.0 节配置反向代理或 VPN，不要直接开放容器端口。
 
 健康检查：
 

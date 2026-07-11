@@ -33,7 +33,7 @@ def create_rag_index_job(
                     next_actions=[
                         AgentAction(tool="read_job", args={"job_id": existing.job_id}, reason="Poll the queued RAG indexing job."),
                     ],
-                    side_effects=["sqlite_job_reused"],
+                    side_effects=["job_reused"],
                 )
         job = repo.create(
             JobType.RAG_INDEX.value,
@@ -50,7 +50,7 @@ def create_rag_index_job(
             next_actions=[
                 AgentAction(tool="read_job", args={"job_id": job.job_id}, reason="Poll the queued RAG indexing job."),
             ],
-            side_effects=["sqlite_job_created"],
+            side_effects=["job_created"],
         )
     finally:
         conn.close()
@@ -97,7 +97,7 @@ def create_rag_index_batch_jobs(
                 "reused_job_ids": reused_job_ids,
                 "tids": normalized_tids,
             },
-            side_effects=["sqlite_job_created" if created_job_ids else "sqlite_job_reused"],
+            side_effects=["job_created" if created_job_ids else "job_reused"],
         )
     finally:
         conn.close()
