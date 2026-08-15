@@ -15,6 +15,7 @@ from yamibo_mcp.errors import LeaseNotAcquired, RemoteFetchError, RemoteMaintena
 from yamibo_mcp.daemon.handlers import get_handler
 from yamibo_mcp.daemon.handlers.sync_thread import JobCancelled, JobPaused
 from yamibo_mcp.daemon.image_backfill_scheduler import maybe_enqueue_image_backfill_dry_run
+from yamibo_mcp.daemon.daily_sign_in_scheduler import maybe_enqueue_daily_sign_ins
 from yamibo_mcp.daemon.recovery import recover_expired_jobs
 from yamibo_mcp.maintenance.forum_sizes import FORUM_SIZE_CACHE_REFRESH_SECONDS, refresh_forum_size_cache
 from yamibo_mcp.storage.paths import StoragePaths
@@ -81,6 +82,10 @@ class DaemonRunner:
             repo = JobsRepository(conn)
             recover_expired_jobs(repo)
             _restore_444_events(conn)
+            try:
+                maybe_enqueue_daily_sign_ins(repo, settings)
+            except Exception:
+                LOG.exception("Daily sign-in scheduler failed")
 
             # 维护恢复探测：每 10 分钟用一次轻量请求检查维护是否结束。
             maintenance_state = get_maintenance_pause_state(conn)

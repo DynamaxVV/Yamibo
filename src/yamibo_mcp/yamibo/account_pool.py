@@ -91,12 +91,20 @@ class AccountPool:
         self._lock = Lock()
         self._inflight = {identity.account_id: 0 for identity in identities}
 
-    def acquire(self, *, min_permission: int | None = None, prefer_high_permission: bool = False) -> AccountIdentity:
+    def acquire(
+        self,
+        *,
+        account_id: str | None = None,
+        min_permission: int | None = None,
+        prefer_high_permission: bool = False,
+    ) -> AccountIdentity:
         with self._lock:
             available = [
                 identity
                 for identity in self._identities
-                if identity.enabled and (min_permission is None or identity.permission_level >= min_permission)
+                if identity.enabled
+                and (account_id is None or identity.account_id == account_id)
+                and (min_permission is None or identity.permission_level >= min_permission)
             ]
             if not available:
                 configured = ",".join(f"{identity.account_id}:{identity.permission_level}" for identity in self._identities if identity.enabled)
@@ -175,6 +183,16 @@ def has_configured_account_pool(settings: Settings) -> bool:
     return any(item.enabled for item in raw_pool)
 
 
+def get_account_identities(settings: Settings) -> tuple[AccountIdentity, ...]:
+    """Return every enabled identity, preserving the configured account boundary."""
+    raw_pool = getattr(settings, "account_pool", ())
+    if isinstance(raw_pool, (list, tuple)):
+        configured = tuple(_identity_from_config(item) for item in raw_pool if item.enabled)
+        if configured:
+            return configured
+    return (_default_identity_from_settings(settings),)
+
+
 def _refresh_cookie_if_stale(identity: AccountIdentity, settings: Settings) -> None:
     """Delete cookie file if older than the configured refresh interval, forcing re-login."""
     interval_hours = getattr(settings, "cookie_refresh_interval_hours", 12.0)
@@ -205,6 +223,7 @@ def _refresh_cookie_if_stale(identity: AccountIdentity, settings: Settings) -> N
 def borrow_yamibo_client(
     settings: Settings,
     *,
+    account_id: str | None = None,
     cookie_file: str | None = None,
     min_permission: int | None = None,
     prefer_high_permission: bool = False,
@@ -239,7 +258,11 @@ def borrow_yamibo_client(
         return
 
     pool = get_account_pool(settings)
-    identity = pool.acquire(min_permission=min_permission, prefer_high_permission=prefer_high_permission)
+    identity = pool.acquire(
+        account_id=account_id,
+        min_permission=min_permission,
+        prefer_high_permission=prefer_high_permission,
+    )
     _refresh_cookie_if_stale(identity, settings)
     if min_permission is not None or prefer_high_permission:
         LOG.info(

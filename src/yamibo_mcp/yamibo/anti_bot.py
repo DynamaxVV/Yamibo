@@ -23,6 +23,7 @@ REMOTE_JOB_TYPES = frozenset({
     JobType.SYNC_THREAD.value,
     JobType.UPDATE_THREAD.value,
     JobType.IMAGE_BACKFILL.value,
+    JobType.DAILY_SIGN_IN.value,
 })
 _LIVE_PAUSABLE_JOB_STATUSES = {
     JobStatus.QUEUED.value,

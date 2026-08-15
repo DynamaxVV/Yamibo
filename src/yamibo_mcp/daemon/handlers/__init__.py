@@ -12,6 +12,7 @@ from yamibo_mcp.daemon.handlers.sync_thread import handle_sync_thread
 from yamibo_mcp.daemon.handlers.update_thread import handle_update_thread
 from yamibo_mcp.daemon.handlers.image_backfill import handle_image_backfill
 from yamibo_mcp.daemon.handlers.title_refine import handle_title_refine
+from yamibo_mcp.daemon.handlers.daily_sign_in import handle_daily_sign_in
 
 
 def get_handler(job: Job):
@@ -35,4 +36,6 @@ def get_handler(job: Job):
         return handle_discussion_trend_report
     if job.job_type == JobType.IMAGE_BACKFILL.value:
         return handle_image_backfill
+    if job.job_type == JobType.DAILY_SIGN_IN.value:
+        return handle_daily_sign_in
     return None

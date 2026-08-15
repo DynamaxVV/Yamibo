@@ -109,6 +109,8 @@ class FetchResult:
 
 
 class YamiboClient:
+    SIGN_IN_PAGE_URL = "https://bbs.yamibo.com/plugin.php?id=zqlj_sign"
+    SIGN_IN_ACTION_URL = "https://bbs.yamibo.com/plugin.php?id=zqlj_sign&sign=35981a55"
     def __init__(
         self,
         *,
@@ -194,6 +196,45 @@ class YamiboClient:
 
     def fetch_url(self, url: str, *, referer: str | None = None) -> FetchResult:
         return self._fetch_with_validation(url, self._validate_thread_page, referer=referer)
+
+    def sign_daily_checkin(
+        self,
+        *,
+        page_url: str = SIGN_IN_PAGE_URL,
+        action_url: str = SIGN_IN_ACTION_URL,
+    ) -> FetchResult:
+        """Open the sign-in page, then follow its configured check-in action."""
+        page = self._open_authenticated_page(page_url, referer="https://bbs.yamibo.com/")
+        result = self._open_authenticated_page(action_url, referer=page.final_url)
+        self._save_cookies()
+        return result
+
+    def _open_authenticated_page(self, url: str, *, referer: str | None = None) -> FetchResult:
+        self._throttle()
+        result = self._open_html(url, referer=referer)
+        classification = classify_html(result.html)
+        if classification.page_type == PageType.LOGIN_REQUIRED:
+            if not self._can_login():
+                raise LoginRequiredError(f"login required for {result.final_url}")
+            self._login(base_url=self._base_url_for(url), referer=referer)
+            self._throttle()
+            result = self._open_html(url, referer=referer)
+            classification = classify_html(result.html)
+        if is_soft_block_page(result.html):
+            raise RemoteFetchError(
+                f"soft block detected for {result.final_url}",
+                details={"url": result.final_url, "status_code": result.status_code, "retryable": False},
+            )
+        if classification.page_type == PageType.LOGIN_REQUIRED:
+            raise LoginRequiredError(f"login required for {result.final_url}")
+        if classification.page_type == PageType.REMOTE_MAINTENANCE:
+            raise RemoteMaintenanceError(f"remote maintenance for {result.final_url}")
+        if not 200 <= result.status_code < 400:
+            raise RemoteFetchError(
+                f"sign-in request returned HTTP {result.status_code} for {result.final_url}",
+                details={"url": result.final_url, "status_code": result.status_code, "retryable": True},
+            )
+        return result
 
     def fetch_thread_by_tid(self, tid: int, *, base_url: str | None = None) -> FetchResult:
         resolved_base = base_url or "https://bbs.yamibo.com"
