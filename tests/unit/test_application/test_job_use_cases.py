@@ -16,6 +16,7 @@ _JOB_STATUS_KEYS = {
     "running_duration_seconds", "seconds_since_update", "execution_state",
     "diagnostic_summary", "needs_attention",
     "recommended_poll_after_seconds", "resources",
+    "retry_count", "max_retries", "next_retry_at", "recovery",
 }
 
 

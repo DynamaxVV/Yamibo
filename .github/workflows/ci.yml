@@ -25,7 +25,8 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      YAMIBO_TEST_PG_URL: postgresql://yamibo:yamibo@127.0.0.1:5432/yamibo
+      YAMIBO_TEST_PG_URL: postgresql+psycopg://yamibo:yamibo@127.0.0.1:5432/yamibo
+      YAMIBO_TEST_PG_ISOLATED: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

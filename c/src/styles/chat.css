@@ -52,6 +52,31 @@
   gap: 8px;
 }
 
+.chat-transport-switch {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border-light);
+  border-radius: 999px;
+  background: var(--bg-muted);
+}
+.chat-transport-switch button {
+  border: 0;
+  border-radius: 999px;
+  padding: 5px 9px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.chat-transport-switch button.active {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12);
+}
+.chat-transport-switch button:disabled { cursor: wait; opacity: .6; }
+
 .btn-compact { padding: 4px 10px; border-radius: 999px; }
 
 .chat-rail {

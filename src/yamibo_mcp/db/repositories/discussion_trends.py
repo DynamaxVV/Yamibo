@@ -810,9 +810,10 @@ class DiscussionTrendRepository:
 
 
 def _commit_if_needed(conn: Any) -> None:
-    in_transaction = getattr(conn, "in_transaction", None)
-    if callable(in_transaction) and in_transaction():
-        return
+    # SQLAlchemy 2 starts an implicit transaction on the first statement, so
+    # ``in_transaction()`` cannot distinguish an explicit caller transaction.
+    # These repository methods are standalone application operations and must
+    # publish their state before a separate Web/daemon connection reads it.
     conn.commit()
 
 

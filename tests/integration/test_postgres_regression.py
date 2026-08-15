@@ -50,6 +50,14 @@ def test_postgres_migration_creates_baseline_schema(pg_engine):
         tables = set(inspector.get_table_names(schema="public"))
 
         assert {"forums", "threads", "jobs", "rag_chunks", "alembic_version"}.issubset(tables)
+        assert not {
+            "agent_runs",
+            "agent_steps",
+            "agent_run_events",
+            "agent_approvals",
+            "agent_artifacts",
+            "agent_citations",
+        } & tables
         assert {"discussion_index_runs", "discussion_current_indexes", "discussion_topics", "discussion_topic_assignments", "discussion_partition_daily", "discussion_topic_daily", "discussion_user_daily", "discussion_report_runs", "discussion_rag_chunk_topics"}.issubset(tables)
 
         thread_columns = {column["name"] for column in inspector.get_columns("threads", schema="public")}
@@ -206,7 +214,6 @@ def test_postgres_thread_search_uses_fts_and_ilike_fallback(pg_engine):
     with pg_engine.connect() as raw_conn:
         conn = DatabaseConnection(raw_conn, backend="postgres")
         migrate(conn, schema="public")
-        _cleanup_tid(raw_conn, 1001)
         raw_conn.execute(text("DELETE FROM title_parse WHERE tid = 900001"))
         raw_conn.execute(text("DELETE FROM threads WHERE tid = 900001"))
         raw_conn.execute(
@@ -217,10 +224,10 @@ def test_postgres_thread_search_uses_fts_and_ilike_fallback(pg_engine):
                   archive_status, validation_status, forum_id, content_kind, primary_media_type,
                   content_preview, search_vector
                 ) VALUES (
-                  900001, 'thread_detail', '测试轻小说 13话', '测试轻小说 13话', '汉化工房九九组',
+                  900001, 'thread_detail', 'yamibo-pg-regression-900001', 'yamibo-pg-regression-900001', 'yamibo-pg-publisher-900001',
                   TIMESTAMPTZ '2026-01-01 00:00:00+08', TIMESTAMPTZ '2026-01-01 01:00:00+08',
                   'complete', 'valid', 55, 'novel', 'text',
-                  '少女在星空下告白。', to_tsvector('simple', '测试轻小说 13话 汉化工房九九组 少女在星空下告白')
+                  'yamibo-pg-content-900001', to_tsvector('simple', 'yamibo-pg-regression-900001 yamibo-pg-publisher-900001 yamibo-pg-content-900001')
                 )
                 """
             )
@@ -232,16 +239,16 @@ def test_postgres_thread_search_uses_fts_and_ilike_fallback(pg_engine):
                   tid, raw_title, display_title, group_name, author_guess,
                   core_title_guess, normalized_core_title, series_key, parser_version
                 ) VALUES (
-                  900001, '测试轻小说 13话', '测试轻小说 13话', '汉化工房九九组', NULL,
-                  '测试轻小说', '测试轻小说', '测试轻小说', 'title-v1'
+                  900001, 'yamibo-pg-regression-900001', 'yamibo-pg-regression-900001', 'yamibo-pg-publisher-900001', NULL,
+                  'yamibo-pg-regression-900001', 'yamibo-pg-regression-900001', 'yamibo-pg-regression-900001', 'title-v1'
                 )
                 """
             )
         )
         repo = ThreadsRepository(conn)
 
-        exact = repo.search_threads("测试轻小说 13话", limit=5)
-        partial = repo.search_threads("汉化工房", limit=5)
+        exact = repo.search_threads("yamibo-pg-regression-900001", limit=5)
+        partial = repo.search_threads("yamibo-pg-publisher-900001", limit=5)
 
         assert exact[0]["tid"] == 900001
         assert partial[0]["tid"] == 900001
@@ -263,9 +270,9 @@ def test_postgres_thread_list_reply_count_sort_does_not_reference_select_alias(p
                   archive_status, validation_status, forum_id, content_kind, primary_media_type,
                   local_reply_count, remote_reply_count
                 ) VALUES
-                  (920001, 'thread_detail', 'A', 'A', 'u', TIMESTAMPTZ '2026-01-01 00:00:00+08', TIMESTAMPTZ '2026-01-01 00:00:00+08', 'complete', 'valid', 5, 'novel', 'text', NULL, NULL),
-                  (920002, 'thread_detail', 'B', 'B', 'u', TIMESTAMPTZ '2026-01-01 00:00:00+08', TIMESTAMPTZ '2026-01-01 00:00:00+08', 'complete', 'valid', 5, 'novel', 'text', 5, NULL),
-                  (920003, 'thread_detail', 'C', 'C', 'u', TIMESTAMPTZ '2026-01-01 00:00:00+08', TIMESTAMPTZ '2026-01-01 00:00:00+08', 'complete', 'valid', 5, 'novel', 'text', 1, 8)
+                  (920001, 'thread_detail', 'A', 'A', 'u', TIMESTAMPTZ '2026-01-01 00:00:00+08', TIMESTAMPTZ '2026-01-01 00:00:00+08', 'complete', 'valid', 999001, 'novel', 'text', NULL, NULL),
+                  (920002, 'thread_detail', 'B', 'B', 'u', TIMESTAMPTZ '2026-01-01 00:00:00+08', TIMESTAMPTZ '2026-01-01 00:00:00+08', 'complete', 'valid', 999001, 'novel', 'text', 5, NULL),
+                  (920003, 'thread_detail', 'C', 'C', 'u', TIMESTAMPTZ '2026-01-01 00:00:00+08', TIMESTAMPTZ '2026-01-01 00:00:00+08', 'complete', 'valid', 999001, 'novel', 'text', 1, 8)
                 """
             )
         )
@@ -281,8 +288,8 @@ def test_postgres_thread_list_reply_count_sort_does_not_reference_select_alias(p
             )
         )
 
-        asc_page = repo.list_threads_page(page=1, page_size=10, forum_id=5, sort_key="reply_count", sort_dir="asc")
-        desc_page = repo.list_threads_page(page=1, page_size=10, forum_id=5, sort_key="reply_count", sort_dir="desc")
+        asc_page = repo.list_threads_page(page=1, page_size=10, forum_id=999001, sort_key="reply_count", sort_dir="asc")
+        desc_page = repo.list_threads_page(page=1, page_size=10, forum_id=999001, sort_key="reply_count", sort_dir="desc")
 
         assert [row["tid"] for row in asc_page["items"]] == [920001, 920002, 920003]
         assert [row["tid"] for row in desc_page["items"]] == [920003, 920002, 920001]
@@ -347,10 +354,6 @@ def test_postgres_vector_search_uses_pgvector_cosine_distance(pg_engine):
     with pg_engine.connect() as raw_conn:
         conn = DatabaseConnection(raw_conn, backend="postgres")
         migrate(conn, schema="public")
-        _cleanup_tid(raw_conn, 1001)
-        raw_conn.execute(text("DELETE FROM rag_chunks WHERE tid = 501"))
-        raw_conn.execute(text("DELETE FROM title_parse WHERE tid = 501"))
-        raw_conn.execute(text("DELETE FROM threads WHERE tid = 501"))
         raw_conn.execute(text("DELETE FROM rag_chunks WHERE tid = 900002"))
         raw_conn.execute(text("DELETE FROM title_parse WHERE tid = 900002"))
         raw_conn.execute(text("DELETE FROM threads WHERE tid = 900002"))

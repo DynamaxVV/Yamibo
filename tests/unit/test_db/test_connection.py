@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from yamibo_mcp.db.connection import DatabaseConnection
+from yamibo_mcp.db.connection import DatabaseConnection, _normalize_postgres_url
 
 
 class _Result:
@@ -34,3 +34,12 @@ def test_execute_strips_nul_from_parameters():
     assert params["content"] == "挖LZ内的见解好精辟啊"
     assert params["reply_text"]["note"] == "内含字节"
     assert params["pid"] == 123
+
+
+def test_postgres_url_uses_declared_psycopg3_driver():
+    assert _normalize_postgres_url(
+        "postgresql://yamibo:secret@db.example.com:5432/yamibo"
+    ) == "postgresql+psycopg://yamibo:secret@db.example.com:5432/yamibo"
+    assert _normalize_postgres_url(
+        "postgresql+psycopg://yamibo:secret@db.example.com:5432/yamibo"
+    ) == "postgresql+psycopg://yamibo:secret@db.example.com:5432/yamibo"

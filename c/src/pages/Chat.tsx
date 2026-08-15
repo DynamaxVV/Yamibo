@@ -34,7 +34,6 @@ const CHAT_ACTIVE_SESSION_KEY = 'yamibo.chat.activeSession.v2'
 const CHAT_CONTEXT_CACHE_KEY = 'yamibo.chat.context.v2'
 const CHAT_SETTINGS_CACHE_KEY = 'yamibo.chat.settings.v2'
 const CHAT_CACHE_TTL_MS = 10 * 60 * 1000
-
 function toSession(item: ChatSessionSummary): ChatSession {
   return {
     id: item.id,
@@ -137,6 +136,7 @@ export function Chat() {
     const cachedSettings = readCache<SettingsResponse>(CHAT_SETTINGS_CACHE_KEY)
     const cachedSessions = typeof window !== 'undefined' ? window.localStorage.getItem(CHAT_SESSIONS_STORAGE_KEY) : null
     const storedActiveId = typeof window !== 'undefined' ? window.localStorage.getItem(CHAT_ACTIVE_SESSION_KEY) : null
+    let cachedSessionSnapshot: ChatSession[] = []
 
     if (cachedContext?.value) {
       setContext(cachedContext.value)
@@ -148,6 +148,7 @@ export function Chat() {
     if (cachedSessions) {
       try {
         const parsedSessions = JSON.parse(cachedSessions) as ChatSession[]
+        cachedSessionSnapshot = parsedSessions
         setSessions(parsedSessions)
         setActiveSessionId(storedActiveId && parsedSessions.some((item) => item.id === storedActiveId) ? storedActiveId : parsedSessions[0]?.id || '')
       } catch {
@@ -158,9 +159,17 @@ export function Chat() {
     api.chatContext().then((next) => {
       if (!alive) return
       const parsed = (next.sessions || []).map(toSession)
-      const nextActiveId = storedActiveId && parsed.some((item) => item.id === storedActiveId) ? storedActiveId : parsed[0]?.id || ''
+      const serverSessionIds = new Set(parsed.map((item) => item.id))
+      const mergedSessions = parsed.map((serverSession) => {
+        const localSession = cachedSessionSnapshot.find((item) => item.id === serverSession.id)
+        return localSession && localSession.updatedAt > serverSession.updatedAt ? localSession : serverSession
+      })
+      for (const localSession of cachedSessionSnapshot) {
+        if (!serverSessionIds.has(localSession.id)) mergedSessions.push(localSession)
+      }
+      const nextActiveId = storedActiveId && mergedSessions.some((item) => item.id === storedActiveId) ? storedActiveId : mergedSessions[0]?.id || ''
       setContext(next)
-      setSessions(parsed)
+      setSessions(mergedSessions)
       setActiveSessionId(nextActiveId)
       writeCache(CHAT_CONTEXT_CACHE_KEY, next)
       if (typeof window !== 'undefined') window.localStorage.setItem(CHAT_ACTIVE_SESSION_KEY, nextActiveId)
@@ -189,7 +198,7 @@ export function Chat() {
     setMessageExpanded(next)
   }, [sessions])
 
-  const currentTransport = useMemo(() => context?.transports.find((item) => item.id === context.transport), [context])
+  const currentTransport = useMemo(() => context?.transports.find((item) => item.id === 'hermes_http'), [context])
 
   const loadSettings = async () => {
     setSettingsLoading(true)
@@ -361,6 +370,8 @@ export function Chat() {
 
   const lockedFields = new Set(settingsPayload?.locked_fields || [])
   const connectionStatus = context?.status?.connected ? (lang === 'en' ? 'Connected' : '已连接') : (lang === 'en' ? 'Disconnected' : '未连接')
+  const displayModel = context?.model
+  const displayEndpoint = context?.hermes?.endpoint
   const sessionCount = sessions.length
 
   return (
@@ -373,7 +384,7 @@ export function Chat() {
           </div>
           <div className="chat-topbar-actions">
             <span className={`badge ${context?.status?.connected ? 'badge-ok' : 'badge-error'}`}>{context?.status?.label || (lang === 'en' ? 'Unknown' : '未知')}</span>
-            <span className="badge badge-muted">{context?.model || '-'}</span>
+            <span className="badge badge-muted">{displayModel || '-'}</span>
             <button className="btn-secondary btn-compact" onClick={() => void openSettings()}>{lang === 'en' ? 'Settings' : '设置'}</button>
           </div>
         </header>
@@ -410,7 +421,7 @@ export function Chat() {
             </div>
             <div className="chat-stage-badges">
               <span className="badge badge-muted">{activeSession ? `${messages.length} ${lang === 'en' ? 'messages' : '条消息'}` : '-'}</span>
-              <span className="badge badge-muted">{context?.hermes?.endpoint || '-'}</span>
+              <span className="badge badge-muted">{displayEndpoint || '-'}</span>
             </div>
           </div>
 

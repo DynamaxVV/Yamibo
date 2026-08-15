@@ -210,6 +210,7 @@ class DaemonRunner:
                                 job.job_id,
                                 error_code="HTTP_444",
                                 error_message=f"HTTP 444 from {exc.details.get('url', 'unknown')} (node={node}); node blacklisted, will retry with different node",
+                                delay_seconds=5,
                             )
                             LOG.warning("HTTP 444 on job %s (node=%s) — will retry with different node", job.job_id, node)
                         return DaemonResult(processed=1)
@@ -227,6 +228,7 @@ class DaemonRunner:
                             job.job_id,
                             error_code="REMOTE_SOFT_BLOCK",
                             error_message=f"Soft block / CF challenge from {exc.details.get('url', 'unknown') if isinstance(getattr(exc, 'details', None), dict) else 'unknown'}; proxy cache cleared, will retry with different node",
+                            delay_seconds=15,
                         )
                         LOG.warning("Soft block on job %s — will retry with different proxy", job.job_id)
                         return DaemonResult(processed=1)
@@ -255,11 +257,12 @@ class DaemonRunner:
                                     f"proxy cache cleared, will retry with different node. "
                                     f"title={page_title}"
                                 ),
+                                delay_seconds=15,
                             )
                             return DaemonResult(processed=1)
                     if isinstance(exc, RemoteFetchError) and is_http_429_error(exc):
                         LOG.warning("HTTP 429 rate limit on job %s, retrying later", job.job_id)
-                        repo.retry_later(job.job_id, "HTTP_429", str(exc))
+                        repo.retry_later(job.job_id, error_code="HTTP_429", error_message=str(exc), delay_seconds=10)
                         return DaemonResult(processed=1)
                     artifacts = {
                         "failure_context": {
@@ -278,6 +281,7 @@ class DaemonRunner:
                             error_code=classify_error(exc),
                             error_message=str(exc),
                             artifacts=artifacts,
+                            delay_seconds=5,
                         )
                     ):
                         LOG.warning("Job %s moved to retrying after transient remote fetch failure", job.job_id)

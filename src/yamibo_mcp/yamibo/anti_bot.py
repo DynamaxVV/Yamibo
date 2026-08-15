@@ -211,6 +211,9 @@ _SOFT_BLOCK_SIGNATURES = [
     "attention required",
     "captcha",
     "challenge-platform",
+    # Baidu WAF's JavaScript challenge currently returned by bbs.yamibo.com.
+    "__noxexpire",
+    "gangplank_",
 ]
 
 

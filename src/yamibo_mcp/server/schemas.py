@@ -24,6 +24,21 @@ from yamibo_mcp.yamibo.urls import thread_url_from_tid
 _TERMINAL_JOB_STATUSES = {"succeeded", "partial", "failed", "cancelled", "superseded"}
 _RESULT_READY_STATUSES = {"succeeded", "partial"}
 _ACTIVE_JOB_STATUSES = {"queued", "running", "retrying", "interrupted", "cancel_requested", "paused"}
+_USER_ACTION_ERROR_CODES = {
+    "REMOTE_LOGIN_REQUIRED",
+    "REMOTE_THREAD_PERMISSION_REQUIRED",
+    "REMOTE_ACCESS_PAUSED",
+    "GROUP_ACCESS_DENIED",
+    "INVALID_ARGUMENT",
+    "EXPORT_PRECHECK_FAILED",
+    "LOCAL_ARCHIVE_NOT_FOUND",
+    "UNSUPPORTED_DATABASE_BACKEND",
+}
+_AUTO_RECOVERY_ERROR_CODES = {
+    "REMOTE_MAINTENANCE",
+    "REMOTE_SOFT_BLOCK",
+    "HTTP_444",
+}
 
 
 def _parse_iso8601(value: datetime | str | None) -> datetime | None:
@@ -171,9 +186,40 @@ def _job_execution_diagnostics(job) -> dict[str, Any]:
     }
 
 
+def _action(tool: str, job_id: str, reason: str) -> dict[str, Any]:
+    return {"tool": tool, "args": {"job_id": job_id}, "reason": reason}
+
+
+def _job_recovery(job, diagnostics: dict[str, Any]) -> dict[str, Any]:
+    poll_after = diagnostics.get("recommended_poll_after_seconds")
+    base = {
+        "reason_code": job.error_code or job.status,
+        "poll_after_seconds": poll_after,
+        "next_actions": [],
+    }
+    if job.status == "succeeded":
+        return {**base, "classification": "completed", "owner": "system", "retryable": False, "requires_user_action": False, "message": "Job completed successfully; use the result resource declared by the creating tool."}
+    if job.status == "partial":
+        return {**base, "classification": "use_partial_result", "owner": "agent", "retryable": False, "requires_user_action": False, "message": "Partial result is available; report incompleteness before considering a rerun.", "next_actions": [_action("read_job_events", job.job_id, "Inspect which stage produced the partial result.")]}
+    if job.status in {"queued", "running", "interrupted", "cancel_requesting", "cancel_requested"}:
+        return {**base, "classification": "continue_waiting", "owner": "daemon", "retryable": True, "requires_user_action": False, "message": "Job is still managed by the daemon; poll the same job_id instead of creating a duplicate.", "next_actions": [_action("read_job", job.job_id, "Poll the existing Job after the recommended delay.")]}
+    if job.status == "retrying":
+        return {**base, "classification": "automatic_retry", "owner": "daemon", "retryable": True, "requires_user_action": False, "message": "Daemon scheduled a delayed retry; do not create a duplicate Job.", "next_actions": [_action("read_job", job.job_id, "Wait until next_retry_at or poll_after_seconds, then re-check the same Job.")]}
+    if job.status == "paused" and (job.error_code in _AUTO_RECOVERY_ERROR_CODES or not job.error_code):
+        return {**base, "classification": "automatic_recovery", "owner": "daemon", "retryable": True, "requires_user_action": False, "message": "Daemon is probing remote access recovery; do not create a duplicate Job.", "next_actions": [_action("read_job", job.job_id, "Wait for the daemon recovery probe, then re-check the same Job.")]}
+    if job.status == "failed" and job.error_code in _USER_ACTION_ERROR_CODES:
+        return {**base, "classification": "user_action_required", "owner": "user", "retryable": False, "requires_user_action": True, "message": "The failure requires user action such as cookies, permissions, configuration, or a valid request; do not retry automatically."}
+    if job.status == "failed":
+        return {**base, "classification": "inspect_failure", "owner": "agent", "retryable": False, "requires_user_action": False, "message": "No deterministic recovery path is known; inspect events before deciding next steps.", "next_actions": [_action("read_job_events", job.job_id, "Read failure events before considering any new Job.")]}
+    if job.status in {"cancelled", "superseded"}:
+        return {**base, "classification": "stopped", "owner": "system", "retryable": False, "requires_user_action": False, "message": "Job is stopped and should not be retried as the original Job."}
+    return {**base, "classification": "inspect_failure", "owner": "agent", "retryable": False, "requires_user_action": False, "message": "Job state is not recognized; inspect events.", "next_actions": [_action("read_job_events", job.job_id, "Read events for the unrecognized Job state.")]}
+
+
 def job_status_payload(job) -> dict[str, Any]:
     is_terminal = job.status in _TERMINAL_JOB_STATUSES
     diagnostics = _job_execution_diagnostics(job)
+    next_retry_at = job.lease_until if job.status == "retrying" else None
     return {
         "job_id": job.job_id,
         "job_type": job.job_type,
@@ -184,6 +230,9 @@ def job_status_payload(job) -> dict[str, Any]:
         "worker_id": job.worker_id,
         "error_code": job.error_code,
         "error_message": job.error_message,
+        "retry_count": job.retry_count,
+        "max_retries": job.max_retries,
+        "next_retry_at": next_retry_at,
         "artifacts": job.artifacts,
         "created_at": job.created_at,
         "updated_at": job.updated_at,
@@ -196,6 +245,7 @@ def job_status_payload(job) -> dict[str, Any]:
         "diagnostic_summary": diagnostics["diagnostic_summary"],
         "needs_attention": diagnostics["needs_attention"],
         "recommended_poll_after_seconds": diagnostics["recommended_poll_after_seconds"],
+        "recovery": _job_recovery(job, diagnostics),
         "resources": {
             "status": job_status_uri(job.job_id),
         },

@@ -15,6 +15,10 @@ from yamibo_mcp.yamibo import anti_bot as ab
 _NORMAL_FORUM_HTML = '<html><body><div id="threadlisttableid"></div></body></html>'
 # 维护页 HTML
 _MAINTENANCE_HTML = '<html><body>百合会每日维护</body></html>'
+_BAIDU_WAF_HTML = (
+    '<script>window.__noxExpire=30;</script>'
+    '<script src="/static/gangplank_20251103.js"></script>'
+)
 
 
 def _open_db():
@@ -122,6 +126,11 @@ def test_probe_remote_access_network_error_still_blocked(monkeypatch):
         assert ab.probe_remote_access(cookie_file=None, settings=None) is False
     finally:
         conn.close()
+
+
+def test_baidu_waf_page_is_detected_as_soft_block():
+    """Baidu WAF challenge pages must not be classified as normal HTML."""
+    assert ab.is_soft_block_page(_BAIDU_WAF_HTML) is True
 
 
 def test_should_probe_remote_access_first_time_true():

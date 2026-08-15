@@ -44,7 +44,7 @@ from yamibo_mcp.application.remote_queries import (
 )
 from yamibo_mcp.application.update_queries import check_thread_updates as _check_thread_updates
 from yamibo_mcp.application.contracts import AgentResult
-from yamibo_mcp.server.agent_adapter import agent_tool
+from yamibo_mcp.server.agent_adapter import agent_tool, capability_registration
 
 
 @agent_tool
@@ -516,37 +516,369 @@ def create_forum_research_report_job(
     )
 
 
+def _read_metadata(
+    *,
+    requires: list[str] | None = None,
+    produces: list[str] | None = None,
+    followups: list[str] | None = None,
+    timeout_class: str = "short",
+    cost_hints: dict[str, object] | None = None,
+) -> dict[str, object]:
+    return {
+        "version": "1",
+        "effect": "read_only",
+        "risk": "read",
+        "idempotency": {"mode": "safe_to_retry", "scope": []},
+        "requires": requires if requires is not None else ["database"],
+        "cost_hints": cost_hints if cost_hints is not None else {"remote_requests": 0},
+        "produces": produces if produces is not None else ["agent_result"],
+        "followups": followups if followups is not None else [],
+        "timeout_class": timeout_class,
+    }
+
+
+def _remote_metadata(
+    *, cost_hints: dict[str, object] | None = None, followups: list[str]
+) -> dict[str, object]:
+    return {
+        "version": "1",
+        "effect": "remote_read",
+        "risk": "remote_read",
+        "idempotency": {"mode": "safe_to_retry", "scope": []},
+        "requires": ["remote_access"],
+        "cost_hints": cost_hints if cost_hints is not None else {"remote_requests": 1},
+        "produces": ["agent_result"],
+        "followups": followups,
+        "timeout_class": "short",
+    }
+
+
+def _job_metadata(
+    *,
+    idempotency: dict[str, object],
+    requires: list[str],
+    followups: list[str],
+    job_id_paths: list[str],
+    terminal_when: str | None = None,
+) -> dict[str, object]:
+    terminal_read: dict[str, object] = {
+        "job_id_paths": job_id_paths,
+        "tool": "read_job",
+        "resource": "yamibo://jobs/{job_id}/status",
+        "completion_field": "data.result_ready",
+    }
+    if terminal_when:
+        terminal_read["when"] = terminal_when
+    return {
+        "version": "1",
+        "effect": "enqueue_job",
+        "risk": "write",
+        "idempotency": idempotency,
+        "requires": requires,
+        "cost_hints": {"remote_requests": 0, "job_submissions": 1},
+        "produces": ["job_id", "job_status_resource"],
+        "followups": followups,
+        "timeout_class": "background",
+        "terminal_read": terminal_read,
+    }
+
+
+_ACTIVE_JOB_IDEMPOTENCY = {
+    "mode": "deduplicated_by_active_job",
+    "scope": ["job_type", "tid", "normalized_payload"],
+}
+_NONDEDUPLICATED_JOB = {
+    "mode": "not_deduplicated",
+    "scope": [],
+    "retry": "do_not_automatically_retry",
+}
+_SINGLE_JOB_ID = ["data.job_id"]
+_BATCH_JOB_IDS = ["data.created_job_ids[]", "data.reused_job_ids[]"]
+
+
 _DISCUSSION_AGENT_TOOLS = [
-    ("create_discussion_trend_index_job", "Create a background job that builds the discussion trend mart for a (forum_id, date window). Side effect: writes a queued job to the database.", create_discussion_trend_index_job),
-    ("get_discussion_partition_trends", "Read-only query for partition-level daily activity trends from the current trend mart run. Returns bucket-level thread/post/user counts.", get_discussion_partition_trends),
-    ("get_discussion_topic_trends", "Read-only query for topic-level daily trends with caller-side threshold filtering. Returns empty topics + TOPIC_QUALITY_INSUFFICIENT warning when below quality threshold.", get_discussion_topic_trends),
-    ("get_discussion_user_trends", "Read-only query for user-level daily activity trends from the current trend mart run. Sortable by floor_count, thread_count, or topic_count.", get_discussion_user_trends),
-    ("get_discussion_report", "Read-only query for generated trend or research report artifacts. Returns DISCUSSION_REPORT_NOT_FOUND when the requested run has no stored artifact yet.", get_discussion_report),
-    ("get_forum_evidence_pack", "Read-only research tool for non-trend forum investigation (slang, atmosphere, context). Uses SQL floor snippet search; does not require a current trend run.", get_forum_evidence_pack),
-    ("get_discussion_topic_evidence", "Read-only query for representative floor evidence (snippets) for a specific topic in the current trend run. Supports auto/rag/sql retrieval modes with SQL fallback when RAG is unavailable.", get_discussion_topic_evidence),
-    ("create_discussion_trend_report_job", "Create a background job that generates a template-driven trend report (JSON + Markdown) for a forum window. Requires an existing current trend run.", create_discussion_trend_report_job),
-    ("create_forum_research_report_job", "Create a background job that generates a forum research report (JSON + Markdown) for non-trend investigations. Does not require a current trend run.", create_forum_research_report_job),
+    capability_registration(
+        "create_discussion_trend_index_job",
+        "Create a background job that builds the discussion trend mart for a "
+        "(forum_id, date window). Side effect: writes a queued job to the database.",
+        create_discussion_trend_index_job,
+        _job_metadata(
+            idempotency=_NONDEDUPLICATED_JOB,
+            requires=["database", "daemon"],
+            followups=["read_job", "get_discussion_partition_trends"],
+            job_id_paths=_SINGLE_JOB_ID,
+        ),
+    ),
+    capability_registration(
+        "get_discussion_partition_trends",
+        "Read-only query for partition-level daily activity trends from the current "
+        "trend mart run. Returns bucket-level thread/post/user counts.",
+        get_discussion_partition_trends,
+        _read_metadata(),
+    ),
+    capability_registration(
+        "get_discussion_topic_trends",
+        "Read-only query for topic-level daily trends with caller-side threshold "
+        "filtering. Returns empty topics + TOPIC_QUALITY_INSUFFICIENT warning when "
+        "below quality threshold.",
+        get_discussion_topic_trends,
+        _read_metadata(followups=["get_discussion_topic_evidence"]),
+    ),
+    capability_registration(
+        "get_discussion_user_trends",
+        "Read-only query for user-level daily activity trends from the current trend "
+        "mart run. Sortable by floor_count, thread_count, or topic_count.",
+        get_discussion_user_trends,
+        _read_metadata(),
+    ),
+    capability_registration(
+        "get_discussion_report",
+        "Read-only query for generated trend or research report artifacts. Returns "
+        "DISCUSSION_REPORT_NOT_FOUND when the requested run has no stored artifact yet.",
+        get_discussion_report,
+        _read_metadata(produces=["report_artifact"]),
+    ),
+    capability_registration(
+        "get_forum_evidence_pack",
+        "Read-only research tool for non-trend forum investigation (slang, atmosphere, "
+        "context). Uses SQL floor snippet search; does not require a current trend run.",
+        get_forum_evidence_pack,
+        _read_metadata(produces=["evidence_bundle"]),
+    ),
+    capability_registration(
+        "get_discussion_topic_evidence",
+        "Read-only query for representative floor evidence (snippets) for a specific "
+        "topic in the current trend run. Supports auto/rag/sql retrieval modes with SQL "
+        "fallback when RAG is unavailable.",
+        get_discussion_topic_evidence,
+        _read_metadata(produces=["evidence_bundle"]),
+        input_any_of=[["topic_id"], ["topic_label"]],
+    ),
+    capability_registration(
+        "create_discussion_trend_report_job",
+        "Create a background job that generates a template-driven trend report "
+        "(JSON + Markdown) for a forum window. Requires an existing current trend run.",
+        create_discussion_trend_report_job,
+        _job_metadata(
+            idempotency=_NONDEDUPLICATED_JOB,
+            requires=["database", "daemon"],
+            followups=["read_job", "get_discussion_report"],
+            job_id_paths=_SINGLE_JOB_ID,
+        ),
+    ),
+    capability_registration(
+        "create_forum_research_report_job",
+        "Create a background job that generates a forum research report "
+        "(JSON + Markdown) for non-trend investigations. Does not require a current run.",
+        create_forum_research_report_job,
+        _job_metadata(
+            idempotency=_NONDEDUPLICATED_JOB,
+            requires=["database", "daemon"],
+            followups=["read_job", "get_discussion_report"],
+            job_id_paths=_SINGLE_JOB_ID,
+        ),
+    ),
 ]
 
 
 PUBLIC_AGENT_TOOLS = [
-    ("search_forum_threads", "Remote-first, read-only forum search. Uses forum pagination and compact archive hints; does not expose a limit parameter.", search_forum_threads),
-    ("browse_forum_page", "Remote read-only forum page browse. Returns one page of compact thread items and never creates jobs.", browse_forum_page),
-    ("inspect_remote_thread", "Remote read-only thread preview. Fetches and parses a compact snapshot without writing the local database, downloading assets, or creating jobs.", inspect_remote_thread),
-    ("create_thread_archive_job", "Create a background archive job for a thread or local HTML input. Side effect: writes a queued job to the configured database; daemon execution is required.", create_thread_archive_job),
-    ("create_thread_archive_batch_jobs", "Create background archive jobs for multiple thread ids. Side effect: writes queued jobs to the configured database; daemon execution is required.", create_thread_archive_batch_jobs),
-    ("ensure_thread_archived", "Local archive check plus job creation fallback. Returns local archive state if present, otherwise creates an archive job.", ensure_thread_archived),
-    ("read_archived_thread", "Read local archive views from the configured database and materialized files. Views are local-only and never trigger remote fetches.", read_archived_thread),
-    ("probe_archived_threads", "Batch read-only archive probe for multiple tids. Returns local archive state and the last local floor timestamp without creating jobs or fetching remote data.", probe_archived_threads),
-    ("check_thread_updates", "Remote read-only update inspection for archived novel threads. Does not create jobs.", check_thread_updates),
-    ("create_thread_update_job", "Create a background incremental update job for an archived novel thread. Side effect: writes a queued job to the configured database.", create_thread_update_job),
-    ("create_thread_export_job", "Create a background export job for a local archive. Side effect: writes a queued job to the configured database.", create_thread_export_job),
-    ("create_rag_index_job", "Create a background RAG indexing job for one archived thread. Side effect: writes a queued job to the configured database.", create_rag_index_job),
-    ("create_rag_index_batch_jobs", "Create background RAG indexing jobs for multiple archived threads. Side effect: writes queued jobs to the configured database.", create_rag_index_batch_jobs),
-    ("search_archived_content", "Search local archived text content with keyword, vector, or hybrid ranking. Never fetches remote forum data.", search_archived_content),
-    ("read_job", "Read compact job status from the local job queue.", read_job),
-    ("read_job_events", "Read persisted job event history for a queued or completed job.", read_job_events),
-    ("wait_for_job", "Wait for a background job to reach a terminal state without client-side sleep.", wait_for_job),
-    ("read_forum_profiles", "Read configured forum profiles and content-type guidance from local metadata.", read_forum_profiles),
+    capability_registration(
+        "search_forum_threads",
+        "Remote-first, read-only forum search. Uses forum pagination and compact archive "
+        "hints; does not expose a limit parameter.",
+        search_forum_threads,
+        _remote_metadata(
+            cost_hints={
+                "remote_requests": {
+                    "minimum": 1,
+                    "maximum": "bounded_by:end_page",
+                }
+            },
+            followups=["inspect_remote_thread", "probe_archived_threads"],
+        ),
+    ),
+    capability_registration(
+        "browse_forum_page",
+        "Remote read-only forum page browse. Returns one page of compact thread items "
+        "and never creates jobs.",
+        browse_forum_page,
+        _remote_metadata(
+            followups=["inspect_remote_thread", "probe_archived_threads"]
+        ),
+    ),
+    capability_registration(
+        "inspect_remote_thread",
+        "Remote read-only thread preview. Fetches and parses a compact snapshot without "
+        "writing the local database, downloading assets, or creating jobs.",
+        inspect_remote_thread,
+        _remote_metadata(
+            followups=["probe_archived_threads", "create_thread_archive_job"]
+        ),
+    ),
+    capability_registration(
+        "create_thread_archive_job",
+        "Create a background archive job for a thread or local HTML input. Side effect: "
+        "writes a queued job to the configured database; daemon execution is required.",
+        create_thread_archive_job,
+        _job_metadata(
+            idempotency=_ACTIVE_JOB_IDEMPOTENCY,
+            requires=["database", "daemon", "remote_access"],
+            followups=["read_job", "read_archived_thread"],
+            job_id_paths=_SINGLE_JOB_ID,
+        ),
+        input_any_of=[["tid"], ["url"], ["html_path"]],
+    ),
+    capability_registration(
+        "create_thread_archive_batch_jobs",
+        "Create background archive jobs for multiple thread ids. Side effect: writes "
+        "queued jobs to the configured database; daemon execution is required.",
+        create_thread_archive_batch_jobs,
+        _job_metadata(
+            idempotency={
+                **_ACTIVE_JOB_IDEMPOTENCY,
+                "retry": "Retry only after inspecting per-item created/reused results.",
+            },
+            requires=["database", "daemon", "remote_access"],
+            followups=["read_job", "read_archived_thread"],
+            job_id_paths=_BATCH_JOB_IDS,
+        ),
+    ),
+    capability_registration(
+        "ensure_thread_archived",
+        "Local archive check plus job creation fallback. Returns local archive state if "
+        "present, otherwise creates an archive job.",
+        ensure_thread_archived,
+        _job_metadata(
+            idempotency={
+                **_ACTIVE_JOB_IDEMPOTENCY,
+                "conditional": "Returns a local archive without creating a job.",
+            },
+            requires=["database", "daemon", "remote_access"],
+            followups=["read_job", "read_archived_thread"],
+            job_id_paths=_SINGLE_JOB_ID,
+            terminal_when="data.archived != true",
+        ),
+    ),
+    capability_registration(
+        "read_archived_thread",
+        "Read local archive views from the configured database and materialized files. "
+        "Views are local-only and never trigger remote fetches.",
+        read_archived_thread,
+        _read_metadata(
+            produces=["thread_resource", "pagination_cursor"],
+            followups=["read_archived_thread"],
+        ),
+    ),
+    capability_registration(
+        "probe_archived_threads",
+        "Batch read-only archive probe for multiple tids. Returns local archive state "
+        "and the last local floor timestamp without jobs or remote data.",
+        probe_archived_threads,
+        _read_metadata(followups=["create_thread_archive_batch_jobs"]),
+    ),
+    capability_registration(
+        "check_thread_updates",
+        "Remote read-only update inspection for archived novel threads. Does not create "
+        "jobs.",
+        check_thread_updates,
+        _remote_metadata(followups=["create_thread_update_job"]),
+    ),
+    capability_registration(
+        "create_thread_update_job",
+        "Create a background incremental update job for an archived novel thread. Side "
+        "effect: writes a queued job to the configured database.",
+        create_thread_update_job,
+        _job_metadata(
+            idempotency=_ACTIVE_JOB_IDEMPOTENCY,
+            requires=["database", "daemon", "remote_access"],
+            followups=["read_job", "read_archived_thread"],
+            job_id_paths=_SINGLE_JOB_ID,
+        ),
+    ),
+    capability_registration(
+        "create_thread_export_job",
+        "Create a background export job for a local archive. Side effect: writes a "
+        "queued job to the configured database.",
+        create_thread_export_job,
+        _job_metadata(
+            idempotency=_ACTIVE_JOB_IDEMPOTENCY,
+            requires=["database", "daemon"],
+            followups=["read_job"],
+            job_id_paths=_SINGLE_JOB_ID,
+        ),
+    ),
+    capability_registration(
+        "create_rag_index_job",
+        "Create a background RAG indexing job for one archived thread. Side effect: "
+        "writes a queued job to the configured database.",
+        create_rag_index_job,
+        _job_metadata(
+            idempotency={
+                "mode": "deduplicated_by_active_job",
+                "scope": ["job_type", "tid"],
+                "conditional": "force=true bypasses reuse; do not automatically retry.",
+            },
+            requires=["database", "daemon"],
+            followups=["read_job", "search_archived_content"],
+            job_id_paths=_SINGLE_JOB_ID,
+        ),
+    ),
+    capability_registration(
+        "create_rag_index_batch_jobs",
+        "Create background RAG indexing jobs for multiple archived threads. Side "
+        "effect: writes queued jobs to the configured database.",
+        create_rag_index_batch_jobs,
+        _job_metadata(
+            idempotency={
+                "mode": "deduplicated_by_active_job",
+                "scope": ["job_type", "tid"],
+                "conditional": "force=true bypasses reuse; do not automatically retry.",
+            },
+            requires=["database", "daemon"],
+            followups=["read_job", "search_archived_content"],
+            job_id_paths=_BATCH_JOB_IDS,
+        ),
+    ),
+    capability_registration(
+        "search_archived_content",
+        "Search local archived text content with keyword, vector, or hybrid ranking. "
+        "Never fetches remote forum data.",
+        search_archived_content,
+        _read_metadata(
+            produces=["evidence_bundle"],
+            followups=["read_archived_thread"],
+            cost_hints={"remote_requests": 0, "database_queries": 1},
+        ),
+    ),
+    capability_registration(
+        "read_job",
+        "Read compact job status from the local job queue.",
+        read_job,
+        _read_metadata(
+            produces=["job_status_resource"],
+            followups=["read_job_events", "read_archived_thread"],
+        ),
+    ),
+    capability_registration(
+        "read_job_events",
+        "Read persisted job event history for a queued or completed job.",
+        read_job_events,
+        _read_metadata(),
+    ),
+    capability_registration(
+        "wait_for_job",
+        "Wait for a background job to reach a terminal state without client-side sleep.",
+        wait_for_job,
+        _read_metadata(
+            followups=["read_job_events", "read_archived_thread"],
+            timeout_class="polling",
+        ),
+    ),
+    capability_registration(
+        "read_forum_profiles",
+        "Read configured forum profiles and content-type guidance from local metadata.",
+        read_forum_profiles,
+        _read_metadata(requires=["local_configuration"]),
+    ),
     *_DISCUSSION_AGENT_TOOLS,
 ]

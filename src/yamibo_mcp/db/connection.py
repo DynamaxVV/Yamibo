@@ -8,7 +8,7 @@ from typing import Any
 
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
-from sqlalchemy.engine import Connection, Engine, Result
+from sqlalchemy.engine import Connection, Engine, Result, make_url
 
 from yamibo_mcp.config import Settings, load_settings
 from yamibo_mcp.db.alembic_runner import upgrade_postgres_schema
@@ -283,6 +283,13 @@ def _daemon_pool_size(settings: Settings) -> tuple[int, int]:
     return pool_min, pool_max
 
 
+def _normalize_postgres_url(db_url: str) -> str:
+    url = make_url(db_url)
+    if url.drivername in {"postgres", "postgresql"}:
+        url = url.set(drivername="postgresql+psycopg")
+    return url.render_as_string(hide_password=False)
+
+
 @lru_cache(maxsize=None)
 def _postgres_engine_for_role(
     db_url: str,
@@ -306,7 +313,7 @@ def _postgres_engine_for_role(
     if ssl_root_cert is not None:
         connect_args["sslrootcert"] = ssl_root_cert
     engine = create_engine(
-        db_url,
+        _normalize_postgres_url(db_url),
         pool_size=pool_min,
         max_overflow=max(pool_max - pool_min, 0),
         pool_timeout=pool_timeout,

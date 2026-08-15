@@ -870,27 +870,6 @@ input[type="checkbox"] { width: 14px; height: 14px; cursor: pointer; accent-colo
   min-width: 0;
 }
 
-.chat-runtime-note {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  align-items: flex-start;
-  padding: 12px;
-  border: var(--border-width, 1px) solid var(--border-light);
-  border-radius: var(--radius-sm, 6px);
-  background: var(--bg-muted);
-}
-
-.chat-runtime-note strong {
-  display: block;
-  margin-bottom: 4px;
-}
-
-.chat-runtime-note small {
-  color: var(--text-tertiary);
-  line-height: 1.5;
-}
-
 .chat-transcript {
   flex: 1;
   display: flex;
@@ -1027,7 +1006,6 @@ input[type="checkbox"] { width: 14px; height: 14px; cursor: pointer; accent-colo
 
 .chat-composer-hint,
 .chat-command-list-item small,
-.chat-runtime-note small,
 .chat-settings-help {
   color: var(--text-tertiary);
   font-size: 12px;

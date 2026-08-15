@@ -15,6 +15,7 @@ from yamibo_mcp.server.resource_uris import (
     agent_workflows_guide_uri,
     agent_evaluation_guide_uri,
     archive_model_guide_uri,
+    capabilities_schema_uri,
     error_codes_guide_uri,
     guess_content_type,
     job_events_uri,
@@ -37,18 +38,19 @@ from yamibo_mcp.server.resource_uris import (
 from yamibo_mcp.storage.paths import StoragePaths
 from yamibo_mcp.server.schemas import job_status_payload
 from yamibo_mcp.server.agent_tools import PUBLIC_AGENT_TOOLS
+from yamibo_mcp.server.capabilities import build_capability_manifest
 
 
 _GUIDE_FILES = {
-    "agent-workflows": "agent-workflows.md",
-    "error-codes": "error-codes.md",
-    "archive-model": "archive-model.md",
-    "agent-evaluation": "agent-evaluation.md",
+    "agent-workflows": "智能体工作流.md",
+    "error-codes": "错误码.md",
+    "archive-model": "归档模型.md",
+    "agent-evaluation": "智能体验收速查.md",
 }
 
 
 def _docs_dir() -> Path:
-    return Path(__file__).resolve().parents[3] / "docs" / "mcp-guides"
+    return Path(__file__).resolve().parents[3] / "docs" / "MCP指南"
 
 
 def read_resource(uri: str) -> dict[str, object]:
@@ -57,6 +59,8 @@ def read_resource(uri: str) -> dict[str, object]:
         return _build_guide_resource(uri, kind)
     if kind_root == "schema" and kind == "tools":
         return _build_tools_schema_resource(uri)
+    if kind_root == "schema" and kind == "capabilities":
+        return _build_capabilities_schema_resource(uri)
 
     settings = load_settings()
     paths = StoragePaths(settings.data_dir, export_dir=settings.export_dir)
@@ -148,7 +152,12 @@ def _build_tools_schema_resource(uri: str) -> dict[str, object]:
                 }
             )
         tools.append({"name": name, "description": description, "parameters": parameters})
-    text = json.dumps({"tools": tools}, ensure_ascii=False, indent=2)
+    text = json.dumps({"tools": tools}, ensure_ascii=False, indent=2, default=str)
+    return {"uri": uri, "content_type": "application/json", "exists": True, "text": text}
+
+
+def _build_capabilities_schema_resource(uri: str) -> dict[str, object]:
+    text = json.dumps(build_capability_manifest(PUBLIC_AGENT_TOOLS), ensure_ascii=False, indent=2, default=str)
     return {"uri": uri, "content_type": "application/json", "exists": True, "text": text}
 
 
@@ -162,7 +171,7 @@ def _build_job_status_resource(uri: str, job_id: str, settings) -> dict[str, obj
         "uri": uri,
         "content_type": "application/json",
         "exists": True,
-        "text": json.dumps(job_status_payload(job), ensure_ascii=False, indent=2),
+        "text": json.dumps(job_status_payload(job), ensure_ascii=False, indent=2, default=str),
     }
 
 
@@ -244,7 +253,7 @@ def generate_series_chapters_json(*, series_id: int, write_path: Path | None = N
                 for thread in threads
             ],
         }
-        text = json.dumps(payload, ensure_ascii=False, indent=2)
+        text = json.dumps(payload, ensure_ascii=False, indent=2, default=str)
         if write_path is not None:
             write_path.parent.mkdir(parents=True, exist_ok=True)
             write_path.write_text(text, encoding="utf-8")
@@ -282,7 +291,7 @@ def _build_forums_index_resource(uri: str, settings) -> dict[str, object]:
         }
         for row in rows
     ]
-    return {"uri": uri, "content_type": "application/json", "exists": True, "text": json.dumps(forums, ensure_ascii=False, indent=2)}
+    return {"uri": uri, "content_type": "application/json", "exists": True, "text": json.dumps(forums, ensure_ascii=False, indent=2, default=str)}
 
 
 def _build_forum_summary_resource(uri: str, forum_id: int, settings) -> dict[str, object]:
@@ -300,7 +309,7 @@ def _build_forum_summary_resource(uri: str, forum_id: int, settings) -> dict[str
         "base_url": row["base_url"],
         "enabled": bool(row["enabled"]),
     }
-    return {"uri": uri, "content_type": "application/json", "exists": True, "text": json.dumps(summary, ensure_ascii=False, indent=2)}
+    return {"uri": uri, "content_type": "application/json", "exists": True, "text": json.dumps(summary, ensure_ascii=False, indent=2, default=str)}
 
 
 def _build_thread_summary_resource(uri: str, tid: int, settings) -> dict[str, object]:
@@ -336,7 +345,7 @@ def _build_thread_summary_resource(uri: str, tid: int, settings) -> dict[str, ob
             "assets": thread_assets_uri(tid),
         },
     }
-    return {"uri": uri, "content_type": "application/json", "exists": True, "text": json.dumps(summary, ensure_ascii=False, indent=2)}
+    return {"uri": uri, "content_type": "application/json", "exists": True, "text": json.dumps(summary, ensure_ascii=False, indent=2, default=str)}
 
 
 def _build_thread_diagnostics_resource(uri: str, tid: int, settings) -> dict[str, object]:
@@ -378,7 +387,7 @@ def _build_thread_diagnostics_resource(uri: str, tid: int, settings) -> dict[str
         "warnings": warnings,
         "next_actions": next_actions,
     }
-    return {"uri": uri, "content_type": "application/json", "exists": True, "text": json.dumps(diagnostics, ensure_ascii=False, indent=2)}
+    return {"uri": uri, "content_type": "application/json", "exists": True, "text": json.dumps(diagnostics, ensure_ascii=False, indent=2, default=str)}
 
 
 def _build_thread_posts_resource(uri: str, tid: int, settings) -> dict[str, object]:
@@ -404,7 +413,7 @@ def _build_thread_posts_resource(uri: str, tid: int, settings) -> dict[str, obje
         }
         for block in blocks
     ]
-    return {"uri": uri, "content_type": "application/json", "exists": True, "text": json.dumps(posts_data, ensure_ascii=False, indent=2)}
+    return {"uri": uri, "content_type": "application/json", "exists": True, "text": json.dumps(posts_data, ensure_ascii=False, indent=2, default=str)}
 
 
 def _build_thread_assets_resource(uri: str, tid: int, settings) -> dict[str, object]:
@@ -431,7 +440,7 @@ def _build_thread_assets_resource(uri: str, tid: int, settings) -> dict[str, obj
         }
         for asset in assets
     ]
-    return {"uri": uri, "content_type": "application/json", "exists": True, "text": json.dumps(assets_data, ensure_ascii=False, indent=2)}
+    return {"uri": uri, "content_type": "application/json", "exists": True, "text": json.dumps(assets_data, ensure_ascii=False, indent=2, default=str)}
 
 
 def _build_thread_update_check_resource(uri: str, tid: int) -> dict[str, object]:
@@ -440,7 +449,7 @@ def _build_thread_update_check_resource(uri: str, tid: int) -> dict[str, object]
     result = check_thread_updates(tid=tid)
     if result.get("status") == "failed" and result.get("reason") == f"thread {tid} not found":
         return {"uri": uri, "content_type": "application/json", "exists": False, "error": result["reason"]}
-    return {"uri": uri, "content_type": "application/json", "exists": True, "text": json.dumps(result, ensure_ascii=False, indent=2)}
+    return {"uri": uri, "content_type": "application/json", "exists": True, "text": json.dumps(result, ensure_ascii=False, indent=2, default=str)}
 
 
 def _build_job_events_resource(uri: str, job_id: str, settings) -> dict[str, object]:
@@ -462,4 +471,4 @@ def _build_job_events_resource(uri: str, job_id: str, settings) -> dict[str, obj
         }
         for event in events
     ]
-    return {"uri": uri, "content_type": "application/json", "exists": True, "text": json.dumps(events_data, ensure_ascii=False, indent=2)}
+    return {"uri": uri, "content_type": "application/json", "exists": True, "text": json.dumps(events_data, ensure_ascii=False, indent=2, default=str)}

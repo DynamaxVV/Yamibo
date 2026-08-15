@@ -142,5 +142,25 @@ def test_run_chat_turn_stream_persists_final_message(tmp_path, monkeypatch):
     assert sessions[0]['messages'][-1]['content'] == 'Hello'
 
 
+def test_chat_context_uses_hermes_transport_only(tmp_path, monkeypatch):
+    settings = _make_settings(tmp_path)
+    monkeypatch.setattr(
+        web_chat,
+        '_probe_hermes_status',
+        lambda _settings: {
+            'connected': False,
+            'kind': 'custom_host',
+            'endpoint': 'http://localhost:8642/v1/chat/completions',
+            'label': 'Hermes unavailable',
+        },
+    )
+
+    context = web_chat.get_chat_context(settings)
+
+    assert context['transport'] == 'hermes_http'
+    assert 'agent_runtime' not in context
+    assert {item['id'] for item in context['transports']} == {'hermes_http'}
+
+
 class SimpleNamespace:
     pass

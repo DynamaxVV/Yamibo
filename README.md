@@ -2,7 +2,7 @@
 
 百合会 (yamibo.com) 论坛本地归档系统。通过 MCP 协议让 LLM 客户端浏览、搜索、归档、检查更新和导出论坛贴子；内嵌 React WebUI 控制台，支持多主题切换。
 
-> 当前版本：`1.0.0`
+> 当前版本：`1.1.0`
 
 ## 功能特性
 
@@ -28,9 +28,9 @@
 
 ## 快速开始
 
-更细的文档入口见 [docs/README.md](docs/README.md)。
+更细的文档入口见 [docs/文档索引.md](docs/文档索引.md)。
 
-1.0 之后的 capability manifest、受控 tool loop、策略审批、运行轨迹和证据引用方案见 [Agent 友好型 LLM 原生运行时路线图](docs/llm-native-runtime-roadmap.md)。该路线图是后续规划，不代表当前已经内建自主 Agent。
+1.0 之后的 capability manifest、Recovery 契约和未来运行时重新评估条件见 [LLM 原生运行时路线图](docs/LLM原生运行时路线图.md)。当前仍由 Hermes 负责 Agent 规划，Yamibo 不内建自主 Agent。
 
 ### 安装
 
@@ -144,7 +144,7 @@ YAMIBO_LLM_API_KEY=dummy
 YAMIBO_LLM_MODEL=hermes
 ```
 
-如果 Hermes 运行在宿主机，改用 `http://host.docker.internal:8000/v1`。更完整的 data 外挂、Hermes Docker 网络、PostgreSQL 备份恢复和迁移说明见 [`docs/deployment-guide.md`](docs/deployment-guide.md)。
+如果 Hermes 运行在宿主机，改用 `http://host.docker.internal:8000/v1`。更完整的 data 外挂、Hermes Docker 网络、PostgreSQL 备份恢复和迁移说明见 [`docs/部署运维指南.md`](docs/部署运维指南.md)。
 
 ## 运行期行为
 
@@ -360,19 +360,19 @@ scripts/run_hermes_benchmark.sh
 
 | 文档 | 说明 |
 |------|------|
-| [产品需求 & 架构设计](docs/product-requirements.md) | PRD + 系统架构 |
-| [Agent 架构导航](docs/architecture-for-agents.md) | 给 AI 编码代理的目录职责、修改路径、简化约束和测试矩阵 |
-| [API 接口文档](docs/api-reference.md) | MCP 工具/资源、CLI、Web 路由 |
-| [Agent 接口说明](docs/agent-interface.md) | Agent-facing 工具、错误契约、推荐工作流 |
-| [Discussion Trend V1](docs/discussion-trend-v1.md) | PostgreSQL-only 趋势索引、evidence 检索、trend/report artifact 与已知约束 |
-| [Agent 能力验收标准](docs/agent-evaluation.md) | OpenClaw/Hermes 类 Agent 的验收场景、评分维度与证据要求 |
-| [数据库设计](docs/database-design.md) | 表结构、文件存储格式、PostgreSQL JSONB 决策 |
-| [账号池设计](docs/account-pool-design.md) | 多账号权限分配与 Cookie 管理 |
-| [SQLite-Vec RAG 设计](docs/history/rag-sqlite-vec-design.md) | 历史 SQLite-first RAG 设计，保留作演化参考 |
-| [核心模块开发说明](docs/development-guide.md) | 标题解析、Job 系统、配置 |
-| [FastAPI 迁移方案](docs/history/fastapi-migration-plan.md) | Web 层迁移决策、构建自动化与路由收敛背景 |
-| [部署指南 & 运维手册](docs/deployment-guide.md) | 安装、配置、运维操作 |
-| [用户操作手册](docs/user-manual.md) | MCP/Web/CLI 使用方式 |
-| [测试方案](docs/testing-strategy.md) | 测试原则、规范、数据与回归策略 |
-| [版本更新日志](docs/changelog.md) | 版本演进与本轮变更摘要 |
-| [WebUI 设计文档](docs/webui-design.md) | 功能点、主题系统、组件设计、API 端点 |
+| [产品需求文档](docs/产品需求文档.md) | PRD + 系统架构 |
+| [智能体架构导航](docs/智能体架构导航.md) | 给 AI 编码代理的目录职责、修改路径、简化约束和测试矩阵 |
+| [API 接口参考](docs/API接口参考.md) | MCP 工具/资源、CLI、Web 路由 |
+| [智能体接口说明](docs/智能体接口说明.md) | Agent-facing 工具、错误契约、推荐工作流 |
+| [讨论趋势 V1](docs/讨论趋势V1.md) | PostgreSQL-only 趋势索引、evidence 检索、trend/report artifact 与已知约束 |
+| [智能体验收标准](docs/智能体验收标准.md) | OpenClaw/Hermes 类 Agent 的验收场景、评分维度与证据要求 |
+| [数据库设计](docs/数据库设计.md) | 表结构、文件存储格式、PostgreSQL JSONB 决策 |
+| [账号池设计](docs/账号池设计.md) | 多账号权限分配与 Cookie 管理 |
+| [SQLite-Vec RAG 设计](docs/历史/SQLite-VecRAG设计.md) | 历史 SQLite-first RAG 设计，保留作演化参考 |
+| [开发指南](docs/开发指南.md) | 标题解析、Job 系统、配置 |
+| [FastAPI 迁移方案](docs/历史/FastAPI迁移方案.md) | Web 层迁移决策、构建自动化与路由收敛背景 |
+| [部署运维指南](docs/部署运维指南.md) | 安装、配置、运维操作 |
+| [用户手册](docs/用户手册.md) | MCP/Web/CLI 使用方式 |
+| [测试策略](docs/测试策略.md) | 测试原则、规范、数据与回归策略 |
+| [更新日志](docs/更新日志.md) | 版本演进与本轮变更摘要 |
+| [Web 界面设计](docs/Web界面设计.md) | 功能点、主题系统、组件设计、API 端点 |

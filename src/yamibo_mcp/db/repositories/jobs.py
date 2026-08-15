@@ -641,12 +641,17 @@ class JobsRepository:
         error_code: str,
         error_message: str,
         artifacts: dict[str, Any] | None = None,
+        delay_seconds: int | None = None,
     ) -> bool:
         def _retry_later() -> tuple[sqlite3.Cursor | None, dict[str, Any]]:
             now = utc_now_iso()
             current = self.get(job_id)
             if current.retry_count >= current.max_retries:
                 return None, {}
+            retry_delay = min(int(delay_seconds) if delay_seconds is not None else 5 * (2 ** current.retry_count), 60)
+            # PONETAIL: retrying jobs reuse lease_until as a not-before timestamp;
+            # split it into next_retry_at only if scheduling semantics expand.
+            next_retry_at = utc_after_iso(retry_delay)
             next_artifacts = current.artifacts if isinstance(current.artifacts, dict) else {}
             if artifacts:
                 next_artifacts = {**next_artifacts, **artifacts}
@@ -654,7 +659,7 @@ class JobsRepository:
                 """
                 UPDATE jobs
                 SET status = ?, retry_count = retry_count + 1, error_code = ?, error_message = ?,
-                    artifacts_json = ?, worker_id = NULL, heartbeat_at = NULL, lease_until = NULL, updated_at = ?
+                    artifacts_json = ?, worker_id = NULL, heartbeat_at = NULL, lease_until = ?, updated_at = ?
                 WHERE job_id = ? AND status = ?
                 """,
                 (
@@ -662,6 +667,7 @@ class JobsRepository:
                     error_code,
                     error_message,
                     json.dumps(next_artifacts, ensure_ascii=False),
+                    next_retry_at,
                     now,
                     job_id,
                     JobStatus.RUNNING.value,
@@ -685,6 +691,7 @@ class JobsRepository:
                 "error_message": error_message,
                 "retry_count": refreshed.retry_count,
                 "max_retries": refreshed.max_retries,
+                "next_retry_at": refreshed.lease_until,
                 "artifacts": next_artifacts,
             },
         )

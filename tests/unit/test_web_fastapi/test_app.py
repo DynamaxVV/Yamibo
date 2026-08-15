@@ -1,11 +1,7 @@
 from __future__ import annotations
 
-import json
-from pathlib import Path
 from unittest.mock import patch
 
-from yamibo_mcp.web_fastapi.app import create_app
-from tests.unit.test_web_fastapi.conftest import _TestSettings
 from yamibo_mcp.db.repositories.jobs import JobsRepository
 
 

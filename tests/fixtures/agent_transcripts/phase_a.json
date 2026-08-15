@@ -1,0 +1,30 @@
+[
+  {"id":"search-create-wait-read-with-citation","budget":{"remote_requests":1},"expects_archive_read":true,"steps":[
+    {"capability":"search_forum_threads","effect":"remote_read"},
+    {"capability":"create_thread_archive_job","effect":"enqueue_job","result":{"data":{"job_id":"job-1"}}},
+    {"capability":"read_job","effect":"read_only","result":{"data":{"job_id":"job-1","result_ready":true,"status":"succeeded"}}},
+    {"capability":"read_archived_thread","effect":"read_only","citation":{"resource_uri":"yamibo://threads/572313/posts","snapshot_id":"archive-v1","locator":{"pid":123},"excerpt_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","retrieved_at":"2026-07-12T00:00:00Z"}}
+  ]},
+  {"id":"remote-read-only","budget":{"remote_requests":1},"steps":[{"capability":"inspect_remote_thread","effect":"remote_read"}]},
+  {"id":"remote-failure-is-not-a-write","budget":{"remote_requests":1},"steps":[{"capability":"browse_forum_page","effect":"remote_read","result":{"error":{"code":"REMOTE_FETCH_FAILED"}}}]},
+  {"id":"duplicate-job-creation-reuses-live-job","steps":[
+    {"capability":"create_thread_archive_job","effect":"enqueue_job","result":{"data":{"job_id":"job-2","created":true}}},
+    {"capability":"create_thread_archive_job","effect":"enqueue_job","result":{"data":{"job_id":"job-2","created":false}}},
+    {"capability":"read_job","effect":"read_only","result":{"data":{"job_id":"job-2","result_ready":true,"status":"succeeded"}}}
+  ]},
+  {"id":"failed-job-reads-diagnostics","steps":[
+    {"capability":"create_thread_export_job","effect":"enqueue_job","result":{"data":{"job_id":"job-3"}}},
+    {"capability":"read_job","effect":"read_only","result":{"data":{"job_id":"job-3","result_ready":false,"status":"failed"}}},
+    {"capability":"read_job_events","effect":"read_only"}
+  ]},
+  {"id":"interrupted-job-reads-diagnostics","steps":[
+    {"capability":"create_rag_index_job","effect":"enqueue_job","result":{"data":{"job_id":"job-4"}}},
+    {"capability":"read_job","effect":"read_only","result":{"data":{"job_id":"job-4","result_ready":false,"status":"interrupted"}}},
+    {"capability":"read_job_events","effect":"read_only"}
+  ]},
+  {"id":"paginated-resource-read","steps":[
+    {"capability":"read_archived_thread","effect":"read_only","result":{"data":{"has_more":true}}},
+    {"capability":"read_archived_thread","effect":"read_only","args":{"cursor":"offset:20"},"result":{"data":{"has_more":false}}}
+  ]},
+  {"id":"local-search-has-no-remote-budget","budget":{"remote_requests":0},"steps":[{"capability":"search_archived_content","effect":"read_only"}]}
+]

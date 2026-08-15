@@ -27,6 +27,7 @@ from yamibo_mcp.server.resource_uris import (
     thread_posts_uri,
     thread_summary_uri,
     thread_update_check_uri,
+    capabilities_schema_uri,
     tools_schema_uri,
 )
 from yamibo_mcp.server.resources import read_resource_content
@@ -102,6 +103,7 @@ def register_resources(server) -> None:
         ("archive-model-guide", archive_model_guide_uri, "text/markdown", None, int),
         ("agent-evaluation-guide", agent_evaluation_guide_uri, "text/markdown", None, int),
         ("tools-schema", tools_schema_uri, "application/json", None, int),
+        ("capabilities-schema", capabilities_schema_uri, "application/json", None, int),
         ("thread-context", thread_context_uri, "text/markdown", "tid", int),
         ("thread-metadata", thread_metadata_uri, "application/json", "tid", int),
         ("thread-export", thread_export_uri, "application/octet-stream", "tid", int),

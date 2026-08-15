@@ -79,6 +79,10 @@ def tools_schema_uri() -> str:
     return "yamibo://schema/tools"
 
 
+def capabilities_schema_uri() -> str:
+    return "yamibo://schema/capabilities"
+
+
 def parse_resource_uri(uri: str) -> tuple[str, int | None, str]:
     # 资源 URI 先收敛成固定格式，避免 Web/Server/Worker 各自拼路径。
     prefix = "yamibo://"
@@ -102,7 +106,7 @@ def parse_resource_uri(uri: str) -> tuple[str, int | None, str]:
         return parts[0], None, f"{parts[1]}/status"
     if len(parts) == 2 and parts[0] == "guide":
         return parts[0], None, parts[1]
-    if len(parts) == 2 and parts[0] == "schema" and parts[1] == "tools":
+    if len(parts) == 2 and parts[0] == "schema" and parts[1] in {"tools", "capabilities"}:
         return parts[0], None, parts[1]
     raise ValueError(f"unsupported resource uri: {uri}")
 
@@ -128,7 +132,7 @@ def guess_content_type(kind: str) -> str:
         return "application/json"
     if kind in ("agent-workflows", "error-codes", "archive-model", "agent-evaluation"):
         return "text/markdown"
-    if kind == "tools":
+    if kind in {"tools", "capabilities"}:
         return "application/json"
     raise ValueError(f"unsupported resource kind: {kind}")
 

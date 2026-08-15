@@ -8,6 +8,7 @@ from yamibo_mcp.server.resources import (
     agent_workflows_guide_uri,
     agent_evaluation_guide_uri,
     archive_model_guide_uri,
+    capabilities_schema_uri,
     error_codes_guide_uri,
     forums_index_uri,
     forum_summary_uri,
@@ -57,6 +58,7 @@ class TestNewUriHelpers:
         assert archive_model_guide_uri() == "yamibo://guide/archive-model"
         assert agent_evaluation_guide_uri() == "yamibo://guide/agent-evaluation"
         assert tools_schema_uri() == "yamibo://schema/tools"
+        assert capabilities_schema_uri() == "yamibo://schema/capabilities"
 
 
 # --- parse_resource_uri ---
@@ -126,7 +128,12 @@ class TestParseNewResourceUris:
         assert tid is None
         assert kind == "tools"
 
-    def test_old_uris_still_work(self):
+        root, tid, kind = parse_resource_uri("yamibo://schema/capabilities")
+        assert root == "schema"
+        assert tid is None
+        assert kind == "capabilities"
+
+    def test_phase_a_plus_keeps_existing_business_uris(self):
         root, tid, kind = parse_resource_uri("yamibo://threads/123/context")
         assert root == "threads"
         assert tid == 123
@@ -208,6 +215,25 @@ class TestAgentGuideResources:
         read_tool = next(tool for tool in data["tools"] if tool["name"] == "read_archived_thread")
         params = {param["name"] for param in read_tool["parameters"]}
         assert {"cursor", "chunk_size"}.issubset(params)
+
+    def test_capabilities_schema_contains_phase_a_plus_contract(self):
+        from yamibo_mcp.server.resources import read_resource
+
+        result = read_resource("yamibo://schema/capabilities")
+
+        assert result["exists"] is True
+        assert result["content_type"] == "application/json"
+        data = json.loads(result["text"])
+        names = {capability["name"] for capability in data["capabilities"]}
+        assert "read_job" in names
+        assert "create_thread_archive_job" in names
+        assert "citation_contract" not in data
+        archive_job = next(
+            capability
+            for capability in data["capabilities"]
+            if capability["name"] == "create_thread_archive_job"
+        )
+        assert archive_job["terminal_read"]["tool"] == "read_job"
 
 class TestReadForumsIndex:
     def test_forums_index_returns_all_forums(self, db):

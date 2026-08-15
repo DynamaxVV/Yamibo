@@ -417,7 +417,27 @@ class TestRetryLater:
         assert retried.status == JobStatus.RETRYING
         assert retried.retry_count == 1
         assert retried.worker_id is None
+        assert retried.lease_until is not None
         assert retried.artifacts["failure_context"]["remote_fetch"]["retryable"] is True
+
+    def test_retry_later_delays_acquire_until_not_before_time(self, db):
+        repo = JobsRepository(db)
+        job = repo.create("sync_thread", tid=42)
+        repo.acquire(job.job_id, "worker-1", 300)
+
+        assert repo.retry_later(job.job_id, error_code="HTTP_429", error_message="rate limited", delay_seconds=60)
+        assert repo.acquire_next("worker-2", 300) is None
+
+        db.execute(
+            "UPDATE jobs SET lease_until = ? WHERE job_id = ?",
+            ("2000-01-01T00:00:00+00:00", job.job_id),
+        )
+        db.commit()
+
+        acquired = repo.acquire_next("worker-2", 300)
+        assert acquired is not None
+        assert acquired.job_id == job.job_id
+        assert acquired.status == JobStatus.RUNNING
 
     def test_retry_later_respects_max_retries(self, db):
         repo = JobsRepository(db)

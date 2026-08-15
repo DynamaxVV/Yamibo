@@ -17,6 +17,23 @@ from yamibo_mcp.errors import (
 from yamibo_mcp.storage.exports import ExportPrecheckError
 
 
+def capability_registration(
+    name: str,
+    description: str,
+    handler: Callable[..., AgentResult],
+    metadata: dict[str, Any] | None = None,
+    **overrides: Any,
+) -> tuple[str, str, Callable[..., AgentResult]]:
+    """Bind manifest metadata to the same record used for MCP registration."""
+    if hasattr(handler, "__capability_metadata__"):
+        raise ValueError(f"capability metadata already registered for {name}")
+    handler.__capability_metadata__ = {  # type: ignore[attr-defined]
+        **(metadata or {}),
+        **overrides,
+    }
+    return name, description, handler
+
+
 def action_to_wire(action: AgentAction) -> dict[str, Any]:
     return {"tool": action.tool, "args": action.args, "reason": action.reason}
 

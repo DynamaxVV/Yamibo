@@ -114,7 +114,7 @@ class TestPublicAgentTools:
         for name, _, handler in PUBLIC_AGENT_TOOLS:
             assert "limit" not in inspect.signature(handler).parameters, name
 
-    def test_mcp_registry_only_registers_recommended_agent_tools(self):
+    def test_mcp_registry_registers_public_capabilities(self):
         class FakeServer:
             def __init__(self):
                 self.names: list[str] = []
@@ -291,4 +291,47 @@ class TestAgentStatusHints:
         assert result["ok"] is True
         assert result["data"]["is_terminal"] is False
         assert result["data"]["result_ready"] is False
+        assert result["data"]["retry_count"] == 0
+        assert result["data"]["max_retries"] == 3
+        assert result["data"]["next_retry_at"] is None
+        assert result["data"]["recovery"]["classification"] == "continue_waiting"
+        assert result["data"]["recovery"]["next_actions"][0]["tool"] == "read_job"
         assert result["data"]["recommended_poll_after_seconds"] == 2
+
+    def test_read_job_exposes_user_action_required_recovery(self, tmp_path, db):
+        settings = _fake_settings(tmp_path)
+        from yamibo_mcp.db.repositories.jobs import JobsRepository
+
+        repo = JobsRepository(db)
+        job = repo.create("noop")
+        repo.fail(job.job_id, "REMOTE_THREAD_PERMISSION_REQUIRED", "permission denied")
+
+        with patch("yamibo_mcp.application.job_queries.load_settings", return_value=settings), \
+             patch("yamibo_mcp.application.job_queries.connect", return_value=db):
+            result = read_job(job_id=job.job_id)
+
+        recovery = result["data"]["recovery"]
+        assert recovery["classification"] == "user_action_required"
+        assert recovery["owner"] == "user"
+        assert recovery["requires_user_action"] is True
+        assert recovery["next_actions"] == []
+
+    def test_read_job_exposes_partial_and_paused_recovery(self, tmp_path, db):
+        from yamibo_mcp.db.repositories.jobs import JobsRepository
+        from yamibo_mcp.server.schemas import job_status_payload
+
+        repo = JobsRepository(db)
+        partial = repo.create("noop")
+        paused = repo.create("sync_thread", tid=42)
+        repo.partial(partial.job_id, artifacts={"warning": "stopped early"})
+        repo.fail(paused.job_id, "REMOTE_SOFT_BLOCK", "blocked")
+        db.execute("UPDATE jobs SET status = ?, finished_at = NULL WHERE job_id = ?", ("paused", paused.job_id))
+        db.commit()
+
+        partial_payload = job_status_payload(repo.get(partial.job_id))
+        paused_payload = job_status_payload(repo.get(paused.job_id))
+
+        assert partial_payload["recovery"]["classification"] == "use_partial_result"
+        assert partial_payload["recovery"]["next_actions"][0]["tool"] == "read_job_events"
+        assert paused_payload["recovery"]["classification"] == "automatic_recovery"
+        assert paused_payload["recovery"]["next_actions"][0]["tool"] == "read_job"

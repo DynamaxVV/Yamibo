@@ -33,6 +33,7 @@ def get_chat_context(settings: Settings) -> dict[str, Any]:
     sessions = _load_sessions(settings.project_root)
     status = _probe_hermes_status(settings)
     return {
+        'model': settings.hermes_model,
         'transport': 'hermes_http',
         'status': status,
         'transports': [

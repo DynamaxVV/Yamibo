@@ -12,6 +12,10 @@ class JobNotFound(YamiboError):
     """Raised when a job cannot be found."""
 
 
+class IdempotencyConflict(YamiboError):
+    """Raised when an idempotency key is reused for another request."""
+
+
 class LeaseNotAcquired(YamiboError):
     """Raised when a worker cannot acquire a job lease."""
 

@@ -1,12 +1,13 @@
 """全局测试配置"""
 
 import os
+from uuid import uuid4
 
 import pytest
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, make_url
 
-from yamibo_mcp.db.connection import connect
+from yamibo_mcp.db.connection import _normalize_postgres_url, connect
 
 
 def pytest_ignore_collect(collection_path, config):
@@ -30,11 +31,34 @@ def db(tmp_path, monkeypatch):
 def pg_engine():
     db_url = os.environ.get("YAMIBO_TEST_PG_URL")
     if db_url:
-        engine = create_engine(db_url)
+        normalized_url = make_url(_normalize_postgres_url(db_url))
+        isolated_name = None
+        admin_engine = None
+        if os.environ.get("YAMIBO_TEST_PG_ISOLATED", "").lower() in {"1", "true", "yes", "on"}:
+            isolated_name = f"yamibo_test_{os.getpid()}_{uuid4().hex[:8]}"
+            admin_engine = create_engine(normalized_url.set(database="postgres"))
+            try:
+                with admin_engine.connect() as raw_conn:
+                    conn = raw_conn.execution_options(isolation_level="AUTOCOMMIT")
+                    conn.exec_driver_sql(f'CREATE DATABASE "{isolated_name}"')
+            except Exception as exc:  # pragma: no cover - depends on database privileges
+                admin_engine.dispose()
+                pytest.skip(f"isolated postgres database cannot be created: {exc}")
+            normalized_url = normalized_url.set(database=isolated_name)
+        engine = create_engine(normalized_url)
         try:
             yield engine
         finally:
             engine.dispose()
+            if admin_engine is not None and isolated_name is not None:
+                try:
+                    with admin_engine.connect() as raw_conn:
+                        conn = raw_conn.execution_options(isolation_level="AUTOCOMMIT")
+                        conn.exec_driver_sql(
+                            f'DROP DATABASE IF EXISTS "{isolated_name}" WITH (FORCE)'
+                        )
+                finally:
+                    admin_engine.dispose()
         return
 
     try:

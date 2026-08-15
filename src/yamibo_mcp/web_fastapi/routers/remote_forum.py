@@ -22,9 +22,11 @@ from yamibo_mcp.errors import (
 )
 from yamibo_mcp.web_fastapi.deps import get_conn, get_settings
 from yamibo_mcp.yamibo.account_pool import borrow_yamibo_client, has_configured_account_pool
+from yamibo_mcp.yamibo.browser_fallback import BrowserFallbackClient
 from yamibo_mcp.yamibo.client import YamiboClient
 from yamibo_mcp.yamibo.parsers.forum_list import ForumThreadItem, extract_total_pages
 from yamibo_mcp.yamibo.parsers.thread_detail import parse_thread_detail, parse_thread_snapshot
+from yamibo_mcp.yamibo.proxy_pool import select_random_proxy
 from yamibo_mcp.yamibo.title.parser import parse_title
 from yamibo_mcp.yamibo.urls import thread_url_from_tid, thread_page_url_from_tid
 
@@ -54,8 +56,26 @@ def _is_allowed_remote_image_url(raw_url: str) -> bool:
 
 
 def _open_web_client(settings):
+    binding = select_random_proxy(settings)
+    proxy_url = binding.proxy_url if binding else None
     if has_configured_account_pool(settings):
-        return borrow_yamibo_client(settings, prefer_high_permission=True, proxy_url=None)
+        borrowed = borrow_yamibo_client(
+            settings, prefer_high_permission=True, proxy_url=proxy_url
+        )
+
+        @contextmanager
+        def _pooled_cm():
+            with borrowed as (identity, client):
+                yield identity, BrowserFallbackClient(
+                    client,
+                    settings=settings,
+                    account_id=identity.account_id,
+                    username=identity.username,
+                    password=identity.password,
+                    proxy_url=proxy_url,
+                )
+
+        return _pooled_cm()
     resolved_cookie_file = str(settings.cookie_file)
     if not settings.cookie_file.exists():
         fallback = settings.data_dir / "cookies.txt"
@@ -64,8 +84,8 @@ def _open_web_client(settings):
     client = YamiboClient(
         timeout=getattr(settings, "request_timeout_seconds", 15.0),
         cookie_file=resolved_cookie_file,
-        use_system_proxy=False,
-        proxy_url=None,
+        use_system_proxy=settings.use_system_proxy,
+        proxy_url=proxy_url,
         login_username=settings.login_username,
         login_password=settings.login_password,
         request_interval=settings.request_interval_seconds,
@@ -74,7 +94,14 @@ def _open_web_client(settings):
 
     @contextmanager
     def _cm():
-        yield None, client
+        yield None, BrowserFallbackClient(
+            client,
+            settings=settings,
+            account_id="default",
+            username=settings.login_username,
+            password=settings.login_password,
+            proxy_url=proxy_url,
+        )
     return _cm()
 
 
