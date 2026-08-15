@@ -108,6 +108,37 @@ class FetchResult:
     html: str
 
 
+def daily_checkin_already_done(html: str) -> bool:
+    """Return whether the sign-in page says this account already checked in today."""
+    return "今日已打卡" in html_lib.unescape(html)
+
+
+def validate_daily_checkin_result(result: FetchResult) -> FetchResult:
+    """Require an authenticated page and an explicit check-in success signal."""
+    if not 200 <= result.status_code < 400:
+        raise RemoteFetchError(
+            f"daily sign-in request returned HTTP {result.status_code} for {result.final_url}",
+            details={"url": result.final_url, "status_code": result.status_code, "retryable": True},
+        )
+    if is_soft_block_page(result.html):
+        raise RemoteFetchError(f"soft block detected for {result.final_url}")
+    if classify_html(result.html).page_type == PageType.LOGIN_REQUIRED:
+        raise LoginRequiredError(f"login required for {result.final_url}")
+    # Discuz exposes both markers on authenticated pages. A 200 response alone
+    # is insufficient because the WAF can return a normal-looking HTML page.
+    authenticated = re.search(r"discuz_uid\s*=\s*['\"]([1-9]\d*)", result.html)
+    authenticated = authenticated or re.search(r"action=(?:logout|logging%26action%3Dlogout)", result.html)
+    if not authenticated:
+        raise LoginRequiredError(f"daily sign-in page has no authenticated session: {result.final_url}")
+    page = html_lib.unescape(result.html)
+    if "恭喜您，打卡成功" not in page and "今日已打卡" not in page:
+        raise RemoteFetchError(
+            f"daily sign-in success not confirmed for {result.final_url}",
+            details={"url": result.final_url, "status_code": result.status_code, "retryable": False},
+        )
+    return result
+
+
 class YamiboClient:
     SIGN_IN_PAGE_URL = "https://bbs.yamibo.com/plugin.php?id=zqlj_sign"
     SIGN_IN_ACTION_URL = "https://bbs.yamibo.com/plugin.php?id=zqlj_sign&sign=35981a55"
@@ -205,9 +236,12 @@ class YamiboClient:
     ) -> FetchResult:
         """Open the sign-in page, then follow its configured check-in action."""
         page = self._open_authenticated_page(page_url, referer="https://bbs.yamibo.com/")
+        if daily_checkin_already_done(page.html):
+            self._save_cookies()
+            return page
         result = self._open_authenticated_page(action_url, referer=page.final_url)
         self._save_cookies()
-        return result
+        return validate_daily_checkin_result(result)
 
     def _open_authenticated_page(self, url: str, *, referer: str | None = None) -> FetchResult:
         self._throttle()

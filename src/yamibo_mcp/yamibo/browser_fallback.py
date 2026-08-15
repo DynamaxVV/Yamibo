@@ -12,7 +12,12 @@ from playwright.sync_api import sync_playwright
 from yamibo_mcp.config import Settings
 from yamibo_mcp.errors import LoginRequiredError, RemoteFetchError
 from yamibo_mcp.yamibo.anti_bot import is_soft_block_page
-from yamibo_mcp.yamibo.client import FetchResult, YamiboClient
+from yamibo_mcp.yamibo.client import (
+    FetchResult,
+    YamiboClient,
+    daily_checkin_already_done,
+    validate_daily_checkin_result,
+)
 from yamibo_mcp.yamibo.page_classifier import PageType, classify_html
 from yamibo_mcp.yamibo.parsers.forum_list import (
     ForumThreadItem,
@@ -144,8 +149,18 @@ def sign_daily_checkin_with_browser(
                 username=username,
                 password=password,
             )
-            page.goto(page_url, wait_until="domcontentloaded", timeout=timeout_ms)
+            page_response = page.goto(page_url, wait_until="domcontentloaded", timeout=timeout_ms)
             page.wait_for_timeout(3000)
+            page_html = page.content()
+            if daily_checkin_already_done(page_html):
+                result = FetchResult(
+                    url=page_url,
+                    final_url=page.url,
+                    status_code=page_response.status if page_response else 200,
+                    html=page_html,
+                )
+                validate_daily_checkin_result(result)
+                return result
             action = page.locator(f'a[href="{action_url}"]').first
             if action.count() > 0:
                 action.click(no_wait_after=True)
@@ -162,11 +177,7 @@ def sign_daily_checkin_with_browser(
         finally:
             context.close()
 
-    if is_soft_block_page(result.html):
-        raise RemoteFetchError(f"browser fallback remained blocked for {result.final_url}")
-    if classify_html(result.html).page_type == PageType.LOGIN_REQUIRED:
-        raise LoginRequiredError(f"login required for {result.final_url}")
-    return result
+    return validate_daily_checkin_result(result)
 
 
 class BrowserFallbackClient:
