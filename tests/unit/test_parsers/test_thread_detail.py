@@ -4,7 +4,6 @@
 """
 
 import re
-from pathlib import Path
 
 import pytest
 from tests.fixtures.loader import load_thread, load_edge_case
@@ -350,14 +349,34 @@ class TestThreadDetailParser:
         )
 
     def test_tid129_h2_content_is_preserved_when_postmessage_is_empty(self):
-        html = Path("/Users/vv/Code/html_sample/tid129.html").read_text(encoding="utf-8", errors="ignore")
-        summary = parse_thread_detail(html, base_url="file:///Users/vv/Code/html_sample/tid129.html")
+        html = """
+        <div id="post_1"><div class="pcb">
+          <h2>画很PL,和动画不同吧?</h2>
+          <table><tr><td id="postmessage_31221"></td></tr></table>
+        </div><div id="comment_31221"></div></div>
+        <div id="post_2"><div class="pcb">
+          <h2>13个老婆,谁的呀?????</h2>
+          <table><tr><td id="postmessage_31222"></td></tr></table>
+        </div><div id="comment_31222"></div></div>
+        """
+        summary = parse_thread_detail(html, base_url="https://bbs.yamibo.com/thread-129-1-1.html")
         assert summary.floors[0].content == "画很PL,和动画不同吧?"
         assert summary.floors[1].content == "13个老婆,谁的呀?????"
 
     def test_pure_poll_thread_keeps_poll_content_even_without_primary_text(self):
-        html = Path("/Users/vv/Code/html_sample/纯投票主楼.html").read_text(encoding="utf-8", errors="ignore")
-        summary = parse_thread_detail(html, base_url="file:///Users/vv/Code/html_sample/纯投票主楼.html")
+        html = """
+        <div id="post_1"><div class="pcb">
+          <table><tr><td id="postmessage_35649690"></td></tr></table>
+          <form id="poll">
+            <div class="pinf"><strong>多选投票</strong>: ( 最多可选 1 项 ), 共有 1609 人参与投票</div>
+            <table summary="poll panel">
+              <tr><td><label>1. &nbsp;圣蓉（貌似后圣母时代的官配？）</label></td></tr>
+            </table>
+            <div>该投票已经关闭或者过期，不能投票</div>
+          </form>
+        </div><div id="comment_35649690"></div></div>
+        """
+        summary = parse_thread_detail(html, base_url="https://bbs.yamibo.com/thread-104994-1-1.html")
         first_floor = summary.floors[0]
         assert "多选投票" in first_floor.content
         assert "圣蓉（貌似后圣母时代的官配？）" in first_floor.content
