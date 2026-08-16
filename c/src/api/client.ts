@@ -223,6 +223,21 @@ export interface Forum {
   archive_size_updated_at?: string | null
 }
 
+export interface SignInAccountStats {
+  account_id: string
+  recent_checkin: string | null
+  month_days: number | null
+  consecutive_days: number | null
+  total_days: number | null
+  level: string | null
+  error: string | null
+}
+
+export interface SignInStats {
+  fetched_at: string
+  accounts: SignInAccountStats[]
+}
+
 export interface WorkerHeartbeat {
   worker_id: string
   running_jobs: number
@@ -709,6 +724,7 @@ export const api = {
   deleteSeries: (seriesId: number) => postJson<{ ok: boolean }>('/series/delete', { series_id: seriesId }),
   similarSeries: (seriesId: number) => fetchJson<SeriesSummary[]>(`/series/${seriesId}/similar`),
   forums: () => fetchJson<Forum[]>('/forums'),
+  signInStats: () => fetchJson<SignInStats>('/forums/sign-in-stats'),
   refreshForumSizeCache: () => postJson<{ ok: boolean; updated_at: string | null; forum_count: number }>('/forums/refresh-size-cache', {}),
   fonts: () => fetchJson<FontAsset[]>('/fonts'),
   exports: () => fetchJson<ThreadSummary[]>('/exports'),

@@ -9,6 +9,7 @@ from yamibo_mcp.yamibo.client import (
     YamiboClient,
     daily_checkin_already_done,
     daily_checkin_action_url,
+    parse_daily_checkin_profile,
     validate_daily_checkin_result,
 )
 
@@ -74,6 +75,27 @@ def test_daily_checkin_action_url_uses_current_page_formhash():
         base_url=YamiboClient.SIGN_IN_PAGE_URL,
         fallback_url=YamiboClient.SIGN_IN_ACTION_URL,
     ) == "https://bbs.yamibo.com/plugin.php?id=zqlj_sign&sign=current-formhash"
+
+
+def test_parse_daily_checkin_profile():
+    html = """
+    <div class="bm_c"><ul class="xl xl1">
+      <li>最近打卡：2026-08-16 04:49:20</li>
+      <li>本月打卡：8天</li>
+      <li>连续打卡：2天</li>
+      <li>累计打卡：529天</li>
+      <li>累计奖励：833对象</li>
+      <li>最近奖励：1对象</li><li>当前打卡等级：百合渡劫</li>
+    </ul></div><strong>打卡统计</strong>
+    """
+
+    assert parse_daily_checkin_profile(html) == {
+        "recent_checkin": "2026-08-16 04:49:20",
+        "month_days": 8,
+        "consecutive_days": 2,
+        "total_days": 529,
+        "level": "百合渡劫",
+    }
 
 
 def test_sign_daily_checkin_does_not_click_when_already_checked(monkeypatch):

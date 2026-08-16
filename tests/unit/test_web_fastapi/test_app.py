@@ -122,6 +122,18 @@ def test_forums_list(client):
     assert resp.status_code == 200
 
 
+def test_forums_sign_in_stats_returns_configured_accounts(client):
+    with patch(
+        "yamibo_mcp.web_fastapi.routers.forums._daily_sign_in_stats",
+        return_value={"fetched_at": "2026-08-16T00:00:00+00:00", "accounts": []},
+    ):
+        resp = client.get("/api/forums/sign-in-stats")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "fetched_at" in data
+    assert isinstance(data["accounts"], list)
+
+
 def test_daemon_status(client):
     """GET /api/daemon/status returns operational mode."""
     resp = client.get("/api/daemon/status")

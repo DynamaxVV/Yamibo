@@ -147,6 +147,41 @@ def daily_checkin_action_url(html: str, *, base_url: str, fallback_url: str) -> 
     return fallback_url
 
 
+def parse_daily_checkin_profile(html: str) -> dict[str, str | int] | None:
+    """Extract the current account's summary from the sign-in page's "我的记录" block."""
+    page = html_lib.unescape(html)
+    page = re.sub(r"<(script|style)\b[^>]*>.*?</\1>", " ", page, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"<[^>]+>", " ", page)
+    text = re.sub(r"\s+", " ", text).strip()
+
+    def value_between(label: str, next_labels: tuple[str, ...]) -> str | None:
+        boundary = "|".join(re.escape(item) for item in next_labels)
+        match = re.search(rf"{re.escape(label)}\s*[：:]\s*(.+?)(?=\s+(?:{boundary})(?:\s*[：:])?|$)", text)
+        return match.group(1).strip() if match else None
+
+    recent = value_between("最近打卡", ("本月打卡",))
+    month = value_between("本月打卡", ("连续打卡",))
+    consecutive = value_between("连续打卡", ("累计打卡",))
+    total = value_between("累计打卡", ("累计奖励",))
+    level = value_between("当前打卡等级", ("打卡统计", "打卡等级"))
+    if not all((recent, month, consecutive, total, level)):
+        return None
+
+    def days(value: str) -> int:
+        match = re.search(r"\d+", value)
+        if not match:
+            raise ValueError(f"invalid sign-in day count: {value}")
+        return int(match.group(0))
+
+    return {
+        "recent_checkin": recent,
+        "month_days": days(month),
+        "consecutive_days": days(consecutive),
+        "total_days": days(total),
+        "level": level,
+    }
+
+
 def validate_daily_checkin_result(result: FetchResult) -> FetchResult:
     """Require an authenticated page and an explicit check-in success signal."""
     if not 200 <= result.status_code < 400:
@@ -271,7 +306,7 @@ class YamiboClient:
         action_url: str = SIGN_IN_ACTION_URL,
     ) -> FetchResult:
         """Open the sign-in page, then follow its configured check-in action."""
-        page = self._open_authenticated_page(page_url, referer="https://bbs.yamibo.com/")
+        page = self.fetch_daily_checkin_page(page_url=page_url)
         if daily_checkin_already_done(page.html):
             self._save_cookies()
             return page
@@ -283,6 +318,10 @@ class YamiboClient:
         result = self._open_authenticated_page(resolved_action_url, referer=page.final_url)
         self._save_cookies()
         return validate_daily_checkin_result(result)
+
+    def fetch_daily_checkin_page(self, *, page_url: str = SIGN_IN_PAGE_URL) -> FetchResult:
+        """Fetch the authenticated sign-in page without following the check-in action."""
+        return self._open_authenticated_page(page_url, referer="https://bbs.yamibo.com/")
 
     def _open_authenticated_page(self, url: str, *, referer: str | None = None) -> FetchResult:
         self._throttle()

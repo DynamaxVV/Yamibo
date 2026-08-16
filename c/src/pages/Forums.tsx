@@ -1,16 +1,27 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { api, type Forum } from '../api/client'
+import { api, type Forum, type SignInStats } from '../api/client'
 import { Badge, ContentBadge } from '../components/Badge'
 import { useI18n } from '../context/I18nContext'
 import { formatBytes } from '../utils/bytes'
 
+function SignInStatus({ error }: { error: string | null }) {
+  const { t } = useI18n()
+  return <Badge status={error ? 'error' : 'ok'}>{error ? t('sign_in_unavailable') : t('sign_in_available')}</Badge>
+}
+
 export function Forums() {
   const { t, lang } = useI18n()
   const [forums, setForums] = useState<Forum[]>([])
+  const [signInStats, setSignInStats] = useState<SignInStats | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
-  useEffect(() => { api.forums().then(setForums) }, [])
+  useEffect(() => {
+    void Promise.all([api.forums(), api.signInStats()]).then(([forumRows, stats]) => {
+      setForums(forumRows)
+      setSignInStats(stats)
+    })
+  }, [])
 
   const refreshSizeCache = async () => {
     setRefreshing(true)
@@ -37,6 +48,23 @@ export function Forums() {
           {message && <span className="threads-inline-message">{message}</span>}
         </div>
       </div>
+      {signInStats && <>
+        <h2>{t('sign_in_stats')}</h2>
+        <div className="table-wrap"><table className="sign-in-table">
+          <thead><tr><th>{t('account')}</th><th>{t('sign_in_recent_checkin')}</th><th>{t('sign_in_month_days')}</th><th>{t('sign_in_consecutive_days')}</th><th>{t('sign_in_total_days')}</th><th>{t('sign_in_level')}</th><th>{t('sign_in_source_status')}</th></tr></thead>
+          <tbody>
+            {signInStats.accounts.map(account => <tr key={account.account_id}>
+              <td className="mono sign-in-account">{account.account_id}</td>
+              <td className="nowrap">{account.recent_checkin || '-'}</td>
+              <td>{account.month_days ?? '-'}</td>
+              <td>{account.consecutive_days ?? '-'}</td>
+              <td>{account.total_days ?? '-'}</td>
+              <td>{account.level || '-'}</td>
+              <td><SignInStatus error={account.error} /></td>
+            </tr>)}
+          </tbody>
+        </table></div>
+      </>}
       <div className="table-wrap"><table>
         <thead><tr><th>{t('id')}</th><th>{t('name')}</th><th>{t('content_kind')}</th><th>{t('thread_count')}</th><th>{t('forum_data_size')}</th><th>{t('enabled')}</th><th>{t('action')}</th></tr></thead>
         <tbody>

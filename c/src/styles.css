@@ -235,6 +235,15 @@ h2 {
 }
 .stat-forum-counts b { color: var(--text-secondary); }
 
+.sign-in-date { font-size: 13px !important; }
+.sign-in-account { text-align: left; font-weight: 600; }
+.sign-in-table th:last-child, .sign-in-table td:last-child { min-width: 112px; }
+.sign-in-strip { display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-height: 20px; }
+.sign-in-dot { width: 9px; height: 9px; display: inline-block; border-radius: 50%; background: var(--border); }
+.sign-in-dot-succeeded { background: var(--status-ok); }
+.sign-in-dot-failed { background: var(--status-error); }
+.sign-in-dot-pending { background: var(--status-warn); }
+
 /* ─── Tables ─── */
 .table-wrap { overflow-x: auto; margin-bottom: 16px; }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }

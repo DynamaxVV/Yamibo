@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends
 
@@ -9,8 +11,47 @@ from yamibo_mcp.db.repositories.forums import ForumsRepository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
 from yamibo_mcp.maintenance.forum_sizes import read_forum_size_cache, refresh_forum_size_cache
 from yamibo_mcp.web_fastapi.deps import get_conn, get_settings
+from yamibo_mcp.yamibo.account_pool import borrow_yamibo_client, get_account_identities
+from yamibo_mcp.yamibo.client import parse_daily_checkin_profile
+from yamibo_mcp.yamibo.proxy_pool import select_random_proxy
 
 router = APIRouter(prefix="/api", tags=["forums"])
+LOCAL_TIMEZONE = ZoneInfo("Asia/Shanghai")
+
+
+def _daily_sign_in_stats(settings) -> dict[str, object]:
+    identities = get_account_identities(settings)
+    accounts: list[dict[str, object]] = []
+    for identity in identities:
+        account: dict[str, object] = {
+            "account_id": identity.account_id,
+            "recent_checkin": None,
+            "month_days": None,
+            "consecutive_days": None,
+            "total_days": None,
+            "level": None,
+            "error": None,
+        }
+        proxy_binding = select_random_proxy(settings)
+        try:
+            with borrow_yamibo_client(
+                settings,
+                account_id=identity.account_id,
+                proxy_url=proxy_binding.proxy_url if proxy_binding else None,
+            ) as (_, client):
+                result = client.fetch_daily_checkin_page()
+            profile = parse_daily_checkin_profile(result.html)
+            if profile is None:
+                raise ValueError("sign-in summary not found")
+            account.update(profile)
+        except Exception as exc:  # noqa: BLE001 - one unavailable account must not hide other accounts
+            account["error"] = str(exc)
+        accounts.append(account)
+
+    return {
+        "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "accounts": accounts,
+    }
 
 
 @router.get("/forums")
@@ -36,6 +77,12 @@ def list_forums(conn: DatabaseConnection = Depends(get_conn), settings=Depends(g
         }
         for r in rows
     ]
+
+
+@router.get("/forums/sign-in-stats")
+def sign_in_stats(conn: DatabaseConnection = Depends(get_conn), settings=Depends(get_settings)):
+    del conn
+    return _daily_sign_in_stats(settings)
 
 
 @router.post("/forums/refresh-size-cache")
