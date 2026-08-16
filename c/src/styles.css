@@ -455,6 +455,7 @@ input[type="checkbox"] { width: 14px; height: 14px; cursor: pointer; accent-colo
 }
 .jobs-status-tabs {
   display: flex;
+  flex-wrap: nowrap;
   flex: 1 1 auto;
   min-width: 0;
   max-width: 100%;
@@ -469,6 +470,12 @@ input[type="checkbox"] { width: 14px; height: 14px; cursor: pointer; accent-colo
   font-size: 12px;
   white-space: nowrap;
 }
+.jobs-status-tabs a[data-count-digits="4"] { padding-inline: 8px; }
+.jobs-status-tabs a[data-count-digits="5"] { padding-inline: 6px; }
+.jobs-status-tabs a[data-count-digits="6"],
+.jobs-status-tabs a[data-count-digits="7"],
+.jobs-status-tabs a[data-count-digits="8"],
+.jobs-status-tabs a[data-count-digits="9"] { padding-inline: 4px; }
 .jobs-toolbar-end {
   display: inline-flex;
   align-items: center;
@@ -479,7 +486,7 @@ input[type="checkbox"] { width: 14px; height: 14px; cursor: pointer; accent-colo
   gap: 6px;
 }
 .jobs-toolbar .seg-count {
-  background: none; padding: 0; margin-left: 2px;
+  background: none; padding: 0; margin-left: 1px;
   font-size: 10px; color: var(--text-tertiary);
 }
 .jobs-toolbar a.active .seg-count {

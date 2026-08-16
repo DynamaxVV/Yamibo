@@ -444,6 +444,7 @@ export function Jobs() {
             const count = statusCounts[key]
             return (
               <a key={key} className={status === s && !showIdleTasks ? 'active' : ''}
+                data-count-digits={count == null ? 0 : String(Math.abs(count)).length}
                 href="#" onClick={e => { e.preventDefault(); setStatusAndRemember(s) }}>
                 {s ? t(s) : t('all')}{count != null && <span className="seg-count">{count}</span>}
               </a>

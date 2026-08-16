@@ -72,25 +72,6 @@ export function Forums() {
           {message && <span className="threads-inline-message">{message}</span>}
         </div>
       </div>
-      <>
-        <h2>{t('sign_in_stats')}</h2>
-        {signInStatsError && <div className="threads-inline-message sign-in-stats-error">{t('sign_in_unavailable')}</div>}
-        <div className="table-wrap"><table className="sign-in-table">
-          <thead><tr><th>{t('account')}</th><th>{t('sign_in_recent_checkin')}</th><th>{t('sign_in_month_days')}</th><th>{t('sign_in_consecutive_days')}</th><th>{t('sign_in_total_days')}</th><th>{t('sign_in_level')}</th><th>{t('today_status')}</th></tr></thead>
-          <tbody>
-            {(signInStats?.accounts ?? []).map(account => <tr key={account.account_id}>
-              <td className="mono sign-in-account">{account.account_id}</td>
-              <td className="nowrap">{account.recent_checkin || '-'}</td>
-              <td>{account.month_days ?? '-'}</td>
-              <td>{account.consecutive_days ?? '-'}</td>
-              <td>{account.total_days ?? '-'}</td>
-              <td>{account.level || '-'}</td>
-              <td><SignInStatus status={account.today_status} error={account.error} onSignIn={() => void signIn(account.account_id)} signing={signingAccount === account.account_id || signingAccount !== null} /></td>
-            </tr>)}
-            {!signInStats && <tr><td colSpan={7}>{signInStatsError ? t('sign_in_unavailable') : t('loading')}</td></tr>}
-          </tbody>
-        </table></div>
-      </>
       <div className="table-wrap"><table>
         <thead><tr><th>{t('id')}</th><th>{t('name')}</th><th>{t('content_kind')}</th><th>{t('thread_count')}</th><th>{t('forum_data_size')}</th><th>{t('enabled')}</th><th>{t('action')}</th></tr></thead>
         <tbody>
@@ -111,6 +92,25 @@ export function Forums() {
           ))}
         </tbody>
       </table></div>
+      <>
+        <h2>{t('sign_in_stats')}</h2>
+        {signInStatsError && <div className="threads-inline-message sign-in-stats-error">{t('sign_in_unavailable')}</div>}
+        <div className="table-wrap"><table className="sign-in-table">
+          <thead><tr><th>{t('account')}</th><th>{t('sign_in_recent_checkin')}</th><th>{t('sign_in_month_days')}</th><th>{t('sign_in_consecutive_days')}</th><th>{t('sign_in_total_days')}</th><th>{t('sign_in_level')}</th><th>{t('today_status')}</th></tr></thead>
+          <tbody>
+            {(signInStats?.accounts ?? []).map(account => <tr key={account.account_id}>
+              <td className="mono sign-in-account">{account.account_id}</td>
+              <td className="nowrap">{account.recent_checkin || '-'}</td>
+              <td>{account.month_days ?? '-'}</td>
+              <td>{account.consecutive_days ?? '-'}</td>
+              <td>{account.total_days ?? '-'}</td>
+              <td>{account.level || '-'}</td>
+              <td><SignInStatus status={account.today_status} error={account.error} onSignIn={() => void signIn(account.account_id)} signing={signingAccount === account.account_id} /></td>
+            </tr>)}
+            {!signInStats && <tr><td colSpan={7}>{signInStatsError ? t('sign_in_unavailable') : t('loading')}</td></tr>}
+          </tbody>
+        </table></div>
+      </>
     </>
   )
 }
