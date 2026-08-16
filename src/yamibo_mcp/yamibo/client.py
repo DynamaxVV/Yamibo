@@ -26,6 +26,10 @@ from yamibo_mcp.errors import (
 from yamibo_mcp.structured_logging import emit
 from yamibo_mcp.yamibo.anti_bot import is_soft_block_page
 from yamibo_mcp.yamibo.cf_challenge import solve_acw_sc__v2_if_present
+from yamibo_mcp.yamibo.waf_challenge import (
+    WafChallengeError,
+    solve_nox_challenge_if_present,
+)
 from yamibo_mcp.yamibo.parsers.forum_list import ForumThreadItem, extract_total_pages, parse_forum_list
 from yamibo_mcp.yamibo.parsers.thread_detail import extract_author_only_total_pages
 from yamibo_mcp.yamibo.parsers.search_results import SearchResultItem, parse_search_results
@@ -110,7 +114,37 @@ class FetchResult:
 
 def daily_checkin_already_done(html: str) -> bool:
     """Return whether the sign-in page says this account already checked in today."""
-    return "今日已打卡" in html_lib.unescape(html)
+    page = html_lib.unescape(html)
+    for match in re.finditer(
+        r'<a\b[^>]*href=["\'][^"\']*plugin\.php\?id=zqlj_sign(?:&[^"\']*)?["\'][^>]*>(.*?)</a>',
+        page,
+        flags=re.IGNORECASE | re.DOTALL,
+    ):
+        link_text = re.sub(r"<[^>]+>", " ", match.group(1))
+        link_text = re.sub(r"\s+", " ", link_text).strip()
+        if "今日已打卡" in link_text:
+            return True
+    return False
+
+
+def daily_checkin_action_url(html: str, *, base_url: str, fallback_url: str) -> str:
+    """Resolve the current page's check-in action, whose formhash may change."""
+    page = html_lib.unescape(html)
+    candidates: list[tuple[str, str]] = []
+    for match in re.finditer(
+        r'<a\b[^>]*href=["\']([^"\']*plugin\.php\?id=zqlj_sign&[^"\']*)["\'][^>]*>(.*?)</a>',
+        page,
+        flags=re.IGNORECASE | re.DOTALL,
+    ):
+        href = match.group(1)
+        link_text = re.sub(r"<[^>]+>", " ", match.group(2))
+        link_text = re.sub(r"\s+", " ", link_text).strip()
+        candidates.append((href, link_text))
+        if "点击打卡" in link_text:
+            return urllib.parse.urljoin(base_url, href)
+    if candidates:
+        return urllib.parse.urljoin(base_url, candidates[0][0])
+    return fallback_url
 
 
 def validate_daily_checkin_result(result: FetchResult) -> FetchResult:
@@ -131,7 +165,7 @@ def validate_daily_checkin_result(result: FetchResult) -> FetchResult:
     if not authenticated:
         raise LoginRequiredError(f"daily sign-in page has no authenticated session: {result.final_url}")
     page = html_lib.unescape(result.html)
-    if "恭喜您，打卡成功" not in page and "今日已打卡" not in page:
+    if "恭喜您，打卡成功" not in page and not daily_checkin_already_done(result.html):
         raise RemoteFetchError(
             f"daily sign-in success not confirmed for {result.final_url}",
             details={"url": result.final_url, "status_code": result.status_code, "retryable": False},
@@ -217,7 +251,9 @@ class YamiboClient:
 
     def _request_headers(self, *, referer: str | None = None) -> dict[str, str]:
         h = dict(self.headers)
-        h["User-Agent"] = _random_ua()
+        # Keep the browser fingerprint stable for the lifetime of a session.
+        # Baidu WAF binds nox_jst_v1 to the User-Agent that received the challenge.
+        h["User-Agent"] = self.headers["User-Agent"]
         if referer:
             h["Referer"] = referer
             h["Sec-Fetch-Site"] = "same-origin"
@@ -239,20 +275,25 @@ class YamiboClient:
         if daily_checkin_already_done(page.html):
             self._save_cookies()
             return page
-        result = self._open_authenticated_page(action_url, referer=page.final_url)
+        resolved_action_url = daily_checkin_action_url(
+            page.html,
+            base_url=page.final_url,
+            fallback_url=action_url,
+        )
+        result = self._open_authenticated_page(resolved_action_url, referer=page.final_url)
         self._save_cookies()
         return validate_daily_checkin_result(result)
 
     def _open_authenticated_page(self, url: str, *, referer: str | None = None) -> FetchResult:
         self._throttle()
-        result = self._open_html(url, referer=referer)
+        result = self._open_html_with_retry(url, referer=referer)
         classification = classify_html(result.html)
         if classification.page_type == PageType.LOGIN_REQUIRED:
             if not self._can_login():
                 raise LoginRequiredError(f"login required for {result.final_url}")
             self._login(base_url=self._base_url_for(url), referer=referer)
             self._throttle()
-            result = self._open_html(url, referer=referer)
+            result = self._open_html_with_retry(url, referer=referer)
             classification = classify_html(result.html)
         if is_soft_block_page(result.html):
             raise RemoteFetchError(
@@ -628,10 +669,64 @@ class YamiboClient:
             },
         )
 
+    def _open_html_with_retry(self, url: str, *, referer: str | None = None) -> FetchResult:
+        """Retry direct page opens, rebuilding the session after protocol errors."""
+        last_error: Exception | None = None
+        for attempt in range(self.retries + 1):
+            try:
+                return self._open_html(url, referer=referer)
+            except (TimeoutError, curl_requests.errors.RequestsError) as exc:
+                last_error = exc
+                if attempt >= self.retries:
+                    break
+                if self._is_protocol_error(exc):
+                    LOG.info(
+                        "HTTP protocol error while opening %s, resetting session before retry %d/%d: %s",
+                        url,
+                        attempt + 1,
+                        self.retries,
+                        exc,
+                    )
+                    try:
+                        self._reset_session()
+                    except Exception:
+                        LOG.warning("Failed to reset session after protocol error", exc_info=True)
+                time.sleep(self._retry_delay(attempt))
+        raise RemoteFetchError(
+            f"failed to fetch {url} after {self.retries + 1} attempt(s) with timeout={self.timeout}s: {last_error}",
+            details={
+                "url": url,
+                "attempts": self.retries + 1,
+                "timeout_seconds": self.timeout,
+                "last_error_type": None if last_error is None else last_error.__class__.__name__,
+                "last_error_message": None if last_error is None else str(last_error),
+                "retryable": True,
+            },
+        )
+
     def _open_html(self, url: str, *, referer: str | None = None) -> FetchResult:
         headers = self._request_headers(referer=referer)
         resp = self._session.get(url, headers=headers, timeout=self.timeout)
         html = _decode_response_body(resp.content, resp.headers.get("Content-Encoding", ""))
+
+        try:
+            nox_cookies = solve_nox_challenge_if_present(
+                html,
+                page_url=str(resp.url),
+                user_agent=headers["User-Agent"],
+                cookie_pairs=list(self._session.cookies.items()),
+                fetch_script=lambda script_url: self._fetch_waf_script(script_url, referer=str(resp.url)),
+            )
+        except WafChallengeError as exc:
+            raise RemoteFetchError(
+                f"failed to solve Baidu WAF challenge for {resp.url}: {exc}",
+                details={"url": str(resp.url), "status_code": resp.status_code, "retryable": False},
+            ) from exc
+        if nox_cookies is not None:
+            self._install_cookie_pairs(nox_cookies, url=str(resp.url))
+            self._save_cookies()
+            resp = self._session.get(url, headers=headers, timeout=self.timeout)
+            html = _decode_response_body(resp.content, resp.headers.get("Content-Encoding", ""))
 
         # acw_sc__v2 CF challenge — solve inline and retry once
         cookie_value = solve_acw_sc__v2_if_present(html)
@@ -645,6 +740,23 @@ class YamiboClient:
             return FetchResult(url=url, final_url=resp2.url, status_code=resp2.status_code, html=html2)
 
         return FetchResult(url=url, final_url=resp.url, status_code=resp.status_code, html=html)
+
+    def _fetch_waf_script(self, url: str, *, referer: str) -> str:
+        """Fetch a same-origin WAF script with the current session fingerprint."""
+        headers = self._request_headers(referer=referer)
+        response = self._session.get(url, headers=headers, timeout=self.timeout)
+        if not 200 <= response.status_code < 400:
+            raise RemoteFetchError(
+                f"WAF challenge script returned HTTP {response.status_code} for {url}",
+                details={"url": url, "status_code": response.status_code, "retryable": True},
+            )
+        return _decode_response_body(response.content, response.headers.get("Content-Encoding", ""))
+
+    def _install_cookie_pairs(self, pairs: list[tuple[str, str]], *, url: str) -> None:
+        hostname = urllib.parse.urlsplit(url).hostname or "bbs.yamibo.com"
+        for name, value in pairs:
+            self._session.cookies.delete(name)
+            self._session.cookies.set(name, value, domain=hostname, path="/")
 
     def _base_url_for(self, url: str) -> str:
         parsed = urllib.parse.urlparse(url)
@@ -660,7 +772,7 @@ class YamiboClient:
     def _login(self, *, base_url: str, referer: str | None = None) -> None:
         self._throttle()
         login_page_url = f"{base_url.rstrip('/')}/member.php?mod=logging&action=login"
-        login_page = self._open_html(login_page_url, referer=referer)
+        login_page = self._open_html_with_retry(login_page_url, referer=referer)
         if classify_html(login_page.html).page_type == PageType.REMOTE_MAINTENANCE:
             raise RemoteMaintenanceError(f"remote maintenance for {login_page.final_url}")
         action_url, formhash = _extract_login_form(login_page.html, base_url=base_url)
@@ -719,7 +831,10 @@ class YamiboClient:
         if self.cookie_file is None or not self.persist_cookies:
             return
         self.cookie_file.parent.mkdir(parents=True, exist_ok=True)
-        lines = [f"{name}={value}" for name, value in self._session.cookies.items()]
+        cookies: dict[str, str] = {}
+        for name, value in self._session.cookies.items():
+            cookies[name] = value
+        lines = [f"{name}={value}" for name, value in cookies.items()]
         self.cookie_file.write_text("\n".join(lines), encoding="utf-8")
 
 

@@ -160,6 +160,31 @@ def test_fetch_curl_error_contains_details(monkeypatch):
     assert excinfo.value.details["last_error_type"] == "RequestException"
 
 
+def test_authenticated_page_retries_protocol_error_after_reset(monkeypatch):
+    client = YamiboClient(timeout=0.1, retries=1)
+    calls = {"open": 0, "reset": 0}
+    result = FetchResult(
+        url="https://bbs.yamibo.com/plugin.php?id=zqlj_sign",
+        final_url="https://bbs.yamibo.com/plugin.php?id=zqlj_sign",
+        status_code=200,
+        html="<html><body>ok</body></html>",
+    )
+
+    def _fake_open(_url: str, *, referer: str | None = None):
+        calls["open"] += 1
+        if calls["open"] == 1:
+            raise curl_errors.RequestsError("curl: (92) HTTP/2 stream 1 was not closed cleanly")
+        return result
+
+    monkeypatch.setattr(client, "_open_html", _fake_open)
+    monkeypatch.setattr(client, "_reset_session", lambda: calls.__setitem__("reset", calls["reset"] + 1))
+    monkeypatch.setattr(client, "_retry_delay", lambda _attempt: 0.0)
+    monkeypatch.setattr(client, "_throttle", lambda: None)
+
+    assert client._open_authenticated_page(result.url).html == result.html
+    assert calls == {"open": 2, "reset": 1}
+
+
 def test_validate_thread_page_reports_discuz_prompt_text():
     client = YamiboClient()
     result = FetchResult(

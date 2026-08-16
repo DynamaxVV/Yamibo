@@ -16,6 +16,7 @@ from yamibo_mcp.yamibo.client import (
     FetchResult,
     YamiboClient,
     daily_checkin_already_done,
+    daily_checkin_action_url,
     validate_daily_checkin_result,
 )
 from yamibo_mcp.yamibo.page_classifier import PageType, classify_html
@@ -65,6 +66,26 @@ def _login(page, *, base_url: str, username: str | None, password: str | None) -
     page.wait_for_timeout(5000)
 
 
+def _goto_authenticated_page(
+    page,
+    *,
+    url: str,
+    base_url: str,
+    username: str | None,
+    password: str | None,
+    timeout_ms: int,
+):
+    """Reuse an existing browser session and log in only when the target requires it."""
+    response = page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+    page.wait_for_timeout(3000)
+    if classify_html(page.content()).page_type != PageType.LOGIN_REQUIRED:
+        return response
+    _login(page, base_url=base_url, username=username, password=password)
+    response = page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+    page.wait_for_timeout(3000)
+    return response
+
+
 def fetch_html_with_browser(
     *,
     url: str,
@@ -92,14 +113,14 @@ def fetch_html_with_browser(
             page = context.pages[0] if context.pages else context.new_page()
             page.set_default_timeout(timeout_ms)
             parsed_url = urllib.parse.urlsplit(url)
-            _login(
+            response = _goto_authenticated_page(
                 page,
+                url=url,
                 base_url=f"{parsed_url.scheme}://{parsed_url.netloc}",
                 username=username,
                 password=password,
+                timeout_ms=timeout_ms,
             )
-            response = page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-            page.wait_for_timeout(3000)
             html = page.content()
             result = FetchResult(
                 url=url,
@@ -143,14 +164,14 @@ def sign_daily_checkin_with_browser(
             page = context.pages[0] if context.pages else context.new_page()
             page.set_default_timeout(timeout_ms)
             parsed_url = urllib.parse.urlsplit(page_url)
-            _login(
+            page_response = _goto_authenticated_page(
                 page,
+                url=page_url,
                 base_url=f"{parsed_url.scheme}://{parsed_url.netloc}",
                 username=username,
                 password=password,
+                timeout_ms=timeout_ms,
             )
-            page_response = page.goto(page_url, wait_until="domcontentloaded", timeout=timeout_ms)
-            page.wait_for_timeout(3000)
             page_html = page.content()
             if daily_checkin_already_done(page_html):
                 result = FetchResult(
@@ -161,15 +182,29 @@ def sign_daily_checkin_with_browser(
                 )
                 validate_daily_checkin_result(result)
                 return result
-            action = page.locator(f'a[href="{action_url}"]').first
-            if action.count() > 0:
+            resolved_action_url = daily_checkin_action_url(
+                page_html,
+                base_url=page.url,
+                fallback_url=action_url,
+            )
+            action_candidates = page.locator('a[href*="plugin.php?id=zqlj_sign&"]')
+            action = None
+            for index in range(action_candidates.count()):
+                candidate = action_candidates.nth(index)
+                href = candidate.get_attribute("href") or ""
+                candidate_url = urllib.parse.urljoin(page.url, href)
+                text = candidate.inner_text().strip()
+                if candidate_url == resolved_action_url or "点击打卡" in text:
+                    action = candidate
+                    break
+            if action is not None:
                 action.click(no_wait_after=True)
             else:
-                page.goto(action_url, wait_until="domcontentloaded", timeout=timeout_ms)
+                page.goto(resolved_action_url, wait_until="domcontentloaded", timeout=timeout_ms)
             page.wait_for_timeout(3000)
             html = page.content()
             result = FetchResult(
-                url=action_url,
+                url=resolved_action_url,
                 final_url=page.url,
                 status_code=200,
                 html=html,
@@ -224,8 +259,8 @@ class BrowserFallbackClient:
                 page_url=resolved_page_url,
                 action_url=resolved_action_url,
             )
-        except RemoteFetchError as exc:
-            if not self._is_soft_block(exc):
+        except Exception as exc:
+            if not self._should_fallback(exc):
                 raise
             LOG.info("Falling back to browser sign-in for %s", resolved_page_url)
             return sign_daily_checkin_with_browser(
@@ -241,6 +276,20 @@ class BrowserFallbackClient:
     @staticmethod
     def _is_soft_block(exc: RemoteFetchError) -> bool:
         return "soft block" in str(exc).lower()
+
+    @classmethod
+    def _should_fallback(cls, exc: Exception) -> bool:
+        if isinstance(exc, RemoteFetchError):
+            return cls._is_soft_block(exc) or "success not confirmed" in str(exc).lower()
+        message = str(exc).lower()
+        exception_name = type(exc).__name__.lower()
+        return exception_name in {
+            "connectionerror",
+            "httperror",
+            "requestexception",
+            "requestserror",
+            "timeout",
+        } or "http/2 stream" in message or "curl:" in message
 
     def fetch_forum_threads(
         self,

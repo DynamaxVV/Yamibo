@@ -10,6 +10,7 @@ dependencies = [
   "pgvector>=0.3.0",
   "alembic>=1.13.0",
   "curl-cffi>=0.7.0",
+  "quickjs>=1.19.4",
   "playwright>=1.62.0",
   "fastapi>=0.115.0",
   "uvicorn>=0.30.0",

@@ -5,7 +5,6 @@ import logging
 from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.domain.models import Job
 from yamibo_mcp.yamibo.account_pool import borrow_yamibo_client
-from yamibo_mcp.yamibo.browser_fallback import BrowserFallbackClient
 from yamibo_mcp.yamibo.proxy_pool import select_random_proxy
 
 LOG = logging.getLogger(__name__)
@@ -27,14 +26,7 @@ def handle_daily_sign_in(
         account_id=account_id,
         proxy_url=proxy_binding.proxy_url if proxy_binding else None,
     ) as (identity, client):
-        result = BrowserFallbackClient(
-            client,
-            settings=settings,
-            account_id=identity.account_id,
-            username=getattr(identity, "username", None),
-            password=getattr(identity, "password", None),
-            proxy_url=proxy_binding.proxy_url if proxy_binding else None,
-        ).sign_daily_checkin()
+        result = client.sign_daily_checkin()
     repo.succeed(
         job.job_id,
         artifacts={

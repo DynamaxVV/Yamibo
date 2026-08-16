@@ -34,7 +34,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
-    && rm -rf /var/lib/apt/lists/*
+        build-essential
 
 # 先拷贝项目基础文件
 COPY pyproject.toml uv.lock README.md ./
@@ -45,7 +45,9 @@ COPY alembic ./alembic
 COPY --from=frontend-build /app/src/yamibo_mcp/web/static ./src/yamibo_mcp/web/static
 
 # 兼容不支持 BuildKit cache mount 的旧版 Docker。
-RUN uv sync --locked --no-dev --no-editable
+RUN uv sync --locked --no-dev --no-editable \
+    && apt-get purge -y --auto-remove build-essential \
+    && rm -rf /var/lib/apt/lists/*
 
 RUN useradd --create-home --uid 10001 yamibo \
     && mkdir -p /app/data \
