@@ -437,17 +437,19 @@ export function Jobs() {
 
   return (
     <>
-      <div className="segmented jobs-toolbar">
-        {STATUSES.map(s => {
-          const key = s || 'all'
-          const count = statusCounts[key]
-          return (
-            <a key={key} className={status === s && !showIdleTasks ? 'active' : ''}
-              href="#" onClick={e => { e.preventDefault(); setStatusAndRemember(s) }}>
-              {s ? t(s) : t('all')}{count != null && <span className="seg-count">{count}</span>}
-            </a>
-          )
-        })}
+      <div className="jobs-toolbar">
+        <div className="segmented jobs-status-tabs">
+          {STATUSES.map(s => {
+            const key = s || 'all'
+            const count = statusCounts[key]
+            return (
+              <a key={key} className={status === s && !showIdleTasks ? 'active' : ''}
+                href="#" onClick={e => { e.preventDefault(); setStatusAndRemember(s) }}>
+                {s ? t(s) : t('all')}{count != null && <span className="seg-count">{count}</span>}
+              </a>
+            )
+          })}
+        </div>
         {showFailureKindSelect && (
           <label className="job-failure-filter">
             <span>{lang === 'en' ? 'Failure kind' : '失败类型'}</span>

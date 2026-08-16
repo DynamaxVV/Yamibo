@@ -448,18 +448,33 @@ input[type="checkbox"] { width: 14px; height: 14px; cursor: pointer; accent-colo
 .jobs-toolbar {
   display: flex;
   align-items: center;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
+  gap: 8px;
   width: 100%;
   margin-bottom: 12px;
 }
-.jobs-toolbar a {
-  padding: 5px 10px; font-size: 12px;
+.jobs-status-tabs {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  margin-bottom: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+}
+.jobs-status-tabs a {
+  flex: 0 0 auto;
+  padding: 5px 10px;
+  font-size: 12px;
+  white-space: nowrap;
 }
 .jobs-toolbar-end {
   display: inline-flex;
   align-items: center;
-  flex-wrap: nowrap;
-  flex-shrink: 0;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  max-width: 100%;
   margin-left: auto;
   gap: 6px;
 }
@@ -492,6 +507,7 @@ input[type="checkbox"] { width: 14px; height: 14px; cursor: pointer; accent-colo
   align-items: center;
   padding: 0 8px;
   font-size: 12px;
+  white-space: nowrap;
 }
 
 .job-failure-filter {
@@ -713,10 +729,13 @@ input[type="checkbox"] { width: 14px; height: 14px; cursor: pointer; accent-colo
   .forum-tags { gap: 4px; }
   .threads-filter-row { align-items: stretch; }
   .threads-filter-actions { width: 100%; margin-top: 0; margin-left: 0; justify-content: space-between; }
-  .jobs-toolbar-end { width: 100%; margin-left: 0; justify-content: space-between; }
+  .jobs-toolbar { align-items: stretch; flex-direction: column; }
+  .jobs-status-tabs { width: 100%; flex: 0 0 auto; }
+  .jobs-toolbar-end { width: 100%; margin-left: 0; justify-content: flex-start; }
   .jobs-toolbar { flex-wrap: wrap; }
-  .jobs-toolbar .segmented { margin-bottom: 4px; }
-  .jobs-toolbar .segmented a { padding: 4px 8px; font-size: 11px; }
+  .jobs-status-tabs { margin-bottom: 0; }
+  .jobs-status-tabs a { padding: 4px 8px; font-size: 11px; }
+  .job-failure-filter { margin-left: 0; padding-left: 0; border-left: 0; }
   .job-control-cell { min-width: 0; flex-direction: column; align-items: flex-start; }
   .job-page-size { margin-left: 0; }
   .forum-tag { padding: 3px 8px; font-size: 11px; }
