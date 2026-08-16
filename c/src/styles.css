@@ -456,7 +456,7 @@ input[type="checkbox"] { width: 14px; height: 14px; cursor: pointer; accent-colo
 .jobs-status-tabs {
   display: flex;
   flex-wrap: nowrap;
-  flex: 1 1 auto;
+  flex: 1 1 0;
   min-width: 0;
   max-width: 100%;
   margin-bottom: 0;
@@ -479,9 +479,9 @@ input[type="checkbox"] { width: 14px; height: 14px; cursor: pointer; accent-colo
 .jobs-toolbar-end {
   display: inline-flex;
   align-items: center;
-  flex: 0 1 auto;
-  flex-wrap: wrap;
-  max-width: 100%;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  max-width: none;
   margin-left: auto;
   gap: 6px;
 }
@@ -548,6 +548,8 @@ input[type="checkbox"] { width: 14px; height: 14px; cursor: pointer; accent-colo
   color: var(--text-secondary);
   border-left: var(--border-width, 1px) solid var(--border-light);
   min-height: 28px;
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .job-page-size span {
