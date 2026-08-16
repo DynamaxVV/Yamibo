@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
 from yamibo_mcp.config import AccountConfig
-from yamibo_mcp.daemon.daily_sign_in_scheduler import _has_daily_job, maybe_enqueue_daily_sign_ins
+from yamibo_mcp.daemon.daily_sign_in_scheduler import _has_daily_job, maybe_enqueue_daily_sign_ins, scheduled_sign_in_time
 from yamibo_mcp.daemon.handlers.daily_sign_in import handle_daily_sign_in
 from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.domain.enums import JobStatus, JobType
+from yamibo_mcp.maintenance.sign_in_cache import update_sign_in_cache_account
 
 
 def _settings(tmp_path: Path, *, account_pool=()):
@@ -48,12 +49,12 @@ def test_daily_scheduler_waits_until_one_and_enqueues_each_enabled_account(db, t
         ),
     )
     before_one = datetime.fromisoformat("2026-08-16T00:59:00+08:00")
-    after_one = datetime.fromisoformat("2026-08-16T01:00:00+08:00")
+    after_random_window = datetime.fromisoformat("2026-08-16T02:00:00+08:00")
     repo = JobsRepository(db)
 
     assert maybe_enqueue_daily_sign_ins(repo, settings, now=before_one) == 0
-    assert maybe_enqueue_daily_sign_ins(repo, settings, now=after_one) == 2
-    assert maybe_enqueue_daily_sign_ins(repo, settings, now=after_one) == 0
+    assert maybe_enqueue_daily_sign_ins(repo, settings, now=after_random_window) == 2
+    assert maybe_enqueue_daily_sign_ins(repo, settings, now=after_random_window) == 0
 
     rows = db.execute(
         "SELECT job_type, tid, payload_json, status FROM jobs WHERE job_type = ? ORDER BY job_id",
@@ -63,9 +64,99 @@ def test_daily_scheduler_waits_until_one_and_enqueues_each_enabled_account(db, t
     assert {row["tid"] for row in rows} == {20260816}
     assert {row["status"] for row in rows} == {JobStatus.QUEUED.value}
     assert {row["payload_json"] for row in rows} == {
-        '{"account_id": "one", "local_day": "2026-08-16"}',
-        '{"account_id": "two", "local_day": "2026-08-16"}',
+        '{"account_id": "one", "local_day": "2026-08-16", "scheduled_at": "' + scheduled_sign_in_time(local_day="2026-08-16", account_id="one").isoformat() + '"}',
+        '{"account_id": "two", "local_day": "2026-08-16", "scheduled_at": "' + scheduled_sign_in_time(local_day="2026-08-16", account_id="two").isoformat() + '"}',
     }
+
+
+def test_daily_scheduler_waits_for_each_account_randomized_minute(db, tmp_path):
+    settings = _settings(tmp_path, account_pool=(_account("one", tmp_path / "one.cookie"),))
+    scheduled_at = scheduled_sign_in_time(local_day="2026-08-16", account_id="one")
+    repo = JobsRepository(db)
+
+    before = scheduled_at - timedelta(seconds=1)
+    assert maybe_enqueue_daily_sign_ins(repo, settings, now=before) == 0
+    assert maybe_enqueue_daily_sign_ins(repo, settings, now=scheduled_at) == 1
+
+
+def test_daily_scheduler_enqueues_one_startup_status_check_per_account(db, tmp_path):
+    settings = _settings(
+        tmp_path,
+        account_pool=(_account("one", tmp_path / "one.cookie"),),
+    )
+    repo = JobsRepository(db)
+
+    assert maybe_enqueue_daily_sign_ins(
+        repo,
+        settings,
+        now=datetime.fromisoformat("2026-08-16T00:30:00+08:00"),
+        startup_check=True,
+    ) == 1
+    assert maybe_enqueue_daily_sign_ins(
+        repo,
+        settings,
+        now=datetime.fromisoformat("2026-08-16T00:30:00+08:00"),
+        startup_check=True,
+    ) == 0
+    job = repo.list(limit=None, status=JobStatus.QUEUED.value)[0]
+    assert job.payload["check_only"] is True
+
+
+def test_daily_scheduler_skips_account_checked_by_startup_probe(db, tmp_path):
+    settings = _settings(tmp_path, account_pool=(_account("one", tmp_path / "one.cookie"),))
+    update_sign_in_cache_account(
+        settings,
+        "one",
+        {"today_status": "checked"},
+        fetched_at="2026-08-16T00:00:00+08:00",
+    )
+    repo = JobsRepository(db)
+
+    assert maybe_enqueue_daily_sign_ins(
+        repo,
+        settings,
+        now=datetime.fromisoformat("2026-08-16T02:00:00+08:00"),
+    ) == 0
+
+
+def test_daily_sign_in_handler_checks_status_without_clicking(monkeypatch, db, tmp_path):
+    repo = JobsRepository(db)
+    job = repo.create(
+        JobType.DAILY_SIGN_IN.value,
+        tid=20260816,
+        payload={"account_id": "two", "local_day": "2026-08-16", "check_only": True},
+    )
+    calls = []
+
+    class _Client:
+        def fetch_daily_checkin_page(self):
+            calls.append("check")
+            return SimpleNamespace(status_code=200, html='<a href="plugin.php?id=zqlj_sign">今日已打卡</a>')
+
+        def sign_daily_checkin(self, **kwargs):
+            calls.append("sign")
+            raise AssertionError("startup status check must not click sign-in")
+
+    class _Context:
+        def __enter__(self):
+            return SimpleNamespace(account_id="two"), _Client()
+
+        def __exit__(self, *args):
+            return None
+
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.daily_sign_in.borrow_yamibo_client",
+        lambda settings, **kwargs: _Context(),
+    )
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.daily_sign_in.select_random_proxy",
+        lambda settings: None,
+    )
+
+    handle_daily_sign_in(repo, job, "worker", 60, _settings(tmp_path))
+
+    assert calls == ["check"]
+    assert repo.get(job.job_id).artifacts["check_only"] is True
 
 
 def test_daily_scheduler_accepts_database_json_objects():

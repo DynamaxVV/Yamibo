@@ -6,7 +6,7 @@ from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.domain.models import Job
 from yamibo_mcp.maintenance.sign_in_cache import update_sign_in_cache_account
 from yamibo_mcp.yamibo.account_pool import borrow_yamibo_client
-from yamibo_mcp.yamibo.client import parse_daily_checkin_profile
+from yamibo_mcp.yamibo.client import daily_checkin_already_done, parse_daily_checkin_profile
 from yamibo_mcp.yamibo.proxy_pool import select_random_proxy
 
 LOG = logging.getLogger(__name__)
@@ -28,6 +28,26 @@ def handle_daily_sign_in(
         account_id=account_id,
         proxy_url=proxy_binding.proxy_url if proxy_binding else None,
     ) as (identity, client):
+        if bool(job.payload.get("check_only")):
+            page = client.fetch_daily_checkin_page()
+            profile = parse_daily_checkin_profile(page.html)
+            update_sign_in_cache_account(
+                settings,
+                identity.account_id,
+                profile or {"today_status": "checked" if daily_checkin_already_done(page.html) else "not_checked"},
+                refresh_timestamp=True,
+            )
+            repo.succeed(
+                job.job_id,
+                artifacts={
+                    "local_day": day,
+                    "account_id": identity.account_id,
+                    "check_only": True,
+                    "status_code": page.status_code,
+                },
+            )
+            LOG.info("Daily sign-in status checked for account_id=%s local_day=%s", identity.account_id, day)
+            return
         result = client.sign_daily_checkin()
         profile = parse_daily_checkin_profile(getattr(result, "html", ""))
         if profile is None:
