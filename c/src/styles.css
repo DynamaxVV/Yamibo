@@ -456,7 +456,7 @@ input[type="checkbox"] { width: 14px; height: 14px; cursor: pointer; accent-colo
 .jobs-status-tabs {
   display: flex;
   flex-wrap: wrap;
-  flex: 1 0 100%;
+  flex: 0 1 auto;
   min-width: 0;
   max-width: 100%;
   margin-bottom: 0;
@@ -513,6 +513,13 @@ input[type="checkbox"] { width: 14px; height: 14px; cursor: pointer; accent-colo
   padding: 0 8px;
   font-size: 12px;
   white-space: nowrap;
+}
+.toolbar-compact-btn .seg-count {
+  margin-left: 4px;
+  padding: 0;
+  background: none;
+  color: inherit;
+  font-size: 10px;
 }
 
 .job-failure-filter {

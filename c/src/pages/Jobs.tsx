@@ -477,12 +477,12 @@ export function Jobs() {
             <>
             <button className="btn-danger-outline toolbar-compact-btn" style={{ marginLeft: 8 }}
               onClick={() => setConfirmSelectedDelete(true)} disabled={pendingAction}>
-              {t('delete_selected')} ({selectedIds.size})
+              {t('delete_selected')} <span className="seg-count">{selectedIds.size}</span>
             </button>
             {canRetrySelected && (
               <button className="btn-subtle toolbar-compact-btn" style={{ marginLeft: 8 }}
                 onClick={() => void handleSelectedRetry()} disabled={pendingSelectedRetry || pendingAction}>
-                {pendingSelectedRetry ? t('running') : `${t('rerun')} (${selectedIds.size})`}
+                {pendingSelectedRetry ? t('running') : <>{t('rerun')} <span className="seg-count">{selectedIds.size}</span></>}
               </button>
             )}
             {canPauseSelected && (
@@ -511,7 +511,7 @@ export function Jobs() {
       {(() => {
         const idleTypes = [...new Set(idleJobs.map(j => j.job_type))]
         const todayInfo = backfillStatus
-          ? ` · ${t('backfill_pending_count')}: ${backfillStatus.pending_count} · ${t('backfill_today_count')}: ${backfillStatus.today_count}/${backfillStatus.daily_limit}`
+          ? ` · ${t('backfill_pending_count')}: ${backfillStatus.pending_count ?? '-'} · ${t('backfill_today_count')}: ${backfillStatus.today_count ?? '-'}/${backfillStatus.daily_limit ?? '-'}`
           : ''
         const names = idleTypes.length > 0 ? idleTypes.map(jt => t(`job_type_${jt}` as any) || jt).join(' · ') : ''
         return (
