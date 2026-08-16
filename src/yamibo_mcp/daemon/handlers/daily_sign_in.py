@@ -29,10 +29,17 @@ def handle_daily_sign_in(
         proxy_url=proxy_binding.proxy_url if proxy_binding else None,
     ) as (identity, client):
         result = client.sign_daily_checkin()
+        profile = parse_daily_checkin_profile(getattr(result, "html", ""))
+        if profile is None:
+            try:
+                profile = parse_daily_checkin_profile(client.fetch_daily_checkin_page().html)
+            except Exception:  # noqa: BLE001 - the sign-in itself already succeeded
+                LOG.warning("Failed to refresh sign-in profile after success for account_id=%s", identity.account_id, exc_info=True)
     update_sign_in_cache_account(
         settings,
         identity.account_id,
-        parse_daily_checkin_profile(getattr(result, "html", "")) or {"today_status": "checked"},
+        profile or {"today_status": "checked"},
+        refresh_timestamp=profile is not None,
     )
     repo.succeed(
         job.job_id,

@@ -114,13 +114,19 @@ def manual_sign_in(request: SignInRequest, settings=Depends(get_settings)):
             proxy_url=proxy_binding.proxy_url if proxy_binding else None,
         ) as (_, client):
             result = client.sign_daily_checkin()
+            profile = parse_daily_checkin_profile(result.html)
+            if profile is None:
+                try:
+                    profile = parse_daily_checkin_profile(client.fetch_daily_checkin_page().html)
+                except Exception:  # noqa: BLE001 - the sign-in itself already succeeded
+                    profile = None
     except Exception as exc:  # noqa: BLE001 - surface the manual operation failure to the console
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    profile = parse_daily_checkin_profile(result.html)
     update_sign_in_cache_account(
         settings,
         identity.account_id,
         profile or {"today_status": "checked"},
+        refresh_timestamp=profile is not None,
     )
     return {
         "ok": True,

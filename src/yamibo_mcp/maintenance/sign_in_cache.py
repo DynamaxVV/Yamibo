@@ -5,12 +5,14 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from yamibo_mcp.storage.atomic import atomic_write_text
 
 SIGN_IN_CACHE_REFRESH_SECONDS = 6 * 60 * 60
 SIGN_IN_CACHE_RELATIVE_PATH = Path("cache/sign_in_stats.json")
 _CACHE_LOCK = threading.Lock()
+_LOCAL_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
 
 def sign_in_cache_path(settings) -> Path:
@@ -42,6 +44,10 @@ def is_fresh(entry: dict[str, Any], *, now: datetime | None = None) -> bool:
     if fetched.tzinfo is None:
         fetched = fetched.replace(tzinfo=timezone.utc)
     current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    if fetched.astimezone(_LOCAL_TIMEZONE).date() != current.astimezone(_LOCAL_TIMEZONE).date():
+        return False
     return 0 <= (current - fetched).total_seconds() < SIGN_IN_CACHE_REFRESH_SECONDS
 
 
@@ -63,13 +69,17 @@ def update_sign_in_cache_account(
     profile: dict[str, Any],
     *,
     fetched_at: str | None = None,
+    refresh_timestamp: bool = True,
 ) -> None:
     accounts = read_sign_in_cache(settings)
     previous = accounts.get(account_id, {})
     data = previous.get("data") if isinstance(previous.get("data"), dict) else {}
     data = {**data, **profile}
+    timestamp = fetched_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
+    if not refresh_timestamp:
+        timestamp = str(previous.get("fetched_at") or "1970-01-01T00:00:00+00:00")
     accounts[account_id] = {
-        "fetched_at": fetched_at or datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "fetched_at": timestamp,
         "data": data,
     }
     write_sign_in_cache(settings, accounts)
