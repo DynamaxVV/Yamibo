@@ -255,14 +255,26 @@ def resume_remote_access(conn: DatabaseConnection = Depends(get_conn)):
 def batch_delete_jobs(body: dict, conn: DatabaseConnection = Depends(get_conn)):
     _clear_jobs_cache()
     status_filter = body.get("status")
+    failure_kind_filter = body.get("failure_kind")
     if not status_filter:
         raise HTTPException(status_code=400, detail="status required")
     if status_filter == "running":
         raise HTTPException(status_code=400, detail="Cannot batch delete running jobs")
-    job_ids = JobsRepository(conn).list_ids_by_status(status_filter)
+    repo = JobsRepository(conn)
+    if failure_kind_filter:
+        if status_filter != JobStatus.FAILED.value:
+            raise HTTPException(status_code=400, detail="failure_kind requires failed status")
+        all_failed_jobs = repo.list(limit=None, status=JobStatus.FAILED.value)
+        job_ids = [
+            job.job_id
+            for job in all_failed_jobs
+            if (job_failure_kind(job, artifacts=job.artifacts if isinstance(job.artifacts, dict) else {}) or "other") == failure_kind_filter
+        ]
+    else:
+        job_ids = repo.list_ids_by_status(status_filter)
     if not job_ids:
         return {"ok": True, "deleted": 0}
-    JobsRepository(conn).delete_jobs(job_ids)
+    repo.delete_jobs(job_ids)
     return {"ok": True, "deleted": len(job_ids)}
 
 

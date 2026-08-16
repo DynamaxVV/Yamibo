@@ -7,7 +7,7 @@ import { useI18n } from '../context/I18nContext'
 import { formatDateTime } from '../utils/time'
 import { formatJobFailureKind, getJobFailureKind, type JobFailureKind } from '../utils/jobMessages'
 
-const STATUSES = [null, 'queued', 'running', 'paused', 'succeeded', 'partial', 'failed', 'interrupted', 'superseded'] as const
+const STATUSES = [null, 'queued', 'running', 'paused', 'succeeded', 'partial', 'failed', 'interrupted'] as const
 const FAILURE_KINDS: Array<JobFailureKind | null> = [null, 'forum_closed', 'thread_deleted', 'thread_permission', 'thread_missing', 'login_required', 'maintenance', 'remote_http_404', 'remote_http_error', 'remote_timeout', 'remote_connection', 'remote_blocked', 'remote_fetch', 'unexpected_page', 'empty_content', 'local_missing', 'validation', 'cancelled', 'other']
 const PAGE_SIZE_OPTIONS = [25, 50, 100] as const
 const STORAGE_KEY = 'yamibo_jobs_status'
@@ -320,25 +320,18 @@ export function Jobs() {
     if (!confirmBatchDelete) return
     setPendingAction(true)
     try {
-      // 当选中失败类型筛选时，只删除当前筛选类型的失败任务
       let deletedCount = 0
       if (confirmBatchDelete === 'failed' && failureKind) {
-        const ids = jobs.map(j => j.job_id)
-        if (ids.length > 0) {
-          const result = await api.batchDeleteJobIds(ids)
-          deletedCount = result.deleted
-        }
+        const result = await api.batchDeleteJobs(confirmBatchDelete, failureKind)
+        deletedCount = result.deleted
       } else {
         const result = await api.batchDeleteJobs(confirmBatchDelete)
         deletedCount = result.deleted
       }
-      if (deletedCount > 0) {
-        setJobs(prev => prev.filter(job => job.status !== confirmBatchDelete))
-        jobsRef.current = jobsRef.current.filter(job => job.status !== confirmBatchDelete)
-      }
       setConfirmBatchDelete(null)
       setDeleteError(null)
       refreshCounts()
+      if (deletedCount > 0) await refreshJobs(false)
     } catch (e: any) {
       setDeleteError(e.message || String(e))
     } finally {
@@ -685,8 +678,8 @@ export function Jobs() {
             <p style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.6, margin: '0 0 16px' }}>
               {confirmBatchDelete === 'failed' && failureKind
                 ? (lang === 'en'
-                  ? `Are you sure you want to delete all ${jobs.length} failed jobs of type "${formatJobFailureKind(failureKind, lang)}"? This action cannot be undone.`
-                  : `确定删除当前类型 (${failureKind ? formatJobFailureKind(failureKind, lang) : ''}) 的全部 ${jobs.length} 条失败任务？此操作不可撤销。`)
+                  ? `Are you sure you want to delete all ${totalCount} failed jobs of type "${formatJobFailureKind(failureKind, lang)}"? This action cannot be undone.`
+                  : `确定删除当前类型 (${failureKind ? formatJobFailureKind(failureKind, lang) : ''}) 的全部 ${totalCount} 条失败任务？此操作不可撤销。`)
                 : t(`batch_delete_confirm_${confirmBatchDelete}`, { n: String(statusCounts[confirmBatchDelete] ?? jobs.length) })}
             </p>
             {deleteError && <p style={{ fontSize: 12, color: 'var(--status-error)', margin: '0 0 12px' }}>{deleteError}</p>}
