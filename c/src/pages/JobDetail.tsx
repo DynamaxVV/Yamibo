@@ -51,6 +51,9 @@ export function JobDetail() {
   if (error) return <div className="panel" style={{ color: 'var(--status-error)' }}>{error}</div>
   if (!job) return <div className="panel" style={{ color: 'var(--text-tertiary)' }}>{t('loading')}</div>
 
+  const isImageBackfill = job.job_type === 'image_backfill'
+  const remoteImageCount = job.artifacts?.remote_image_count
+  const applyNeedFetchCount = job.artifacts?.apply_need_fetch_count
   const rows = [
     [t('description'), <span style={{ fontSize: 14, fontWeight: 500 }}>{desc(job)}</span>],
     ['ID', <span className="mono" style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{job.job_id}</span>],
@@ -69,6 +72,10 @@ export function JobDetail() {
       const kind = job.failure_kind || getJobFailureKind(job)
       return kind ? <span className="badge badge-muted">{formatJobFailureKind(kind, lang)}</span> : '-'
     })()],
+    ...(isImageBackfill ? [
+      [lang === 'en' ? 'Total remote images' : '图片总数', remoteImageCount == null ? '-' : String(remoteImageCount)],
+      [lang === 'en' ? 'Images to backfill' : '待补图片', applyNeedFetchCount == null ? '-' : String(applyNeedFetchCount)],
+    ] : []),
     [t('progress'), `${job.progress_current}/${job.progress_total ?? '?'}`],
     [t('worker'), job.worker_id || '-'],
     [t('error'), (() => {

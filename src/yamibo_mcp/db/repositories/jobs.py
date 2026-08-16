@@ -304,6 +304,16 @@ class JobsRepository:
             row = self.conn.execute("SELECT COUNT(*) AS n FROM jobs").fetchone()
         return int(row["n"] or 0)
 
+    def count_by_job_type_status(self, *, job_type: str, statuses: tuple[str, ...]) -> int:
+        if not statuses:
+            return 0
+        placeholders = ",".join("?" for _ in statuses)
+        row = self.conn.execute(
+            f"SELECT COUNT(*) AS n FROM jobs WHERE job_type = ? AND status IN ({placeholders})",
+            (job_type, *statuses),
+        ).fetchone()
+        return int(row["n"] or 0)
+
     def find_live_job_for_thread(self, *, job_type: str, tid: int) -> Job | None:
         row = self.conn.execute(
             f"""

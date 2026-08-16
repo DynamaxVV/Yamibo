@@ -517,7 +517,9 @@ export function Jobs() {
       {jobActionError && <div className="panel" style={{ marginTop: 12, color: 'var(--status-error)' }}>{jobActionError}</div>}
       {(() => {
         const idleTypes = [...new Set(idleJobs.map(j => j.job_type))]
-        const todayInfo = backfillStatus ? ` · ${t('backfill_today_count')}: ${backfillStatus.today_count}/${backfillStatus.daily_limit}` : ''
+        const todayInfo = backfillStatus
+          ? ` · ${t('backfill_pending_count')}: ${backfillStatus.pending_count} · ${t('backfill_today_count')}: ${backfillStatus.today_count}/${backfillStatus.daily_limit}`
+          : ''
         const names = idleTypes.length > 0 ? idleTypes.map(jt => t(`job_type_${jt}` as any) || jt).join(' · ') : ''
         return (
           <div style={{ marginTop: 4, fontSize: 11, color: 'var(--text-tertiary)' }}>

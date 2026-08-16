@@ -10,7 +10,7 @@ from yamibo_mcp.db.connection import DatabaseConnection
 from yamibo_mcp.db.repositories.job_events import JobEventsRepository
 from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.db.repositories.system_state import SystemStateRepository
-from yamibo_mcp.domain.enums import JobStatus
+from yamibo_mcp.domain.enums import JobStatus, JobType
 from yamibo_mcp.web_fastapi.converters import job_rows_to_dicts, job_to_dict, event_to_dict, job_failure_kind
 from yamibo_mcp.web_fastapi.deps import get_conn, get_settings
 from yamibo_mcp.web_fastapi.helpers import TTLCache
@@ -111,12 +111,25 @@ _BACKFILL_STATE_KEY = "image_backfill_auto_scheduler"
 
 @router.get("/jobs/backfill-status")
 def backfill_status(conn: DatabaseConnection = Depends(get_conn)):
+    cached = _jobs_cache.get("backfill-status")
+    if cached is not None:
+        return cached
     settings = load_settings()
     state = SystemStateRepository(conn).get_json(_BACKFILL_STATE_KEY) or {}
     today = datetime.now(timezone.utc).date().isoformat()
     state_day = str(state.get("day") or "")
     count = int(state.get("count") or 0) if state_day == today else 0
-    return {
+    pending_count = JobsRepository(conn).count_by_job_type_status(
+        job_type=JobType.IMAGE_BACKFILL.value,
+        statuses=(
+            JobStatus.QUEUED.value,
+            JobStatus.RUNNING.value,
+            JobStatus.RETRYING.value,
+            JobStatus.PAUSED.value,
+            JobStatus.CANCEL_REQUESTED.value,
+        ),
+    )
+    result = {
         "enabled": settings.image_backfill_enabled,
         "dry_run": settings.image_backfill_dry_run,
         "forum_id": settings.image_backfill_forum_id,
@@ -124,9 +137,12 @@ def backfill_status(conn: DatabaseConnection = Depends(get_conn)):
         "interval_seconds": settings.image_backfill_auto_interval_seconds,
         "max_pages": settings.image_backfill_max_pages,
         "today_count": count,
+        "pending_count": pending_count,
         "last_enqueued_at": state.get("last_enqueued_at"),
         "last_reason": state.get("last_reason"),
     }
+    _jobs_cache.set("backfill-status", result)
+    return result
 
 
 @router.get("/jobs/{job_id}")

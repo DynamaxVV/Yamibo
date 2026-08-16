@@ -590,6 +590,7 @@ export interface BackfillStatus {
   interval_seconds: number
   max_pages: number
   today_count: number
+  pending_count: number
   last_enqueued_at: string | null
   last_reason: string | null
 }
