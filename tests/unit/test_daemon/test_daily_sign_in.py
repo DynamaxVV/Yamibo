@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from yamibo_mcp.config import AccountConfig
-from yamibo_mcp.daemon.daily_sign_in_scheduler import maybe_enqueue_daily_sign_ins
+from yamibo_mcp.daemon.daily_sign_in_scheduler import _has_daily_job, maybe_enqueue_daily_sign_ins
 from yamibo_mcp.daemon.handlers.daily_sign_in import handle_daily_sign_in
 from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.domain.enums import JobStatus, JobType
@@ -66,6 +66,19 @@ def test_daily_scheduler_waits_until_one_and_enqueues_each_enabled_account(db, t
         '{"account_id": "one", "local_day": "2026-08-16"}',
         '{"account_id": "two", "local_day": "2026-08-16"}',
     }
+
+
+def test_daily_scheduler_accepts_database_json_objects():
+    class _Conn:
+        def execute(self, *_args):
+            return SimpleNamespace(fetchall=lambda: [{"payload_json": {"account_id": "one", "local_day": "2026-08-16"}}])
+
+    assert _has_daily_job(
+        SimpleNamespace(conn=_Conn()),
+        day_key=20260816,
+        account_id="one",
+        local_day="2026-08-16",
+    ) is True
 
 
 def test_daily_sign_in_handler_borrows_the_job_account(monkeypatch, db, tmp_path):

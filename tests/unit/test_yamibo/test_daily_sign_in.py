@@ -95,6 +95,7 @@ def test_parse_daily_checkin_profile():
         "consecutive_days": 2,
         "total_days": 529,
         "level": "百合渡劫",
+        "today_status": "not_checked",
     }
 
 

@@ -179,6 +179,7 @@ def parse_daily_checkin_profile(html: str) -> dict[str, str | int] | None:
         "consecutive_days": days(consecutive),
         "total_days": days(total),
         "level": level,
+        "today_status": "checked" if daily_checkin_already_done(html) else "not_checked",
     }
 
 

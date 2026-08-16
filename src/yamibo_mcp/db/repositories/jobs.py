@@ -392,6 +392,7 @@ class JobsRepository:
             WHERE status IN (?, ?, ?)
               AND (lease_until IS NULL OR lease_until < ?)
             ORDER BY
+              CASE WHEN job_type = 'daily_sign_in' THEN -1 ELSE 0 END ASC,
               CASE
                 WHEN status = ? THEN 0
                 WHEN status = ? THEN 1

@@ -252,12 +252,13 @@ th, td {
   border-bottom: var(--border-width, 1px) solid var(--border-light, #e8ecef0); vertical-align: top;
 }
 th {
-  font-weight: 700; font-size: 11px; color: var(--text-primary, #1f2328);
+  font-weight: 700; font-size: 11px; color: var(--text-header, var(--text-primary, #1f2328));
   text-transform: uppercase; letter-spacing: 0.45px; text-align: center;
   background: linear-gradient(180deg, color-mix(in srgb, var(--bg-header, #f0f2f5) 88%, white), var(--bg-header, #f0f2f5));
   border-bottom: 1px solid color-mix(in srgb, var(--border-light, #e8ecf0) 78%, var(--text-secondary, #656d76));
   position: sticky; top: 0; z-index: 1;
 }
+.sign-in-inline-action { white-space: nowrap; }
 tr:hover td { background: var(--bg-muted, #f6f8fa); }
 td.mono { font-family: var(--font-mono, monospace); font-size: 12px; }
 td.nowrap { white-space: nowrap; }

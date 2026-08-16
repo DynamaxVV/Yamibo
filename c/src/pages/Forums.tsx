@@ -1,26 +1,27 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { api, type Forum, type SignInStats } from '../api/client'
+import { api, type Forum, type SignInAccountStats, type SignInStats } from '../api/client'
 import { Badge, ContentBadge } from '../components/Badge'
 import { useI18n } from '../context/I18nContext'
 import { formatBytes } from '../utils/bytes'
 
-function SignInStatus({ error }: { error: string | null }) {
+function SignInStatus({ status, error, onSignIn, signing }: { status: SignInAccountStats['today_status']; error: string | null; onSignIn?: () => void; signing?: boolean }) {
   const { t } = useI18n()
-  return <Badge status={error ? 'error' : 'ok'}>{error ? t('sign_in_unavailable') : t('sign_in_available')}</Badge>
+  if (error || status === 'unavailable') return <Badge status="error">{t('sign_in_unavailable')}</Badge>
+  if (status === 'checked') return <Badge status="ok">{t('sign_in_checked')}</Badge>
+  return <button className="btn-subtle sign-in-inline-action" onClick={onSignIn} disabled={signing}>{signing ? t('running') : t('sign_in_now')}</button>
 }
 
 export function Forums() {
   const { t, lang } = useI18n()
   const [forums, setForums] = useState<Forum[]>([])
   const [signInStats, setSignInStats] = useState<SignInStats | null>(null)
+  const [signingAccount, setSigningAccount] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
   useEffect(() => {
-    void Promise.all([api.forums(), api.signInStats()]).then(([forumRows, stats]) => {
-      setForums(forumRows)
-      setSignInStats(stats)
-    })
+    void api.forums().then(setForums).catch((error: Error) => setMessage(error.message))
+    void api.signInStats().then(setSignInStats).catch(() => setSignInStats(null))
   }, [])
 
   const refreshSizeCache = async () => {
@@ -34,6 +35,20 @@ export function Forums() {
       setMessage(e.message || String(e))
     } finally {
       setRefreshing(false)
+    }
+  }
+
+  const signIn = async (accountId: string) => {
+    setSigningAccount(accountId)
+    setMessage(null)
+    try {
+      await api.signIn(accountId)
+      setSignInStats(await api.signInStats())
+      setMessage(t('sign_in_completed'))
+    } catch (e: any) {
+      setMessage(e.message || String(e))
+    } finally {
+      setSigningAccount(null)
     }
   }
 
@@ -51,7 +66,7 @@ export function Forums() {
       {signInStats && <>
         <h2>{t('sign_in_stats')}</h2>
         <div className="table-wrap"><table className="sign-in-table">
-          <thead><tr><th>{t('account')}</th><th>{t('sign_in_recent_checkin')}</th><th>{t('sign_in_month_days')}</th><th>{t('sign_in_consecutive_days')}</th><th>{t('sign_in_total_days')}</th><th>{t('sign_in_level')}</th><th>{t('sign_in_source_status')}</th></tr></thead>
+          <thead><tr><th>{t('account')}</th><th>{t('sign_in_recent_checkin')}</th><th>{t('sign_in_month_days')}</th><th>{t('sign_in_consecutive_days')}</th><th>{t('sign_in_total_days')}</th><th>{t('sign_in_level')}</th><th>{t('today_status')}</th></tr></thead>
           <tbody>
             {signInStats.accounts.map(account => <tr key={account.account_id}>
               <td className="mono sign-in-account">{account.account_id}</td>
@@ -60,7 +75,7 @@ export function Forums() {
               <td>{account.consecutive_days ?? '-'}</td>
               <td>{account.total_days ?? '-'}</td>
               <td>{account.level || '-'}</td>
-              <td><SignInStatus error={account.error} /></td>
+              <td><SignInStatus status={account.today_status} error={account.error} onSignIn={() => void signIn(account.account_id)} signing={signingAccount === account.account_id || signingAccount !== null} /></td>
             </tr>)}
           </tbody>
         </table></div>

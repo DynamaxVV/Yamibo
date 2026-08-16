@@ -230,6 +230,7 @@ export interface SignInAccountStats {
   consecutive_days: number | null
   total_days: number | null
   level: string | null
+  today_status: 'checked' | 'not_checked' | 'unavailable'
   error: string | null
 }
 
@@ -725,6 +726,7 @@ export const api = {
   similarSeries: (seriesId: number) => fetchJson<SeriesSummary[]>(`/series/${seriesId}/similar`),
   forums: () => fetchJson<Forum[]>('/forums'),
   signInStats: () => fetchJson<SignInStats>('/forums/sign-in-stats'),
+  signIn: (accountId: string) => postJson<{ ok: boolean; account_id: string; today_status: string }>('/forums/sign-in', { account_id: accountId }),
   refreshForumSizeCache: () => postJson<{ ok: boolean; updated_at: string | null; forum_count: number }>('/forums/refresh-size-cache', {}),
   fonts: () => fetchJson<FontAsset[]>('/fonts'),
   exports: () => fetchJson<ThreadSummary[]>('/exports'),

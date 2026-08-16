@@ -2,21 +2,20 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from urllib.parse import quote
-from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from yamibo_mcp.db.connection import DatabaseConnection
 from yamibo_mcp.db.repositories.forums import ForumsRepository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
 from yamibo_mcp.maintenance.forum_sizes import read_forum_size_cache, refresh_forum_size_cache
 from yamibo_mcp.web_fastapi.deps import get_conn, get_settings
+from yamibo_mcp.web_fastapi.models.requests import SignInRequest
 from yamibo_mcp.yamibo.account_pool import borrow_yamibo_client, get_account_identities
 from yamibo_mcp.yamibo.client import parse_daily_checkin_profile
 from yamibo_mcp.yamibo.proxy_pool import select_random_proxy
 
 router = APIRouter(prefix="/api", tags=["forums"])
-LOCAL_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
 
 def _daily_sign_in_stats(settings) -> dict[str, object]:
@@ -30,10 +29,11 @@ def _daily_sign_in_stats(settings) -> dict[str, object]:
             "consecutive_days": None,
             "total_days": None,
             "level": None,
+            "today_status": "unavailable",
             "error": None,
         }
-        proxy_binding = select_random_proxy(settings)
         try:
+            proxy_binding = select_random_proxy(settings)
             with borrow_yamibo_client(
                 settings,
                 account_id=identity.account_id,
@@ -80,9 +80,31 @@ def list_forums(conn: DatabaseConnection = Depends(get_conn), settings=Depends(g
 
 
 @router.get("/forums/sign-in-stats")
-def sign_in_stats(conn: DatabaseConnection = Depends(get_conn), settings=Depends(get_settings)):
-    del conn
+def sign_in_stats(settings=Depends(get_settings)):
     return _daily_sign_in_stats(settings)
+
+
+@router.post("/forums/sign-in")
+def manual_sign_in(request: SignInRequest, settings=Depends(get_settings)):
+    identity = next((item for item in get_account_identities(settings) if item.account_id == request.account_id), None)
+    if identity is None:
+        raise HTTPException(status_code=404, detail="account not found")
+    try:
+        proxy_binding = select_random_proxy(settings)
+        with borrow_yamibo_client(
+            settings,
+            account_id=identity.account_id,
+            proxy_url=proxy_binding.proxy_url if proxy_binding else None,
+        ) as (_, client):
+            result = client.sign_daily_checkin()
+    except Exception as exc:  # noqa: BLE001 - surface the manual operation failure to the console
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    profile = parse_daily_checkin_profile(result.html)
+    return {
+        "ok": True,
+        "account_id": identity.account_id,
+        "today_status": profile.get("today_status") if profile else "checked",
+    }
 
 
 @router.post("/forums/refresh-size-cache")

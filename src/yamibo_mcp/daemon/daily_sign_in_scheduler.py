@@ -66,8 +66,9 @@ def _has_daily_job(repo: JobsRepository, *, day_key: int, account_id: str, local
             JobStatus.CANCELLED.value,
         ),
     ).fetchall()
-    return any(
-        (payload := json.loads(row["payload_json"] or "{}")).get("account_id") == account_id
-        and payload.get("local_day") == local_day
-        for row in rows
-    )
+    for row in rows:
+        raw_payload = row["payload_json"] or {}
+        payload = raw_payload if isinstance(raw_payload, dict) else json.loads(raw_payload)
+        if payload.get("account_id") == account_id and payload.get("local_day") == local_day:
+            return True
+    return False
