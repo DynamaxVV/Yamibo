@@ -9,6 +9,12 @@ from yamibo_mcp.db.connection import DatabaseConnection
 from yamibo_mcp.db.repositories.forums import ForumsRepository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
 from yamibo_mcp.maintenance.forum_sizes import read_forum_size_cache, refresh_forum_size_cache
+from yamibo_mcp.maintenance.sign_in_cache import (
+    SIGN_IN_CACHE_REFRESH_SECONDS,
+    is_fresh,
+    read_sign_in_cache,
+    update_sign_in_cache_account,
+)
 from yamibo_mcp.web_fastapi.deps import get_conn, get_settings
 from yamibo_mcp.web_fastapi.models.requests import SignInRequest
 from yamibo_mcp.yamibo.account_pool import borrow_yamibo_client, get_account_identities
@@ -20,6 +26,7 @@ router = APIRouter(prefix="/api", tags=["forums"])
 
 def _daily_sign_in_stats(settings) -> dict[str, object]:
     identities = get_account_identities(settings)
+    cached_accounts = read_sign_in_cache(settings)
     accounts: list[dict[str, object]] = []
     for identity in identities:
         account: dict[str, object] = {
@@ -32,6 +39,13 @@ def _daily_sign_in_stats(settings) -> dict[str, object]:
             "today_status": "unavailable",
             "error": None,
         }
+        cached = cached_accounts.get(identity.account_id)
+        cached_data = cached.get("data") if isinstance(cached, dict) else None
+        if isinstance(cached, dict) and isinstance(cached_data, dict) and is_fresh(cached):
+            account.update(cached_data)
+            account["cache_status"] = "cached"
+            accounts.append(account)
+            continue
         try:
             proxy_binding = select_random_proxy(settings)
             with borrow_yamibo_client(
@@ -44,12 +58,15 @@ def _daily_sign_in_stats(settings) -> dict[str, object]:
             if profile is None:
                 raise ValueError("sign-in summary not found")
             account.update(profile)
+            account["cache_status"] = "fresh"
+            update_sign_in_cache_account(settings, identity.account_id, profile)
         except Exception as exc:  # noqa: BLE001 - one unavailable account must not hide other accounts
             account["error"] = str(exc)
         accounts.append(account)
 
     return {
         "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "cache_refresh_seconds": SIGN_IN_CACHE_REFRESH_SECONDS,
         "accounts": accounts,
     }
 
@@ -100,6 +117,11 @@ def manual_sign_in(request: SignInRequest, settings=Depends(get_settings)):
     except Exception as exc:  # noqa: BLE001 - surface the manual operation failure to the console
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     profile = parse_daily_checkin_profile(result.html)
+    update_sign_in_cache_account(
+        settings,
+        identity.account_id,
+        profile or {"today_status": "checked"},
+    )
     return {
         "ok": True,
         "account_id": identity.account_id,

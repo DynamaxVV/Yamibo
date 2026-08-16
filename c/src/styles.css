@@ -259,6 +259,7 @@ th {
   position: sticky; top: 0; z-index: 1;
 }
 .sign-in-inline-action { white-space: nowrap; }
+.sign-in-stats-error { color: var(--status-error); margin-bottom: 8px; }
 tr:hover td { background: var(--bg-muted, #f6f8fa); }
 td.mono { font-family: var(--font-mono, monospace); font-size: 12px; }
 td.nowrap { white-space: nowrap; }

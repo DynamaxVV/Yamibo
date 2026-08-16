@@ -16,12 +16,21 @@ export function Forums() {
   const { t, lang } = useI18n()
   const [forums, setForums] = useState<Forum[]>([])
   const [signInStats, setSignInStats] = useState<SignInStats | null>(null)
+  const [signInStatsError, setSignInStatsError] = useState<string | null>(null)
   const [signingAccount, setSigningAccount] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
   useEffect(() => {
     void api.forums().then(setForums).catch((error: Error) => setMessage(error.message))
-    void api.signInStats().then(setSignInStats).catch(() => setSignInStats(null))
+    void api.signInStats()
+      .then(data => {
+        setSignInStats(data)
+        setSignInStatsError(null)
+      })
+      .catch((error: Error) => {
+        setSignInStats(null)
+        setSignInStatsError(error.message)
+      })
   }, [])
 
   const refreshSizeCache = async () => {
@@ -55,7 +64,7 @@ export function Forums() {
   return (
     <>
       <div className="threads-filter-row" style={{ marginBottom: 12 }}>
-        <h2 style={{ margin: 0 }}>{t('forums')}</h2>
+        <h2 style={{ margin: 0 }}>{t('forum_stats')}</h2>
         <div className="threads-filter-actions">
           <button className="btn-subtle" onClick={() => void refreshSizeCache()} disabled={refreshing}>
             {refreshing ? t('running') : t('forum_size_refresh')}
@@ -63,12 +72,13 @@ export function Forums() {
           {message && <span className="threads-inline-message">{message}</span>}
         </div>
       </div>
-      {signInStats && <>
+      <>
         <h2>{t('sign_in_stats')}</h2>
+        {signInStatsError && <div className="threads-inline-message sign-in-stats-error">{t('sign_in_unavailable')}</div>}
         <div className="table-wrap"><table className="sign-in-table">
           <thead><tr><th>{t('account')}</th><th>{t('sign_in_recent_checkin')}</th><th>{t('sign_in_month_days')}</th><th>{t('sign_in_consecutive_days')}</th><th>{t('sign_in_total_days')}</th><th>{t('sign_in_level')}</th><th>{t('today_status')}</th></tr></thead>
           <tbody>
-            {signInStats.accounts.map(account => <tr key={account.account_id}>
+            {(signInStats?.accounts ?? []).map(account => <tr key={account.account_id}>
               <td className="mono sign-in-account">{account.account_id}</td>
               <td className="nowrap">{account.recent_checkin || '-'}</td>
               <td>{account.month_days ?? '-'}</td>
@@ -77,9 +87,10 @@ export function Forums() {
               <td>{account.level || '-'}</td>
               <td><SignInStatus status={account.today_status} error={account.error} onSignIn={() => void signIn(account.account_id)} signing={signingAccount === account.account_id || signingAccount !== null} /></td>
             </tr>)}
+            {!signInStats && <tr><td colSpan={7}>{signInStatsError ? t('sign_in_unavailable') : t('loading')}</td></tr>}
           </tbody>
         </table></div>
-      </>}
+      </>
       <div className="table-wrap"><table>
         <thead><tr><th>{t('id')}</th><th>{t('name')}</th><th>{t('content_kind')}</th><th>{t('thread_count')}</th><th>{t('forum_data_size')}</th><th>{t('enabled')}</th><th>{t('action')}</th></tr></thead>
         <tbody>

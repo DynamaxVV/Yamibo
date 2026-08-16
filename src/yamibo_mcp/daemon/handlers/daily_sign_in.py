@@ -4,7 +4,9 @@ import logging
 
 from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.domain.models import Job
+from yamibo_mcp.maintenance.sign_in_cache import update_sign_in_cache_account
 from yamibo_mcp.yamibo.account_pool import borrow_yamibo_client
+from yamibo_mcp.yamibo.client import parse_daily_checkin_profile
 from yamibo_mcp.yamibo.proxy_pool import select_random_proxy
 
 LOG = logging.getLogger(__name__)
@@ -27,6 +29,11 @@ def handle_daily_sign_in(
         proxy_url=proxy_binding.proxy_url if proxy_binding else None,
     ) as (identity, client):
         result = client.sign_daily_checkin()
+    update_sign_in_cache_account(
+        settings,
+        identity.account_id,
+        parse_daily_checkin_profile(getattr(result, "html", "")) or {"today_status": "checked"},
+    )
     repo.succeed(
         job.job_id,
         artifacts={
