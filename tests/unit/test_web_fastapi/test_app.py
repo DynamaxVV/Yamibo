@@ -91,16 +91,85 @@ def test_settings_get_returns_config(client, test_settings):
     assert "values" in data
     assert "sources" in data
     assert "config_path" in data
+    assert "table_layouts" in data["values"]
+
+
+def test_settings_exposes_hermes_connection_fields_without_secret(client):
+    response = client.get("/api/settings")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["values"]["hermes_host"] == "127.0.0.1"
+    assert body["values"]["hermes_port"] == 8642
+    assert body["values"]["hermes_model"] == "hermes-agent"
+    assert body["values"]["hermes_api_key"] is None
+    assert body["stored"]["hermes_api_key"] is None
+    assert body["values"]["chat_streaming_enabled"] is True
+
+
+def test_settings_update_persists_hermes_connection_fields(client, test_settings):
+    import json
+
+    response = client.post(
+        "/api/settings",
+        json={"values": {"hermes_host": "127.0.0.1", "hermes_port": 8643, "hermes_model": "hermes-test", "chat_streaming_enabled": False}},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["restart_targets"] == ["web"]
+    assert body["effect_mode_summary"] == "restart_web"
+    saved = json.loads(test_settings.config_path.read_text())
+    assert saved["chat"] == {"hermes_host": "127.0.0.1", "hermes_port": 8643, "hermes_model": "hermes-test"}
+    assert saved["ui"]["chat_streaming_enabled"] is False
+
+
+def test_settings_update_persists_table_layout(client, test_settings):
+    layouts = {
+        "threads": [{"key": "title", "visible": True, "width": 620}],
+        "jobs": [{"key": "description", "visible": True, "width": 520}],
+    }
+    resp = client.post("/api/settings", json={"values": {"table_layouts": layouts}})
+    assert resp.status_code == 200
+    saved = resp.json()["values"]["table_layouts"]
+    assert next(item for item in saved["threads"] if item["key"] == "title")["width"] == 620
+    assert next(item for item in saved["jobs"] if item["key"] == "description")["width"] == 520
+
+
+def test_settings_sensitive_values_are_redacted(client, test_settings, monkeypatch):
+    sentinel = "TEST_ONLY_SECRET_SENTINEL"
+    test_settings.config_path.write_text('{"llm": {"api_key": "' + sentinel + '"}, "chat": {"hermes_api_key": "' + sentinel + '"}}')
+    monkeypatch.setenv("YAMIBO_LLM_API_KEY", sentinel)
+    monkeypatch.setenv("YAMIBO_HERMES_API_KEY", sentinel)
+    response = client.get("/api/settings")
+    body = response.json()
+    assert sentinel not in str(body)
+    assert body["values"]["llm_api_key"] is None and body["stored"]["llm_api_key"] is None
+    assert body["configured"]["llm_api_key"] is True and body["configured"]["rag_api_key"] is True
+    assert body["configured"]["hermes_api_key"] is True
+    for name, value in body["values"].items():
+        if name.endswith("api_key") or name == "db_url":
+            assert value is None
+
+
+def test_settings_post_secret_does_not_echo(client, test_settings):
+    sentinel = "POST_ONLY_SECRET_SENTINEL"
+    response = client.post("/api/settings", json={"values": {"llm_api_key": sentinel}})
+    assert response.status_code == 200
+    assert sentinel not in str(response.json())
+    assert response.json()["values"]["llm_api_key"] is None
+    assert response.json()["configured"]["llm_api_key"] is True
 
 
 def test_settings_hermes_test_returns_probe_payload(client):
-    with patch(
-        "yamibo_mcp.web_fastapi.routers.settings.probe_hermes_chat_completions",
-        return_value={"connected": True, "endpoint": "http://127.0.0.1:8642/v1/chat/completions", "label": "ok", "status": 200, "stdout": "", "stderr": ""},
-    ):
+    from yamibo_mcp.web_fastapi.deps import get_chat_service
+    class Service:
+        def context(self, **kwargs): return {"ready": True, "hermes": {"connected": True}}
+    client.app.dependency_overrides[get_chat_service] = lambda: Service()
+    try:
         resp = client.post("/api/settings/hermes-test", json={})
+    finally:
+        client.app.dependency_overrides.pop(get_chat_service, None)
     assert resp.status_code == 200
-    assert resp.json()["connected"] is True
+    assert resp.json()["hermes"]["connected"] is True
 
 
 def test_thread_detail_not_found(client):
@@ -194,46 +263,13 @@ def test_logs_endpoint(client):
 
 
 def test_chat_context_returns_runtime_payload(client):
-    with patch(
-        "yamibo_mcp.web_fastapi.routers.chat.get_chat_context",
-        return_value={"transport": "hermes_http", "daemon_connected": True},
-    ):
-        resp = client.get("/api/chat/context")
+    resp = client.get("/api/chat/context")
     assert resp.status_code == 200
-    assert resp.json()["transport"] == "hermes_http"
+    assert resp.json()["transport"] == "hermes_runs"
 
 
-def test_chat_turn_executes_non_stream(client):
-    with patch(
-        "yamibo_mcp.web_fastapi.routers.chat.run_chat_turn",
-        return_value={"assistant_message": "done", "commands": [], "warnings": [], "transport": "hermes_http"},
-    ):
-        resp = client.post("/api/chat/turn", json={"message": "hello", "history": []})
-    assert resp.status_code == 200
-    assert resp.json()["assistant_message"] == "done"
-
-
-def test_chat_turn_streams_sse(client):
-    events = [{"type": "delta", "content": "hi"}, {"type": "done", "status": 200}]
-    with patch(
-        "yamibo_mcp.web_fastapi.routers.chat.iter_chat_turn_stream",
-        return_value=iter(events),
-    ):
-        with client.stream("POST", "/api/chat/turn", json={"message": "hello", "stream": True}) as resp:
-            body = b"".join(resp.iter_bytes())
-    assert resp.status_code == 200
-    assert b"data: [DONE]" in body
-    assert b"\"type\": \"delta\"" in body
-
-
-def test_chat_session_delete_calls_service(client):
-    with patch(
-        "yamibo_mcp.web_fastapi.routers.chat.delete_chat_session",
-        return_value={"ok": True, "deleted": 1},
-    ):
-        resp = client.delete("/api/chat/sessions/chat-1")
-    assert resp.status_code == 200
-    assert resp.json()["deleted"] == 1
+def test_chat_turn_removed(client):
+    assert client.post("/api/chat/turn", json={"message": "hello"}).status_code == 404
 
 
 def test_remote_forums_list(client):

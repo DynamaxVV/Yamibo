@@ -6,6 +6,7 @@ import { PaginationControls } from '../components/PaginationControls'
 import { useI18n } from '../context/I18nContext'
 import { formatDateTime } from '../utils/time'
 import { formatThreadListTitle } from '../utils/threadTitle'
+import { useTableLayout } from '../components/TableLayoutEditor'
 
 type SortKey = 'pub_time' | 'sync_time' | 'reply_count' | 'remote_last_reply_at'
 type SortDir = 'asc' | 'desc'
@@ -64,6 +65,8 @@ export function Threads() {
       return 25
     }
   })
+  const tableLayout = useTableLayout('threads')
+  const column = (key: string) => tableLayout.find(item => item.key === key)
   const [selectedTids, setSelectedTids] = useState<Set<number>>(new Set())
   const [confirmDeleteTids, setConfirmDeleteTids] = useState<number[] | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
@@ -287,16 +290,16 @@ export function Threads() {
         <thead>
           <tr>
             <th style={{ width: 32 }}><input type="checkbox" checked={allPagedSelected} onChange={toggleSelectAll} /></th>
-            <th style={{ width: 60 }}>{t('tid')}</th>
-            <th style={{ width: 480 }}>{t('title')}</th>
-            <th style={{ width: 80 }}>{t('forum')}</th>
-            <th style={{ width: 110 }} className="hide-mobile">{t('category')}</th>
-            <th style={{ width: 60 }} className="hide-mobile">{t('archive')}</th>
-            <SortHeader label={t('reply_count')} sortKey="reply_count" currentKey={sortKey} currentDir={sortDir} onSort={handleSort} width={55} />
-            <SortHeader label={t('pub_time')} sortKey="pub_time" currentKey={sortKey} currentDir={sortDir} onSort={handleSort} width={105} />
-            <SortHeader label={t('last_reply_time')} sortKey="remote_last_reply_at" currentKey={sortKey} currentDir={sortDir} onSort={handleSort} width={105} className="hide-mobile" />
-            <SortHeader label={t('sync_time')} sortKey="sync_time" currentKey={sortKey} currentDir={sortDir} onSort={handleSort} width={105} className="hide-mobile" />
-            <th style={{ width: 84 }}>{t('action')}</th>
+            {column('tid')?.visible && <th style={{ width: column('tid')?.width }}>{t('tid')}</th>}
+            {column('title')?.visible && <th style={{ width: column('title')?.width }}>{t('title')}</th>}
+            {column('forum')?.visible && <th style={{ width: column('forum')?.width }}>{t('forum')}</th>}
+            {column('category')?.visible && <th style={{ width: column('category')?.width }} className="hide-mobile">{t('category')}</th>}
+            {column('archive')?.visible && <th style={{ width: column('archive')?.width }} className="hide-mobile">{t('archive')}</th>}
+            {column('reply_count')?.visible && <SortHeader label={t('reply_count')} sortKey="reply_count" currentKey={sortKey} currentDir={sortDir} onSort={handleSort} width={column('reply_count')?.width} />}
+            {column('pub_time')?.visible && <SortHeader label={t('pub_time')} sortKey="pub_time" currentKey={sortKey} currentDir={sortDir} onSort={handleSort} width={column('pub_time')?.width} />}
+            {column('last_reply_time')?.visible && <SortHeader label={t('last_reply_time')} sortKey="remote_last_reply_at" currentKey={sortKey} currentDir={sortDir} onSort={handleSort} width={column('last_reply_time')?.width} className="hide-mobile" />}
+            {column('sync_time')?.visible && <SortHeader label={t('sync_time')} sortKey="sync_time" currentKey={sortKey} currentDir={sortDir} onSort={handleSort} width={column('sync_time')?.width} className="hide-mobile" />}
+            <th style={{ width: column('action')?.width || 84 }}>{t('action')}</th>
           </tr>
         </thead>
         <tbody>
@@ -305,12 +308,12 @@ export function Threads() {
             return (
             <tr key={t_.tid}>
               <td><input type="checkbox" checked={selectedTids.has(t_.tid)} onChange={() => toggleSelect(t_.tid)} /></td>
-              <td className="mono"><Link to={`/threads/${t_.tid}`}>{t_.tid}</Link></td>
-              <td className="truncate" title={titleText}><Link to={`/threads/${t_.tid}`}>{titleText}</Link></td>
-              <td className="nowrap">{forums.find(f => f.forum_id === t_.forum_id)?.[lang === 'en' ? 'name_en' : 'name'] || t_.forum_id || '-'}</td>
-              <td className="nowrap hide-mobile">{t_.category || '-'}</td>
-              <td className="hide-mobile"><ContentBadge kind={t_.content_kind} /></td>
-              <td
+              {column('tid')?.visible && <td className="mono"><Link to={`/threads/${t_.tid}`}>{t_.tid}</Link></td>}
+              {column('title')?.visible && <td className="truncate" title={titleText}><Link to={`/threads/${t_.tid}`}>{titleText}</Link></td>}
+              {column('forum')?.visible && <td className="nowrap">{forums.find(f => f.forum_id === t_.forum_id)?.[lang === 'en' ? 'name_en' : 'name'] || t_.forum_id || '-'}</td>}
+              {column('category')?.visible && <td className="nowrap hide-mobile">{t_.category || '-'}</td>}
+              {column('archive')?.visible && <td className="hide-mobile"><ContentBadge kind={t_.content_kind} /></td>}
+              {column('reply_count')?.visible && <td
                 title={
                   t_.remote_reply_count != null
                     ? `${t('remote_reply_count')}: ${t_.remote_reply_count} / ${t('local_reply_count')}: ${t_.local_reply_count ?? '-'} / ${t('floor_count')}: ${t_.floor_count}`
@@ -318,10 +321,10 @@ export function Threads() {
                 }
               >
                 {t_.reply_count ?? '-'}
-              </td>
-              <td className="col-time" style={{ textAlign: 'center' }}>{formatDateTimeStacked(t_.pub_time)}</td>
-              <td className="col-time hide-mobile" style={{ textAlign: 'center' }}>{formatDateTimeStacked(t_.remote_last_reply_at)}</td>
-              <td className="col-time hide-mobile" style={{ textAlign: 'center' }}>{formatDateTimeStacked(t_.sync_time)}</td>
+              </td>}
+              {column('pub_time')?.visible && <td className="col-time" style={{ textAlign: 'center' }}>{formatDateTimeStacked(t_.pub_time)}</td>}
+              {column('last_reply_time')?.visible && <td className="col-time hide-mobile" style={{ textAlign: 'center' }}>{formatDateTimeStacked(t_.remote_last_reply_at)}</td>}
+              {column('sync_time')?.visible && <td className="col-time hide-mobile" style={{ textAlign: 'center' }}>{formatDateTimeStacked(t_.sync_time)}</td>}
               <td><button className="btn-danger-outline" onClick={() => setConfirmDeleteTids([t_.tid])} style={{ fontSize: 11, padding: '2px 6px' }}>{t('delete')}</button></td>
             </tr>
           )})}

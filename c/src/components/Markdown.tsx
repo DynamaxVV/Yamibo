@@ -16,23 +16,36 @@ function renderInline(text: string): string {
     .replace(/`(.+?)`/g, '<code>$1</code>')
 }
 
+function splitTableRow(row: string): string[] {
+  const value = row.trim()
+  const withoutLeading = value.startsWith('|') ? value.slice(1) : value
+  const withoutOuter = withoutLeading.endsWith('|') ? withoutLeading.slice(0, -1) : withoutLeading
+  return withoutOuter.split('|').map((cell) => cell.trim())
+}
+
+function isTableSeparatorRow(row: string[]): boolean {
+  return row.length > 0 && row.every((cell) => /^:?-{3,}:?$/.test(cell.replace(/\s/g, '')))
+}
+
 function renderTable(lines: string[]): ReactNode {
   const rows = lines.map((line) => line.trim()).filter(Boolean)
   if (rows.length < 2) return null
-  const cells = rows.map((row) => row.split('|').map((cell) => cell.trim()).filter(Boolean))
+  const cells = rows.map(splitTableRow)
   const header = cells[0]
-  const body = cells.slice(2)
+  const body = cells.slice(isTableSeparatorRow(cells[1]) ? 2 : 1).map((row) => [...row, ...Array(Math.max(0, header.length - row.length)).fill('')].slice(0, header.length))
   return (
-    <table className="md-table">
-      <thead>
-        <tr>{header.map((cell, idx) => <th key={idx} dangerouslySetInnerHTML={{ __html: renderInline(cell) }} />)}</tr>
-      </thead>
-      <tbody>
-        {body.map((row, rowIndex) => (
-          <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex} dangerouslySetInnerHTML={{ __html: renderInline(cell) }} />)}</tr>
-        ))}
-      </tbody>
-    </table>
+    <div className="md-table-wrap">
+      <table className="md-table">
+        <thead>
+          <tr>{header.map((cell, idx) => <th key={idx} dangerouslySetInnerHTML={{ __html: renderInline(cell) }} />)}</tr>
+        </thead>
+        <tbody>
+          {body.map((row, rowIndex) => (
+            <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex} dangerouslySetInnerHTML={{ __html: renderInline(cell) }} />)}</tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   )
 }
 
@@ -65,11 +78,11 @@ export function Markdown({ content }: { content: string }) {
       return
     }
     if (list.length) {
-      parts.push(<ul key={`l-${parts.length}`}>{list.map((item, idx) => <li key={idx} dangerouslySetInnerHTML={{ __html: renderInline(item.replace(/^[-*]\s+/, '')) }} />)}</ul>)
+      parts.push(<ul className="md-list" key={`l-${parts.length}`}>{list.map((item, idx) => <li key={idx} dangerouslySetInnerHTML={{ __html: renderInline(item.replace(/^[-*]\s+/, '')) }} />)}</ul>)
       list = []
     }
     if (paragraph.length) {
-      parts.push(<p key={`p-${parts.length}`} dangerouslySetInnerHTML={{ __html: renderInline(paragraph.join(' ')) }} />)
+      parts.push(<p className="md-paragraph" key={`p-${parts.length}`} dangerouslySetInnerHTML={{ __html: renderInline(paragraph.join(' ')) }} />)
       paragraph = []
     }
   }

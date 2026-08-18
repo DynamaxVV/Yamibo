@@ -918,8 +918,8 @@ input[type="checkbox"] { width: 14px; height: 14px; cursor: pointer; accent-colo
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  min-height: 420px;
+  gap: 8px;
+  min-height: 0;
 }
 
 .chat-empty {
@@ -1020,7 +1020,7 @@ input[type="checkbox"] { width: 14px; height: 14px; cursor: pointer; accent-colo
 
 .chat-composer {
   border-top: var(--border-width, 1px) solid var(--border-light);
-  padding-top: 12px;
+  padding-top: 8px;
 }
 
 .chat-composer textarea,
@@ -1037,7 +1037,10 @@ input[type="checkbox"] { width: 14px; height: 14px; cursor: pointer; accent-colo
 
 .chat-composer textarea {
   resize: vertical;
-  min-height: 120px;
+  min-height: 32px;
+  max-height: 30vh;
+  padding: 6px 10px;
+  line-height: 1.35;
 }
 
 .chat-composer-actions {

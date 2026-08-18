@@ -7,7 +7,7 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }))
-    throw new Error(err.error || `${res.status} ${res.statusText}`)
+    throw toApiError(err, res.status, res.statusText)
   }
   return res.json()
 }
@@ -20,9 +20,19 @@ async function postJson<T>(path: string, body: Record<string, unknown>): Promise
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }))
-    throw new Error(err.error || `${res.status} ${res.statusText}`)
+    throw toApiError(err, res.status, res.statusText)
   }
   return res.json()
+}
+
+function toApiError(payload: unknown, status: number, statusText: string): Error {
+  const root = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {}
+  const detail = root.error && typeof root.error === 'object' ? root.error as Record<string, unknown> : root
+  const message = typeof detail.message === 'string' ? detail.message : typeof root.detail === 'string' ? root.detail : typeof root.error === 'string' ? root.error : `${status} ${statusText}`
+  const code = typeof detail.code === 'string' ? detail.code : undefined
+  const error = new Error(message) as Error & { code?: string }
+  if (code) error.code = code
+  return error
 }
 
 export interface JobSummary {
@@ -390,6 +400,18 @@ export interface SettingsResponse {
   sources: Record<string, string>
   locked_fields: string[]
   effects: Record<string, 'immediate' | 'restart_daemon' | 'restart_web' | 'restart_daemon_web'>
+  configured?: Record<string, boolean>
+}
+
+export interface TableLayout {
+  key: string
+  visible: boolean
+  width: number
+}
+
+export interface TableLayouts {
+  threads: TableLayout[]
+  jobs: TableLayout[]
 }
 
 export interface SettingsUpdateResponse extends SettingsResponse {
@@ -595,89 +617,6 @@ export interface BackfillStatus {
   last_reason: string | null
 }
 
-export interface ChatTransportOption {
-  id: string
-  label: string
-  description: string
-}
-
-export interface ChatContextResponse {
-  model: string
-  transport: string
-  status: {
-    connected: boolean
-    kind: string
-    endpoint: string
-    label: string
-  }
-  transports: ChatTransportOption[]
-  daemon_connected: boolean
-  runtime_files: {
-    sessions: string
-  }
-  sessions: ChatSessionSummary[]
-  hermes: {
-    api_key: string | null
-    model: string
-    host: string
-    port: number
-    endpoint: string
-    stream?: boolean
-  }
-}
-
-export interface ChatSessionSummary {
-  id: string
-  title: string
-  created_at: string
-  updated_at: string
-  messages: Array<{
-    role: 'user' | 'assistant'
-    content: string
-    created_at: string
-  }>
-}
-
-export interface ChatTurnCommandResult {
-  command: string
-  args: Record<string, unknown>
-  reason: string
-  transport: string
-  executed: boolean
-  ok: boolean
-  argv?: string[]
-  invocation?: string
-  stdout?: string
-  stderr?: string
-  output?: unknown
-  returncode?: number
-  warning?: string
-}
-
-export interface ChatTurnResponse {
-  assistant_message: string
-  model: string
-  transport: string
-  stream: boolean
-  commands: ChatTurnCommandResult[]
-  warnings: string[]
-  runtime_files: {
-    agent: string
-    skill: string
-    prompt: string
-  }
-}
-
-export interface ChatStreamEvent {
-  type: 'delta' | 'done' | 'error' | 'meta'
-  content?: string
-  assistant_message?: string
-  error?: string
-  done?: boolean
-  raw_output?: unknown
-  command?: unknown
-}
-
 // API methods
 export const api = {
   dashboard: (limit?: number) => fetchJson<DashboardData>(`/dashboard${limit ? `?limit=${limit}` : ''}`),
@@ -815,47 +754,22 @@ export const api = {
     const s = qs.toString()
     return fetchJson<RemoteThreadDetail>(`/remote/threads/${tid}${s ? `?${s}` : ''}`)
   },
-  chatContext: () => fetchJson<ChatContextResponse>('/chat/context'),
-  chatTurn: async (data: {
-    session_id?: string | null
-    message: string
-    history?: Array<{ role: 'user' | 'assistant'; content: string }>
-    stream?: boolean
-  }): Promise<ChatTurnResponse> => {
-    const res = await fetch(`${BASE}/chat/turn`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: data.stream ? 'text/event-stream' : 'application/json' },
-      body: JSON.stringify(data),
-    })
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: res.statusText }))
-      throw new Error(err.error || `${res.status} ${res.statusText}`)
-    }
-    return res.json() as Promise<ChatTurnResponse>
-  },
-  chatTurnStream: async (data: {
-    session_id?: string | null
-    message: string
-    history?: Array<{ role: 'user' | 'assistant'; content: string }>
-    stream: true
-  }) => {
-    const res = await fetch(`${BASE}/chat/turn`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-      body: JSON.stringify(data),
-    })
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: res.statusText }))
-      throw new Error(err.error || `${res.status} ${res.statusText}`)
-    }
+  chatContext: () => fetchJson<import('../types/chat').ChatContext>('/chat/context'),
+  chatSessions: (params?: { limit?: number; offset?: number }, signal?: AbortSignal) => fetchJson<import('../types/chat').ChatSessionPage>(`/chat/sessions?limit=${params?.limit ?? 50}&offset=${params?.offset ?? 0}`, { signal }),
+  createChatSession: (title?: string) => postJson<import('../types/chat').ChatSession>('/chat/sessions', title ? { title } : {}),
+  getChatSession: (id: string) => fetchJson<import('../types/chat').ChatSession>(`/chat/sessions/${encodeURIComponent(id)}`),
+  renameChatSession: (id: string, title: string) => fetchJson<import('../types/chat').ChatSession>(`/chat/sessions/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify({ title }) }),
+  deleteChatSession: (id: string) => fetchJson<{ ok: boolean }>(`/chat/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  chatMessages: async (id: string, signal?: AbortSignal) => { const payload = await fetchJson<{ messages?: import('../types/chat').ChatMessage[] } | import('../types/chat').ChatMessage[]>(`/chat/sessions/${encodeURIComponent(id)}/messages`, { signal }); return Array.isArray(payload) ? payload : payload.messages || [] },
+  startChatRun: (id: string, input: string) => postJson<import('../types/chat').StartRunResponse>(`/chat/sessions/${encodeURIComponent(id)}/runs`, { input }),
+  getChatRun: (id: string) => fetchJson<import('../types/chat').ChatRun>(`/chat/runs/${encodeURIComponent(id)}`),
+  stopChatRun: (id: string) => postJson<{ status: 'stopping' }>(`/chat/runs/${encodeURIComponent(id)}/stop`, {}),
+  approveChatRun: (id: string, choice: import('../types/chat').ApprovalChoice, resolve_all = false) => postJson<{ status: string }>(`/chat/runs/${encodeURIComponent(id)}/approval`, { choice, resolve_all }),
+  openChatRunEvents: async (id: string, lastEventId?: string, signal?: AbortSignal) => {
+    const headers: HeadersInit = { Accept: 'text/event-stream' }
+    if (lastEventId) headers['Last-Event-ID'] = lastEventId
+    const res = await fetch(`${BASE}/chat/runs/${encodeURIComponent(id)}/events`, { headers, signal })
+    if (!res.ok || !res.body) { const payload = await res.json().catch(() => null); throw toApiError(payload, res.status, res.statusText) }
     return res.body
-  },
-  deleteChatSession: async (sessionId: string) => {
-    const res = await fetch(`${BASE}/chat/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' })
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: res.statusText }))
-      throw new Error(err.error || `${res.status} ${res.statusText}`)
-    }
-    return res.json() as Promise<{ ok: boolean; deleted: number }>
   },
 }

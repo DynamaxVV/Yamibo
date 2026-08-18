@@ -8,10 +8,34 @@ from copy import deepcopy
 from fastapi import APIRouter, Depends, HTTPException
 
 from yamibo_mcp.config import Settings, load_settings, read_local_config, write_local_config
-from yamibo_mcp.services.web_chat import probe_hermes_chat_completions
-from yamibo_mcp.web_fastapi.deps import get_settings
+from yamibo_mcp.web_fastapi.deps import get_chat_service, get_settings
+from yamibo_mcp.services.web_chat import ChatService
 
 router = APIRouter(prefix="/api", tags=["settings"])
+
+TABLE_LAYOUT_DEFAULTS = {
+    "threads": [
+        {"key": "tid", "visible": True, "width": 60},
+        {"key": "title", "visible": True, "width": 480},
+        {"key": "forum", "visible": True, "width": 80},
+        {"key": "category", "visible": True, "width": 110},
+        {"key": "archive", "visible": True, "width": 60},
+        {"key": "reply_count", "visible": True, "width": 55},
+        {"key": "pub_time", "visible": True, "width": 105},
+        {"key": "last_reply_time", "visible": True, "width": 105},
+        {"key": "sync_time", "visible": True, "width": 105},
+        {"key": "action", "visible": True, "width": 84},
+    ],
+    "jobs": [
+        {"key": "tid", "visible": True, "width": 65},
+        {"key": "description", "visible": True, "width": 420},
+        {"key": "status", "visible": True, "width": 80},
+        {"key": "stage", "visible": True, "width": 120},
+        {"key": "progress", "visible": True, "width": 80},
+        {"key": "created_at", "visible": True, "width": 110},
+        {"key": "action", "visible": True, "width": 110},
+    ],
+}
 
 SETTINGS_FIELD_SPECS = {
     "db_backend": {"section": "database", "key": "backend", "type": "string", "default": "sqlite", "env": "YAMIBO_DB_BACKEND", "effect": "restart_daemon_web"},
@@ -35,6 +59,11 @@ SETTINGS_FIELD_SPECS = {
     "llm_base_url": {"section": "llm", "key": "base_url", "type": "string", "default": "https://api.openai.com/v1", "env": "YAMIBO_LLM_BASE_URL", "effect": "restart_daemon_web"},
     "llm_api_key": {"section": "llm", "key": "api_key", "type": "string", "default": None, "env": "YAMIBO_LLM_API_KEY", "sensitive": True, "effect": "restart_daemon_web"},
     "llm_model": {"section": "llm", "key": "model", "type": "string", "default": "gpt-4.1-mini", "env": "YAMIBO_LLM_MODEL", "effect": "restart_daemon_web"},
+    "hermes_host": {"section": "chat", "key": "hermes_host", "type": "string", "default": "host.docker.internal", "env": "YAMIBO_HERMES_HOST", "effect": "restart_web"},
+    "hermes_port": {"section": "chat", "key": "hermes_port", "type": "int", "default": 8642, "env": "YAMIBO_HERMES_PORT", "effect": "restart_web"},
+    "hermes_model": {"section": "chat", "key": "hermes_model", "type": "string", "default": "hermes-agent", "env": "YAMIBO_HERMES_MODEL", "effect": "restart_web"},
+    "hermes_api_key": {"section": "chat", "key": "hermes_api_key", "type": "string", "default": None, "env": "YAMIBO_HERMES_API_KEY", "sensitive": True, "effect": "restart_web"},
+    "chat_streaming_enabled": {"section": "ui", "key": "chat_streaming_enabled", "type": "bool", "default": True, "env": None, "ui_only": True, "effect": "immediate"},
     "rag_enabled": {"section": "rag", "key": "enabled", "type": "bool", "default": True, "env": "YAMIBO_RAG_ENABLED", "effect": "restart_daemon_web"},
     "rag_base_url": {"section": "rag", "key": "base_url", "type": "string", "default": None, "env": "YAMIBO_RAG_BASE_URL", "inherit": "llm_base_url", "effect": "restart_daemon_web"},
     "rag_api_key": {"section": "rag", "key": "api_key", "type": "string", "default": None, "env": "YAMIBO_RAG_API_KEY", "inherit": "llm_api_key", "sensitive": True, "effect": "restart_daemon_web"},
@@ -60,6 +89,7 @@ SETTINGS_FIELD_SPECS = {
     "worker_lease_seconds": {"section": "worker", "key": "lease_seconds", "type": "int", "default": 60, "env": "YAMIBO_WORKER_LEASE_SECONDS", "effect": "restart_daemon"},
     "worker_heartbeat_seconds": {"section": "worker", "key": "heartbeat_seconds", "type": "int", "default": 15, "env": "YAMIBO_WORKER_HEARTBEAT_SECONDS", "effect": "restart_daemon"},
     "worker_parallelism": {"section": "worker", "key": "parallelism", "type": "int", "default": 2, "env": "YAMIBO_WORKER_PARALLELISM", "effect": "restart_daemon"},
+    "table_layouts": {"section": "ui", "key": "table_layouts", "type": "json", "default": TABLE_LAYOUT_DEFAULTS, "env": None, "effect": "immediate"},
 }
 
 SETTINGS_RESTART_TARGETS = {
@@ -75,6 +105,8 @@ def _setting_value_from_raw(raw_config: dict, spec: dict):
     if not isinstance(section, dict) or spec["key"] not in section:
         return None
     value = section.get(spec["key"])
+    if spec["type"] == "json":
+        return deepcopy(value) if isinstance(value, (dict, list)) else None
     if value in {"", None}:
         return None
     if spec["type"] == "list":
@@ -109,6 +141,7 @@ def _settings_payload(settings: Settings) -> dict:
     stored: dict = {}
     sources: dict = {}
     locked_fields: list[str] = []
+    configured: dict[str, bool] = {}
     for name, spec in SETTINGS_FIELD_SPECS.items():
         env_name = spec.get("env")
         if env_name and os.environ.get(env_name) not in {None, ""}:
@@ -120,8 +153,15 @@ def _settings_payload(settings: Settings) -> dict:
             sources[name] = "derived"
         else:
             sources[name] = "default"
-        stored[name] = _setting_value_from_raw(raw_config, spec)
-        values[name] = _setting_effective_value(settings, name)
+        stored_value = _setting_value_from_raw(raw_config, spec)
+        effective_value = _setting_effective_value(settings, name)
+        if spec.get("sensitive"):
+            configured[name] = effective_value not in {None, ""} or stored_value not in {None, ""} or (env_name and os.environ.get(env_name) not in {None, ""}) or bool(spec.get("inherit") and configured.get(spec["inherit"]))
+            stored[name] = None
+            values[name] = None
+        else:
+            stored[name] = stored_value
+            values[name] = stored[name] if spec.get("ui_only") and stored[name] is not None else (stored[name] if spec["type"] == "json" and stored[name] is not None else effective_value)
 
     try:
         from yamibo_mcp.services.title_hints import load_title_hints
@@ -141,12 +181,37 @@ def _settings_payload(settings: Settings) -> dict:
         "stored": stored,
         "sources": sources,
         "locked_fields": locked_fields,
+        "configured": configured,
         "effects": {name: spec["effect"] for name, spec in SETTINGS_FIELD_SPECS.items()},
     }
 
 
 def _normalize_setting_input(name: str, value):
     spec = SETTINGS_FIELD_SPECS[name]
+    if spec["type"] == "json":
+        if not isinstance(value, dict):
+            raise ValueError(f"{name} must be an object")
+        normalized = deepcopy(TABLE_LAYOUT_DEFAULTS)
+        for table_name in normalized:
+            entries = value.get(table_name)
+            if not isinstance(entries, list):
+                continue
+            seen: set[str] = set()
+            clean_entries = []
+            for item in entries:
+                if not isinstance(item, dict) or not isinstance(item.get("key"), str):
+                    continue
+                key = item["key"]
+                if key in seen or not any(default["key"] == key for default in normalized[table_name]):
+                    continue
+                seen.add(key)
+                width = item.get("width")
+                if not isinstance(width, (int, float)) or width <= 0:
+                    width = next(default["width"] for default in normalized[table_name] if default["key"] == key)
+                clean_entries.append({"key": key, "visible": bool(item.get("visible", True)), "width": width})
+            if clean_entries:
+                normalized[table_name] = clean_entries
+        return normalized
     if spec["type"] == "list":
         if value is None:
             return []
@@ -179,6 +244,9 @@ def _apply_setting_patch(raw_config: dict, name: str, value) -> None:
             section.pop(spec["key"], None)
         if not section:
             raw_config.pop(spec["section"], None)
+        return
+    if spec["type"] == "json":
+        section[spec["key"]] = _normalize_setting_input(name, value)
         return
     if value in {None, ""}:
         if spec.get("inherit") or spec["type"] == "string":
@@ -260,6 +328,12 @@ def settings_update(body: dict, settings: Settings = Depends(get_settings)):
 
     refreshed = load_settings()
     payload = _settings_payload(refreshed)
+    # UI-only JSON settings are intentionally not part of the runtime Settings dataclass.
+    # Return the just-written value even when this endpoint is using an injected test/runtime config.
+    if "table_layouts" in next_raw_config.get("ui", {}):
+        payload["values"]["table_layouts"] = next_raw_config["ui"]["table_layouts"]
+        payload["stored"]["table_layouts"] = next_raw_config["ui"]["table_layouts"]
+        payload["sources"]["table_layouts"] = "file"
     payload.update(summarize_setting_effects(changed_fields))
     payload["ok"] = True
     payload["saved_path"] = str(settings.config_path)
@@ -298,8 +372,8 @@ def settings_models_get(settings: Settings = Depends(get_settings)):
 
 
 @router.post("/settings/hermes-test")
-def settings_hermes_test(settings: Settings = Depends(get_settings)):
-    return probe_hermes_chat_completions(settings)
+def settings_hermes_test(service: ChatService = Depends(get_chat_service)):
+    return service.context(force=True)
 
 
 def persist_jobs_enabled(settings: Settings, enabled: bool) -> None:

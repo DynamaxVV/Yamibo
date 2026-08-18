@@ -75,13 +75,10 @@ class Settings:
     llm_base_url: str
     llm_api_key: str | None
     llm_model: str
-    chat_transport: str
-    chat_mcp_sse_url: str | None
     hermes_api_key: str | None
     hermes_model: str
     hermes_host: str
     hermes_port: int
-    hermes_stream: bool
     rag_enabled: bool
     rag_base_url: str
     rag_api_key: str | None
@@ -398,18 +395,6 @@ def load_settings() -> Settings:
                 str(_cfg_value(config, "llm", "model", "gpt-4.1-mini")),
             )
         ),
-        chat_transport=str(
-            os.environ.get(
-                "YAMIBO_CHAT_TRANSPORT",
-                str(_cfg_value(config, "chat", "transport", "cli")),
-            )
-        ),
-        chat_mcp_sse_url=os.environ.get("YAMIBO_CHAT_MCP_SSE_URL")
-        or (
-            None
-            if _cfg_value(config, "chat", "mcp_sse_url", None) in {None, ""}
-            else str(_cfg_value(config, "chat", "mcp_sse_url", None))
-        ),
         hermes_api_key=os.environ.get("YAMIBO_HERMES_API_KEY") or (
             None if _cfg_value(config, "chat", "hermes_api_key", None) in {None, ""} else str(_cfg_value(config, "chat", "hermes_api_key", None))
         ),
@@ -431,13 +416,6 @@ def load_settings() -> Settings:
                 str(_cfg_value(config, "chat", "hermes_port", 8642)),
             )
         ),
-        hermes_stream=str(
-            os.environ.get(
-                "YAMIBO_HERMES_STREAM",
-                str(_cfg_value(config, "chat", "hermes_stream", False)),
-            )
-        ).lower()
-        in {"1", "true", "yes", "on"},
         rag_enabled=str(
             os.environ.get(
                 "YAMIBO_RAG_ENABLED",

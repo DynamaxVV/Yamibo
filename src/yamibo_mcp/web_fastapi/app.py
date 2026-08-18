@@ -8,7 +8,9 @@ from urllib.parse import unquote
 from urllib.request import Request as URLRequest, urlopen
 
 import uvicorn
-from fastapi import FastAPI, Request, Query
+from fastapi import FastAPI, Request, Query, HTTPException
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.staticfiles import StaticFiles
 from starlette.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 
@@ -18,7 +20,34 @@ from yamibo_mcp import __version__
 
 def create_app(settings) -> FastAPI:
     app = FastAPI(title="Yamibo Archiver", version=__version__)
+
+    @app.middleware("http")
+    async def removed_chat_turn(request: Request, call_next):
+        if request.url.path == "/api/chat/turn":
+            return PlainTextResponse("Not found", status_code=404)
+        return await call_next(request)
+
     app.state.settings = settings
+    from yamibo_mcp.services.web_chat import ChatService
+    app.state.chat_service = ChatService(settings)
+
+    @app.on_event("shutdown")
+    def shutdown_chat_service():
+        app.state.chat_service.shutdown()
+
+    @app.exception_handler(HTTPException)
+    async def http_error_handler(request: Request, exc: HTTPException):
+        if request.url.path == "/api/chat/turn" and exc.status_code == 405:
+            return PlainTextResponse("Not found", status_code=404)
+        if request.url.path.startswith("/api/chat/") and isinstance(exc.detail, dict) and {"code", "message", "retryable", "details"}.issubset(exc.detail):
+            return JSONResponse(status_code=exc.status_code, content={"error": exc.detail})
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+    @app.exception_handler(RequestValidationError)
+    async def request_validation_error(request: Request, exc: RequestValidationError):
+        if request.url.path.startswith("/api/chat/"):
+            return JSONResponse(status_code=400, content={"error": {"code": "CHAT_INVALID_REQUEST", "message": "invalid request", "retryable": False, "details": {}}})
+        return await request_validation_exception_handler(request, exc)
 
     from yamibo_mcp.errors import JobNotFound
     from yamibo_mcp.web_fastapi.routers import (

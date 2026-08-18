@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { Badge } from '../components/Badge'
-import { api, type SettingsResponse, type SettingsUpdateResponse } from '../api/client'
+import { api, type SettingsResponse, type SettingsUpdateResponse, type TableLayouts } from '../api/client'
 import { useI18n } from '../context/I18nContext'
+import { TableLayoutEditor } from '../components/TableLayoutEditor'
 
 type FieldKind = 'text' | 'password' | 'number' | 'checkbox' | 'textarea' | 'select' | 'tags'
 type EffectMode = SettingsResponse['effects'][string]
@@ -55,6 +56,18 @@ const SECTIONS: SectionSpec[] = [
       { key: 'title_parse_use_llm', labelKey: 'settings_title_parse_use_llm', helpKey: 'settings_title_parse_use_llm_help', kind: 'checkbox', section: 'title', fullWidth: true },
       { key: 'common_scanlation_groups', labelKey: 'settings_common_scanlation_groups', helpKey: 'settings_common_scanlation_groups_help', kind: 'tags', section: 'title' },
       { key: 'common_authors', labelKey: 'settings_common_authors', helpKey: 'settings_common_authors_help', kind: 'tags', section: 'title' },
+    ],
+  },
+  {
+    key: 'hermes',
+    titleKey: 'settings_section_hermes',
+    descKey: 'settings_section_hermes_desc',
+    fields: [
+      { key: 'hermes_host', labelKey: 'settings_hermes_host', helpKey: 'settings_hermes_host_help', kind: 'text', section: 'hermes', placeholderKey: 'settings_placeholder_hermes_host' },
+      { key: 'hermes_port', labelKey: 'settings_hermes_port', helpKey: 'settings_hermes_port_help', kind: 'number', section: 'hermes', min: 1, max: 65535, step: 1 },
+      { key: 'hermes_model', labelKey: 'settings_hermes_model', helpKey: 'settings_hermes_model_help', kind: 'text', section: 'hermes', placeholderKey: 'settings_placeholder_hermes_model' },
+      { key: 'hermes_api_key', labelKey: 'settings_hermes_api_key', helpKey: 'settings_hermes_api_key_help', kind: 'password', section: 'hermes', placeholderKey: 'settings_placeholder_hermes_api_key' },
+      { key: 'chat_streaming_enabled', labelKey: 'settings_chat_streaming_enabled', helpKey: 'settings_chat_streaming_enabled_help', kind: 'checkbox', section: 'hermes', fullWidth: true },
     ],
   },
   {
@@ -137,6 +150,13 @@ function valueToInput(field: FieldSpec, payload: SettingsResponse | null) {
   if (field.kind === 'checkbox') return raw ? '1' : '0'
   if (field.kind === 'textarea' || field.kind === 'tags') return Array.isArray(raw) ? raw.join('\n') : String(raw ?? '')
   return raw == null ? '' : String(raw)
+}
+
+function fieldPlaceholder(field: FieldSpec, payload: SettingsResponse, value: string, t: (key: string) => string) {
+  if (field.key === 'hermes_api_key' && payload.configured?.hermes_api_key && !value) {
+    return t('settings_placeholder_hermes_api_key_configured')
+  }
+  return field.placeholderKey ? t(field.placeholderKey) : undefined
 }
 
 function sourceLabel(t: (key: string, vars?: Record<string, string | number>) => string, source: string) {
@@ -347,7 +367,7 @@ function SettingsSection({
                   rows={field.rows || 4}
                   value={formValues[field.key] || ''}
                   disabled={locked}
-                  placeholder={field.placeholderKey ? t(field.placeholderKey) : undefined}
+                  placeholder={fieldPlaceholder(field, payload, formValues[field.key] || '', t)}
                   onChange={e => setFormValues(v => ({ ...v, [field.key]: e.target.value }))}
                 />
               ) : field.kind === 'select' ? (
@@ -382,7 +402,7 @@ function SettingsSection({
                   step={field.step}
                   value={formValues[field.key] || ''}
                   disabled={locked}
-                  placeholder={field.placeholderKey ? t(field.placeholderKey) : undefined}
+                  placeholder={fieldPlaceholder(field, payload, formValues[field.key] || '', t)}
                   onChange={e => setFormValues(v => ({ ...v, [field.key]: e.target.value }))}
                 />
               )}
@@ -600,6 +620,11 @@ export function Settings() {
             modelError={modelError}
           />
         ))}
+
+        <TableLayoutEditor
+          value={payload.values.table_layouts}
+          onSaved={(layouts: TableLayouts) => setPayload(prev => prev ? { ...prev, values: { ...prev.values, table_layouts: layouts }, stored: { ...prev.stored, table_layouts: layouts } } : prev)}
+        />
 
         <section className="panel settings-footer">
           <div className="settings-footer-copy">{t('settings_footer_note')}</div>

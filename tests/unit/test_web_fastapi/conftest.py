@@ -52,7 +52,6 @@ class _TestSettings:
     hermes_port: int = 8642
     hermes_api_key: str | None = None
     hermes_model: str = "hermes-agent"
-    hermes_stream: bool = False
     rag_enabled: bool = False
     rag_base_url: str = "https://api.openai.com/v1"
     rag_api_key: str | None = None

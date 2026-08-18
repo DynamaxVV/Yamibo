@@ -1,0 +1,79 @@
+from unittest.mock import Mock
+
+import pytest
+
+from yamibo_mcp.services.web_chat import ChatService, ChatServiceError, REQUIRED_CAPABILITIES
+from yamibo_mcp.services.hermes_api import HermesTimeoutError
+
+
+class Client:
+    endpoint = "http://hermes:8642"; api_key = "secret"; model = "hermes-agent"
+    def __init__(self): self.calls = []
+    def health(self): self.calls.append("health"); return {"version": "1"}
+    def capabilities(self): self.calls.append("capabilities"); return {"capabilities": sorted(REQUIRED_CAPABILITIES)}
+    def models(self): self.calls.append("models"); return {"models": []}
+
+
+def test_probe_order_cache_and_force():
+    c = Client(); now = [0.0]; s = ChatService(client=c, clock=lambda: now[0])
+    assert s.probe_capabilities()["ready"] and c.calls == ["health", "capabilities", "models"]
+    s.probe_capabilities(); assert c.calls == ["health", "capabilities", "models"]
+    now[0] = 31; s.probe_capabilities(force=True); assert c.calls[-3:] == ["health", "capabilities", "models"]
+
+
+def test_context_never_returns_key_and_missing_is_not_ready():
+    c = Client(); c.capabilities = lambda: {"capabilities": []}
+    result = ChatService(client=c).context()
+    assert result["ready"] is False and result["error"]["code"] == "HERMES_CAPABILITY_MISSING"
+    assert "secret" not in str(result) and result["hermes"]["has_api_key"] is True
+    assert result["streaming_enabled"] is True
+
+
+def test_history_is_complete_deterministic_and_input_not_added():
+    c = Client(); c.get_session = Mock(return_value={"object": "hermes.session", "session": {"id": "s"}})
+    c.get_messages = Mock(return_value={"object": "list", "session_id": "s", "data": [{"role": "system", "content": {"z": 1, "a": "中"}}, {"role": "tool", "content": ""}]})
+    registry = Mock(); registry.submit.return_value = Mock()
+    ChatService(client=c, registry=registry).start_run("s", "input")
+    history = registry.submit.call_args.kwargs["history"]
+    assert history == [{"role": "system", "content": '{"a":"中","z":1}'}, {"role": "tool", "content": ""}]
+    assert "input" not in [x["content"] for x in history]
+
+
+def test_history_failure_never_submits():
+    c = Client(); c.get_session = Mock(return_value={"object": "hermes.session", "session": {"id": "s"}}); c.get_messages = Mock(side_effect=RuntimeError())
+    registry = Mock()
+    with pytest.raises(ChatServiceError) as err: ChatService(client=c, registry=registry).start_run("s", "x")
+    assert err.value.code == "CHAT_HISTORY_UNAVAILABLE"; registry.submit.assert_not_called()
+
+
+def test_timeout_maps_to_unavailable():
+    c = Client(); c.health = Mock(side_effect=HermesTimeoutError())
+    with pytest.raises(ChatServiceError) as err: ChatService(client=c).probe_capabilities()
+    assert (err.value.code, err.value.http_status, err.value.retryable) == ("HERMES_UNAVAILABLE", 503, True)
+
+
+def test_session_envelopes_are_normalized_to_local_contract():
+    c = Client()
+    c.list_sessions = Mock(return_value={"object": "list", "data": [{"id": "s1"}], "has_more": True, "limit": 50, "offset": 0})
+    c.create_session = Mock(return_value={"object": "hermes.session", "session": {"id": "s1", "title": "新对话"}})
+    c.get_session = Mock(return_value={"object": "hermes.session", "session": {"id": "s1"}})
+    c.get_messages = Mock(return_value={"object": "list", "session_id": "s1", "data": [{"role": "user", "content": "hi"}]})
+    service = ChatService(client=c)
+    assert service.list_sessions() == {"sessions": [{"id": "s1"}], "items": [{"id": "s1"}], "has_more": True, "limit": 50, "offset": 0}
+    assert service.create_session()["id"] == "s1"
+    assert service.get_session("s1")["id"] == "s1"
+    assert service.get_messages("s1")["messages"][0]["content"] == "hi"
+    assert service.get_messages("s1")["list"] == [{"role": "user", "content": "hi"}]
+
+
+@pytest.mark.parametrize("payload", [{"object": "list", "data": [], "has_more": False}, {"object": "list", "data": [], "has_more": False, "limit": 1, "offset": "0"}])
+def test_invalid_session_list_envelope_maps_to_protocol_error(payload):
+    c = Client(); c.list_sessions = Mock(return_value=payload)
+    with pytest.raises(ChatServiceError) as err: ChatService(client=c).list_sessions()
+    assert (err.value.code, err.value.http_status) == ("CHAT_UPSTREAM_PROTOCOL_ERROR", 502)
+
+
+def test_invalid_messages_envelope_maps_to_protocol_error():
+    c = Client(); c.get_messages = Mock(return_value={"object": "list", "session_id": "s", "data": {}})
+    with pytest.raises(ChatServiceError) as err: ChatService(client=c).get_messages("s")
+    assert (err.value.code, err.value.http_status) == ("CHAT_UPSTREAM_PROTOCOL_ERROR", 502)

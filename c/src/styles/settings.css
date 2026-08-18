@@ -183,11 +183,27 @@
   gap: 12px;
 }
 .settings-footer-copy { font-size: 12px; color: var(--text-tertiary); line-height: 1.5; }
+.table-layout-tabs { display: flex; gap: 6px; margin-bottom: 12px; }
+.table-layout-tabs button { border: 1px solid var(--border-light); border-radius: var(--radius-sm); padding: 6px 12px; background: var(--bg-muted); color: var(--text-secondary); cursor: pointer; }
+.table-layout-tabs button.active { background: var(--accent-light); color: var(--accent-text); border-color: var(--accent); }
+.table-layout-editor { display: grid; grid-template-columns: minmax(280px, 1fr) minmax(260px, 1fr); gap: 16px; }
+.table-layout-list { display: flex; flex-direction: column; gap: 6px; }
+.table-layout-row { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--border-light); border-radius: var(--radius-sm); background: var(--bg-muted); cursor: grab; }
+.table-layout-row.dragging { opacity: .55; border-style: dashed; }
+.table-layout-grip { color: var(--text-tertiary); letter-spacing: -3px; user-select: none; }
+.table-layout-visible { display: flex; align-items: center; gap: 8px; flex: 1; font-size: 12px; }
+.table-layout-width { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text-tertiary); }
+.table-layout-width input { width: 64px; padding: 4px 6px; }
+.table-layout-preview { min-width: 0; padding: 12px; border: 1px solid var(--border-light); border-radius: var(--radius-sm); background: var(--bg-muted); overflow: hidden; }
+.table-layout-preview-label { margin-bottom: 10px; color: var(--text-tertiary); font-size: 11px; }
+.table-layout-preview-table { display: flex; min-width: max-content; border: 1px solid var(--border-light); border-radius: var(--radius-sm); overflow: hidden; }
+.table-layout-preview-table span { box-sizing: border-box; flex: 0 0 auto; padding: 8px 10px; border-right: 1px solid var(--border-light); background: var(--bg-surface); color: var(--text-secondary); font-size: 11px; white-space: nowrap; }
 @media (max-width: 900px) {
   .settings-grid { grid-template-columns: 1fr; }
   .settings-footer { flex-direction: column; align-items: flex-start; }
   .settings-field-head { flex-direction: column; }
   .settings-field-badges { justify-content: flex-start; }
+  .table-layout-editor { grid-template-columns: 1fr; }
 }
 .rag-result-meta-row {
   margin-top: 5px;
@@ -256,4 +272,3 @@
   font-size: 11px;
   color: var(--text-secondary);
 }
-

@@ -6,6 +6,7 @@ import { PaginationControls } from '../components/PaginationControls'
 import { useI18n } from '../context/I18nContext'
 import { formatDateTime } from '../utils/time'
 import { formatJobFailureKind, getJobFailureKind, type JobFailureKind } from '../utils/jobMessages'
+import { useTableLayout } from '../components/TableLayoutEditor'
 
 const STATUSES = [null, 'queued', 'running', 'paused', 'succeeded', 'partial', 'failed', 'interrupted'] as const
 const FAILURE_KINDS: Array<JobFailureKind | null> = [null, 'forum_closed', 'thread_deleted', 'thread_permission', 'thread_missing', 'login_required', 'maintenance', 'remote_http_404', 'remote_http_error', 'remote_timeout', 'remote_connection', 'remote_blocked', 'remote_fetch', 'unexpected_page', 'empty_content', 'local_missing', 'validation', 'cancelled', 'other']
@@ -42,6 +43,8 @@ export function Jobs() {
       return 25
     }
   })
+  const tableLayout = useTableLayout('jobs')
+  const column = (key: string) => tableLayout.find(item => item.key === key)
   const [totalPages, setTotalPages] = useState(1)
   const [totalCount, setTotalCount] = useState(0)
   const [failureKindCounts, setFailureKindCounts] = useState<Record<string, number>>({})
@@ -580,21 +583,21 @@ export function Jobs() {
         <div className="table-wrap"><table style={{ tableLayout: 'fixed', width: '100%' }}>
         <thead><tr>
           <th style={{ width: 32 }}><input type="checkbox" checked={allPagedSelected} onChange={toggleSelectAll} /></th>
-          <th style={{ width: 65 }}>{t('tid')}</th>
-          <th style={{ width: '35%' }}>{t('description')}</th>
-          <th style={{ width: 80 }}>{t('status')}</th>
-          <th style={{ width: 120 }} className="hide-mobile">{t('stage')}</th>
-          <th style={{ width: 80 }} className="hide-mobile">{t('progress')}</th>
-          <th style={{ width: 110 }}>{t('created_at')}</th>
-          <th style={{ width: 110 }}>{t('action')}</th>
+          {column('tid')?.visible && <th style={{ width: column('tid')?.width }}>{t('tid')}</th>}
+          {column('description')?.visible && <th style={{ width: column('description')?.width }}>{t('description')}</th>}
+          {column('status')?.visible && <th style={{ width: column('status')?.width }}>{t('status')}</th>}
+          {column('stage')?.visible && <th style={{ width: column('stage')?.width }} className="hide-mobile">{t('stage')}</th>}
+          {column('progress')?.visible && <th style={{ width: column('progress')?.width }} className="hide-mobile">{t('progress')}</th>}
+          {column('created_at')?.visible && <th style={{ width: column('created_at')?.width }}>{t('created_at')}</th>}
+          <th style={{ width: column('action')?.width || 110 }}>{t('action')}</th>
         </tr></thead>
         <tbody>
           {jobs.map(j => (
             <tr key={j.job_id}>
               <td><input type="checkbox" checked={selectedIds.has(j.job_id)} onChange={() => toggleSelect(j.job_id)} /></td>
-              <td>{j.tid ? <Link to={`/threads/${j.tid}`}>{j.tid}</Link> : '-'}</td>
-              <td className="truncate" title={desc(j)}><Link to={`/jobs/${j.job_id}`}>{desc(j)}</Link></td>
-              <td>
+              {column('tid')?.visible && <td>{j.tid ? <Link to={`/threads/${j.tid}`}>{j.tid}</Link> : '-'}</td>}
+              {column('description')?.visible && <td className="truncate" title={desc(j)}><Link to={`/jobs/${j.job_id}`}>{desc(j)}</Link></td>}
+              {column('status')?.visible && <td>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'center', justifyContent: 'center' }}>
                   <Badge status={j.status} />
                   {j.status === 'superseded' && j.rerun_job_status && (
@@ -608,10 +611,10 @@ export function Jobs() {
                     return kind ? <span className="badge badge-muted">{formatJobFailureKind(kind, lang)}</span> : null
                   })()}
                 </div>
-              </td>
-              <td className="nowrap hide-mobile">{j.stage || '-'}</td>
-              <td className="nowrap hide-mobile">{j.progress_current}/{j.progress_total ?? '?'}</td>
-              <td className="nowrap col-time">{formatDateTime(j.created_at)}</td>
+              </td>}
+              {column('stage')?.visible && <td className="nowrap hide-mobile">{j.stage || '-'}</td>}
+              {column('progress')?.visible && <td className="nowrap hide-mobile">{j.progress_current}/{j.progress_total ?? '?'}</td>}
+              {column('created_at')?.visible && <td className="nowrap col-time">{formatDateTime(j.created_at)}</td>}
               <td>
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                   {(j.status === 'partial' || j.status === 'failed' || j.status === 'interrupted') && (
