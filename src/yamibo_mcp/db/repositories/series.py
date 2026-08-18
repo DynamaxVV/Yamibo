@@ -158,6 +158,40 @@ class SeriesRepository:
         self.conn.commit()
         return (int(row["series_id"]) if row is not None else 0), False
 
+    def resolve_for_quarantine(self, forum_id: int) -> tuple[int, bool]:
+        """Return a stable review bucket for a forum without a default series."""
+        from yamibo_mcp.domain.forums import resolve_forum
+
+        profile = resolve_forum(forum_id)
+        series_key = f"quarantine_forum_{profile.forum_id}"
+        existing = self.conn.execute(
+            "SELECT * FROM series WHERE series_key = ?",
+            (series_key,),
+        ).fetchone()
+        if existing is not None:
+            self.conn.execute(
+                "UPDATE series SET needs_review = ?, updated_at = CURRENT_TIMESTAMP WHERE series_id = ?",
+                (True, existing["series_id"]),
+            )
+            return int(existing["series_id"]), True
+
+        display_name = f"待确认：{profile.name}"
+        cur = self.conn.execute(
+            """
+            INSERT INTO series (
+              canonical_title, normalized_title, series_key, alias_keys_json,
+              aliases_json, author_guess, creator_key, merge_confidence,
+              needs_review
+            )
+            VALUES (?, ?, ?, '[]', '[]', NULL, NULL, 0.0, ?)
+            RETURNING series_id
+            """,
+            (display_name, display_name, series_key, True),
+        )
+        row = cur.fetchone()
+        self.conn.commit()
+        return (int(row["series_id"]) if row is not None else 0), True
+
     def _creator_compatible(self, existing: str | None, incoming: str | None) -> bool:
         return not existing or not incoming or existing == incoming
 

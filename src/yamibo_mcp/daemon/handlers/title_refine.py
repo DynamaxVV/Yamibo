@@ -5,6 +5,7 @@ import json
 from yamibo_mcp.db.connection import connect
 from yamibo_mcp.db.repositories.series import SeriesRepository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
+from yamibo_mcp.domain.forums import resolve_forum
 from yamibo_mcp.domain.models import TitleSnapshot
 from yamibo_mcp.server.resource_uris import series_chapters_uri
 from yamibo_mcp.server.schemas import thread_summary_payload
@@ -122,7 +123,14 @@ def handle_title_refine(repo, job, worker_id: str, lease_seconds: int, settings)
                 needs_review=bool(row["needs_review"]),
                 parser_version=row["parser_version"],
             )
-            series_id, needs_review = series_repo.resolve_for_title(title)
+            forum_id = row["forum_id"]
+            profile = resolve_forum(forum_id)
+            if profile.default_series_key:
+                series_id, needs_review = series_repo.resolve_for_forum(profile.forum_id)
+            elif forum_id is None or profile.forum_id in {30, 55}:
+                series_id, needs_review = series_repo.resolve_for_title(title)
+            else:
+                series_id, needs_review = series_repo.resolve_for_quarantine(profile.forum_id)
             threads_repo.set_thread_series(int(row["tid"]), series_id, needs_review)
             rebuilt += 1
             repo.heartbeat(job.job_id, worker_id, lease_seconds)

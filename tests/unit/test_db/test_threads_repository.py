@@ -144,6 +144,38 @@ class TestUpsertAndGetThread:
         assert row["content_kind"] == "novel"
         assert row["primary_media_type"] == "text"
 
+    @pytest.mark.parametrize(
+        ("forum_id", "series_key", "canonical_title"),
+        [
+            (5, "forum_anime", "动漫区"),
+            (33, "forum_sea", "海域区"),
+        ],
+    )
+    def test_discussion_forums_use_fixed_series(self, db, forum_id, series_key, canonical_title):
+        repo = ThreadsRepository(db)
+        snapshot = _make_snapshot(tid=1004 + forum_id, title=_make_title(series_key=None))
+
+        repo.upsert_snapshot(snapshot, forum_id=forum_id)
+
+        thread = repo.get_thread(snapshot.tid)
+        series = db.execute("SELECT * FROM series WHERE series_id = ?", (thread["series_id"],)).fetchone()
+        assert series["series_key"] == series_key
+        assert series["canonical_title"] == canonical_title
+        assert thread["needs_series_review"] in (False, 0)
+
+    def test_unknown_forum_uses_review_quarantine_series(self, db):
+        repo = ThreadsRepository(db)
+        snapshot = _make_snapshot(tid=1030, title=_make_title(series_key=None))
+
+        repo.upsert_snapshot(snapshot, forum_id=13)
+
+        thread = repo.get_thread(snapshot.tid)
+        series = db.execute("SELECT * FROM series WHERE series_id = ?", (thread["series_id"],)).fetchone()
+        assert series["series_key"] == "quarantine_forum_13"
+        assert series["canonical_title"] == "待确认：贴图区"
+        assert series["needs_review"] in (True, 1)
+        assert thread["needs_series_review"] in (True, 1)
+
     def test_update_archive_metadata_creates_missing_title_parse_row(self, db):
         repo = ThreadsRepository(db)
         snapshot = _make_snapshot(tid=1100)
