@@ -15,7 +15,10 @@ from urllib.parse import quote, urlencode, urlsplit
 
 
 CONNECT_TIMEOUT = 5.0
-READ_TIMEOUT = 30.0
+# Hermes may spend several seconds generating the first token before it sends
+# the response headers. Keep connection establishment short, but allow the
+# response itself to wait longer.
+READ_TIMEOUT = 60.0
 _APPROVAL_CHOICES = {"once", "session", "always", "deny"}
 
 
@@ -236,6 +239,12 @@ class HermesApiClient:
         if method in {"POST", "PATCH"}:
             headers["Content-Type"] = "application/json"
         try:
+            # HTTPConnection applies its constructor timeout to both the TCP
+            # connect and getresponse(). Establish the connection explicitly,
+            # then use the longer read timeout for the request and response.
+            conn.connect()
+            if conn.sock is not None:
+                conn.sock.settimeout(READ_TIMEOUT)
             payload = json.dumps(body, ensure_ascii=False).encode("utf-8") if body is not None else None
             conn.request(method, request_path, body=payload, headers=headers)
             response = conn.getresponse()

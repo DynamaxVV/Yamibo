@@ -95,6 +95,7 @@ class ChatService:
             available_set = set(available)
             runs_ready = REQUIRED_CAPABILITIES.issubset(available_set)
             chat_ready = bool(available_set & CHAT_COMPLETIONS_CAPABILITIES)
+            compatibility_error: ChatServiceError | None = None
             if not runs_ready and not chat_ready:
                 probe = getattr(self.client, "chat_completion", None)
                 if callable(probe):
@@ -105,12 +106,14 @@ class ChatService:
                             available.append("chat_completions")
                     except HermesApiError as exc:
                         if exc.status not in {404, 405}:
-                            raise
-                    except Exception:
-                        # A failed compatibility probe is represented as an
-                        # unavailable transport below; the health/models result is
-                        # still retained for diagnostics.
-                        pass
+                            compatibility_error = self._map_error(exc)
+                    except Exception as exc:
+                        compatibility_error = self._map_error(exc)
+                    if compatibility_error is not None:
+                        log.warning(
+                            "Hermes chat-completions compatibility probe failed code=%s",
+                            compatibility_error.code,
+                        )
             mode = RUNS_TRANSPORT if runs_ready else CHAT_COMPLETIONS_TRANSPORT if chat_ready else None
             log.info(
                 "Hermes capability probe connected=true mode=%s source=%s capabilities=%s",
@@ -134,10 +137,14 @@ class ChatService:
                     "message": "Hermes Sessions/Runs 不可用，已降级到 /v1/chat/completions",
                 }
             elif mode is None:
-                result["error"] = {
-                    "code": "HERMES_CAPABILITY_MISSING",
-                    "missing": sorted(REQUIRED_CAPABILITIES - available_set),
-                }
+                result["error"] = (
+                    compatibility_error.as_dict()["error"]
+                    if compatibility_error is not None
+                    else {
+                        "code": "HERMES_CAPABILITY_MISSING",
+                        "missing": sorted(REQUIRED_CAPABILITIES - available_set),
+                    }
+                )
             self._apply_transport(mode)
             with self._lock: self._capability_cache = (self._clock(), result)
             return dict(result)

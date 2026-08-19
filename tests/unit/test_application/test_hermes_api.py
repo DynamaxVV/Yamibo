@@ -24,6 +24,7 @@ class _Handler(BaseHTTPRequestHandler):
     response_body: bytes = b'{}'
     response_type = "application/json"
     finished = 0
+    header_delay = 0.0
     response_delay = 0.0
 
     def log_message(self, *_args):
@@ -34,6 +35,8 @@ class _Handler(BaseHTTPRequestHandler):
         super().finish()
 
     def _reply(self):
+        if type(self).header_delay:
+            time.sleep(type(self).header_delay)
         length = len(type(self).response_body)
         self.send_response(type(self).response_status)
         self.send_header("Content-Type", type(self).response_type)
@@ -63,6 +66,7 @@ def server():
     _Handler.response_status = 200
     _Handler.response_body = b'{}'
     _Handler.response_type = "application/json"
+    _Handler.header_delay = 0.0
     _Handler.response_delay = 0.0
     srv = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
     thread = threading.Thread(target=srv.serve_forever, daemon=True)
@@ -218,3 +222,12 @@ def test_read_timeout_is_mapped_without_leaking_key(server, monkeypatch):
 
     assert exc.value.code == "HERMES_TIMEOUT"
     assert "test-key" not in str(exc.value)
+
+
+def test_slow_response_headers_use_read_timeout_not_connect_timeout(server, monkeypatch):
+    _Handler.response_body = b'{"ready":true}'
+    _Handler.header_delay = 0.05
+    monkeypatch.setattr("yamibo_mcp.services.hermes_api.CONNECT_TIMEOUT", 0.01)
+    monkeypatch.setattr("yamibo_mcp.services.hermes_api.READ_TIMEOUT", 0.2)
+
+    assert client(server).health() == {"ready": True}

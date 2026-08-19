@@ -64,6 +64,11 @@ class CompatClient:
         yield {"done": True}
 
 
+class TimeoutCompatClient(CompatClient):
+    def chat_completion(self, *, messages, stream=False):
+        raise HermesTimeoutError(operation="chat_completion")
+
+
 def test_missing_capability_endpoint_selects_chat_completions_fallback(tmp_path):
     from types import SimpleNamespace
 
@@ -75,6 +80,17 @@ def test_missing_capability_endpoint_selects_chat_completions_fallback(tmp_path)
     assert context["degraded"] is True
     assert context["hermes"]["capabilities_source"] == "inferred"
     assert "chat_completions" in context["hermes"]["capabilities"]
+
+
+def test_compatibility_probe_timeout_returns_diagnostic_context(tmp_path):
+    from types import SimpleNamespace
+
+    service = ChatService(settings=SimpleNamespace(data_dir=tmp_path), client=TimeoutCompatClient())
+    context = service.context()
+
+    assert context["ready"] is False
+    assert context["transport"] == "unavailable"
+    assert context["error"]["code"] == "HERMES_UNAVAILABLE"
 
 
 def test_chat_completions_fallback_reuses_local_sessions_and_run_events(tmp_path):
