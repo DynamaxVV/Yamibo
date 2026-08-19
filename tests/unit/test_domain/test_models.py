@@ -9,7 +9,7 @@ from yamibo_mcp.time_utils import utc_after_iso, utc_now, utc_now_iso
 class TestJobStatus:
     def test_all_expected_values(self):
         expected = {"queued", "running", "paused", "succeeded", "partial", "failed",
-                    "superseded", "interrupted", "retrying", "cancel_requested", "cancelled"}
+                    "interrupted", "retrying", "cancel_requested", "cancelled"}
         actual = {s.value for s in JobStatus}
         assert actual == expected
 

@@ -62,12 +62,6 @@ export function JobDetail() {
     [t('paused_at'), formatDateTime(job.paused_at)],
     [t('original_url'), job.url ? <a href={job.url} target="_blank" rel="noreferrer">{job.url}</a> : '-'],
     [t('tid'), job.tid ? <Link to={`/threads/${job.tid}`}>{job.tid}</Link> : '-'],
-    [t('rerun_status'), job.rerun_job_id ? (
-      <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-        <Link to={`/jobs/${job.rerun_job_id}`}>{job.rerun_job_id}</Link>
-        <Badge status={job.rerun_job_status} />
-      </span>
-    ) : '-'],
     [lang === 'en' ? 'Failure type' : '失败类型', (() => {
       const kind = job.failure_kind || getJobFailureKind(job)
       return kind ? <span className="badge badge-muted">{formatJobFailureKind(kind, lang)}</span> : '-'

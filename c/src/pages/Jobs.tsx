@@ -424,7 +424,7 @@ export function Jobs() {
     }
   }
 
-  const batchDeleteKey = (status === 'succeeded' || status === 'failed' || status === 'interrupted' || status === 'partial' || status === 'superseded') ? status : null
+  const batchDeleteKey = (status === 'succeeded' || status === 'failed' || status === 'interrupted' || status === 'partial') ? status : null
   const pagedIds = jobs.map(j => j.job_id)
   const allPagedSelected = pagedIds.length > 0 && pagedIds.every(id => selectedIds.has(id))
   const canRetrySelected = selectedJobs.some(job => job.status === 'failed' || job.status === 'partial' || job.status === 'interrupted')
@@ -600,12 +600,6 @@ export function Jobs() {
               {column('status')?.visible && <td>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'center', justifyContent: 'center' }}>
                   <Badge status={j.status} />
-                  {j.status === 'superseded' && j.rerun_job_status && (
-                    <div style={{ display: 'inline-flex', gap: 4, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'center', fontSize: 11, color: 'var(--text-tertiary)' }}>
-                      <span>{t('rerun_status')}</span>
-                      <Badge status={j.rerun_job_status} />
-                    </div>
-                  )}
                   {(() => {
                     const kind = j.failure_kind || getJobFailureKind(j)
                     return kind ? <span className="badge badge-muted">{formatJobFailureKind(kind, lang)}</span> : null

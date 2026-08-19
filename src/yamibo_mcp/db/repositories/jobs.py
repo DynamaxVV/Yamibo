@@ -154,15 +154,8 @@ class JobsRepository:
             if exact_matches:
                 keeper = exact_matches[-1]
                 superseded_job_ids = [row["job_id"] for row in exact_matches[:-1]]
-                self._mark_superseded_rows(superseded_job_ids, superseded_by_job_id=keeper["job_id"], now=now)
+                self._delete_jobs_without_commit(superseded_job_ids)
                 self.conn.commit()
-                for job_id in superseded_job_ids:
-                    self._append_event(
-                        job_id,
-                        "job.superseded",
-                        status=JobStatus.SUPERSEDED.value,
-                        payload={"superseded_by_job_id": keeper["job_id"]},
-                    )
                 LOG.info(
                     "Reused queued job %s for job_type=%s tid=%s payload_deduped=%s",
                     keeper["job_id"],
@@ -200,19 +193,12 @@ class JobsRepository:
             exact_matches = [row for row in queued_matches if _loads(row["payload_json"]) == normalized_payload]
             superseded_job_ids = [row["job_id"] for row in exact_matches if row["job_id"] != job_id]
             if superseded_job_ids:
-                self._mark_superseded_rows(superseded_job_ids, superseded_by_job_id=job_id, now=now)
+                self._delete_jobs_without_commit(superseded_job_ids)
         self.conn.commit()
         self._append_event(job_id, "job.created", status=JobStatus.QUEUED.value)
         emit(LOG, logging.INFO, "job.created", f"Job {job_id} created",
              result="success", status=JobStatus.QUEUED.value,
              job_id=job_id, job_type=job_type, tid=tid)
-        for superseded_job_id in superseded_job_ids:
-            self._append_event(
-                superseded_job_id,
-                "job.superseded",
-                status=JobStatus.SUPERSEDED.value,
-                payload={"superseded_by_job_id": job_id},
-            )
         return self.get(job_id)
 
     def rerun(self, job_id: str) -> Job:
@@ -233,7 +219,7 @@ class JobsRepository:
                 """,
                 (
                     next_job_id,
-                    source.job_id,
+                    None,
                     source.job_type,
                     source.tid,
                     json.dumps(source.payload or {}, ensure_ascii=False),
@@ -244,35 +230,12 @@ class JobsRepository:
                     now,
                 ),
             )
-            cur = self.conn.execute(
-                """
-                UPDATE jobs
-                SET status = ?, updated_at = ?, finished_at = ?, lease_until = NULL
-                WHERE job_id = ? AND status IN (?, ?, ?)
-                """,
-                (
-                    JobStatus.SUPERSEDED.value,
-                    now,
-                    now,
-                    source.job_id,
-                    JobStatus.PARTIAL.value,
-                    JobStatus.FAILED.value,
-                    JobStatus.INTERRUPTED.value,
-                ),
-            )
-            if cur.rowcount != 1:
-                raise ValueError("Failed to supersede source job")
+            self._delete_jobs_without_commit([source.job_id])
             self.conn.commit()
         except Exception:
             self.conn.rollback()
             raise
         self._append_event(next_job_id, "job.created", status=JobStatus.QUEUED.value)
-        self._append_event(
-            source.job_id,
-            "job.superseded",
-            status=JobStatus.SUPERSEDED.value,
-            payload={"superseded_by_job_id": next_job_id},
-        )
         return self.get(next_job_id)
 
     def get(self, job_id: str) -> Job:
@@ -287,6 +250,9 @@ class JobsRepository:
         if status:
             clauses.append("status = ?")
             params.append(status)
+        else:
+            clauses.append("status != ?")
+            params.append("superseded")
         sql = "SELECT * FROM jobs"
         if clauses:
             sql += f" WHERE {' AND '.join(clauses)}"
@@ -301,7 +267,7 @@ class JobsRepository:
         if status:
             row = self.conn.execute("SELECT COUNT(*) AS n FROM jobs WHERE status = ?", (status,)).fetchone()
         else:
-            row = self.conn.execute("SELECT COUNT(*) AS n FROM jobs").fetchone()
+            row = self.conn.execute("SELECT COUNT(*) AS n FROM jobs WHERE status != ?", ("superseded",)).fetchone()
         return int(row["n"] or 0)
 
     def count_by_job_type_status(self, *, job_type: str, statuses: tuple[str, ...]) -> int:
@@ -441,31 +407,12 @@ class JobsRepository:
             (job_type, tid, JobStatus.QUEUED.value),
         ).fetchall()
 
-    def _mark_superseded_rows(self, job_ids: list[str], *, superseded_by_job_id: str, now: str) -> None:
+    def _delete_jobs_without_commit(self, job_ids: list[str]) -> None:
         if not job_ids:
             return
-        self.conn.executemany(
-            """
-            UPDATE jobs
-            SET status = ?, updated_at = ?, finished_at = ?, lease_until = NULL
-            WHERE job_id = ? AND status = ?
-            """,
-            [
-                (
-                    JobStatus.SUPERSEDED.value,
-                    now,
-                    now,
-                    job_id,
-                    JobStatus.QUEUED.value,
-                )
-                for job_id in job_ids
-            ],
-        )
-        LOG.info(
-            "Superseded duplicate queued job(s) %s in favor of %s",
-            job_ids,
-            superseded_by_job_id,
-        )
+        placeholders = ",".join("?" for _ in job_ids)
+        self.conn.execute(f"DELETE FROM job_events WHERE job_id IN ({placeholders})", job_ids)
+        self.conn.execute(f"DELETE FROM jobs WHERE job_id IN ({placeholders})", job_ids)
 
     def acquire(self, job_id: str, worker_id: str, lease_seconds: int) -> Job:
         def _acquire() -> sqlite3.Cursor:
@@ -923,7 +870,7 @@ class JobsRepository:
         return int(row["c"]) if row is not None else 0
 
     def count_by_status(self) -> dict[str, int]:
-        rows = self.conn.execute("SELECT status, COUNT(*) AS cnt FROM jobs GROUP BY status").fetchall()
+        rows = self.conn.execute("SELECT status, COUNT(*) AS cnt FROM jobs WHERE status != ? GROUP BY status", ("superseded",)).fetchall()
         counts = {"all": 0}
         for row in rows:
             counts[str(row["status"])] = int(row["cnt"])

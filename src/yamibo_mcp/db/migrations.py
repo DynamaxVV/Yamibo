@@ -329,6 +329,13 @@ def migrate(conn: Any, *, schema: str | None = None) -> None:
     _ensure_column(conn, "floors", "reply_text", "TEXT")
     _ensure_column(conn, "floors", "publisher_uid", "TEXT")
     _seed_default_forums(conn)
+    # The superseded Job state was removed. Clean old rows on every SQLite
+    # migration so databases upgraded from older releases converge safely.
+    conn.execute(
+        "DELETE FROM job_events WHERE job_id IN (SELECT job_id FROM jobs WHERE status = ?)",
+        ("superseded",),
+    )
+    conn.execute("DELETE FROM jobs WHERE status = ?", ("superseded",))
     conn.execute(
         "INSERT OR IGNORE INTO schema_migrations(version) VALUES (?)",
         (1,),

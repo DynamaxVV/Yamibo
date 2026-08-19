@@ -21,7 +21,7 @@ from yamibo_mcp.server.resource_uris import (
 from yamibo_mcp.yamibo.urls import thread_url_from_tid
 
 
-_TERMINAL_JOB_STATUSES = {"succeeded", "partial", "failed", "cancelled", "superseded"}
+_TERMINAL_JOB_STATUSES = {"succeeded", "partial", "failed", "cancelled"}
 _RESULT_READY_STATUSES = {"succeeded", "partial"}
 _ACTIVE_JOB_STATUSES = {"queued", "running", "retrying", "interrupted", "cancel_requested", "paused"}
 _USER_ACTION_ERROR_CODES = {
@@ -92,8 +92,6 @@ def _job_execution_diagnostics(job) -> dict[str, Any]:
                 summary = "Job completed partially; archived content is usually readable, but diagnostics and events should be checked."
         elif job.status == "failed":
             summary = "Job failed; inspect job events before retrying."
-        elif job.status == "superseded":
-            summary = "Job was superseded by a rerun and is kept for history only."
         elif job.status == "cancelled":
             summary = "Job was cancelled before completion."
         else:
@@ -211,7 +209,7 @@ def _job_recovery(job, diagnostics: dict[str, Any]) -> dict[str, Any]:
         return {**base, "classification": "user_action_required", "owner": "user", "retryable": False, "requires_user_action": True, "message": "The failure requires user action such as cookies, permissions, configuration, or a valid request; do not retry automatically."}
     if job.status == "failed":
         return {**base, "classification": "inspect_failure", "owner": "agent", "retryable": False, "requires_user_action": False, "message": "No deterministic recovery path is known; inspect events before deciding next steps.", "next_actions": [_action("read_job_events", job.job_id, "Read failure events before considering any new Job.")]}
-    if job.status in {"cancelled", "superseded"}:
+    if job.status == "cancelled":
         return {**base, "classification": "stopped", "owner": "system", "retryable": False, "requires_user_action": False, "message": "Job is stopped and should not be retried as the original Job."}
     return {**base, "classification": "inspect_failure", "owner": "agent", "retryable": False, "requires_user_action": False, "message": "Job state is not recognized; inspect events.", "next_actions": [_action("read_job_events", job.job_id, "Read events for the unrecognized Job state.")]}
 

@@ -66,6 +66,22 @@ class TestMigrationAddsThreadColumns:
 
 
 class TestMigrationBackfill:
+    def test_removed_superseded_jobs_are_cleaned(self, db):
+        db.execute(
+            "INSERT INTO jobs (job_id, job_type, payload_json, status) VALUES (?, ?, ?, ?)",
+            ("legacy-superseded", "noop", "{}", "superseded"),
+        )
+        db.execute(
+            "INSERT INTO job_events (job_id, event_type, status) VALUES (?, ?, ?)",
+            ("legacy-superseded", "job.superseded", "superseded"),
+        )
+        db.commit()
+
+        migrate(db)
+
+        assert db.execute("SELECT COUNT(*) FROM jobs WHERE status = 'superseded'").fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM job_events WHERE job_id = 'legacy-superseded'").fetchone()[0] == 0
+
     def test_existing_threads_backfilled_forum_id(self, db):
         # Arrange — insert a thread via raw SQL (simulating old schema data)
         db.execute(

@@ -294,19 +294,14 @@ def job_failure_kind(job, *, artifacts: dict[str, object] | None = None) -> str 
 
 def job_rows_to_dicts(jobs, conn=None, include_details: bool = True) -> list[dict]:
     thread_titles_by_tid = None
-    rerun_jobs_by_parent = None
     if conn is not None:
         thread_titles_by_tid = thread_titles_by_tids(conn, [job_tid(job) for job in jobs if job_tid(job) is not None])
-        rerun_jobs_by_parent = JobsRepository(conn).get_latest_child_jobs(
-            [job.job_id for job in jobs if job.status == "superseded"]
-        )
     return [
         job_to_dict(
             job,
             conn,
             include_details=include_details,
             thread_titles_by_tid=thread_titles_by_tid,
-            rerun_jobs_by_parent=rerun_jobs_by_parent,
         )
         for job in jobs
     ]
@@ -317,18 +312,12 @@ def job_to_dict(
     conn=None,
     include_details: bool = True,
     thread_titles_by_tid: dict[int, str] | None = None,
-    rerun_jobs_by_parent: dict[str, object] | None = None,
 ) -> dict:
     payload = job.payload if isinstance(job.payload, dict) else {}
     artifacts = job.artifacts if isinstance(job.artifacts, dict) else {}
     _tid = job_tid(job)
     thread_title = thread_titles_by_tid.get(int(_tid)) if thread_titles_by_tid is not None and _tid is not None and int(_tid) in thread_titles_by_tid else None
     allow_thread_lookup = thread_titles_by_tid is None
-    rerun_job = None
-    if rerun_jobs_by_parent is not None and job.status == "superseded":
-        rerun_job = rerun_jobs_by_parent.get(job.job_id)
-    elif conn is not None and job.status == "superseded":
-        rerun_job = JobsRepository(conn).get_latest_child_job(job.job_id)
     description = describe_job(conn, job, thread_title=thread_title, allow_thread_lookup=allow_thread_lookup) if conn else job.job_type
     description_en = describe_job_en(conn, job, thread_title=thread_title, allow_thread_lookup=allow_thread_lookup) if conn else job.job_type
     data = {
@@ -340,8 +329,6 @@ def job_to_dict(
         "error_message": job.error_message, "paused_at": getattr(job, "paused_at", None), "created_at": job.created_at,
         "updated_at": job.updated_at, "finished_at": job.finished_at,
         "failure_kind": job_failure_kind(job, artifacts=artifacts),
-        "rerun_job_id": rerun_job.job_id if rerun_job is not None else None,
-        "rerun_job_status": rerun_job.status if rerun_job is not None else None,
     }
     data["url"] = thread_url_from_tid(int(_tid)) if _tid is not None else None
     if include_details:

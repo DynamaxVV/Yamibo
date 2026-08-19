@@ -456,40 +456,36 @@ class TestRetryLater:
 
 
 class TestRerun:
-    def test_rerun_moves_partial_job_to_superseded_and_creates_queued_copy(self, db):
+    def test_rerun_deletes_partial_job_and_creates_queued_copy(self, db):
         repo = JobsRepository(db)
         job = repo.create("rag_index", tid=42, payload={"tid": 42, "force": False})
         repo.partial(job.job_id, artifacts={"warning": "embedding failed: 'data'"})
 
         next_job = repo.rerun(job.job_id)
 
-        source = repo.get(job.job_id)
-        assert source.status == JobStatus.SUPERSEDED
-        assert source.finished_at is not None
-        assert source.artifacts == {"warning": "embedding failed: 'data'"}
+        with pytest.raises(JobNotFound):
+            repo.get(job.job_id)
         assert next_job.status == JobStatus.QUEUED
         assert next_job.job_type == "rag_index"
         assert next_job.tid == 42
         assert next_job.payload == {"tid": 42, "force": False}
         parent_row = db.execute("SELECT parent_job_id FROM jobs WHERE job_id = ?", (next_job.job_id,)).fetchone()
-        assert parent_row["parent_job_id"] == job.job_id
+        assert parent_row["parent_job_id"] is None
 
-    def test_rerun_moves_failed_job_to_superseded_and_keeps_payload(self, db):
+    def test_rerun_deletes_failed_job_and_keeps_payload(self, db):
         repo = JobsRepository(db)
         job = repo.create("sync_thread", tid=99, payload={"tid": 99})
         repo.fail(job.job_id, "HTTP_500", "boom")
 
         next_job = repo.rerun(job.job_id)
 
-        source = repo.get(job.job_id)
-        assert source.status == JobStatus.SUPERSEDED
-        assert source.error_code == "HTTP_500"
-        assert source.error_message == "boom"
+        with pytest.raises(JobNotFound):
+            repo.get(job.job_id)
         assert next_job.status == JobStatus.QUEUED
         parent_row = db.execute("SELECT parent_job_id FROM jobs WHERE job_id = ?", (next_job.job_id,)).fetchone()
-        assert parent_row["parent_job_id"] == job.job_id
+        assert parent_row["parent_job_id"] is None
 
-    def test_rerun_moves_interrupted_job_to_superseded_and_keeps_payload(self, db):
+    def test_rerun_deletes_interrupted_job_and_keeps_payload(self, db):
         repo = JobsRepository(db)
         job = repo.create("sync_thread", tid=100, payload={"tid": 100})
         db.execute(
@@ -500,10 +496,8 @@ class TestRerun:
 
         next_job = repo.rerun(job.job_id)
 
-        source = repo.get(job.job_id)
-        assert source.status == JobStatus.SUPERSEDED
-        assert source.error_code == "worker_lost"
-        assert source.error_message == "lease expired"
+        with pytest.raises(JobNotFound):
+            repo.get(job.job_id)
         assert next_job.status == JobStatus.QUEUED
         assert next_job.payload == {"tid": 100}
 

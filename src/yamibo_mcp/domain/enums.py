@@ -10,7 +10,6 @@ class JobStatus(StrEnum):
     SUCCEEDED = "succeeded"
     PARTIAL = "partial"
     FAILED = "failed"
-    SUPERSEDED = "superseded"
     INTERRUPTED = "interrupted"
     RETRYING = "retrying"
     CANCEL_REQUESTED = "cancel_requested"

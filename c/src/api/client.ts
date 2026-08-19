@@ -42,8 +42,6 @@ export interface JobSummary {
   stage: string | null
   tid: number | null
   url: string | null
-  rerun_job_id: string | null
-  rerun_job_status: string | null
   description: string
   description_en: string
   progress_current: number
