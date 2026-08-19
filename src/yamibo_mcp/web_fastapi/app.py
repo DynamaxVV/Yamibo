@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import mimetypes
 import os
+import logging
 import threading
 from pathlib import Path
 from urllib.parse import unquote
@@ -17,6 +18,8 @@ from starlette.responses import FileResponse, HTMLResponse, JSONResponse, PlainT
 from yamibo_mcp.config import load_settings
 from yamibo_mcp import __version__
 
+log = logging.getLogger(__name__)
+
 
 def create_app(settings) -> FastAPI:
     app = FastAPI(title="Yamibo Archiver", version=__version__)
@@ -30,6 +33,16 @@ def create_app(settings) -> FastAPI:
     app.state.settings = settings
     from yamibo_mcp.services.web_chat import ChatService
     app.state.chat_service = ChatService(settings)
+
+    @app.on_event("startup")
+    def initialize_chat_service():
+        # Select Hermes Runs or the OpenAI-compatible fallback before the first
+        # browser request.  A down Hermes must not prevent the web console from
+        # starting; the context endpoint will expose the safe diagnostic state.
+        try:
+            app.state.chat_service.context(force=True)
+        except Exception:
+            log.exception("chat transport startup probe failed")
 
     @app.on_event("shutdown")
     def shutdown_chat_service():

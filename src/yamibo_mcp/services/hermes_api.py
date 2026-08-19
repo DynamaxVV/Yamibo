@@ -98,6 +98,48 @@ class HermesApiClient:
     def models(self) -> dict[str, Any]:
         return self._json_request("GET", "/v1/models", operation="models")
 
+    def chat_completion(self, *, messages: list[Mapping[str, Any]], stream: bool = False) -> dict[str, Any]:
+        """Call the OpenAI-compatible Hermes chat endpoint.
+
+        This is used both for capability probing and by the degraded transport
+        when Hermes does not expose the Sessions/Runs API.
+        """
+        return self._json_request(
+            "POST",
+            "/v1/chat/completions",
+            body={"model": self.model, "messages": messages, "stream": stream},
+            operation="chat_completion",
+        )
+
+    def iter_chat_completion_events(
+        self, *, messages: list[Mapping[str, Any]]
+    ) -> Iterator[dict[str, Any]]:
+        """Yield decoded OpenAI-compatible SSE chat completion chunks."""
+        response, conn = self._open(
+            "POST",
+            "/v1/chat/completions",
+            body={"model": self.model, "messages": messages, "stream": True},
+            operation="chat_completion_stream",
+            accept_sse=True,
+        )
+        try:
+            if response.status >= 400:
+                self._raise_http(response.status, "chat_completion_stream")
+            for event in parse_sse_events(response):
+                raw_data = str(event.get("data") or "").strip()
+                if raw_data == "[DONE]":
+                    yield {"done": True}
+                    continue
+                if event.get("event") == "protocol.error" or not isinstance(event.get("json"), dict):
+                    raise HermesProtocolError(operation="chat_completion_stream")
+                yield event["json"]
+        except (socket.timeout, TimeoutError) as exc:
+            raise HermesTimeoutError(operation="chat_completion_stream") from exc
+        except (OSError, ConnectionError) as exc:
+            raise HermesUnavailableError(operation="chat_completion_stream") from exc
+        finally:
+            conn.close()
+
     def list_sessions(
         self, *, limit: int, offset: int, source: str | None = None, include_children: bool | None = None
     ) -> dict[str, Any]:

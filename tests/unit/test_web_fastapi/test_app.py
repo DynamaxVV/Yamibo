@@ -265,7 +265,26 @@ def test_logs_endpoint(client):
 def test_chat_context_returns_runtime_payload(client):
     resp = client.get("/api/chat/context")
     assert resp.status_code == 200
-    assert resp.json()["transport"] == "hermes_runs"
+    payload = resp.json()
+    assert payload["transport"] in {"hermes_runs", "hermes_http", "unavailable"}
+    assert "mode" in payload
+
+
+def test_chat_transport_is_probed_during_app_startup(test_settings, monkeypatch):
+    from fastapi.testclient import TestClient
+    from yamibo_mcp.services.web_chat import ChatService
+    from yamibo_mcp.web_fastapi.app import create_app
+
+    calls = []
+
+    def startup_probe(self, **kwargs):
+        calls.append(kwargs)
+        return {"ready": False}
+
+    monkeypatch.setattr(ChatService, "context", startup_probe)
+    with TestClient(create_app(test_settings)) as live_client:
+        assert live_client.get("/api/health").status_code == 200
+    assert calls == [{"force": True}]
 
 
 def test_chat_turn_removed(client):

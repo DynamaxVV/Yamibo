@@ -103,6 +103,22 @@ def test_contract_methods_paths_query_auth_and_bodies(server):
     assert run_body == {"model": "test-model", "session_id": "id/with space", "input": "hello", "conversation_history": []}
 
 
+def test_chat_completion_contract(server):
+    c = client(server)
+    assert c.chat_completion(messages=[{"role": "user", "content": "hello"}], stream=False) == {}
+    request = _Handler.requests[0]
+    assert request[0:2] == ("POST", "/v1/chat/completions")
+    assert json.loads(request[3]) == {"model": "test-model", "messages": [{"role": "user", "content": "hello"}], "stream": False}
+
+
+def test_chat_completion_sse_decodes_openai_chunks_and_done(server):
+    _Handler.response_type = "text/event-stream"
+    _Handler.response_body = b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\n'
+    events = list(client(server).iter_chat_completion_events(messages=[{"role": "user", "content": "hello"}]))
+    assert events == [{"choices": [{"delta": {"content": "hi"}}]}, {"done": True}]
+    assert _Handler.requests[0][1] == "/v1/chat/completions"
+
+
 def test_session_and_approval_bodies_are_sent_exactly(server):
     c = client(server)
     c.create_session(title="new", model="test-model")

@@ -3,7 +3,7 @@ from unittest.mock import Mock
 import pytest
 
 from yamibo_mcp.services.web_chat import ChatService, ChatServiceError, REQUIRED_CAPABILITIES
-from yamibo_mcp.services.hermes_api import HermesTimeoutError
+from yamibo_mcp.services.hermes_api import HermesApiError, HermesTimeoutError
 
 
 class Client:
@@ -50,6 +50,47 @@ def test_timeout_maps_to_unavailable():
     c = Client(); c.health = Mock(side_effect=HermesTimeoutError())
     with pytest.raises(ChatServiceError) as err: ChatService(client=c).probe_capabilities()
     assert (err.value.code, err.value.http_status, err.value.retryable) == ("HERMES_UNAVAILABLE", 503, True)
+
+
+class CompatClient:
+    endpoint = "http://hermes:18642"; api_key = "secret"; model = "hermes-agent"
+
+    def health(self): return {"version": "0.10.0"}
+    def capabilities(self): raise HermesApiError("HERMES_UPSTREAM_HTTP_ERROR", "not found", status=404, operation="capabilities")
+    def models(self): return {"data": [{"id": "hermes-agent"}]}
+    def chat_completion(self, *, messages, stream=False): return {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+    def iter_chat_completion_events(self, *, messages):
+        yield {"choices": [{"delta": {"role": "assistant", "content": "ok"}}]}
+        yield {"done": True}
+
+
+def test_missing_capability_endpoint_selects_chat_completions_fallback(tmp_path):
+    from types import SimpleNamespace
+
+    service = ChatService(settings=SimpleNamespace(data_dir=tmp_path), client=CompatClient())
+    context = service.context()
+    assert context["ready"] is True
+    assert context["mode"] == "hermes_http"
+    assert context["transport"] == "hermes_http"
+    assert context["degraded"] is True
+    assert context["hermes"]["capabilities_source"] == "inferred"
+    assert "chat_completions" in context["hermes"]["capabilities"]
+
+
+def test_chat_completions_fallback_reuses_local_sessions_and_run_events(tmp_path):
+    from types import SimpleNamespace
+
+    service = ChatService(settings=SimpleNamespace(data_dir=tmp_path), client=CompatClient())
+    session = service.create_session(title="compat")
+    run = service.start_run(session["id"], "hello")
+    service.registry.join(run.run_id, timeout=2)
+    subscription = service.subscribe(run.run_id)
+    events = [subscription.get(timeout=1), subscription.get(timeout=1), subscription.get(timeout=1)]
+    subscription.close()
+    assert [event.type for event in events] == ["message.delta", "run.completed", "session.reconciled"]
+    messages = service.get_messages(session["id"])["messages"]
+    assert [item["role"] for item in messages] == ["user", "assistant"]
+    assert messages[-1]["content"] == "ok"
 
 
 def test_session_envelopes_are_normalized_to_local_contract():
