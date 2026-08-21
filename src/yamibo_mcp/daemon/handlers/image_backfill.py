@@ -34,7 +34,7 @@ from yamibo_mcp.yamibo.account_pool import borrow_yamibo_client, next_permission
 from yamibo_mcp.yamibo.anti_bot import ensure_no_maintenance_pause
 from yamibo_mcp.yamibo.parsers.thread_detail import parse_thread_snapshot
 from yamibo_mcp.yamibo.proxy_pool import activate_proxy_binding, select_thread_proxy
-from yamibo_mcp.yamibo.urls import stable_attachment_id
+from yamibo_mcp.yamibo.urls import remote_image_identity, stable_attachment_id
 
 
 LOG = logging.getLogger(__name__)
@@ -516,71 +516,76 @@ def _reconcile_selected_targets(
 
     if not reconciled:
         return reconciled
-    missing = _thread_missing_urls_from_metadata(metadata)
-    missing = [url for url in missing if url not in reconciled]
-    metadata_changed = False
-    for floor in metadata.get("floors") or []:
-        if not isinstance(floor, dict):
-            continue
-        slots = floor.get("image_slots") or []
-        floor_changed = False
-        for slot in slots:
-            if not isinstance(slot, dict) or str(slot.get("remote_url") or "") not in reconciled:
-                continue
-            url = str(slot["remote_url"])
-            slot["local_path"] = str(expected_paths[url].relative_to(paths.thread_dir(tid)))
-            slot["status"] = "shared" if _classify_backfill_image(url) in {"static", "decorative"} else "content"
-            floor.setdefault("content_image_urls", [])
-            if slot["status"] == "content" and slot["local_path"] not in floor["content_image_urls"]:
-                floor["content_image_urls"].append(slot["local_path"])
-            floor.setdefault("image_urls", [])
-            if slot["status"] == "content" and slot["local_path"] not in floor["image_urls"]:
-                floor["image_urls"].append(slot["local_path"])
-            floor["missing_image_urls"] = [value for value in floor.get("missing_image_urls") or [] if value != url]
-            metadata_changed = True
-            floor_changed = True
-        if floor_changed:
-            # Rebuild the materialized-path arrays from the original remote
-            # URL order.  Appending a reconciled path would shift every later
-            # slot (the exact corruption this endpoint repairs).
-            slot_by_url = {
-                str(slot.get("remote_url")): slot
-                for slot in slots
-                if isinstance(slot, dict) and slot.get("remote_url")
-            }
-            ordered_urls = list(floor.get("remote_image_urls") or [])
-            ordered_content = [
-                str(slot_by_url[url].get("local_path"))
-                for url in ordered_urls
-                if url in slot_by_url and slot_by_url[url].get("local_path")
-                and slot_by_url[url].get("status") == "content"
-            ]
-            ordered_non_export = [
-                str(slot_by_url[url].get("local_path"))
-                for url in ordered_urls
-                if url in slot_by_url and slot_by_url[url].get("local_path")
-                and slot_by_url[url].get("status") == "non_export"
-            ]
-            ordered_shared = [
-                str(slot_by_url[url].get("local_path"))
-                for url in ordered_urls
-                if url in slot_by_url and slot_by_url[url].get("local_path")
-                and slot_by_url[url].get("status") == "shared"
-            ]
-            floor["content_image_urls"] = ordered_content
-            floor["non_export_image_urls"] = ordered_non_export
-            floor["shared_image_urls"] = ordered_shared
-            floor["image_urls"] = ordered_content + ordered_non_export
-    metadata["missing_image_urls"] = missing
-    metadata["archive_status"] = "partial" if missing or metadata.get("missing_shared_image_urls") else "complete"
-    if metadata_changed:
-        atomic_write_text(paths.thread_metadata(tid), json.dumps(metadata, ensure_ascii=False, indent=2))
+    asset_rows = AssetsRepository(conn).list_assets(tid)
+    missing, missing_shared = _refresh_metadata_from_asset_rows(
+        paths=paths,
+        tid=tid,
+        metadata=metadata,
+        asset_rows=asset_rows,
+    )
+    atomic_write_text(paths.thread_metadata(tid), json.dumps(metadata, ensure_ascii=False, indent=2))
     conn.execute(
         "UPDATE threads SET missing_images_json = ?, archive_status = ? WHERE tid = ?",
-        (json.dumps(missing, ensure_ascii=False), metadata["archive_status"], tid),
+        (json.dumps([*missing, *missing_shared], ensure_ascii=False), metadata["archive_status"], tid),
     )
     conn.commit()
     return reconciled
+
+
+def _refresh_metadata_from_asset_rows(*, paths: StoragePaths, tid: int, metadata: dict[str, Any], asset_rows) -> tuple[list[str], list[str]]:
+    assets_by_identity = {
+        remote_image_identity(str(row["remote_url"])): row
+        for row in asset_rows
+        if row["remote_url"]
+    }
+    missing_images: list[str] = []
+    missing_shared: list[str] = []
+    archived_images: dict[str, list[str]] = {}
+    non_export_images: dict[str, list[str]] = {}
+    shared_images: dict[str, list[str]] = {}
+    for floor in metadata.get("floors") or []:
+        if not isinstance(floor, dict):
+            continue
+        pid_key = str(floor.get("pid"))
+        remote_urls = [str(url) for url in (floor.get("remote_image_urls") or [])]
+        slots: list[dict[str, str | None]] = []
+        for url in remote_urls:
+            image_class = _classify_backfill_image(url)
+            row = assets_by_identity.get(remote_image_identity(url))
+            local_path = str(row["local_path"]) if row is not None and row["local_path"] else None
+            if local_path and _is_valid_image_file(_asset_path(tid=tid, local_path=local_path, paths=paths)):
+                if image_class in {"static", "decorative"}:
+                    status = "shared"
+                    shared_images.setdefault(pid_key, []).append(local_path)
+                elif bool(row["exportable"]):
+                    status = "content"
+                    archived_images.setdefault(pid_key, []).append(local_path)
+                else:
+                    status = "non_export"
+                    non_export_images.setdefault(pid_key, []).append(local_path)
+            elif image_class == "embedded":
+                local_path = None
+                status = "skipped"
+            else:
+                local_path = None
+                status = "missing_shared" if image_class in {"static", "decorative"} else "missing"
+                (missing_shared if status == "missing_shared" else missing_images).append(url)
+            slots.append({"remote_url": url, "local_path": local_path, "status": status})
+        floor["image_slots"] = slots
+        floor["content_image_urls"] = list(archived_images.get(pid_key, []))
+        floor["non_export_image_urls"] = list(non_export_images.get(pid_key, []))
+        floor["shared_image_urls"] = list(shared_images.get(pid_key, []))
+        floor["image_urls"] = [*floor["content_image_urls"], *floor["non_export_image_urls"]]
+        floor["missing_image_urls"] = [
+            slot["remote_url"] for slot in slots if slot["status"] in {"missing", "missing_shared"}
+        ]
+    metadata["archived_images"] = archived_images
+    metadata["non_export_images"] = non_export_images
+    metadata["shared_images"] = shared_images
+    metadata["missing_image_urls"] = _unique(missing_images)
+    metadata["missing_shared_image_urls"] = _unique(missing_shared)
+    metadata["archive_status"] = "partial" if missing_images or missing_shared else "complete"
+    return metadata["missing_image_urls"], metadata["missing_shared_image_urls"]
 
 
 def _thread_missing_urls_from_metadata(metadata: dict[str, Any]) -> list[str]:

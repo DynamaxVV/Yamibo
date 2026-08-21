@@ -13,6 +13,7 @@ from yamibo_mcp.daemon.handlers.image_backfill import (
     _image_slot_overrides_from_assets,
     _merge_assets,
     _missing_urls_from_assets,
+    _refresh_metadata_from_asset_rows,
     _resolve_selected_remote_urls,
     _selected_download_retries,
     _snapshot_for_missing_images,
@@ -166,6 +167,49 @@ def test_selected_asset_state_keeps_only_the_downloaded_slot_available():
     assert len(missing) == 64
     assert urls[12] not in missing
     assert missing_shared == []
+
+
+def test_reconcile_refreshes_rotated_asset_into_its_metadata_slot(tmp_path):
+    old = "https://bbs.yamibo.com/forum.php?mod=attachment&aid=MTYzODQzNHw1MWU2OTRkM3wxNzg3MjIyNzU3fDczNzQ5M3w1NzUwOTA%3D&nothumb=yes"
+    current = "https://bbs.yamibo.com/forum.php?mod=attachment&aid=MTYzODQzNHxmYjQzZDc3ZnwxNzg3MzI5ODk5fDczNzQ5M3w1NzUwOTA%3D&nothumb=yes"
+    missing_url = "https://bbs.yamibo.com/forum.php?mod=attachment&aid=MTYzODQzNXxiMTc0OGE1ZXwxNzg3MzI5ODk5fDczNzQ5M3w1NzUwOTA%3D&nothumb=yes"
+    paths = StoragePaths(tmp_path)
+    image_path = paths.thread_images_dir(575090) / "floor_001_13.png"
+    image_path.parent.mkdir(parents=True, exist_ok=True)
+    png = bytearray(b"\x89PNG\r\n\x1a\n" + b"\x00" * 108 + b"\x00\x00\x00\x00IEND\xaeB`\x82")
+    png[16:20] = (640).to_bytes(4, "big")
+    png[20:24] = (480).to_bytes(4, "big")
+    image_path.write_bytes(png)
+    metadata = {
+        "floors": [{
+            "pid": 41605934,
+            "remote_image_urls": [missing_url, current],
+            "image_slots": [
+                {"remote_url": missing_url, "local_path": "images/floor_001_13.png", "status": "non_export"},
+                {"remote_url": current, "local_path": None, "status": "missing"},
+            ],
+        }],
+        "archive_status": "complete",
+        "missing_image_urls": [],
+    }
+    rows = [
+        {"remote_url": missing_url, "local_path": None, "exportable": False},
+        {"remote_url": old, "local_path": "images/floor_001_13.png", "exportable": False},
+    ]
+
+    missing, missing_shared = _refresh_metadata_from_asset_rows(
+        paths=paths,
+        tid=575090,
+        metadata=metadata,
+        asset_rows=rows,
+    )
+
+    slots = metadata["floors"][0]["image_slots"]
+    assert slots[0] == {"remote_url": missing_url, "local_path": None, "status": "missing"}
+    assert slots[1] == {"remote_url": current, "local_path": "images/floor_001_13.png", "status": "non_export"}
+    assert missing == [missing_url]
+    assert missing_shared == []
+    assert metadata["archive_status"] == "partial"
 
 
 def test_rotated_selected_asset_keeps_existing_local_path_for_other_assets(tmp_path):
