@@ -21,6 +21,7 @@ def build_obsidian_context_payload(
     skipped_image_urls: dict[int, list[str]] | None = None,
     missing_image_urls: list[str] | None = None,
     missing_shared_image_urls: list[str] | None = None,
+    image_slot_overrides: dict[str, dict[str, str | None]] | None = None,
     context_source: str = "archive_materialize",
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     forum = resolve_forum(forum_id)
@@ -54,6 +55,7 @@ def build_obsidian_context_payload(
                 skipped_image_urls=skipped_image_urls or {},
                 missing_image_urls=set(missing_image_urls or []),
                 missing_shared_image_urls=set(missing_shared_image_urls or []),
+                image_slot_overrides=image_slot_overrides or {},
             )
             for floor in snapshot.floors
         ],
@@ -96,6 +98,7 @@ def _render_floor_payload(
     skipped_image_urls: dict[int, list[str]],
     missing_image_urls: set[str],
     missing_shared_image_urls: set[str],
+    image_slot_overrides: dict[str, dict[str, str | None]],
 ) -> dict[str, Any]:
     return {
         "pid": floor.pid,
@@ -113,5 +116,6 @@ def _render_floor_payload(
             skipped_image_urls=list(skipped_image_urls.get(floor.pid, [])),
             missing_image_urls=missing_image_urls,
             missing_shared_image_urls=missing_shared_image_urls,
+            slot_overrides=image_slot_overrides,
         ),
     }

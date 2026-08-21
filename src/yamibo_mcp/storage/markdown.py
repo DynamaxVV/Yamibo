@@ -198,6 +198,7 @@ def render_thread_metadata(
     skipped_image_urls: dict[int, list[str]] | None = None,
     missing_image_urls: list[str] | None = None,
     missing_shared_image_urls: list[str] | None = None,
+    image_slot_overrides: dict[str, dict[str, str | None]] | None = None,
     context_format_version: str = CONTEXT_FORMAT_ARCHIVE_V1,
     cleaner_version: str | None = None,
     context_source_hash: str | None = None,
@@ -229,6 +230,7 @@ def render_thread_metadata(
             skipped_image_urls=floor["skipped_image_urls"],
             missing_image_urls=missing_images,
             missing_shared_image_urls=missing_shared,
+            slot_overrides=image_slot_overrides,
         )
     data["context_path"] = context_path
     data["context_format_version"] = context_format_version
@@ -254,6 +256,7 @@ def _build_floor_image_slots(
     skipped_image_urls: list[str],
     missing_image_urls: set[str],
     missing_shared_image_urls: set[str],
+    slot_overrides: dict[str, dict[str, str | None]] | None = None,
 ) -> list[dict[str, str | None]]:
     slots: list[dict[str, str | None]] = []
     content_index = 0
@@ -261,6 +264,12 @@ def _build_floor_image_slots(
     shared_index = 0
     skipped_set = set(skipped_image_urls)
     for remote_url in remote_image_urls:
+        override = (slot_overrides or {}).get(remote_url)
+        if override is not None:
+            local_path = override.get("local_path")
+            status = override.get("status") or ("content" if local_path else "missing")
+            slots.append({"remote_url": remote_url, "local_path": local_path, "status": status})
+            continue
         if remote_url in skipped_set:
             slots.append({"remote_url": remote_url, "local_path": None, "status": "skipped"})
             continue

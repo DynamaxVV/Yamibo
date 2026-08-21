@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import re
-from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qs, unquote, urlencode, urlparse, urlunparse
 
 from yamibo_mcp.yamibo.parsers.common import extract_tid
 
@@ -9,6 +11,37 @@ from yamibo_mcp.yamibo.parsers.common import extract_tid
 DEFAULT_THREAD_BASE = "https://bbs.yamibo.com"
 DEFAULT_COMIC_FORUM_ID = 30
 DEFAULT_FORUM_ID = DEFAULT_COMIC_FORUM_ID
+
+
+def stable_attachment_id(url: str) -> str | None:
+    """Return the stable numeric component of a signed Yamibo attachment URL."""
+    parsed = urlparse(url)
+    if (parsed.hostname or "").lower() != "bbs.yamibo.com" or parsed.path.lower() != "/forum.php":
+        return None
+    query = parse_qs(parsed.query)
+    mod_values = {value.lower() for value in query.get("mod", [])}
+    if "attachment" not in mod_values and "attachment/image" not in mod_values:
+        return None
+    encoded = unquote(query.get("aid", [""])[0]).strip()
+    if not encoded:
+        return None
+    decoded = encoded
+    try:
+        padded = encoded + "=" * (-len(encoded) % 4)
+        decoded = base64.urlsafe_b64decode(padded).decode("utf-8")
+    except (ValueError, UnicodeDecodeError, binascii.Error):
+        # Some fixtures and older exports contain the decoded aid directly.
+        pass
+    stable = decoded.split("|", 1)[0].strip()
+    return stable or None
+
+
+def remote_image_identity(url: str) -> tuple[str, str]:
+    """Build an equality key that ignores only Yamibo attachment signatures."""
+    attachment_id = stable_attachment_id(url)
+    if attachment_id is not None:
+        return ("yamibo_attachment", attachment_id)
+    return ("url", url)
 
 
 def thread_url_from_tid(tid: int, *, base_url: str = DEFAULT_THREAD_BASE) -> str:

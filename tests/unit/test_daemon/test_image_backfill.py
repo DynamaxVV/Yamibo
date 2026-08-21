@@ -10,7 +10,9 @@ import pytest
 from yamibo_mcp.daemon.handlers.image_backfill import (
     _diff_snapshot_images,
     _local_assets_by_url,
+    _image_slot_overrides_from_assets,
     _merge_assets,
+    _missing_urls_from_assets,
     _resolve_selected_remote_urls,
     _selected_download_retries,
     _snapshot_for_missing_images,
@@ -139,6 +141,31 @@ def test_rotated_selected_success_clears_the_submitted_missing_url():
     old = "https://bbs.yamibo.com/forum.php?mod=attachment&aid=MQ%3D%3D"
     current = "https://bbs.yamibo.com/forum.php?mod=attachment&aid=MXxuZXc%3D"
     assert _successful_selected_url_aliases({current}, {old: current}) == {old, current}
+
+
+def test_selected_asset_state_keeps_only_the_downloaded_slot_available():
+    urls = [f"https://bbs.yamibo.com/data/attachment/forum/{index}.jpg" for index in range(1, 66)]
+    assets = [
+        AssetSnapshot(
+            f"asset-{index}",
+            1,
+            2,
+            "attachment",
+            url,
+            "images/floor_001_13.jpg" if index == 13 else None,
+            False,
+            False,
+            "downloaded" if index == 13 else "pending",
+        )
+        for index, url in enumerate(urls, start=1)
+    ]
+    overrides = _image_slot_overrides_from_assets(assets)
+    missing, missing_shared = _missing_urls_from_assets(assets)
+    assert overrides[urls[0]] == {"local_path": None, "status": "missing"}
+    assert overrides[urls[12]] == {"local_path": "images/floor_001_13.jpg", "status": "non_export"}
+    assert len(missing) == 64
+    assert urls[12] not in missing
+    assert missing_shared == []
 
 
 def test_rotated_selected_asset_keeps_existing_local_path_for_other_assets(tmp_path):

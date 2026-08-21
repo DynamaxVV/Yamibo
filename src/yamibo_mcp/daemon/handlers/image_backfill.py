@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import base64
-import binascii
 import json
 import logging
 import shutil
@@ -36,6 +34,7 @@ from yamibo_mcp.yamibo.account_pool import borrow_yamibo_client, next_permission
 from yamibo_mcp.yamibo.anti_bot import ensure_no_maintenance_pause
 from yamibo_mcp.yamibo.parsers.thread_detail import parse_thread_snapshot
 from yamibo_mcp.yamibo.proxy_pool import activate_proxy_binding, select_thread_proxy
+from yamibo_mcp.yamibo.urls import stable_attachment_id
 
 
 LOG = logging.getLogger(__name__)
@@ -234,20 +233,23 @@ def handle_image_backfill(
                     protected_urls=selected_remote_urls if selected_scope else set(),
                     expected_paths=expected_paths,
                 )
+                image_slot_overrides = _image_slot_overrides_from_assets(synced_assets)
                 archive_maps = _archive_maps_from_assets(apply_snapshot, synced_assets)
                 previous_missing = _thread_missing_urls(thread)
                 previous_missing_shared = _archive_missing_shared_urls(paths, tid)
                 successful_urls = set(image_result.relative_path_by_url)
                 if selected_scope:
                     successful_urls = _successful_selected_url_aliases(successful_urls, selected_url_map)
-                missing_image_urls = _unique([
-                    *[url for url in previous_missing if url not in successful_urls],
-                    *image_result.missing_urls,
-                ])
-                missing_shared_image_urls = _unique([
-                    *[url for url in previous_missing_shared if url not in successful_urls],
-                    *image_result.missing_shared_urls,
-                ])
+                    missing_image_urls, missing_shared_image_urls = _missing_urls_from_assets(synced_assets)
+                else:
+                    missing_image_urls = _unique([
+                        *[url for url in previous_missing if url not in successful_urls],
+                        *image_result.missing_urls,
+                    ])
+                    missing_shared_image_urls = _unique([
+                        *[url for url in previous_missing_shared if url not in successful_urls],
+                        *image_result.missing_shared_urls,
+                    ])
                 archive_status = "partial" if (missing_image_urls or missing_shared_image_urls or image_result.stopped_reason) else "complete"
                 resolved_selected_urls = {
                     asset.remote_url
@@ -293,6 +295,7 @@ def handle_image_backfill(
                     skipped_image_urls=archive_maps["skipped_image_urls"],
                     missing_image_urls=missing_image_urls,
                     missing_shared_image_urls=missing_shared_image_urls,
+                    image_slot_overrides=image_slot_overrides,
                     context_source="image_backfill",
                 )
                 context_path, metadata_path = materialize_thread(
@@ -305,6 +308,7 @@ def handle_image_backfill(
                     skipped_image_urls=archive_maps["skipped_image_urls"],
                     missing_image_urls=missing_image_urls,
                     missing_shared_image_urls=missing_shared_image_urls,
+                    image_slot_overrides=image_slot_overrides,
                     context_format_version="obsidian-md-v2",
                     cleaner_output=cleaner_output,
                     metadata=context_metadata,
@@ -932,20 +936,8 @@ def _successful_selected_url_aliases(
 
 
 def _stable_attachment_id(url: str) -> str | None:
-    """Return the stable first component of a Yamibo attachment ``aid``."""
-    if not _is_site_attachment(url):
-        return None
-    query = parse_qs(urlparse(url).query)
-    raw = query.get("aid", [""])[0]
-    decoded = unquote(raw)
-    try:
-        padded = decoded + "=" * (-len(decoded) % 4)
-        decoded = base64.urlsafe_b64decode(padded).decode("utf-8")
-    except (ValueError, UnicodeDecodeError, binascii.Error):
-        # Keep compatibility with fixtures or legacy URLs carrying a plain aid.
-        pass
-    stable = decoded.split("|", 1)[0].strip()
-    return stable or None
+    """Compatibility wrapper for existing tests and internal call sites."""
+    return stable_attachment_id(url)
 
 
 def _update_selected_assets(
@@ -1003,6 +995,38 @@ def _archive_maps_from_assets(snapshot, assets) -> dict[str, dict[int, list[str]
         "shared_images": shared_images,
         "skipped_image_urls": skipped_image_urls,
     }
+
+
+def _image_slot_overrides_from_assets(assets) -> dict[str, dict[str, str | None]]:
+    overrides: dict[str, dict[str, str | None]] = {}
+    for asset in assets:
+        image_class = _classify_backfill_image(asset.remote_url)
+        if asset.local_path:
+            if image_class in {"static", "decorative"}:
+                status = "shared"
+            elif asset.exportable:
+                status = "content"
+            else:
+                status = "non_export"
+        elif image_class == "embedded":
+            status = "skipped"
+        else:
+            status = "missing"
+        overrides[asset.remote_url] = {"local_path": asset.local_path, "status": status}
+    return overrides
+
+
+def _missing_urls_from_assets(assets) -> tuple[list[str], list[str]]:
+    missing_images: list[str] = []
+    missing_shared: list[str] = []
+    for asset in assets:
+        if asset.local_path or _classify_backfill_image(asset.remote_url) == "embedded":
+            continue
+        if _classify_backfill_image(asset.remote_url) in {"static", "decorative"}:
+            missing_shared.append(asset.remote_url)
+        else:
+            missing_images.append(asset.remote_url)
+    return _unique(missing_images), _unique(missing_shared)
 
 
 def _unique(values: list[str]) -> list[str]:

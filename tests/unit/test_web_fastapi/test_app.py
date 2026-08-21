@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from unittest.mock import patch
 
 import pytest
@@ -213,7 +214,6 @@ def test_retry_thread_image_creates_selected_job_and_keeps_history(client, test_
     conn = connect(test_settings.db_path)
     try:
         row = conn.execute("SELECT payload_json FROM jobs WHERE job_id = ?", (body["job_id"],)).fetchone()
-        import json
         payload = json.loads(row["payload_json"])
         assert payload == {
             "tid": tid,
@@ -229,6 +229,60 @@ def test_retry_thread_image_creates_selected_job_and_keeps_history(client, test_
             "SELECT COUNT(*) AS n FROM jobs WHERE job_type = 'image_backfill' AND tid = ?",
             (tid,),
         ).fetchone()["n"] == 1
+    finally:
+        conn.close()
+
+
+def test_thread_image_retry_matches_rotated_attachment_signature(client, test_settings):
+    from yamibo_mcp.db.connection import connect
+
+    tid = 575090
+    pid = 41605934
+    asset_id = "asset-rotated-575090"
+    old_url = "https://bbs.yamibo.com/forum.php?mod=attachment&aid=MTYzODQzNHw1MWU2OTRkM3wxNzg3MjIyNzU3fDczNzQ5M3w1NzUwOTA%3D&nothumb=yes"
+    current_url = "https://bbs.yamibo.com/forum.php?mod=attachment&aid=MTYzODQzNHxmYjQzZDc3ZnwxNzg3MzI5ODk5fDczNzQ5M3w1NzUwOTA%3D&nothumb=yes"
+    conn = connect(test_settings.db_path)
+    try:
+        conn.execute("INSERT INTO threads (tid, raw_title, display_title) VALUES (?, ?, ?)", (tid, "raw", "display"))
+        conn.execute(
+            "INSERT INTO floors (pid, tid, floor_no, content, has_images) VALUES (?, ?, 1, 'first', 1)",
+            (pid, tid),
+        )
+        conn.execute(
+            "INSERT INTO assets (asset_id, tid, pid, asset_type, remote_url, status) VALUES (?, ?, ?, ?, ?, ?)",
+            (asset_id, tid, pid, "attachment", old_url, "missing"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    metadata_path = test_settings.data_dir / "threads" / str(tid) / "metadata.json"
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
+    metadata_path.write_text(json.dumps({
+        "floors": [{
+            "pid": pid,
+            "floor_no": 1,
+            "remote_image_urls": [current_url],
+            "image_slots": [{"remote_url": current_url, "local_path": None, "status": "missing"}],
+        }],
+    }), encoding="utf-8")
+
+    detail = client.get(f"/api/threads/{tid}")
+    assert detail.status_code == 200
+    assert detail.json()["floors"][0]["image_slots"][0]["asset_id"] == asset_id
+
+    retry = client.post(f"/api/threads/{tid}/images/{asset_id}/retry")
+    assert retry.status_code == 200
+    conn = connect(test_settings.db_path)
+    try:
+        row = conn.execute("SELECT payload_json FROM jobs WHERE job_id = ?", (retry.json()["job_id"],)).fetchone()
+        payload = json.loads(row["payload_json"])
+        assert payload["target_positions"] == [{
+            "pid": pid,
+            "floor_no": 1,
+            "image_index": 1,
+            "url": old_url,
+        }]
     finally:
         conn.close()
 

@@ -6,9 +6,23 @@ from yamibo_mcp.yamibo.urls import (
     DEFAULT_COMIC_FORUM_ID,
     DEFAULT_FORUM_ID,
     forum_page_url,
+    remote_image_identity,
+    stable_attachment_id,
     thread_author_url_from_tid,
     thread_page_url_from_tid,
 )
+
+
+def test_signed_attachment_identity_ignores_rotating_signature():
+    old = "https://bbs.yamibo.com/forum.php?mod=attachment&aid=MTYzODQzNHw1MWU2OTRkM3wxNzg3MjIyNzU3fDczNzQ5M3w1NzUwOTA%3D&nothumb=yes"
+    current = "https://bbs.yamibo.com/forum.php?mod=attachment&aid=MTYzODQzNHxmYjQzZDc3ZnwxNzg3MzI5ODk5fDczNzQ5M3w1NzUwOTA%3D&nothumb=yes"
+    assert stable_attachment_id(old) == "1638434"
+    assert stable_attachment_id(current) == "1638434"
+    assert remote_image_identity(old) == remote_image_identity(current)
+
+
+def test_external_image_identity_remains_exact():
+    assert remote_image_identity("https://example.com/a.jpg") != remote_image_identity("https://example.com/b.jpg")
 
 
 class TestForumPageUrl:

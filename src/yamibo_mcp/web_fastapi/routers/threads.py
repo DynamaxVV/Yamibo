@@ -22,7 +22,7 @@ from yamibo_mcp.web_fastapi.converters import (
 )
 from yamibo_mcp.web_fastapi.deps import get_conn, get_settings
 from yamibo_mcp.web_fastapi.helpers import jsonish_loads
-from yamibo_mcp.yamibo.urls import thread_url_from_tid, thread_author_url_from_tid
+from yamibo_mcp.yamibo.urls import remote_image_identity, thread_url_from_tid, thread_author_url_from_tid
 
 router = APIRouter(prefix="/api", tags=["threads"])
 
@@ -184,15 +184,18 @@ def thread_detail(
     # Image retry actions need the stable asset identity.  Enrich the
     # metadata-derived slots without making the browser infer an asset ID
     # from a possibly stale/misordered local path.
-    asset_ids_by_url = {
-        str(row["remote_url"]): str(row["asset_id"])
+    asset_ids_by_identity = {
+        remote_image_identity(str(row["remote_url"])): str(row["asset_id"])
         for row in AssetsRepository(conn).list_assets(tid)
         if row["remote_url"]
     }
     for floor in data["floors"]:
         for slot in floor.get("image_slots") or []:
-            if isinstance(slot, dict) and slot.get("remote_url") in asset_ids_by_url:
-                slot["asset_id"] = asset_ids_by_url[slot["remote_url"]]
+            if not isinstance(slot, dict) or not slot.get("remote_url"):
+                continue
+            asset_id = asset_ids_by_identity.get(remote_image_identity(str(slot["remote_url"])))
+            if asset_id is not None:
+                slot["asset_id"] = asset_id
 
     data["floor_count"] = floor_count
     data["floor_page"] = preview_page
@@ -302,7 +305,7 @@ def retry_thread_image(
             continue
         urls = list(floor.get("remote_image_urls") or floor.get("image_urls") or [])
         for index, candidate in enumerate(urls, start=1):
-            if str(candidate) != remote_url:
+            if remote_image_identity(str(candidate)) != remote_image_identity(remote_url):
                 continue
             if asset["pid"] is not None and floor.get("pid") is not None and int(asset["pid"]) != int(floor["pid"]):
                 continue

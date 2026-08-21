@@ -232,3 +232,37 @@ class TestRenderThreadMetadata:
         assert slots[1]["local_path"] is None
         assert slots[1]["status"] == "missing"
         assert slots[2]["local_path"] == "images/b.jpg"
+
+    def test_floor_image_slot_overrides_keep_a_selected_download_at_its_original_position(self):
+        urls = [f"https://img.example.com/{index}.jpg" for index in range(1, 66)]
+        floor = FloorSnapshot(
+            pid=1001,
+            tid=999,
+            floor_no=1,
+            publisher="u",
+            content="内容",
+            pub_time=None,
+            has_images=True,
+            image_urls=urls,
+        )
+        overrides = {
+            url: {
+                "local_path": "images/floor_001_13.jpg" if index == 13 else None,
+                "status": "non_export" if index == 13 else "missing",
+            }
+            for index, url in enumerate(urls, start=1)
+        }
+        result = render_thread_metadata(
+            _make_snapshot(floors=[floor]),
+            "ctx.md",
+            non_export_images={1001: ["images/floor_001_13.jpg"]},
+            image_slot_overrides=overrides,
+        )
+        slots = json.loads(result)["floors"][0]["image_slots"]
+        assert slots[0] == {"remote_url": urls[0], "local_path": None, "status": "missing"}
+        assert slots[12] == {
+            "remote_url": urls[12],
+            "local_path": "images/floor_001_13.jpg",
+            "status": "non_export",
+        }
+        assert sum(slot["local_path"] is not None for slot in slots) == 1
