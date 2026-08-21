@@ -7,7 +7,7 @@ import urllib.request
 
 import yamibo_mcp.storage.images as images
 from yamibo_mcp.domain.models import FloorSnapshot, ThreadSnapshot, TitleSnapshot
-from yamibo_mcp.storage.images import _download_with_retries, download_images_to_staging
+from yamibo_mcp.storage.images import _download_with_retries, _is_valid_image_file, download_images_to_staging
 from yamibo_mcp.storage.paths import StoragePaths
 
 
@@ -128,6 +128,17 @@ def test_download_with_retries_stops_at_retry_limit(tmp_path, monkeypatch):
         pass
 
     assert len(attempts) == 2
+
+
+def test_image_validation_rejects_truncated_jpeg_after_size_header(tmp_path):
+    truncated = tmp_path / "truncated.jpg"
+    complete = tmp_path / "complete.jpg"
+    jpeg = b"\xff\xd8\xff\xc0\x00\x0b\x08\x01\xe0\x02\x80\x03\x01\x11\x00" + b"\x00" * 80
+    truncated.write_bytes(jpeg)
+    complete.write_bytes(jpeg + b"\xff\xd9")
+
+    assert _is_valid_image_file(truncated) is False
+    assert _is_valid_image_file(complete) is True
 
 
 def test_download_images_to_staging_keeps_input_order_with_parallel_completion(tmp_path, monkeypatch):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import random
 import shutil
 import time
@@ -41,6 +42,11 @@ class ImageDownloadResult:
     missing_urls: list[str] = field(default_factory=list)
     missing_shared_urls: list[str] = field(default_factory=list)
     stopped_reason: str | None = None
+    # The list-shaped fields above are retained for archive artifacts and
+    # backwards compatibility.  Callers that need to associate a URL with
+    # its own original slot must use this direct map instead of zipping
+    # successful downloads (failed downloads make that unsafe).
+    relative_path_by_url: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -95,7 +101,7 @@ def _download_task(
     if task.kind == "shared":
         assert task.target is not None
         try:
-            if not task.target.exists():
+            if not task.target.exists() or not _is_valid_image_file(task.target):
                 _download_to_explicit_target_with_retries(
                     task.image_url,
                     target=task.target,
@@ -159,6 +165,7 @@ def download_images_to_staging(
     cancel_check: Callable[[], None] | None = None,
     stage_deadline_seconds: float | None = None,
     download_slot_wait_seconds: float | None = None,
+    target_urls: set[str] | None = None,
 ) -> ImageDownloadResult:
     started_at = time.monotonic()
     slot_wait_seconds = timeout if download_slot_wait_seconds is None else download_slot_wait_seconds
@@ -173,6 +180,7 @@ def download_images_to_staging(
             missing_urls: list[str] = []
             missing_shared_urls: list[str] = []
             stopped_reason: str | None = None
+            relative_path_by_url: dict[str, str] = {}
             tasks: list[_DownloadTask] = []
             shared_targets: dict[Path, str] = {}
 
@@ -200,6 +208,11 @@ def download_images_to_staging(
                 if _stop_if_timed_out():
                     break
                 for index, image_url in enumerate(floor.image_urls, start=1):
+                    # Keep the original position in ``floor.image_urls`` for
+                    # the stem.  Selected/retry jobs filter after this point
+                    # so floor_001_23 never becomes floor_001_01.
+                    if target_urls is not None and image_url not in target_urls:
+                        continue
                     if _is_embedded_image_url(image_url):
                         skipped_relpaths.setdefault(floor.pid, []).append(image_url)
                         if on_progress is not None:
@@ -224,7 +237,7 @@ def download_images_to_staging(
                             )
                         )
                         continue
-                    if not _is_exportable_content_image(snapshot, floor):
+                    if target_urls is None and not _is_exportable_content_image(snapshot, floor):
                         skipped_relpaths.setdefault(floor.pid, []).append(image_url)
                         if on_progress is not None:
                             on_progress()
@@ -295,7 +308,9 @@ def download_images_to_staging(
                         continue
                     if result.kind == "shared":
                         shared_relpaths.setdefault(result.floor_pid, []).append(result.relative_path)
+                        relative_path_by_url[result.image_url] = result.relative_path
                     elif result.kind == "content":
+                        relative_path_by_url[result.image_url] = result.relative_path
                         if result.non_export:
                             non_export_relpaths.setdefault(result.floor_pid, []).append(result.relative_path)
                         else:
@@ -316,6 +331,7 @@ def download_images_to_staging(
                 missing_urls=missing_urls,
                 missing_shared_urls=missing_shared_urls,
                 stopped_reason=stopped_reason,
+                relative_path_by_url=relative_path_by_url,
             )
     except CookieDownloadSlotTimeoutError:
         LOG.warning(
@@ -335,7 +351,10 @@ def materialize_staged_images(paths: StoragePaths, job_id: str, tid: int) -> Non
     thread_images_dir.mkdir(parents=True, exist_ok=True)
     # 先在 staging 下载，再复制到正式归档目录，方便后续继续演进成更严格的 finalize 检查。
     for path in staging_dir.iterdir():
-        if path.is_file():
+        # A failed/cancelled worker must never promote a partial marker.  The
+        # downloader normally removes it, but this guard also protects a
+        # resumed job from stale staging residue.
+        if path.is_file() and not path.name.endswith(".part"):
             shutil.copy2(path, thread_images_dir / path.name)
 
 
@@ -434,52 +453,71 @@ def _fetch_to_path(
     staging_dir.mkdir(parents=True, exist_ok=True)
     parsed = urllib.parse.urlparse(image_url)
     # 本地样例页里的 file:// 图片直接复制；远端 http(s) 图片通过 urllib 下载。
-    if parsed.scheme == "file":
-        if cancel_check is not None:
-            cancel_check()
-        source = Path(urllib.request.url2pathname(parsed.path))
-        target = staging_dir / f"{stem}{_guess_suffix(image_url)}"
-        shutil.copy2(source, target)
-        if cancel_check is not None:
-            cancel_check()
-        return target
-    if parsed.scheme in {"http", "https"}:
-        time.sleep(random.uniform(0.1, 0.5))
-        request_headers = dict(headers or {})
-        if referer:
-            request_headers.setdefault("Referer", referer)
-        request = urllib.request.Request(image_url, headers=request_headers)
-        with opener.open(request, timeout=timeout) as response:
-            status = getattr(response, "status", 200)
-            if status in {444, 429}:
-                LOG.warning("Image download returned HTTP %d for %s", status, image_url)
-                raise _ImageHTTPError(status)
-            first_bytes = response.read(64)
+    target: Path | None = None
+    part_target: Path | None = None
+    try:
+        if parsed.scheme == "file":
             if cancel_check is not None:
                 cancel_check()
-            suffix = _suffix_from_response(response, image_url=image_url, first_bytes=first_bytes)
-            target = staging_dir / f"{stem}{suffix}"
-            with target.open("wb") as fp:
-                if first_bytes:
-                    fp.write(first_bytes)
-                while True:
-                    if cancel_check is not None:
-                        cancel_check()
-                    chunk = response.read(64 * 1024)
-                    if not chunk:
-                        break
-                    fp.write(chunk)
-        return target
-    source = Path(image_url)
-    if source.exists():
-        if cancel_check is not None:
-            cancel_check()
-        target = staging_dir / f"{stem}{source.suffix or '.bin'}"
-        shutil.copy2(source, target)
-        if cancel_check is not None:
-            cancel_check()
-        return target
-    raise FileNotFoundError(f"unsupported image source: {image_url}")
+            source = Path(urllib.request.url2pathname(parsed.path))
+            target = staging_dir / f"{stem}{_guess_suffix(image_url)}"
+            part_target = target.with_name(target.name + ".part")
+            shutil.copy2(source, part_target)
+            _require_valid_image_file(part_target)
+            os.replace(part_target, target)
+            if cancel_check is not None:
+                cancel_check()
+            return target
+        if parsed.scheme in {"http", "https"}:
+            time.sleep(random.uniform(0.1, 0.5))
+            request_headers = dict(headers or {})
+            if referer:
+                request_headers.setdefault("Referer", referer)
+            request = urllib.request.Request(image_url, headers=request_headers)
+            with opener.open(request, timeout=timeout) as response:
+                status = getattr(response, "status", 200)
+                if status in {444, 429}:
+                    LOG.warning("Image download returned HTTP %d for %s", status, image_url)
+                    raise _ImageHTTPError(status)
+                first_bytes = response.read(64)
+                if cancel_check is not None:
+                    cancel_check()
+                suffix = _suffix_from_response(response, image_url=image_url, first_bytes=first_bytes)
+                target = staging_dir / f"{stem}{suffix}"
+                part_target = target.with_name(target.name + ".part")
+                with part_target.open("wb") as fp:
+                    if first_bytes:
+                        fp.write(first_bytes)
+                    while True:
+                        if cancel_check is not None:
+                            cancel_check()
+                        chunk = response.read(64 * 1024)
+                        if not chunk:
+                            break
+                        fp.write(chunk)
+                _require_valid_image_file(part_target)
+                os.replace(part_target, target)
+            return target
+        source = Path(image_url)
+        if source.exists():
+            if cancel_check is not None:
+                cancel_check()
+            target = staging_dir / f"{stem}{source.suffix or '.bin'}"
+            part_target = target.with_name(target.name + ".part")
+            shutil.copy2(source, part_target)
+            _require_valid_image_file(part_target)
+            os.replace(part_target, target)
+            if cancel_check is not None:
+                cancel_check()
+            return target
+        raise FileNotFoundError(f"unsupported image source: {image_url}")
+    except Exception:
+        if part_target is not None:
+            try:
+                part_target.unlink()
+            except FileNotFoundError:
+                pass
+        raise
 
 
 def _fetch_to_explicit_target(
@@ -493,43 +531,49 @@ def _fetch_to_explicit_target(
     cancel_check: Callable[[], None] | None = None,
 ) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
-    parsed = urllib.parse.urlparse(image_url)
-    if parsed.scheme == "file":
+    part_target = target.with_name(target.name + ".part")
+    try:
+        parsed = urllib.parse.urlparse(image_url)
+        if parsed.scheme == "file":
+            if cancel_check is not None:
+                cancel_check()
+            source = Path(urllib.request.url2pathname(parsed.path))
+            shutil.copy2(source, part_target)
+        elif parsed.scheme in {"http", "https"}:
+            time.sleep(random.uniform(0.1, 0.5))
+            request_headers = dict(headers or {})
+            if referer:
+                request_headers.setdefault("Referer", referer)
+            request = urllib.request.Request(image_url, headers=request_headers)
+            with opener.open(request, timeout=timeout) as response, part_target.open("wb") as fp:
+                status = getattr(response, "status", 200)
+                if status in {444, 429}:
+                    LOG.warning("Image download returned HTTP %d for %s", status, image_url)
+                    raise _ImageHTTPError(status)
+                while True:
+                    if cancel_check is not None:
+                        cancel_check()
+                    chunk = response.read(64 * 1024)
+                    if not chunk:
+                        break
+                    fp.write(chunk)
+        else:
+            source = Path(image_url)
+            if not source.exists():
+                raise FileNotFoundError(f"unsupported image source: {image_url}")
+            if cancel_check is not None:
+                cancel_check()
+            shutil.copy2(source, part_target)
+        _require_valid_image_file(part_target)
+        os.replace(part_target, target)
         if cancel_check is not None:
             cancel_check()
-        source = Path(urllib.request.url2pathname(parsed.path))
-        shutil.copy2(source, target)
-        if cancel_check is not None:
-            cancel_check()
-        return
-    if parsed.scheme in {"http", "https"}:
-        time.sleep(random.uniform(0.1, 0.5))
-        request_headers = dict(headers or {})
-        if referer:
-            request_headers.setdefault("Referer", referer)
-        request = urllib.request.Request(image_url, headers=request_headers)
-        with opener.open(request, timeout=timeout) as response, target.open("wb") as fp:
-            status = getattr(response, "status", 200)
-            if status in {444, 429}:
-                LOG.warning("Image download returned HTTP %d for %s", status, image_url)
-                raise _ImageHTTPError(status)
-            while True:
-                if cancel_check is not None:
-                    cancel_check()
-                chunk = response.read(64 * 1024)
-                if not chunk:
-                    break
-                fp.write(chunk)
-        return
-    source = Path(image_url)
-    if source.exists():
-        if cancel_check is not None:
-            cancel_check()
-        shutil.copy2(source, target)
-        if cancel_check is not None:
-            cancel_check()
-        return
-    raise FileNotFoundError(f"unsupported image source: {image_url}")
+    except Exception:
+        try:
+            part_target.unlink()
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def _suffix_from_response(response, *, image_url: str, first_bytes: bytes = b"") -> str:
@@ -617,9 +661,69 @@ def _read_image_size(path: Path) -> tuple[int, int] | None:
                 return width, height
             if header.startswith(b"\xff\xd8"):
                 return _read_jpeg_size(fp)
+            if header.startswith(b"RIFF") and len(header) >= 16 and header[8:12] == b"WEBP":
+                return _read_webp_size(fp, header)
     except OSError:
         return None
     return None
+
+
+def _read_webp_size(fp, header: bytes) -> tuple[int, int] | None:
+    """Read the dimensions from the common WebP chunk forms."""
+    fp.seek(12)
+    chunk = fp.read(8)
+    if len(chunk) != 8:
+        return None
+    kind = chunk[:4]
+    size = int.from_bytes(chunk[4:8], "little")
+    payload = fp.read(min(size, 32))
+    if kind == b"VP8X" and len(payload) >= 10:
+        width = 1 + int.from_bytes(payload[4:7], "little")
+        height = 1 + int.from_bytes(payload[7:10], "little")
+        return width, height
+    if kind == b"VP8L" and len(payload) >= 5 and payload[0] == 0x2F:
+        bits = int.from_bytes(payload[1:5], "little")
+        return (bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1
+    # Lossy VP8 has a frame start code followed by a 16-bit width/height.
+    marker = payload.find(b"\x9d\x01\x2a")
+    if marker >= 0 and len(payload) >= marker + 7:
+        width = int.from_bytes(payload[marker + 3:marker + 5], "little") & 0x3FFF
+        height = int.from_bytes(payload[marker + 5:marker + 7], "little") & 0x3FFF
+        return width, height
+    return None
+
+
+def _is_valid_image_file(path: Path) -> bool:
+    try:
+        file_size = path.stat().st_size
+        if file_size <= 64:
+            return False
+        with path.open("rb") as fp:
+            header = fp.read(64)
+            fp.seek(max(file_size - 16, 0))
+            tail = fp.read(16)
+        suffix = _suffix_from_bytes(header)
+        if suffix is None:
+            return False
+        if suffix == ".jpg" and not tail.endswith(b"\xff\xd9"):
+            return False
+        if suffix == ".png" and not tail.endswith(b"\x00\x00\x00\x00IEND\xaeB`\x82"):
+            return False
+        if suffix == ".gif" and not tail.endswith(b";"):
+            return False
+        if suffix == ".webp":
+            declared_size = int.from_bytes(header[4:8], "little") + 8
+            if declared_size > file_size:
+                return False
+        size = _read_image_size(path)
+        return bool(size and size[0] > 0 and size[1] > 0)
+    except (OSError, ValueError):
+        return False
+
+
+def _require_valid_image_file(path: Path) -> None:
+    if not _is_valid_image_file(path):
+        raise ValueError(f"invalid or incomplete image: {path.name}")
 
 
 def _read_jpeg_size(fp) -> tuple[int, int] | None:

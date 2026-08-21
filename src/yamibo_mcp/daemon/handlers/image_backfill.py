@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import shutil
 from collections import Counter
 from contextlib import ExitStack
@@ -8,6 +9,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs
 from urllib.parse import urlparse
 from urllib.parse import unquote
 
@@ -21,6 +23,8 @@ from yamibo_mcp.db.repositories.threads import ThreadsRepository
 from yamibo_mcp.domain.content import build_content_snapshot
 from yamibo_mcp.domain.models import FloorSnapshot, Job, ThreadSnapshot, TitleSnapshot
 from yamibo_mcp.storage.images import download_images_to_staging
+from yamibo_mcp.storage.images import _is_valid_image_file
+from yamibo_mcp.storage.atomic import atomic_write_text
 from yamibo_mcp.storage.paths import StoragePaths
 from yamibo_mcp.storage.thread_archive import materialize_thread
 from yamibo_mcp.daemon.handlers.update_thread import _load_local_thread_snapshot
@@ -55,6 +59,10 @@ def handle_image_backfill(
         raise ValueError("image_backfill requires tid")
 
     dry_run = bool(job.payload.get("dry_run", True))
+    scope = str(job.payload.get("scope") or "non_first_floor").strip().lower()
+    selected_scope = scope == "selected"
+    include_first_floor = bool(job.payload.get("include_first_floor", selected_scope))
+    target_urls = _unique([str(url) for url in (job.payload.get("target_urls") or []) if str(url).strip()])
 
     max_pages = max(int(job.payload.get("max_pages") or getattr(settings, "image_backfill_max_pages", 1)), 1)
     base_url = str(job.payload.get("base_url") or "https://bbs.yamibo.com")
@@ -67,6 +75,32 @@ def handle_image_backfill(
         raise ValueError(f"local archive not found for image_backfill: {tid}")
     local_assets = _local_assets_by_url(AssetsRepository(repo.conn).list_assets(tid))
     local_snapshot = _load_local_snapshot_for_backfill(paths, repo.conn, thread)
+    target_positions = _target_positions(paths, tid, job.payload, target_urls)
+    expected_paths = _expected_target_paths(paths, tid, target_positions, target_urls)
+    if selected_scope and target_urls:
+        reconciled = _reconcile_selected_targets(
+            repo.conn,
+            paths=paths,
+            tid=tid,
+            target_urls=target_urls,
+            target_positions=target_positions,
+            expected_paths=expected_paths,
+            target_asset_id=str(job.payload.get("target_asset_id") or ""),
+        )
+        if reconciled == set(target_urls):
+            repo.update_stage(job.job_id, "reconcile", progress_current=4, progress_total=4)
+            repo.succeed(
+                job.job_id,
+                {
+                    "tid": tid,
+                    "scope": "selected",
+                    "target_urls": target_urls,
+                    "reconciled_urls": sorted(reconciled),
+                    "downloaded_image_count": 0,
+                    "reconciled_image_count": len(reconciled),
+                },
+            )
+            return
     archive_generation = _archive_generation(thread, fixed_after=fixed_after)
     proxy_binding = select_thread_proxy(settings, tid=tid, job_id=job.job_id)
     proxy_url = proxy_binding.proxy_url if proxy_binding else None
@@ -115,7 +149,15 @@ def handle_image_backfill(
                     snapshot = parse_thread_snapshot(first_page.html, url=first_page.final_url, tid=tid)
 
                 repo.update_stage(job.job_id, "diff_images", progress_current=3, progress_total=4)
-                diff = _diff_snapshot_images(snapshot, local_assets=local_assets, paths=paths, include_shared_static=True)
+                diff = _diff_snapshot_images(
+                    snapshot,
+                    local_assets=local_assets,
+                    paths=paths,
+                    include_shared_static=True,
+                    scope=scope,
+                    include_first_floor=include_first_floor,
+                    target_urls=set(target_urls) if target_urls else None,
+                )
 
                 artifacts: dict[str, Any] = {
                     "dry_run": dry_run,
@@ -149,22 +191,47 @@ def handle_image_backfill(
                     job.job_id,
                     missing_snapshot,
                     timeout=settings.image_download_timeout_seconds,
-                    retries=settings.image_download_retries,
+                    retries=_selected_download_retries(
+                        target_urls=set(target_urls) if selected_scope else None,
+                        configured_retries=settings.image_download_retries,
+                    ),
                     headers=client.headers,
                     cookie_jar=client.cookie_jar,
                     cookie_file=getattr(client, "cookie_file", None),
                     use_system_proxy=client.use_system_proxy,
                     proxy_url=getattr(client, "proxy_url", None),
                     referer=final_url,
+                    target_urls={str(item["url"]) for item in diff["missing_items_for_apply"]},
                     stage_deadline_seconds=float(getattr(settings, "image_download_stage_timeout_seconds", 600.0)),
                 )
                 local_path_by_url = _build_downloaded_url_map(missing_snapshot, image_result)
                 content = build_content_snapshot(apply_snapshot, forum_id=thread["forum_id"] if "forum_id" in thread.keys() else None)
-                synced_assets = _merge_assets(content.assets, local_assets=local_assets, local_path_by_url=local_path_by_url, image_result=image_result)
+                synced_assets = _merge_assets(
+                    content.assets,
+                    local_assets=local_assets,
+                    local_path_by_url=local_path_by_url,
+                    image_result=image_result,
+                    protected_urls=set(target_urls) if selected_scope else set(),
+                    expected_paths=expected_paths,
+                )
                 archive_maps = _archive_maps_from_assets(apply_snapshot, synced_assets)
-                missing_image_urls = _unique([*image_result.missing_urls])
-                missing_shared_image_urls = _unique([*image_result.missing_shared_urls])
+                previous_missing = _thread_missing_urls(thread)
+                previous_missing_shared = _archive_missing_shared_urls(paths, tid)
+                successful_urls = set(image_result.relative_path_by_url)
+                missing_image_urls = _unique([
+                    *[url for url in previous_missing if url not in successful_urls],
+                    *image_result.missing_urls,
+                ])
+                missing_shared_image_urls = _unique([
+                    *[url for url in previous_missing_shared if url not in successful_urls],
+                    *image_result.missing_shared_urls,
+                ])
                 archive_status = "partial" if (missing_image_urls or missing_shared_image_urls or image_result.stopped_reason) else "complete"
+                resolved_selected_urls = {
+                    asset.remote_url
+                    for asset in synced_assets
+                    if asset.remote_url in target_urls and asset.local_path
+                }
 
                 repo.update_stage(job.job_id, "db_commit", progress_current=5, progress_total=6)
                 with transaction(repo.conn):
@@ -226,7 +293,9 @@ def handle_image_backfill(
                         "backfilled_image_count": image_result.downloaded_count + image_result.non_export_count + image_result.shared_downloaded_count,
                     }
                 )
-                if archive_status == "partial":
+                if selected_scope and set(target_urls).issubset(resolved_selected_urls):
+                    repo.succeed(job.job_id, artifacts)
+                elif archive_status == "partial":
                     repo.partial(job.job_id, artifacts)
                 else:
                     repo.succeed(job.job_id, artifacts)
@@ -278,6 +347,218 @@ def handle_image_backfill(
                     f"no account with permission >= {min_permission} available in pool"
                 ) from None
             raise
+
+
+def _load_archive_metadata(paths: StoragePaths, tid: int) -> dict[str, Any]:
+    path = paths.thread_metadata(tid)
+    try:
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def _target_positions(paths: StoragePaths, tid: int, payload: dict[str, Any], target_urls: list[str]) -> dict[str, dict[str, Any]]:
+    """Resolve target identity from payload, falling back to archive metadata.
+
+    ``assets.local_path`` is deliberately not consulted here.  The metadata's
+    ``remote_image_urls`` preserves the source slot even when an older archive
+    compressed successful paths and assigned them to the wrong URLs.
+    """
+    positions: dict[str, dict[str, Any]] = {}
+    raw_positions = payload.get("target_positions") or []
+    if isinstance(raw_positions, dict):
+        raw_positions = [raw_positions]
+    for raw in raw_positions:
+        if not isinstance(raw, dict):
+            continue
+        url = str(raw.get("url") or raw.get("remote_url") or "")
+        if not url:
+            continue
+        try:
+            positions[url] = {
+                "pid": int(raw["pid"]) if raw.get("pid") is not None else None,
+                "floor_no": int(raw["floor_no"]) if raw.get("floor_no") is not None else None,
+                "image_index": int(raw.get("image_index") or raw.get("index") or 0),
+            }
+        except (TypeError, ValueError):
+            continue
+    if all(url in positions for url in target_urls):
+        return positions
+    metadata = _load_archive_metadata(paths, tid)
+    for floor in metadata.get("floors") or []:
+        if not isinstance(floor, dict):
+            continue
+        urls = list(floor.get("remote_image_urls") or floor.get("image_urls") or [])
+        for index, url in enumerate(urls, start=1):
+            url = str(url)
+            if url not in target_urls or url in positions:
+                continue
+            positions[url] = {
+                "pid": floor.get("pid"),
+                "floor_no": floor.get("floor_no"),
+                "image_index": index,
+            }
+    return positions
+
+
+def _suffix_for_target(url: str, metadata: dict[str, Any] | None = None) -> str:
+    suffix = Path(urlparse(url).path).suffix
+    if suffix and len(suffix) <= 8 and suffix.lower() != ".php":
+        return suffix
+    # Attachment/image URLs commonly have no extension.  Existing metadata
+    # may still carry the authoritative materialized suffix for reconciliation.
+    if metadata:
+        candidate = Path(str(metadata.get("local_path") or "")).suffix
+        if candidate and len(candidate) <= 8:
+            return candidate
+    return ".jpg"
+
+
+def _expected_target_paths(
+    paths: StoragePaths,
+    tid: int,
+    positions: dict[str, dict[str, Any]],
+    target_urls: list[str],
+) -> dict[str, Path]:
+    result: dict[str, Path] = {}
+    for url in target_urls:
+        position = positions.get(url) or {}
+        try:
+            floor_no = int(position.get("floor_no"))
+            image_index = int(position.get("image_index"))
+        except (TypeError, ValueError):
+            continue
+        if floor_no <= 0 or image_index <= 0:
+            continue
+        stem = f"floor_{floor_no:03d}_{image_index:02d}"
+        image_dir = paths.thread_images_dir(tid)
+        existing = next((candidate for candidate in sorted(image_dir.glob(f"{stem}.*")) if _is_valid_image_file(candidate)), None)
+        result[url] = existing or image_dir / f"{stem}{_suffix_for_target(url)}"
+    return result
+
+
+def _reconcile_selected_targets(
+    conn,
+    *,
+    paths: StoragePaths,
+    tid: int,
+    target_urls: list[str],
+    target_positions: dict[str, dict[str, Any]],
+    expected_paths: dict[str, Path],
+    target_asset_id: str,
+) -> set[str]:
+    """Repair DB/metadata from an already-valid expected file without HTTP."""
+    if not expected_paths:
+        return set()
+    asset_rows = AssetsRepository(conn).list_assets(tid)
+    asset_by_url = {str(row["remote_url"]): row for row in asset_rows if row["remote_url"]}
+    metadata = _load_archive_metadata(paths, tid)
+    reconciled: set[str] = set()
+    for url in target_urls:
+        path = expected_paths.get(url)
+        if path is None or not _is_valid_image_file(path):
+            continue
+        row = asset_by_url.get(url)
+        if row is None and target_asset_id:
+            row = next((candidate for candidate in asset_rows if str(candidate["asset_id"]) == target_asset_id), None)
+        if row is not None and target_asset_id and str(row["asset_id"]) != target_asset_id:
+            row = None
+        if row is None:
+            continue
+        relative_path = str(path.relative_to(paths.thread_dir(tid)))
+        conn.execute(
+            "UPDATE assets SET local_path = ?, status = 'downloaded' WHERE tid = ? AND asset_id = ? AND remote_url = ?",
+            (relative_path, tid, row["asset_id"], url),
+        )
+        reconciled.add(url)
+
+    if not reconciled:
+        return reconciled
+    missing = _thread_missing_urls_from_metadata(metadata)
+    missing = [url for url in missing if url not in reconciled]
+    metadata_changed = False
+    for floor in metadata.get("floors") or []:
+        if not isinstance(floor, dict):
+            continue
+        slots = floor.get("image_slots") or []
+        floor_changed = False
+        for slot in slots:
+            if not isinstance(slot, dict) or str(slot.get("remote_url") or "") not in reconciled:
+                continue
+            url = str(slot["remote_url"])
+            slot["local_path"] = str(expected_paths[url].relative_to(paths.thread_dir(tid)))
+            slot["status"] = "shared" if _classify_backfill_image(url) in {"static", "decorative"} else "content"
+            floor.setdefault("content_image_urls", [])
+            if slot["status"] == "content" and slot["local_path"] not in floor["content_image_urls"]:
+                floor["content_image_urls"].append(slot["local_path"])
+            floor.setdefault("image_urls", [])
+            if slot["status"] == "content" and slot["local_path"] not in floor["image_urls"]:
+                floor["image_urls"].append(slot["local_path"])
+            floor["missing_image_urls"] = [value for value in floor.get("missing_image_urls") or [] if value != url]
+            metadata_changed = True
+            floor_changed = True
+        if floor_changed:
+            # Rebuild the materialized-path arrays from the original remote
+            # URL order.  Appending a reconciled path would shift every later
+            # slot (the exact corruption this endpoint repairs).
+            slot_by_url = {
+                str(slot.get("remote_url")): slot
+                for slot in slots
+                if isinstance(slot, dict) and slot.get("remote_url")
+            }
+            ordered_urls = list(floor.get("remote_image_urls") or [])
+            ordered_content = [
+                str(slot_by_url[url].get("local_path"))
+                for url in ordered_urls
+                if url in slot_by_url and slot_by_url[url].get("local_path")
+                and slot_by_url[url].get("status") == "content"
+            ]
+            ordered_non_export = [
+                str(slot_by_url[url].get("local_path"))
+                for url in ordered_urls
+                if url in slot_by_url and slot_by_url[url].get("local_path")
+                and slot_by_url[url].get("status") == "non_export"
+            ]
+            ordered_shared = [
+                str(slot_by_url[url].get("local_path"))
+                for url in ordered_urls
+                if url in slot_by_url and slot_by_url[url].get("local_path")
+                and slot_by_url[url].get("status") == "shared"
+            ]
+            floor["content_image_urls"] = ordered_content
+            floor["non_export_image_urls"] = ordered_non_export
+            floor["shared_image_urls"] = ordered_shared
+            floor["image_urls"] = ordered_content + ordered_non_export
+    metadata["missing_image_urls"] = missing
+    metadata["archive_status"] = "partial" if missing or metadata.get("missing_shared_image_urls") else "complete"
+    if metadata_changed:
+        atomic_write_text(paths.thread_metadata(tid), json.dumps(metadata, ensure_ascii=False, indent=2))
+    conn.execute(
+        "UPDATE threads SET missing_images_json = ?, archive_status = ? WHERE tid = ?",
+        (json.dumps(missing, ensure_ascii=False), metadata["archive_status"], tid),
+    )
+    conn.commit()
+    return reconciled
+
+
+def _thread_missing_urls_from_metadata(metadata: dict[str, Any]) -> list[str]:
+    values = metadata.get("missing_image_urls") or []
+    return [str(value) for value in values if str(value).strip()]
+
+
+def _thread_missing_urls(thread) -> list[str]:
+    try:
+        value = thread["missing_images_json"] if "missing_images_json" in thread.keys() else "[]"
+        parsed = json.loads(value or "[]")
+        return [str(item) for item in parsed if str(item).strip()] if isinstance(parsed, list) else []
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+
+
+def _archive_missing_shared_urls(paths: StoragePaths, tid: int) -> list[str]:
+    metadata = _load_archive_metadata(paths, tid)
+    values = metadata.get("missing_shared_image_urls") or []
+    return [str(value) for value in values if str(value).strip()]
 
 
 def _proxy_pool_artifacts(settings: Settings, proxy_binding) -> dict[str, object]:
@@ -413,6 +694,9 @@ def _diff_snapshot_images(
     local_assets: dict[str, _LocalAsset],
     paths: StoragePaths,
     include_shared_static: bool = True,
+    scope: str = "non_first_floor",
+    include_first_floor: bool = False,
+    target_urls: set[str] | None = None,
 ) -> dict[str, Any]:
     reason_counts: Counter[str] = Counter()
     class_counts: Counter[str] = Counter()
@@ -427,10 +711,17 @@ def _diff_snapshot_images(
     for floor in snapshot.floors:
         for url in floor.image_urls:
             remote_image_count += 1
-            if floor.floor_no <= 1:
+            if target_urls is not None and url not in target_urls:
+                continue
+            if not include_first_floor and floor.floor_no <= 1:
                 continue
             remote_non_first_image_count += 1
             image_class = _classify_backfill_image(url)
+            # Automatic idle repair intentionally remains restricted to known
+            # forum/static assets.  A user-selected external URL may still be
+            # attempted through the interactive endpoint.
+            if image_class == "external" and scope != "selected":
+                continue
             class_counts[image_class] += 1
             availability = _local_availability(
                 tid=snapshot.tid,
@@ -451,7 +742,7 @@ def _diff_snapshot_images(
                 "class": image_class,
                 "reason": availability,
             }
-            if image_class == "content":
+            if image_class in {"content", "external"}:
                 content_need_fetch.append(item)
                 missing_items_for_apply.append(item)
             else:
@@ -477,20 +768,25 @@ def _diff_snapshot_images(
 
 
 def _snapshot_for_missing_images(snapshot, missing_items: list[dict[str, Any]]):
-    urls_by_pid: dict[int, list[str]] = {}
+    pids: set[int] = set()
     for item in missing_items:
-        urls_by_pid.setdefault(int(item["pid"]), []).append(str(item["url"]))
+        pids.add(int(item["pid"]))
     floors = [
-        replace(floor, image_urls=urls_by_pid.get(floor.pid, []), has_images=bool(urls_by_pid.get(floor.pid)))
+        # Keep every original URL on the selected floor.  The downloader's
+        # target_urls filter decides what to fetch, while enumerate() retains
+        # the source index for a stable floor_XXX_YY filename.
+        floor
         for floor in snapshot.floors
-        if floor.pid in urls_by_pid
+        if floor.pid in pids
     ]
     return replace(snapshot, floors=floors, image_count=sum(len(floor.image_urls) for floor in floors))
 
 
 def _build_downloaded_url_map(snapshot, image_result) -> dict[str, str]:
-    local_path_by_url: dict[str, str] = {}
+    local_path_by_url: dict[str, str] = dict(getattr(image_result, "relative_path_by_url", {}) or {})
     for floor in snapshot.floors:
+        if any(url in local_path_by_url for url in floor.image_urls):
+            continue
         content_relpaths = [*image_result.downloaded_relpaths.get(floor.pid, []), *image_result.non_export_relpaths.get(floor.pid, [])]
         shared_relpaths = list(image_result.shared_relpaths.get(floor.pid, []))
         shared_index = 0
@@ -507,12 +803,31 @@ def _build_downloaded_url_map(snapshot, image_result) -> dict[str, str]:
     return local_path_by_url
 
 
-def _merge_assets(remote_assets, *, local_assets: dict[str, _LocalAsset], local_path_by_url: dict[str, str], image_result):
+def _merge_assets(
+    remote_assets,
+    *,
+    local_assets: dict[str, _LocalAsset],
+    local_path_by_url: dict[str, str],
+    image_result,
+    protected_urls: set[str] | None = None,
+    expected_paths: dict[str, Path] | None = None,
+):
     merged = []
     missing = set(image_result.missing_urls) | set(image_result.missing_shared_urls)
+    protected_urls = protected_urls or set()
     for asset in remote_assets:
         existing = local_assets.get(asset.remote_url)
-        local_path = existing.local_path if existing and existing.local_path else local_path_by_url.get(asset.remote_url)
+        if asset.remote_url in local_path_by_url:
+            local_path = local_path_by_url[asset.remote_url]
+        elif asset.remote_url in protected_urls:
+            expected = expected_paths.get(asset.remote_url) if expected_paths else None
+            local_path = (
+                str(expected.relative_to(expected.parents[1]))
+                if expected is not None and _is_valid_image_file(expected)
+                else None
+            )
+        else:
+            local_path = existing.local_path if existing and existing.local_path else None
         status = "downloaded" if local_path else ("missing" if asset.remote_url in missing else (existing.status if existing and existing.status else asset.status))
         merged.append(replace(asset, local_path=local_path, status=status))
     return merged
@@ -566,7 +881,27 @@ def _classify_backfill_image(url: str) -> str:
         if parsed.path.endswith("/common/back.gif"):
             return "decorative"
         return "static"
+    if _is_site_attachment(url) or "/data/attachment/" in parsed.path.lower():
+        return "content"
+    if parsed.scheme in {"http", "https"}:
+        return "external"
     return "content"
+
+
+def _selected_download_retries(*, target_urls: set[str] | None, configured_retries: int) -> int:
+    """Avoid spending an interactive retry budget on dead third-party links."""
+    if target_urls and any(_classify_backfill_image(url) == "external" for url in target_urls):
+        return 0
+    return max(0, int(configured_retries))
+
+
+def _is_site_attachment(url: str) -> bool:
+    parsed = urlparse(url)
+    if (parsed.hostname or "").lower() != "bbs.yamibo.com" or parsed.path.lower() != "/forum.php":
+        return False
+    query = parse_qs(parsed.query)
+    mod_values = {value.lower() for value in query.get("mod", [])}
+    return "attachment" in mod_values or "attachment/image" in mod_values
 
 
 def _local_availability(
@@ -583,7 +918,7 @@ def _local_availability(
         return "not_in_assets"
     if asset.local_path:
         path = _asset_path(tid=tid, local_path=asset.local_path, paths=paths)
-        if path.exists():
+        if _is_valid_image_file(path):
             return "ok"
         return "file_missing"
     if asset.status in {"missing", "pending"}:

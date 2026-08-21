@@ -180,6 +180,59 @@ def test_thread_detail_not_found(client):
     assert resp.status_code == 404
 
 
+def test_retry_thread_image_creates_selected_job_and_keeps_history(client, test_settings):
+    from yamibo_mcp.db.connection import connect
+
+    tid = 47901
+    asset_id = "asset-retry-47901"
+    remote_url = "https://bbs.yamibo.com/data/attachment/forum/2026/target-23.jpg"
+    conn = connect(test_settings.db_path)
+    try:
+        conn.execute("INSERT INTO threads (tid, raw_title, display_title) VALUES (?, ?, ?)", (tid, "raw", "display"))
+        conn.execute(
+            "INSERT INTO assets (asset_id, tid, pid, asset_type, remote_url, status) VALUES (?, ?, ?, ?, ?, ?)",
+            (asset_id, tid, tid * 10 + 1, "image", remote_url, "missing"),
+        )
+        old = JobsRepository(conn).create("sync_thread", tid=tid, payload={"tid": tid})
+        JobsRepository(conn).succeed(old.job_id)
+    finally:
+        conn.close()
+
+    response = client.post(f"/api/threads/{tid}/images/{asset_id}/retry")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["created"] is True
+    duplicate = client.post(f"/api/threads/{tid}/images/{asset_id}/retry")
+    assert duplicate.status_code == 200
+    assert duplicate.json() == {
+        "ok": True,
+        "job_id": body["job_id"],
+        "status": "queued",
+        "created": False,
+    }
+    conn = connect(test_settings.db_path)
+    try:
+        row = conn.execute("SELECT payload_json FROM jobs WHERE job_id = ?", (body["job_id"],)).fetchone()
+        import json
+        payload = json.loads(row["payload_json"])
+        assert payload == {
+            "tid": tid,
+            "dry_run": False,
+            "scope": "selected",
+            "target_asset_id": asset_id,
+            "target_urls": [remote_url],
+            "include_first_floor": True,
+            "priority": "interactive",
+        }
+        assert conn.execute("SELECT 1 FROM jobs WHERE job_id = ?", (old.job_id,)).fetchone() is not None
+        assert conn.execute(
+            "SELECT COUNT(*) AS n FROM jobs WHERE job_type = 'image_backfill' AND tid = ?",
+            (tid,),
+        ).fetchone()["n"] == 1
+    finally:
+        conn.close()
+
+
 def test_active_sync_job_is_lightweight_and_excludes_terminal_jobs(client, test_settings):
     from yamibo_mcp.db.connection import connect
 

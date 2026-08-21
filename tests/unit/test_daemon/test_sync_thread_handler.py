@@ -5,13 +5,13 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 from yamibo_mcp.errors import LoginRequiredError, ThreadPermissionRequiredError
-from yamibo_mcp.daemon.handlers.sync_thread import handle_sync_thread
+from yamibo_mcp.daemon.handlers.sync_thread import handle_sync_thread, _map_downloaded_asset_paths
 from yamibo_mcp.db.repositories.assets import AssetsRepository
 from yamibo_mcp.db.repositories.content_blocks import ContentBlocksRepository
 from yamibo_mcp.db.repositories.job_events import JobEventsRepository
 from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
-from yamibo_mcp.domain.models import FloorSnapshot, ThreadSnapshot, TitleSnapshot
+from yamibo_mcp.domain.models import AssetSnapshot, FloorSnapshot, ThreadSnapshot, TitleSnapshot
 from yamibo_mcp.storage.images import ImageDownloadResult
 from yamibo_mcp.yamibo.client import FetchResult
 from yamibo_mcp.yamibo.proxy_pool import ProxyBinding
@@ -92,6 +92,39 @@ def _make_snapshot() -> ThreadSnapshot:
         floors=[floor],
         image_count=1,
     )
+
+
+def test_sync_download_mapping_does_not_shift_after_middle_failure():
+    snapshot = _make_snapshot()
+    floor = replace(snapshot.floors[0], image_urls=[
+        "https://img.example.com/01.jpg",
+        "https://img.example.com/02.jpg",
+        "https://img.example.com/03.jpg",
+    ])
+    snapshot = replace(snapshot, floors=[floor], image_count=3)
+    assets = [
+        AssetSnapshot(
+            asset_id=f"asset-{index}", tid=42, pid=1001, asset_type="image",
+            remote_url=url, local_path=None, exportable=True, required=True, status="pending",
+        )
+        for index, url in enumerate(floor.image_urls, start=1)
+    ]
+    result = ImageDownloadResult(
+        downloaded_relpaths={1001: ["images/floor_001_01.jpg", "images/floor_001_03.jpg"]},
+        downloaded_count=2,
+        missing_urls=[floor.image_urls[1]],
+        relative_path_by_url={
+            floor.image_urls[0]: "images/floor_001_01.jpg",
+            floor.image_urls[2]: "images/floor_001_03.jpg",
+        },
+    )
+
+    local_paths, statuses = _map_downloaded_asset_paths(snapshot, assets, result)
+
+    assert local_paths[floor.image_urls[0]] == "images/floor_001_01.jpg"
+    assert local_paths[floor.image_urls[1]] is None
+    assert local_paths[floor.image_urls[2]] == "images/floor_001_03.jpg"
+    assert statuses[floor.image_urls[1]] == "missing"
 
 
 def test_sync_thread_partial_updates_forum_blocks_assets_and_events(db, tmp_path, monkeypatch):

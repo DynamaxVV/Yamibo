@@ -181,6 +181,19 @@ def thread_detail(
         floor["missing_image_urls"] = list(floor_meta.get("missing_image_urls") or [])
         floor["image_slots"] = list(floor_meta.get("image_slots") or [])
 
+    # Image retry actions need the stable asset identity.  Enrich the
+    # metadata-derived slots without making the browser infer an asset ID
+    # from a possibly stale/misordered local path.
+    asset_ids_by_url = {
+        str(row["remote_url"]): str(row["asset_id"])
+        for row in AssetsRepository(conn).list_assets(tid)
+        if row["remote_url"]
+    }
+    for floor in data["floors"]:
+        for slot in floor.get("image_slots") or []:
+            if isinstance(slot, dict) and slot.get("remote_url") in asset_ids_by_url:
+                slot["asset_id"] = asset_ids_by_url[slot["remote_url"]]
+
     data["floor_count"] = floor_count
     data["floor_page"] = preview_page
     data["floor_page_size"] = preview_page_size
@@ -258,6 +271,81 @@ def thread_images(tid: int, settings: Settings = Depends(get_settings)):
 def thread_assets(tid: int, conn: DatabaseConnection = Depends(get_conn)):
     assets = AssetsRepository(conn).list_assets(tid)
     return [asset_to_dict(a) for a in assets]
+
+
+@router.post("/threads/{tid}/images/{asset_id}/retry")
+def retry_thread_image(
+    tid: int,
+    asset_id: str,
+    conn: DatabaseConnection = Depends(get_conn),
+    settings: Settings = Depends(get_settings),
+):
+    """Queue one URL for an interactive, selected image backfill.
+
+    The source Job is never rerun or removed.  An already-live identical
+    selected Job is returned to make repeated UI clicks idempotent.
+    """
+    thread = ThreadsRepository(conn).get_thread(tid)
+    if thread is None:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    asset = AssetsRepository(conn).get_asset(asset_id)
+    if asset is None or int(asset["tid"]) != int(tid):
+        raise HTTPException(status_code=404, detail="Image asset not found")
+    remote_url = str(asset["remote_url"] or "").strip()
+    if not remote_url or not remote_url.lower().startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="Image asset has no retryable remote URL")
+
+    target_positions: list[dict[str, object]] = []
+    metadata = _load_thread_archive_metadata(settings, tid)
+    for floor in metadata.get("floors") or []:
+        if not isinstance(floor, dict):
+            continue
+        urls = list(floor.get("remote_image_urls") or floor.get("image_urls") or [])
+        for index, candidate in enumerate(urls, start=1):
+            if str(candidate) != remote_url:
+                continue
+            if asset["pid"] is not None and floor.get("pid") is not None and int(asset["pid"]) != int(floor["pid"]):
+                continue
+            target_positions.append({
+                "pid": int(floor["pid"]) if floor.get("pid") is not None else int(asset["pid"]),
+                "floor_no": int(floor["floor_no"]) if floor.get("floor_no") is not None else 1,
+                "image_index": index,
+                "url": remote_url,
+            })
+            break
+
+    payload = {
+        "tid": int(tid),
+        "dry_run": False,
+        "scope": "selected",
+        "target_asset_id": asset_id,
+        "target_urls": [remote_url],
+        "include_first_floor": True,
+        "priority": "interactive",
+    }
+    if target_positions:
+        payload["target_positions"] = target_positions
+
+    live_statuses = ("queued", "running", "retrying", "paused", "cancel_requested", "interrupted")
+    placeholders = ",".join("?" for _ in live_statuses)
+    rows = conn.execute(
+        f"SELECT job_id, payload_json, status FROM jobs WHERE job_type = ? AND tid = ? AND status IN ({placeholders}) ORDER BY created_at DESC",
+        ("image_backfill", int(tid), *live_statuses),
+    ).fetchall()
+    for row in rows:
+        try:
+            existing_payload = json.loads(row["payload_json"] or "{}")
+        except (TypeError, ValueError):
+            existing_payload = {}
+        if (
+            existing_payload.get("scope") == "selected"
+            and str(existing_payload.get("target_asset_id") or "") == asset_id
+            and list(existing_payload.get("target_urls") or []) == [remote_url]
+        ):
+            return {"ok": True, "job_id": row["job_id"], "status": row["status"], "created": False}
+
+    job = JobsRepository(conn).create("image_backfill", tid=int(tid), payload=payload)
+    return {"ok": True, "job_id": job.job_id, "status": job.status, "created": True}
 
 
 @router.get("/threads/{tid}/blocks")

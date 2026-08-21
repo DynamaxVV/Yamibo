@@ -7,12 +7,17 @@ from contextlib import contextmanager
 
 import pytest
 
-from yamibo_mcp.daemon.handlers.image_backfill import handle_image_backfill, _diff_snapshot_images
+from yamibo_mcp.daemon.handlers.image_backfill import (
+    _diff_snapshot_images,
+    _selected_download_retries,
+    _snapshot_for_missing_images,
+    handle_image_backfill,
+)
 from yamibo_mcp.daemon.image_backfill_scheduler import maybe_enqueue_image_backfill_dry_run
 from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.db.repositories.system_state import SystemStateRepository
 from yamibo_mcp.errors import ThreadPermissionRequiredError
-from yamibo_mcp.storage.images import ImageDownloadResult
+from yamibo_mcp.storage.images import ImageDownloadResult, download_images_to_staging
 from yamibo_mcp.domain.models import FloorSnapshot, ThreadSnapshot, TitleSnapshot
 from yamibo_mcp.storage.paths import StoragePaths
 
@@ -97,6 +102,73 @@ def test_image_backfill_diff_counts_content_missing_separately_from_static(tmp_p
     assert result["shared_static_missing_count"] == 1
     assert result["need_fetch_by_class"]["content"] == 1
     assert result["need_fetch_by_class"]["decorative"] == 1
+
+
+def test_selected_first_floor_download_keeps_original_image_index(tmp_path):
+    from dataclasses import replace
+
+    source = tmp_path / "source.png"
+    png = bytearray(b"\x89PNG\r\n\x1a\n" + b"\x00" * 108 + b"\x00\x00\x00\x00IEND\xaeB`\x82")
+    png[16:20] = (640).to_bytes(4, "big")
+    png[20:24] = (480).to_bytes(4, "big")
+    source.write_bytes(png)
+    target_url = source.as_uri()
+    urls = [f"https://example.invalid/{index}.jpg" for index in range(1, 23)] + [target_url]
+    base = _snapshot(125, [])
+    first = replace(base.floors[0], publisher="a", has_images=True, image_urls=urls)
+    snapshot = replace(base, floors=[first], image_count=len(urls))
+    missing = _snapshot_for_missing_images(snapshot, [{"pid": first.pid, "floor_no": 1, "url": target_url}])
+
+    result = download_images_to_staging(
+        StoragePaths(tmp_path),
+        "image_backfill_selected",
+        missing,
+        target_urls={target_url},
+        timeout=1,
+    )
+
+    assert result.missing_urls == []
+    assert result.relative_path_by_url[target_url] == "images/floor_001_23.png"
+    assert (tmp_path / "staging/jobs/image_backfill_selected/images/floor_001_23.png").exists()
+
+
+def test_selected_download_attempts_non_publisher_image_and_external_is_one_shot(tmp_path):
+    from dataclasses import replace
+
+    source = tmp_path / "reply.png"
+    png = bytearray(b"\x89PNG\r\n\x1a\n" + b"\x00" * 108 + b"\x00\x00\x00\x00IEND\xaeB`\x82")
+    png[16:20] = (640).to_bytes(4, "big")
+    png[20:24] = (480).to_bytes(4, "big")
+    source.write_bytes(png)
+    target_url = source.as_uri()
+    base = _snapshot(126, [])
+    reply = replace(
+        base.floors[0],
+        pid=1262,
+        floor_no=2,
+        publisher="reply-author",
+        has_images=True,
+        image_urls=[target_url],
+    )
+    snapshot = replace(base, floors=[reply], image_count=1)
+
+    result = download_images_to_staging(
+        StoragePaths(tmp_path),
+        "image_backfill_selected_reply",
+        snapshot,
+        target_urls={target_url},
+        timeout=1,
+    )
+
+    assert result.relative_path_by_url[target_url] == "images/floor_002_01.png"
+    assert _selected_download_retries(
+        target_urls={"https://third-party.invalid/dead.jpg"},
+        configured_retries=3,
+    ) == 0
+    assert _selected_download_retries(
+        target_urls={"https://bbs.yamibo.com/forum.php?mod=attachment&aid=1"},
+        configured_retries=3,
+    ) == 3
 
 
 def test_auto_scheduler_creates_internal_image_backfill_dry_run_job(db, tmp_path):

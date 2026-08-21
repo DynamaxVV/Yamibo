@@ -668,6 +668,20 @@ Web 控制台基于 HTTP，提供 JSON API 和页面路由。
 | 路径 | 方法 | 说明 |
 |------|------|------|
 | `/api/threads/{tid}/active-sync-job` | GET | 返回指定帖子的最新活动 `sync_thread` Job；无活动任务时返回 `{ "job": null }`，不包含 payload、artifact 或事件列表 |
+| `/api/threads/{tid}/images/{asset_id}/retry` | POST | 为指定图片创建或复用交互式 selected `image_backfill` Job；只处理目标图片，不重跑原归档 Job |
+
+单图补取成功响应：
+
+```json
+{
+  "ok": true,
+  "job_id": "...",
+  "status": "queued",
+  "created": true
+}
+```
+
+相同 `tid + asset_id + remote_url` 已存在活动 selected Job 时，返回同一个 `job_id`，并令 `created=false`。调用方应只轮询该 Job；所选图片恢复后 Job 可以是 `succeeded`，即使帖子因其他缺图仍保持 `partial`。
 
 错误映射：`LoginRequiredError`→401, `ThreadPermissionRequiredError`→403, `RemoteMaintenanceError`→503, `RemoteFetchError`/`UnexpectedPageError`→502
 

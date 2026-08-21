@@ -192,6 +192,7 @@ interface ImageSlot {
   remote_url: string
   local_path: string | null
   status: string
+  asset_id?: string
 }
 
 interface FloorGroup {
@@ -292,7 +293,14 @@ export function ThreadReader({ tid, source, contentKind, floors: floorSource, im
   const previewScrollSuppressed = useRef(false)
   const [pendingFloorNo, setPendingFloorNo] = useState<number | null>(null)
   const [currentFloorNo, setCurrentFloorNo] = useState<number | null>(null)
+  const [retryStatuses, setRetryStatuses] = useState<Record<string, string>>({})
+  const retryTimers = useRef(new Map<string, ReturnType<typeof window.setTimeout>>())
   const customModeLabel = `${t('custom')}（${dark ? t('night_mode') : t('day_mode')}）`
+
+  useEffect(() => () => {
+    retryTimers.current.forEach(timer => window.clearTimeout(timer))
+    retryTimers.current.clear()
+  }, [])
 
   const totalFloorCount = floorSource.length
   const pageSize = isNovel ? 10 : Math.max(1, totalFloorCount)
@@ -416,6 +424,44 @@ export function ThreadReader({ tid, source, contentKind, floors: floorSource, im
     }
   }
 
+  const retryMissingImage = async (slot: ImageSlot) => {
+    if (!slot.asset_id) return
+    const current = retryStatuses[slot.remote_url]
+    if (current === 'checking' || current === 'queued' || current === 'downloading') return
+    setRetryStatuses(prev => ({ ...prev, [slot.remote_url]: 'checking' }))
+    try {
+      const created = await api.retryThreadImage(tid, slot.asset_id)
+      setRetryStatuses(prev => ({ ...prev, [slot.remote_url]: created.status === 'running' ? 'downloading' : 'queued' }))
+      const poll = async () => {
+        try {
+          const job = await api.job(created.job_id)
+          if (job.status === 'succeeded') {
+            setRetryStatuses(prev => ({ ...prev, [slot.remote_url]: 'succeeded' }))
+            // The API rewrites metadata and the exact floor slot. Reloading
+            // the parent is intentionally narrow and avoids polling /jobs.
+            window.location.reload()
+            return
+          }
+          if (job.status === 'failed' || job.status === 'partial' || job.status === 'interrupted') {
+            setRetryStatuses(prev => ({ ...prev, [slot.remote_url]: 'failed' }))
+            return
+          }
+          setRetryStatuses(prev => ({
+            ...prev,
+            [slot.remote_url]: job.stage?.includes('download') ? 'downloading' : (job.status === 'queued' ? 'queued' : 'checking'),
+          }))
+          const timer = window.setTimeout(() => { void poll() }, 1000)
+          retryTimers.current.set(slot.remote_url, timer)
+        } catch {
+          setRetryStatuses(prev => ({ ...prev, [slot.remote_url]: 'failed' }))
+        }
+      }
+      void poll()
+    } catch {
+      setRetryStatuses(prev => ({ ...prev, [slot.remote_url]: 'failed' }))
+    }
+  }
+
   // Current floor tracking
   useEffect(() => {
     if (visibleFloorGroups.length === 0) { setCurrentFloorNo(null); return }
@@ -535,6 +581,19 @@ export function ThreadReader({ tid, source, contentKind, floors: floorSource, im
       <div key={`${slot.remote_url}-${i}`} className="missing-image-url-card">
         <div className="missing-image-url-label">{lang === 'en' ? 'Missing image URL' : '缺失图片 URL'}</div>
         <a href={slot.remote_url} target="_blank" rel="noreferrer">{slot.remote_url}</a>
+        <button
+          type="button"
+          className="btn-subtle"
+          disabled={!slot.asset_id || ['checking', 'queued', 'downloading'].includes(retryStatuses[slot.remote_url] || '')}
+          onClick={() => { void retryMissingImage(slot) }}
+        >
+          {retryStatuses[slot.remote_url] === 'checking' ? t('retry_image_checking')
+            : retryStatuses[slot.remote_url] === 'queued' ? t('retry_image_queued')
+              : retryStatuses[slot.remote_url] === 'downloading' ? t('retry_image_downloading')
+                : retryStatuses[slot.remote_url] === 'succeeded' ? t('retry_image_succeeded')
+                  : retryStatuses[slot.remote_url] === 'failed' ? t('retry_image_failed')
+                    : t('retry_image')}
+        </button>
       </div>
     )
   }

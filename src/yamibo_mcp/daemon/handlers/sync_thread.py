@@ -556,18 +556,7 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
             relative_context = str(context_path.relative_to(settings.data_dir))
             archive_status = "partial" if (image_result.missing_urls or image_result.stopped_reason) else "complete"
             content = build_content_snapshot(snapshot, forum_id=forum_id)
-            status_by_remote_url = {asset.remote_url: "pending" for asset in content.assets}
-            local_path_by_remote_url = {asset.remote_url: None for asset in content.assets}
-            for floor in snapshot.floors:
-                for index, remote_url in enumerate(floor.image_urls):
-                    content_relpaths = image_result.downloaded_relpaths.get(floor.pid, [])
-                    non_export_relpaths = image_result.non_export_relpaths.get(floor.pid, [])
-                    all_relpaths = list(content_relpaths) + list(non_export_relpaths)
-                    if index < len(all_relpaths):
-                        local_path_by_remote_url[remote_url] = all_relpaths[index]
-                        status_by_remote_url[remote_url] = "downloaded"
-                    elif remote_url in image_result.missing_urls:
-                        status_by_remote_url[remote_url] = "missing"
+            local_path_by_remote_url, status_by_remote_url = _map_downloaded_asset_paths(snapshot, content.assets, image_result)
             synced_assets = [
                 replace(
                     asset,
@@ -738,6 +727,37 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
     finally:
         client_stack.close()
         proxy_stack.close()
+
+
+def _map_downloaded_asset_paths(snapshot, assets, image_result):
+    """Map each remote URL by download identity, with a stem fallback.
+
+    The fallback is for older/custom downloaders that do not expose the
+    direct map; matching ``floor_XXX_YY`` still avoids binding a later success
+    to a failed middle slot.
+    """
+    local_path_by_remote_url = {asset.remote_url: None for asset in assets}
+    status_by_remote_url = {asset.remote_url: "pending" for asset in assets}
+    direct = getattr(image_result, "relative_path_by_url", {}) or {}
+    for remote_url, relative_path in direct.items():
+        if remote_url in local_path_by_remote_url:
+            local_path_by_remote_url[remote_url] = relative_path
+            status_by_remote_url[remote_url] = "downloaded"
+    for floor in snapshot.floors:
+        content_relpaths = list(image_result.downloaded_relpaths.get(floor.pid, []))
+        content_relpaths.extend(image_result.non_export_relpaths.get(floor.pid, []))
+        for index, remote_url in enumerate(floor.image_urls, start=1):
+            if local_path_by_remote_url.get(remote_url) is not None:
+                continue
+            stem = f"floor_{floor.floor_no:03d}_{index:02d}"
+            match = next((path for path in content_relpaths if Path(path).name.startswith(stem)), None)
+            if match is not None and remote_url in local_path_by_remote_url:
+                local_path_by_remote_url[remote_url] = match
+                status_by_remote_url[remote_url] = "downloaded"
+    for remote_url in image_result.missing_urls:
+        if remote_url in status_by_remote_url and local_path_by_remote_url[remote_url] is None:
+            status_by_remote_url[remote_url] = "missing"
+    return local_path_by_remote_url, status_by_remote_url
 
 
 def _extract_author_uid_from_url(value: str) -> str | None:

@@ -198,6 +198,7 @@ export interface FloorSummary {
     remote_url: string
     local_path: string | null
     status: string
+    asset_id?: string
   }>
 }
 
@@ -672,6 +673,8 @@ export const api = {
   threadAssets: (tid: number) => fetchJson<Asset[]>(`/threads/${tid}/assets`),
   threadBlocks: (tid: number) => fetchJson<ContentBlock[]>(`/threads/${tid}/blocks`),
   threadImages: (tid: number) => fetchJson<ThreadImage[]>(`/threads/${tid}/images`),
+  retryThreadImage: (tid: number, asset_id: string) =>
+    postJson<{ ok: boolean; job_id: string; status: string; created: boolean }>(`/threads/${tid}/images/${encodeURIComponent(asset_id)}/retry`, {}),
   series: () => fetchJson<SeriesSummary[]>('/series'),
   seriesDetail: (id: number) => fetchJson<{ series: SeriesSummary; threads: ThreadSummary[] }>(`/series/${id}`),
   deleteSeries: (seriesId: number) => postJson<{ ok: boolean }>('/series/delete', { series_id: seriesId }),
