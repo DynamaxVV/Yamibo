@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+
 from yamibo_mcp.db.repositories.jobs import JobsRepository
 
 
@@ -176,6 +178,93 @@ def test_thread_detail_not_found(client):
     """GET /api/threads/{tid} returns 404 for missing thread."""
     resp = client.get("/api/threads/999999")
     assert resp.status_code == 404
+
+
+def test_active_sync_job_is_lightweight_and_excludes_terminal_jobs(client, test_settings):
+    from yamibo_mcp.db.connection import connect
+
+    conn = connect(test_settings.db_path)
+    try:
+        repo = JobsRepository(conn)
+        job = repo.create("sync_thread", tid=4242, payload={"tid": 4242})
+    finally:
+        conn.close()
+
+    response = client.get("/api/threads/4242/active-sync-job")
+    assert response.status_code == 200
+    assert response.json() == {
+        "job": {
+            "job_id": job.job_id,
+            "job_type": "sync_thread",
+            "tid": 4242,
+            "status": "queued",
+            "stage": None,
+            "updated_at": job.updated_at,
+        }
+    }
+    assert "payload" not in response.json()["job"]
+    assert "artifacts" not in response.json()["job"]
+
+    conn = connect(test_settings.db_path)
+    try:
+        JobsRepository(conn).succeed(job.job_id)
+    finally:
+        conn.close()
+    assert client.get("/api/threads/4242/active-sync-job").json() == {"job": None}
+
+
+def test_active_sync_job_returns_null_for_unknown_tid(client):
+    response = client.get("/api/threads/987654/active-sync-job")
+    assert response.status_code == 200
+    assert response.json() == {"job": None}
+
+
+@pytest.mark.parametrize(
+    "status",
+    ["queued", "running", "retrying", "paused", "interrupted", "cancel_requested"],
+)
+def test_active_sync_job_returns_each_live_status(client, test_settings, status):
+    from yamibo_mcp.db.connection import connect
+
+    tid = 5000 + ["queued", "running", "retrying", "paused", "interrupted", "cancel_requested"].index(status)
+    conn = connect(test_settings.db_path)
+    try:
+        repo = JobsRepository(conn)
+        job = repo.create("sync_thread", tid=tid, payload={"tid": tid})
+        conn.execute("UPDATE jobs SET status = ?, stage = ? WHERE job_id = ?", (status, "parse", job.job_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+    response = client.get(f"/api/threads/{tid}/active-sync-job")
+    assert response.status_code == 200
+    assert response.json()["job"] == {
+        "job_id": job.job_id,
+        "job_type": "sync_thread",
+        "tid": tid,
+        "status": status,
+        "stage": "parse",
+        "updated_at": response.json()["job"]["updated_at"],
+    }
+
+
+@pytest.mark.parametrize("status", ["succeeded", "failed", "partial"])
+def test_active_sync_job_excludes_each_terminal_status(client, test_settings, status):
+    from yamibo_mcp.db.connection import connect
+
+    tid = 5100 + ["succeeded", "failed", "partial"].index(status)
+    conn = connect(test_settings.db_path)
+    try:
+        repo = JobsRepository(conn)
+        job = repo.create("sync_thread", tid=tid, payload={"tid": tid})
+        conn.execute("UPDATE jobs SET status = ? WHERE job_id = ?", (status, job.job_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+    response = client.get(f"/api/threads/{tid}/active-sync-job")
+    assert response.status_code == 200
+    assert response.json() == {"job": None}
 
 
 def test_series_list(client):

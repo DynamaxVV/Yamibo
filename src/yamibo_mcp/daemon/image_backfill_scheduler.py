@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import logging
 import json
+import logging
+import threading
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -10,55 +11,139 @@ from yamibo_mcp.config import Settings
 from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.db.repositories.system_state import SystemStateRepository
 from yamibo_mcp.domain.enums import JobStatus, JobType
+from yamibo_mcp.domain.job_state import new_job_id
+from yamibo_mcp.time_utils import utc_now_iso
 
 LOG = logging.getLogger(__name__)
 
 _STATE_KEY = "image_backfill_auto_scheduler"
+_SCHEDULER_LOCK = threading.Lock()
+_SCAN_BATCH_SIZE = 200
+_CANDIDATE_LIMIT = 50
+# A stable signed bigint for pg_try_advisory_xact_lock().  The lock is scoped
+# to the transaction, so a pooled PostgreSQL session cannot retain it.
+_POSTGRES_ADVISORY_LOCK_KEY = 0x59414D49424F5F32
+_BLOCKING_STATUSES = (
+    JobStatus.QUEUED.value,
+    JobStatus.RUNNING.value,
+    JobStatus.PAUSED.value,
+    JobStatus.SUCCEEDED.value,
+    JobStatus.PARTIAL.value,
+    JobStatus.FAILED.value,
+    JobStatus.RETRYING.value,
+    JobStatus.INTERRUPTED.value,
+    JobStatus.CANCEL_REQUESTED.value,
+)
 
 
 def maybe_enqueue_image_backfill_dry_run(repo: JobsRepository, settings: Settings) -> bool:
+    """Run at most one bounded automatic image-backfill scan."""
+    # This guard must remain before opening a transaction/query.  Operators use
+    # the setting as the immediate production stop switch.
     if not settings.image_backfill_enabled:
         return False
-    dry_run = settings.image_backfill_dry_run
-
-    state_repo = SystemStateRepository(repo.conn)
-    state = state_repo.get_json(_STATE_KEY) or {}
-    if not _within_budget(state, settings):
+    if not _SCHEDULER_LOCK.acquire(blocking=False):
+        LOG.info("image_backfill scheduler skipped lock_acquired=false reason=local_lock_busy")
         return False
 
-    candidate = _select_candidate(repo, settings, dry_run=dry_run)
-    if candidate is None:
-        _save_state(state_repo, state, enqueued=False, reason="no_candidate")
-        return False
+    try:
+        # The daemon connection can have a read transaction left by the worker
+        # loop. Clear it before creating the explicit scheduler transaction.
+        repo.conn.commit()
+        with repo.conn.begin():
+            if not _try_postgres_advisory_lock(repo):
+                LOG.info("image_backfill scheduler skipped lock_acquired=false reason=advisory_lock_busy")
+                return False
 
-    payload = {
-        "tid": int(candidate["tid"]),
-        "forum_id": settings.image_backfill_forum_id,
-        "dry_run": dry_run,
-        "mode": "missing_only",
-        "scope": "non_first_floor",
-        "max_pages": settings.image_backfill_max_pages,
-        "fixed_after": settings.image_backfill_fixed_after,
-        "internal_auto": True,
-        "candidate_reason": candidate["reason"],
-        "sync_time": _serialize_sync_time(candidate.get("sync_time")),
-    }
-    repo.create(JobType.IMAGE_BACKFILL.value, tid=int(candidate["tid"]), payload=payload, max_retries=3)
-    _save_state(state_repo, state, enqueued=True, reason="created")
-    LOG.info(
-        "Enqueued automatic image_backfill %s job tid=%s reason=%s",
-        "dry-run" if dry_run else "apply",
-        candidate["tid"],
-        candidate["reason"],
-    )
-    return True
+            state_repo = SystemStateRepository(repo.conn)
+            state = state_repo.get_json(_STATE_KEY) or {}
+            if not _within_budget(state, settings):
+                return False
+
+            dry_run = settings.image_backfill_dry_run
+            cursor_before = _state_cursor(state)
+            scan = _select_candidate_batch(
+                repo,
+                settings,
+                dry_run=dry_run,
+                cursor_tid=cursor_before,
+            )
+            candidate = scan["candidate"]
+            cursor_after = int(scan["cursor_after"])
+            wrap_count = int(scan["wrap_count"])
+            if candidate is None:
+                _save_state(
+                    state_repo,
+                    state,
+                    enqueued=False,
+                    reason="scanned_no_candidate",
+                    cursor_tid=cursor_after,
+                    wrap_count=wrap_count,
+                )
+                _log_scan(scan, cursor_before=cursor_before, cursor_after=cursor_after, wrap_count=wrap_count)
+                return False
+
+            payload = {
+                "tid": int(candidate["tid"]),
+                "forum_id": settings.image_backfill_forum_id,
+                "dry_run": dry_run,
+                "mode": "missing_only",
+                "scope": "non_first_floor",
+                "max_pages": settings.image_backfill_max_pages,
+                "fixed_after": settings.image_backfill_fixed_after,
+                "internal_auto": True,
+                "candidate_reason": candidate["reason"],
+                "sync_time": _serialize_sync_time(candidate.get("sync_time")),
+            }
+            job_id = _create_job_without_commit(
+                repo,
+                tid=int(candidate["tid"]),
+                payload=payload,
+                max_retries=3,
+            )
+            _save_state(
+                state_repo,
+                state,
+                enqueued=True,
+                reason="created",
+                cursor_tid=cursor_after,
+                wrap_count=wrap_count,
+            )
+            _log_scan(scan, cursor_before=cursor_before, cursor_after=cursor_after, wrap_count=wrap_count)
+            LOG.info(
+                "Enqueued automatic image_backfill %s job_id=%s tid=%s reason=%s",
+                "dry-run" if dry_run else "apply",
+                job_id,
+                candidate["tid"],
+                candidate["reason"],
+            )
+            return True
+    except Exception:
+        # The transaction context rolls back state/job writes. In particular,
+        # a failed query must not advance the persistent cursor.
+        LOG.exception("image_backfill scheduler scan failed")
+        return False
+    finally:
+        _SCHEDULER_LOCK.release()
+
+
+def _try_postgres_advisory_lock(repo: JobsRepository) -> bool:
+    backend = str(getattr(repo.conn, "backend", "sqlite") or "sqlite").lower()
+    if backend not in {"postgres", "postgresql"}:
+        return True
+    row = repo.conn.execute(
+        "SELECT pg_try_advisory_xact_lock(?) AS acquired",
+        (_POSTGRES_ADVISORY_LOCK_KEY,),
+    ).fetchone()
+    return bool(row and row["acquired"])
 
 
 def _within_budget(state: dict[str, Any], settings: Settings) -> bool:
     now = time.time()
     interval = settings.image_backfill_auto_interval_seconds
     last_enqueued_at = float(state.get("last_enqueued_at") or 0.0)
-    if interval > 0 and now - last_enqueued_at < interval:
+    last_checked_at = float(state.get("last_checked_at") or 0.0)
+    if interval > 0 and now - max(last_enqueued_at, last_checked_at) < interval:
         return False
 
     daily_limit = settings.image_backfill_daily_limit
@@ -70,122 +155,250 @@ def _within_budget(state: dict[str, Any], settings: Settings) -> bool:
     return count < daily_limit
 
 
+def _state_cursor(state: dict[str, Any]) -> int:
+    try:
+        return max(int(state.get("scan_cursor_tid") or 0), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _save_state(
     state_repo: SystemStateRepository,
     state: dict[str, Any],
     *,
     enqueued: bool,
     reason: str,
+    cursor_tid: int,
+    wrap_count: int,
 ) -> None:
+    """Persist scheduler JSON without committing the caller's transaction."""
     today = datetime.now(timezone.utc).date().isoformat()
     existing_day = str(state.get("day") or "")
     count = int(state.get("count") or 0) if existing_day == today else 0
+    now = time.time()
     if enqueued:
         count += 1
-        state["last_enqueued_at"] = time.time()
-    state.update({"day": today, "count": count, "last_reason": reason})
-    state_repo.set_json(_STATE_KEY, state)
+        state["last_enqueued_at"] = now
+    state.update(
+        {
+            "day": today,
+            "count": count,
+            "last_checked_at": now,
+            "last_reason": reason,
+            "scan_cursor_tid": max(int(cursor_tid), 0),
+            "scan_wrap_count": max(int(wrap_count), 0),
+        }
+    )
+    state_repo.conn.execute(
+        """
+        INSERT INTO system_state (key, value_json, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at
+        """,
+        (_STATE_KEY, json.dumps(state, ensure_ascii=False), utc_now_iso()),
+    )
 
 
-def _select_candidate(repo: JobsRepository, settings: Settings, *, dry_run: bool) -> dict[str, Any] | None:
+def _select_candidate_batch(
+    repo: JobsRepository,
+    settings: Settings,
+    *,
+    dry_run: bool,
+    cursor_tid: int,
+) -> dict[str, Any]:
+    """Scan one bounded TID batch and return its first unblocked candidate."""
+    started = time.perf_counter()
     forum_id = settings.image_backfill_forum_id
-    random_func = "random()" if getattr(repo.conn, "backend", "sqlite") in {"postgres", "postgresql"} else "RANDOM()"
+    state = SystemStateRepository(repo.conn).get_json(_STATE_KEY) or {}
+    previous_wrap_count = int(state.get("scan_wrap_count") or 0)
+    batch_rows = repo.conn.execute(
+        """
+        SELECT t.tid
+        FROM threads t
+        WHERE t.forum_id = ?
+          AND t.archive_status IN ('complete', 'partial')
+          AND t.tid > ?
+        ORDER BY t.tid ASC
+        LIMIT ?
+        """,
+        (forum_id, max(int(cursor_tid), 0), _SCAN_BATCH_SIZE),
+    ).fetchall()
+    if batch_rows:
+        batch_tids = [int(row["tid"]) for row in batch_rows]
+        cursor_after = batch_tids[-1]
+        wrap_count = previous_wrap_count
+    else:
+        batch_tids = []
+        cursor_after = 0
+        # A wrap is persisted without immediately scanning a second batch.
+        wrap_count = previous_wrap_count + 1 if cursor_tid > 0 else previous_wrap_count
+
     rows = repo.conn.execute(
-        f"""
-        WITH asset_counts AS (
-          SELECT tid, COUNT(*) FILTER (WHERE asset_type = 'image') AS image_assets
-          FROM assets
-          GROUP BY tid
+        """
+        WITH batch AS (
+          SELECT t.tid, t.sync_time, t.image_count
+          FROM threads t
+          WHERE t.forum_id = ?
+            AND t.archive_status IN ('complete', 'partial')
+            AND t.tid > ?
+          ORDER BY t.tid ASC
+          LIMIT ?
+        ), asset_counts AS (
+          SELECT a.tid, COUNT(*) FILTER (WHERE a.asset_type = 'image') AS image_assets
+          FROM assets a
+          JOIN batch b ON b.tid = a.tid
+          GROUP BY a.tid
         ), non_first AS (
           SELECT f.tid, COUNT(*) AS floors_without_assets
           FROM floors f
-          JOIN threads t ON t.tid = f.tid
+          JOIN batch b ON b.tid = f.tid
           LEFT JOIN assets a ON a.tid = f.tid AND a.pid = f.pid AND a.asset_type = 'image'
-          WHERE t.forum_id = ?
-            AND t.archive_status IN ('complete', 'partial')
-            AND f.floor_no > 1
+          WHERE f.floor_no > 1
             AND f.has_images = ?
             AND a.asset_id IS NULL
           GROUP BY f.tid
         ), missing_assets AS (
           SELECT a.tid, COUNT(*) AS missing_asset_rows
           FROM assets a
-          JOIN threads t ON t.tid = a.tid
-          WHERE t.forum_id = ?
-            AND t.archive_status IN ('complete', 'partial')
-            AND a.asset_type = 'image'
+          JOIN batch b ON b.tid = a.tid
+          WHERE a.asset_type = 'image'
             AND (a.local_path IS NULL OR a.local_path = '' OR COALESCE(a.status, '') IN ('missing', 'pending'))
           GROUP BY a.tid
         ), candidates AS (
           SELECT
-            t.tid,
-            t.sync_time,
+            b.tid,
+            b.sync_time,
             CASE
               WHEN COALESCE(nf.floors_without_assets, 0) > 0 THEN 'non_first_floor_has_images_without_asset'
-              WHEN t.image_count > COALESCE(ac.image_assets, 0) THEN 'image_count_asset_gap'
+              WHEN b.image_count > COALESCE(ac.image_assets, 0) THEN 'image_count_asset_gap'
               ELSE 'missing_or_pending_asset'
             END AS reason
-          FROM threads t
-          LEFT JOIN asset_counts ac ON ac.tid = t.tid
-          LEFT JOIN non_first nf ON nf.tid = t.tid
-          LEFT JOIN missing_assets ma ON ma.tid = t.tid
-          WHERE t.forum_id = ?
-            AND t.archive_status IN ('complete', 'partial')
-            AND (
+          FROM batch b
+          LEFT JOIN asset_counts ac ON ac.tid = b.tid
+          LEFT JOIN non_first nf ON nf.tid = b.tid
+          LEFT JOIN missing_assets ma ON ma.tid = b.tid
+          WHERE (
               COALESCE(nf.floors_without_assets, 0) > 0
-              OR t.image_count > COALESCE(ac.image_assets, 0)
+              OR b.image_count > COALESCE(ac.image_assets, 0)
               OR COALESCE(ma.missing_asset_rows, 0) > 0
-            )
+          )
         )
         SELECT tid, sync_time, reason
         FROM candidates
-        ORDER BY {random_func}
-        LIMIT 50
+        ORDER BY tid ASC
+        LIMIT ?
         """,
-        (
-            forum_id,
-            True,
-            forum_id,
-            forum_id,
-        ),
+        (forum_id, max(int(cursor_tid), 0), _SCAN_BATCH_SIZE, True, _CANDIDATE_LIMIT),
     ).fetchall()
+
+    tids = [int(row["tid"]) for row in rows]
+    blocked_tids = _blocking_backfill_tids(repo, tids, dry_run=dry_run)
+    candidate = next(
+        (
+            {"tid": int(row["tid"]), "sync_time": row["sync_time"], "reason": row["reason"]}
+            for row in rows
+            if int(row["tid"]) not in blocked_tids
+        ),
+        None,
+    )
+    return {
+        "candidate": candidate,
+        "batch_size": len(batch_tids),
+        "candidate_count": len(rows),
+        "blocking_count": len(blocked_tids),
+        "cursor_after": cursor_after,
+        "wrap_count": wrap_count,
+        "elapsed_ms": (time.perf_counter() - started) * 1000,
+    }
+
+
+def _blocking_backfill_tids(repo: JobsRepository, tids: list[int], *, dry_run: bool) -> set[int]:
+    if not tids:
+        return set()
+    placeholders = ",".join("?" for _ in tids)
+    rows = repo.conn.execute(
+        f"""
+        SELECT tid, payload_json
+        FROM jobs
+        WHERE job_type = ?
+          AND tid IN ({placeholders})
+          AND status IN ({','.join('?' for _ in _BLOCKING_STATUSES)})
+        """,
+        (JobType.IMAGE_BACKFILL.value, *tids, *_BLOCKING_STATUSES),
+    ).fetchall()
+    blocked: set[int] = set()
     for row in rows:
         tid = int(row["tid"])
-        if not _has_blocking_backfill_job(repo, tid=tid, dry_run=dry_run):
-            return {"tid": row["tid"], "sync_time": row["sync_time"], "reason": row["reason"]}
-    return None
+        if dry_run or not bool(_loads_payload(row["payload_json"]).get("dry_run", True)):
+            blocked.add(tid)
+    return blocked
+
+
+def _select_candidate(repo: JobsRepository, settings: Settings, *, dry_run: bool) -> dict[str, Any] | None:
+    """Compatibility wrapper for callers/tests of the former helper."""
+    return _select_candidate_batch(repo, settings, dry_run=dry_run, cursor_tid=0)["candidate"]
 
 
 def _has_blocking_backfill_job(repo: JobsRepository, *, tid: int, dry_run: bool) -> bool:
-    rows = repo.conn.execute(
+    """Compatibility wrapper; new scans use one batch query instead."""
+    return int(tid) in _blocking_backfill_tids(repo, [int(tid)], dry_run=dry_run)
+
+
+def _create_job_without_commit(
+    repo: JobsRepository,
+    *,
+    tid: int,
+    payload: dict[str, Any],
+    max_retries: int,
+) -> str:
+    """Insert an automatic job and its creation event in the active transaction."""
+    job_id = new_job_id(JobType.IMAGE_BACKFILL.value)
+    now = utc_now_iso()
+    repo.conn.execute(
         """
-        SELECT payload_json
-        FROM jobs
-        WHERE job_type = ?
-          AND tid = ?
-          AND status IN (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO jobs (
+          job_id, parent_job_id, job_type, tid, payload_json, status,
+          max_retries, resumable, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
+            job_id,
+            None,
             JobType.IMAGE_BACKFILL.value,
             tid,
+            json.dumps(payload, ensure_ascii=False),
             JobStatus.QUEUED.value,
-            JobStatus.RUNNING.value,
-            JobStatus.PAUSED.value,
-            JobStatus.SUCCEEDED.value,
-            JobStatus.PARTIAL.value,
-            JobStatus.FAILED.value,
-            JobStatus.RETRYING.value,
-            JobStatus.INTERRUPTED.value,
-            JobStatus.CANCEL_REQUESTED.value,
+            max_retries,
+            True,
+            now,
+            now,
         ),
-    ).fetchall()
-    if dry_run:
-        return bool(rows)
-    for row in rows:
-        payload = _loads_payload(row["payload_json"])
-        if not bool(payload.get("dry_run", True)):
-            return True
-    return False
+    )
+    repo.conn.execute(
+        """
+        INSERT INTO job_events (job_id, event_type, status, stage, payload_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (job_id, "job.created", JobStatus.QUEUED.value, None, "{}", now),
+    )
+    return job_id
+
+
+def _log_scan(scan: dict[str, Any], *, cursor_before: int, cursor_after: int, wrap_count: int) -> None:
+    LOG.info(
+        "image_backfill scan elapsed_ms=%.1f batch_size=%d candidate_count=%d "
+        "blocking_count=%d cursor_before=%d cursor_after=%d wrap_count=%d "
+        "lock_acquired=true reason=%s",
+        float(scan["elapsed_ms"]),
+        int(scan["batch_size"]),
+        int(scan["candidate_count"]),
+        int(scan["blocking_count"]),
+        cursor_before,
+        cursor_after,
+        wrap_count,
+        "candidate" if scan["candidate"] is not None else "scanned_no_candidate",
+    )
 
 
 def _loads_payload(value: Any) -> dict[str, Any]:

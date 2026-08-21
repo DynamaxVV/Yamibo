@@ -2,7 +2,7 @@
 
 百合会 (yamibo.com) 论坛本地归档系统。通过 MCP 协议让 LLM 客户端浏览、搜索、归档、检查更新和导出论坛贴子；内嵌 React WebUI 控制台，支持多主题切换。
 
-> 当前版本：`1.1.1`
+> 当前版本：`1.2.0`
 
 ## 功能特性
 
@@ -11,7 +11,7 @@
 - **智能标题解析** — 规则引擎 + LLM 辅助作为内部归档实现细节
 - **自动归档** — 抓取帖子 HTML，解析楼层，下载图片，生成结构化本地存档
 - **轻小说更新检测** — 独立 `check_thread_updates` / `update_thread` 流程，轻小说贴子支持只看楼主增量更新
-- **图片回填闲时任务** — Daemon 空闲时可自动为已归档帖子补跑 `image_backfill`，优先修复缺失图片和非首楼漏记资产
+- **图片回填闲时任务** — Daemon 以 single-flight、有界 TID 游标扫描自动补跑 `image_backfill`，避免维护查询与在线 Web 请求竞争
 - **内容模型** — 支持 comic/novel/discussion/mixed 四种内容形态，有序内容块 + 资产管理
 - **系列管理** — 按 series_key 自动聚合同一系列的多个章节帖子
 - **标准化导出** — 漫画/通用贴子 ZIP 打包（context.md + metadata.json + 图片），轻小说导出为可追加的 TXT 文件
@@ -52,7 +52,7 @@ uv sync --extra dev
     "cookie_file": ".cookie",
     "novel_author_only_max_pages": 50,
     "novel_author_only_page_delay_seconds": 0.5,
-    "image_backfill_enabled": true,
+    "image_backfill_enabled": false,
     "image_backfill_dry_run": true,
     "image_backfill_forum_id": 5,
     "image_backfill_auto_interval_seconds": 60,
@@ -96,7 +96,7 @@ uv sync --extra dev
 
 `yamibo.image_backfill_*` 用于控制 Daemon 的闲时图片回填调度器：
 
-- `image_backfill_enabled`：是否启用自动回填
+- `image_backfill_enabled`：是否启用自动回填；新版本部署后先保持 `false`，完成 PostgreSQL dry-run canary 后再开启
 - `image_backfill_dry_run`：只做差异探测，不写回本地归档
 - `image_backfill_forum_id`：候选帖子来源分区
 - `image_backfill_auto_interval_seconds`：两次自动入队之间的最短间隔
@@ -150,7 +150,7 @@ YAMIBO_LLM_MODEL=hermes
 
 - **论坛维护暂停**：当 Daemon 识别到维护页时，会把所有远程任务统一切到 `paused`，并每 10 分钟做一次轻量探测；维护结束后自动恢复。
 - **软封锁恢复**：遇到 HTTP 444、429 或未知反爬页时，会优先清理代理缓存并把任务转入重试，而不是直接失败。
-- **闲时图片回填**：当队列空闲且达到预算条件时，Daemon 会自动创建 `image_backfill` 任务；Web「任务」页可查看当日入队计数和最近一次入队原因。
+- **闲时图片回填**：当队列空闲且达到预算条件时，Daemon 会在跨 worker single-flight 锁内扫描最多 200 个 TID，并自动创建 `image_backfill` 任务；Web「任务」页可查看当日入队计数和最近一次入队原因。
 
 ### 初始化数据库
 

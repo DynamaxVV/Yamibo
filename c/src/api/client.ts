@@ -125,6 +125,19 @@ export interface JobListResponse {
   items: JobSummary[]
 }
 
+export interface ActiveSyncJob {
+  job_id: string
+  job_type: 'sync_thread'
+  tid: number | null
+  status: string
+  stage: string | null
+  updated_at: string
+}
+
+export interface ActiveSyncJobResponse {
+  job: ActiveSyncJob | null
+}
+
 export interface ThreadDetail extends ThreadSummary {
   url: string | null
   publisher_uid: string | null
@@ -655,6 +668,7 @@ export const api = {
     const s = qs.toString()
     return fetchJson<ThreadDetail>(`/threads/${tid}${s ? `?${s}` : ''}`)
   },
+  activeSyncJob: (tid: number) => fetchJson<ActiveSyncJobResponse>(`/threads/${tid}/active-sync-job`),
   threadAssets: (tid: number) => fetchJson<Asset[]>(`/threads/${tid}/assets`),
   threadBlocks: (tid: number) => fetchJson<ContentBlock[]>(`/threads/${tid}/blocks`),
   threadImages: (tid: number) => fetchJson<ThreadImage[]>(`/threads/${tid}/images`),

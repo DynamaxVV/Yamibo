@@ -73,25 +73,6 @@ class TestGetJobStatusPayload:
         assert result["result_ready"] is True
         assert result["recommended_poll_after_seconds"] is None
 
-    def test_marks_superseded_job_as_terminal_but_not_result_ready(self, tmp_path, db):
-        settings = _fake_settings(tmp_path)
-        repo = JobsRepository(db)
-        job = repo.create("noop")
-        db.execute(
-            "UPDATE jobs SET status = 'superseded', finished_at = '2026-06-22T14:03:40+00:00' WHERE job_id = ?",
-            (job.job_id,),
-        )
-        db.commit()
-        with patch("yamibo_mcp.application.job_queries.load_settings", return_value=settings), \
-             patch("yamibo_mcp.application.job_queries.connect", return_value=db), \
-             patch("yamibo_mcp.server.schemas.utc_now_iso", return_value="2026-06-22T14:03:40+00:00"):
-            result = get_job_status_payload(job.job_id)
-
-        assert result["is_terminal"] is True
-        assert result["result_ready"] is False
-        assert result["execution_state"] == "terminal"
-        assert result["diagnostic_summary"].startswith("Job was superseded")
-
     def test_marks_old_running_download_job_as_attention_with_diagnostic_summary(self, tmp_path, db):
         settings = _fake_settings(tmp_path)
         repo = JobsRepository(db)

@@ -85,6 +85,24 @@ def list_threads(
     }
 
 
+@router.get("/threads/{tid}/active-sync-job")
+def active_sync_job(tid: int, conn: DatabaseConnection = Depends(get_conn)):
+    """Return the current sync job for one thread without loading the job list."""
+    job = JobsRepository(conn).find_live_job_for_thread(job_type="sync_thread", tid=tid)
+    if job is None:
+        return {"job": None}
+    return {
+        "job": {
+            "job_id": job.job_id,
+            "job_type": job.job_type,
+            "tid": job.tid,
+            "status": job.status,
+            "stage": job.stage,
+            "updated_at": job.updated_at,
+        }
+    }
+
+
 @router.get("/threads/{tid}")
 def thread_detail(
     tid: int,

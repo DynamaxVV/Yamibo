@@ -247,10 +247,9 @@ export function ThreadDetail() {
     let poll: ReturnType<typeof window.setInterval> | null = null
     const refresh = async () => {
       try {
-        const jobs = await api.jobs({ page: 1, page_size: 200 })
+        const activeJob = (await api.activeSyncJob(tid)).job
         if (!active) return
-        const activeJob = jobs.items.find(j => j.tid === tid && j.job_type === 'sync_thread' && ACTIVE_JOB_STATUSES.has(j.status))
-        if (!activeJob) {
+        if (!activeJob || !ACTIVE_JOB_STATUSES.has(activeJob.status)) {
           setActiveSyncStatus(null)
           if (poll != null) { window.clearInterval(poll); poll = null }
           return
