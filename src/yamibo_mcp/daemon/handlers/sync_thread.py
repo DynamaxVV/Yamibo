@@ -528,6 +528,7 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
                 use_system_proxy=False if client is None else client.use_system_proxy,
                 proxy_url=None if client is None else getattr(client, "proxy_url", None),
                 referer=source_url,
+                fetcher=None if client is None else getattr(client, "fetch_image", None),
                 on_progress=_progress,
                 cancel_check=_cancel_check,
                 stage_deadline_seconds=download_stage_timeout_seconds,

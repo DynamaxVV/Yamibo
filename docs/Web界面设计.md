@@ -142,7 +142,7 @@ c/
 
 | 功能 | 说明 |
 |------|------|
-| 实时日志流 | 每 2 秒轮询 `/api/logs`，显示服务端运行日志 |
+| 实时日志流 | 首次加载最近日志，之后每 2 秒用 `since` 增量轮询 `/api/logs`，显示服务端运行日志 |
 | 级别筛选 | 最低级别过滤（DEBUG/INFO/WARNING/ERROR/CRITICAL），默认 INFO |
 | 控制按钮 | 刷新、暂停/继续、清空 |
 | 自动滚动 | 默认开启，可关闭 |
@@ -298,7 +298,7 @@ c/
 | GET | `/api/rag/overview` | RAG 配置、索引元数据、统计、版块分布、最近 `rag_index` 任务 |
 | GET | `/api/rag/threads` | 带 RAG chunk/embedding 状态的贴子列表（`?q=&forum_id=&rag_status=`） |
 | GET | `/api/debug/info` | 系统信息 + 统计 |
-| GET | `/api/logs` | 实时日志（`?limit=&since=`） |
+| GET | `/api/logs` | 结构化实时日志；支持 `limit/since/job_id/tid/event_type/level/component/q/errors_only`，返回时间范围和实际过滤条件 |
 | POST | `/api/rag/index` | 创建 `rag_index` 任务 |
 | POST | `/api/rag/search` | 调用本地 `search_archived_content`，返回 evidence 结果 |
 | POST | `/api/review/confirm-title` | 确认标题 |

@@ -19,6 +19,7 @@ from yamibo_mcp.db.connection import transaction
 from yamibo_mcp.db.repositories.assets import AssetsRepository
 from yamibo_mcp.db.repositories.content_blocks import ContentBlocksRepository
 from yamibo_mcp.db.repositories.jobs import JobsRepository
+from yamibo_mcp.db.repositories.job_events import JobEventsRepository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
 from yamibo_mcp.domain.content import build_content_snapshot
 from yamibo_mcp.domain.models import FloorSnapshot, Job, ThreadSnapshot, TitleSnapshot
@@ -30,6 +31,7 @@ from yamibo_mcp.storage.thread_archive import materialize_thread
 from yamibo_mcp.daemon.handlers.update_thread import _load_local_thread_snapshot
 from yamibo_mcp.daemon.handlers.sync_thread import _check_cancelled, _check_paused
 from yamibo_mcp.errors import ThreadPermissionRequiredError, RemoteMaintenanceError, UnexpectedPageError, _extract_permission_code
+from yamibo_mcp.structured_logging import emit
 from yamibo_mcp.yamibo.account_pool import borrow_yamibo_client, next_permission_threshold
 from yamibo_mcp.yamibo.anti_bot import ensure_no_maintenance_pause
 from yamibo_mcp.yamibo.parsers.thread_detail import parse_thread_snapshot
@@ -38,6 +40,21 @@ from yamibo_mcp.yamibo.urls import remote_image_identity, stable_attachment_id
 
 
 LOG = logging.getLogger(__name__)
+
+
+def _safe_image_diagnostic(item: dict[str, Any]) -> dict[str, Any]:
+    """Keep job events useful without persisting cookies or query-bearing URLs."""
+    result = {key: value for key, value in item.items() if key not in {"url", "final_url"}}
+    for key in ("url", "final_url"):
+        value = item.get(key)
+        if value:
+            parsed = urlparse(str(value))
+            result[f"{key}_host"] = parsed.netloc
+            result[f"{key}_path"] = parsed.path
+            attachment_id = stable_attachment_id(str(value))
+            if attachment_id is not None:
+                result["remote_identity"] = attachment_id
+    return result
 
 
 @dataclass(frozen=True)
@@ -220,9 +237,56 @@ def handle_image_backfill(
                     use_system_proxy=client.use_system_proxy,
                     proxy_url=getattr(client, "proxy_url", None),
                     referer=final_url,
+                    fetcher=getattr(client, "fetch_image", None),
                     target_urls={str(item["url"]) for item in diff["missing_items_for_apply"]},
                     stage_deadline_seconds=float(getattr(settings, "image_download_stage_timeout_seconds", 600.0)),
                 )
+                diagnostics = [_safe_image_diagnostic(item) for item in image_result.diagnostics]
+                error_type_counts: dict[str, int] = {}
+                http_status_counts: dict[str, int] = {}
+                for item in diagnostics:
+                    if item.get("error_type"):
+                        key = str(item["error_type"])
+                        error_type_counts[key] = error_type_counts.get(key, 0) + 1
+                    if item.get("http_status") is not None:
+                        key = str(item["http_status"])
+                        http_status_counts[key] = http_status_counts.get(key, 0) + 1
+                diagnostic_summary = {
+                    "attempted": len(diagnostics),
+                    "succeeded": sum(1 for item in diagnostics if item.get("status") == "ok"),
+                    "failed": sum(1 for item in diagnostics if item.get("status") != "ok"),
+                    "retryable_failed": sum(1 for item in diagnostics if item.get("status") != "ok" and item.get("retryable")),
+                    "transports": sorted({str(item.get("transport")) for item in diagnostics}),
+                    "error_type_counts": error_type_counts,
+                    "http_status_counts": http_status_counts,
+                    "stopped_reason": image_result.stopped_reason,
+                }
+                artifacts["image_download_diagnostics"] = diagnostics
+                artifacts["image_download_summary"] = diagnostic_summary
+                has_failures = bool(
+                    image_result.missing_urls
+                    or image_result.missing_shared_urls
+                    or image_result.stopped_reason
+                )
+                event_payload = {"tid": tid, "summary": diagnostic_summary, "diagnostics": diagnostics}
+                try:
+                    JobEventsRepository(repo.conn).append(
+                        job_id=job.job_id,
+                        event_type="image.download.result",
+                        status="partial" if has_failures else "succeeded",
+                        stage="download_missing_images",
+                        payload=event_payload,
+                    )
+                except Exception:
+                    LOG.warning("Failed to persist image download diagnostics for job %s", job.job_id, exc_info=True)
+                first_failure = next((item for item in diagnostics if item.get("status") != "ok"), None)
+                emit(LOG, logging.INFO if not has_failures else logging.WARNING, "image.download.result",
+                     "image download result", result="success" if not has_failures else "partial",
+                     status="ok" if not has_failures else "error", job_id=job.job_id, tid=tid,
+                     error_code=None if not has_failures else "IMAGE_TARGET_NOT_DOWNLOADED",
+                     error_message=None if first_failure is None else str(first_failure.get("error_message") or first_failure.get("error_type") or "image download failed"),
+                     retryable=bool(diagnostic_summary["retryable_failed"]), tags=["image", "download"], operation="image_backfill",
+                     payload=event_payload)
                 local_path_by_url = _build_downloaded_url_map(missing_snapshot, image_result)
                 content = build_content_snapshot(apply_snapshot, forum_id=thread["forum_id"] if "forum_id" in thread.keys() else None)
                 synced_assets = _merge_assets(

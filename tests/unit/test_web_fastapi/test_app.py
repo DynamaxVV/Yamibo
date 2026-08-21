@@ -456,6 +456,66 @@ def test_logs_endpoint(client):
     assert resp.status_code == 200
     data = resp.json()
     assert "entries" in data
+    assert "applied_filters" in data
+    assert "oldest_ts" in data
+    assert "newest_ts" in data
+
+
+def test_logs_endpoint_filters_structured_image_diagnostics(client):
+    import logging
+
+    from yamibo_mcp.structured_logging import emit
+
+    job_id = "image_backfill_log_filter_test"
+    emit(
+        logging.getLogger("yamibo_mcp.tests.image_logs"),
+        logging.WARNING,
+        "image.download.result",
+        "Image download failed",
+        result="failure",
+        status="missing",
+        error_code="IMAGE_HTTP_ERROR",
+        error_message="HTTP 403",
+        retryable=True,
+        job_id=job_id,
+        tid=575256,
+        payload={"http_status": 403, "transport": "curl_cffi", "remote_identity": "1640438"},
+    )
+
+    resp = client.get(
+        "/api/logs",
+        params={
+            "job_id": job_id,
+            "tid": 575256,
+            "event_type": "image.download.result",
+            "level": "WARNING",
+            "q": "curl_cffi",
+            "errors_only": "true",
+        },
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["count"] == 1
+    assert data["entries"][0]["job_id"] == job_id
+    assert data["entries"][0]["payload"]["http_status"] == 403
+    assert data["applied_filters"]["event_type"] == "image.download.result"
+
+
+def test_log_buffer_since_normalizes_timezones_and_errors_include_partial():
+    from yamibo_mcp.web_fastapi.log_buffer import LogBuffer
+
+    buffer = LogBuffer()
+    buffer._buffer.extend([
+        {"ts": "2026-08-22T14:00:00Z", "level": "INFO", "result": "success", "status": "ok"},
+        {"ts": "2026-08-22T16:00:00Z", "level": "WARNING", "result": "partial", "status": "partial"},
+    ])
+
+    entries = buffer.get_recent(since_ts="2026-08-22T23:00:00+08:00", errors_only=True)
+
+    assert entries == [
+        {"ts": "2026-08-22T16:00:00Z", "level": "WARNING", "result": "partial", "status": "partial"}
+    ]
 
 
 def test_chat_context_returns_runtime_payload(client):

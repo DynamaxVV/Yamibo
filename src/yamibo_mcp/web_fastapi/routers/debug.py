@@ -70,10 +70,46 @@ def debug_info(conn: DatabaseConnection = Depends(get_conn), settings=Depends(ge
 
 @router.get("/logs")
 def logs(
-    limit: int = Query(default=200, le=500),
-    since: float | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=500),
+    since: str | None = Query(default=None, description="ISO-8601 timestamp; return entries newer than this value"),
+    job_id: str | None = Query(default=None),
+    tid: int | None = Query(default=None),
+    event_type: str | None = Query(default=None),
+    level: str | None = Query(default=None),
+    component: str | None = Query(default=None),
+    q: str | None = Query(default=None, description="Case-insensitive search across the complete structured entry"),
+    errors_only: bool = Query(default=False),
 ):
     from yamibo_mcp.web_fastapi.log_buffer import get_log_buffer
     buf = get_log_buffer()
-    entries = buf.get_recent(limit=limit, since_ts=since)
-    return {"entries": entries, "count": len(entries)}
+    entries = buf.get_recent(
+        limit=limit,
+        since_ts=since,
+        job_id=job_id,
+        tid=tid,
+        event_type=event_type,
+        level=level,
+        component=component,
+        query=q,
+        errors_only=errors_only,
+    )
+    return {
+        "entries": entries,
+        "count": len(entries),
+        "oldest_ts": entries[0].get("ts") if entries else None,
+        "newest_ts": entries[-1].get("ts") if entries else None,
+        "applied_filters": {
+            key: value
+            for key, value in {
+                "since": since,
+                "job_id": job_id,
+                "tid": tid,
+                "event_type": event_type,
+                "level": level,
+                "component": component,
+                "q": q,
+                "errors_only": errors_only or None,
+            }.items()
+            if value is not None
+        },
+    }

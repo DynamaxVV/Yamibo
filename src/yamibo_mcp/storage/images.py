@@ -3,8 +3,10 @@ from __future__ import annotations
 import logging
 import os
 import random
+import re
 import shutil
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
@@ -12,12 +14,14 @@ from http.cookiejar import CookieJar
 from mimetypes import guess_extension
 from pathlib import Path
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from typing import Callable, Mapping
+from typing import Any, Callable, Mapping
 from urllib.parse import urlparse
 
 from yamibo_mcp.domain.models import ThreadSnapshot
 from yamibo_mcp.storage.paths import StoragePaths
-from yamibo_mcp.yamibo.anti_bot import is_http_429_error, is_http_444_error
+from yamibo_mcp.structured_logging import emit
+from yamibo_mcp.yamibo.anti_bot import is_http_429_error, is_http_444_error, is_soft_block_page
+from yamibo_mcp.yamibo.urls import stable_attachment_id
 from yamibo_mcp.yamibo.runtime_limits import CookieDownloadSlotTimeoutError, acquire_cookie_download_slot, throttle_cookie_request
 
 
@@ -25,9 +29,20 @@ LOG = logging.getLogger(__name__)
 
 
 class _ImageHTTPError(Exception):
-    """Raised internally when an image download gets 444 or 429."""
+    """Raised internally when an image download returns an HTTP error."""
+
     def __init__(self, status_code: int) -> None:
+        super().__init__(f"HTTP {status_code}")
         self.status_code = status_code
+        self.retryable = status_code in {408, 425, 429} or status_code >= 500
+
+
+class _ImageContentError(ValueError):
+    def __init__(self, error_type: str) -> None:
+        super().__init__("WAF interception page returned instead of image" if error_type == "waf" else "non-image response")
+        self.error_type = error_type
+        # The authenticated fetcher already performed its challenge retry.
+        self.retryable = False
 
 
 @dataclass(frozen=True)
@@ -47,6 +62,7 @@ class ImageDownloadResult:
     # its own original slot must use this direct map instead of zipping
     # successful downloads (failed downloads make that unsafe).
     relative_path_by_url: dict[str, str] = field(default_factory=dict)
+    diagnostics: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -68,6 +84,10 @@ class _DownloadTaskResult:
     relative_path: str | None = None
     non_export: bool = False
     missing: bool = False
+    diagnostic: dict[str, Any] = field(default_factory=dict)
+
+
+ImageFetcher = Callable[..., Any]
 
 
 def _download_task(
@@ -84,7 +104,10 @@ def _download_task(
     headers: Mapping[str, str] | None,
     referer: str | None,
     cancel_check: Callable[[], None] | None,
+    fetcher: ImageFetcher | None = None,
 ) -> _DownloadTaskResult:
+    started_at = time.monotonic()
+    effective_fetcher = fetcher if _use_authenticated_fetcher(task.image_url, fetcher) else None
     local_cookie_jar = CookieJar()
     if cookie_jar is not None:
         for cookie in cookie_jar:
@@ -95,6 +118,7 @@ def _download_task(
     elif not use_system_proxy:
         handlers.insert(0, urllib.request.ProxyHandler({}))
     opener = urllib.request.build_opener(*handlers)
+    metadata: dict[str, Any] = {}
 
     # Respect per-cookie rate limits for image fetches too
     throttle_cookie_request(cookie_file, request_interval=0.3, request_interval_jitter=0.2)
@@ -111,32 +135,32 @@ def _download_task(
                     headers=headers,
                     referer=referer,
                     cancel_check=cancel_check,
+                    fetcher=effective_fetcher,
+                    metadata=metadata,
                 )
-        except Exception:  # noqa: BLE001 - shared resource failure should not block archive
-            return _DownloadTaskResult(task_index=task.task_index, floor_pid=task.floor_pid, kind=task.kind, image_url=task.image_url, missing=True)
+        except Exception as exc:  # noqa: BLE001 - shared resource failure should not block archive
+            return _DownloadTaskResult(task_index=task.task_index, floor_pid=task.floor_pid, kind=task.kind, image_url=task.image_url, missing=True,
+                diagnostic=_diagnostic(task.image_url, exc=exc, attempts=int(metadata.get("attempts", 1)), duration_ms=_elapsed_ms(started_at), transport=_transport(effective_fetcher), metadata=metadata))
         return _DownloadTaskResult(
             task_index=task.task_index,
             floor_pid=task.floor_pid,
             kind=task.kind,
             image_url=task.image_url,
             relative_path=str(task.target.relative_to(paths.data_dir)),
+            diagnostic=_diagnostic(task.image_url, status="ok", attempts=int(metadata.get("attempts", 1)), duration_ms=_elapsed_ms(started_at), transport=_transport(effective_fetcher), metadata=metadata),
         )
 
     assert task.stem is not None
     try:
-        target = _download_with_retries(
-            task.image_url,
-            staging_dir=staging_dir,
-            stem=task.stem,
-            timeout=timeout,
-            retries=retries,
-            opener=opener,
-            headers=headers,
-            referer=referer,
-            cancel_check=cancel_check,
-        )
-    except Exception:  # noqa: BLE001 - image failure should be tracked as missing
-        return _DownloadTaskResult(task_index=task.task_index, floor_pid=task.floor_pid, kind=task.kind, image_url=task.image_url, missing=True)
+        download_kwargs = dict(staging_dir=staging_dir, stem=task.stem, timeout=timeout, retries=retries,
+                               opener=opener, headers=headers, referer=referer, cancel_check=cancel_check)
+        if effective_fetcher is not None:
+            download_kwargs["fetcher"] = effective_fetcher
+        download_kwargs["metadata"] = metadata
+        target = _download_with_retries(task.image_url, **download_kwargs)
+    except Exception as exc:  # noqa: BLE001 - image failure should be tracked as missing
+        return _DownloadTaskResult(task_index=task.task_index, floor_pid=task.floor_pid, kind=task.kind, image_url=task.image_url, missing=True,
+            diagnostic=_diagnostic(task.image_url, exc=exc, attempts=int(metadata.get("attempts", 1)), duration_ms=_elapsed_ms(started_at), transport=_transport(effective_fetcher), metadata=metadata))
     relative = f"images/{target.name}"
     return _DownloadTaskResult(
         task_index=task.task_index,
@@ -145,6 +169,7 @@ def _download_task(
         image_url=task.image_url,
         relative_path=relative,
         non_export=_should_exclude_from_export(target, image_url=task.image_url),
+        diagnostic=_diagnostic(task.image_url, status="ok", attempts=int(metadata.get("attempts", 1)), duration_ms=_elapsed_ms(started_at), transport=_transport(effective_fetcher), metadata=metadata),
     )
 
 
@@ -166,6 +191,7 @@ def download_images_to_staging(
     stage_deadline_seconds: float | None = None,
     download_slot_wait_seconds: float | None = None,
     target_urls: set[str] | None = None,
+    fetcher: ImageFetcher | None = None,
 ) -> ImageDownloadResult:
     started_at = time.monotonic()
     slot_wait_seconds = timeout if download_slot_wait_seconds is None else download_slot_wait_seconds
@@ -179,6 +205,7 @@ def download_images_to_staging(
             skipped_relpaths: dict[int, list[str]] = {}
             missing_urls: list[str] = []
             missing_shared_urls: list[str] = []
+            diagnostics: list[dict[str, Any]] = []
             stopped_reason: str | None = None
             relative_path_by_url: dict[str, str] = {}
             tasks: list[_DownloadTask] = []
@@ -258,21 +285,26 @@ def download_images_to_staging(
             if tasks:
                 max_workers = min(4, len(tasks))
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    task_kwargs = {
+                        "paths": paths,
+                        "staging_dir": staging_dir,
+                        "timeout": timeout,
+                        "retries": retries,
+                        "cookie_jar": cookie_jar,
+                        "cookie_file": str(cookie_file) if cookie_file else None,
+                        "use_system_proxy": use_system_proxy,
+                        "proxy_url": proxy_url,
+                        "headers": headers,
+                        "referer": referer,
+                        "cancel_check": cancel_check,
+                    }
+                    if fetcher is not None:
+                        task_kwargs["fetcher"] = fetcher
                     futures = {
                         executor.submit(
                             _download_task,
                             task,
-                            paths=paths,
-                            staging_dir=staging_dir,
-                            timeout=timeout,
-                            retries=retries,
-                            cookie_jar=cookie_jar,
-                            cookie_file=str(cookie_file) if cookie_file else None,
-                            use_system_proxy=use_system_proxy,
-                            proxy_url=proxy_url,
-                            headers=headers,
-                            referer=referer,
-                            cancel_check=cancel_check,
+                            **task_kwargs,
                         ): task.task_index
                         for task in tasks
                     }
@@ -298,6 +330,8 @@ def download_images_to_staging(
                 for result in future_results:
                     if result is None:
                         continue
+                    if result.diagnostic:
+                        diagnostics.append(result.diagnostic)
                     if result.missing:
                         if result.kind == "shared":
                             missing_shared_urls.append(result.image_url)
@@ -320,7 +354,7 @@ def download_images_to_staging(
                 if stopped_reason is None and _stage_timed_out():
                     stopped_reason = "stage_timeout"
 
-            return ImageDownloadResult(
+            result = ImageDownloadResult(
                 downloaded_relpaths=downloaded_relpaths,
                 non_export_relpaths=non_export_relpaths,
                 shared_relpaths=shared_relpaths,
@@ -332,7 +366,10 @@ def download_images_to_staging(
                 missing_shared_urls=missing_shared_urls,
                 stopped_reason=stopped_reason,
                 relative_path_by_url=relative_path_by_url,
+                diagnostics=diagnostics,
             )
+            _emit_download_diagnostics(job_id=job_id, tid=snapshot.tid, result=result)
+            return result
     except CookieDownloadSlotTimeoutError:
         LOG.warning(
             "Image download slot timed out job_id=%s cookie_file=%s wait_seconds=%s",
@@ -340,7 +377,9 @@ def download_images_to_staging(
             cookie_file,
             slot_wait_seconds,
         )
-        return ImageDownloadResult(stopped_reason="download_slot_timeout")
+        result = ImageDownloadResult(stopped_reason="download_slot_timeout")
+        _emit_download_diagnostics(job_id=job_id, tid=snapshot.tid, result=result)
+        return result
 
 
 def materialize_staged_images(paths: StoragePaths, job_id: str, tid: int) -> None:
@@ -377,11 +416,15 @@ def _download_with_retries(
     headers: Mapping[str, str] | None = None,
     referer: str | None = None,
     cancel_check: Callable[[], None] | None = None,
+    fetcher: ImageFetcher | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> Path:
     attempts = max(0, retries) + 1
     last_error: Exception | None = None
     for attempt in range(attempts):
         try:
+            if metadata is not None:
+                metadata["attempts"] = attempt + 1
             return _fetch_to_path(
                 image_url,
                 staging_dir=staging_dir,
@@ -391,12 +434,17 @@ def _download_with_retries(
                 headers=headers,
                 referer=referer,
                 cancel_check=cancel_check,
+                fetcher=fetcher,
+                metadata=metadata,
             )
-        except _ImageHTTPError:
-            raise  # 444/429 — don't retry, propagate immediately
+        except _ImageHTTPError as exc:
+            last_error = exc
+            if exc.status_code in {429, 444} or not exc.retryable or attempt + 1 >= attempts:
+                raise
+            time.sleep(min(0.5 * (attempt + 1), 2.0))
         except Exception as exc:  # noqa: BLE001 - 上层只关心最终是否成功
             last_error = exc
-            if attempt + 1 >= attempts:
+            if attempt + 1 >= attempts or not _should_retry_exception(exc, metadata=metadata):
                 break
             time.sleep(min(0.5 * (attempt + 1), 2.0))
     assert last_error is not None
@@ -413,11 +461,15 @@ def _download_to_explicit_target_with_retries(
     headers: Mapping[str, str] | None = None,
     referer: str | None = None,
     cancel_check: Callable[[], None] | None = None,
+    fetcher: ImageFetcher | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> None:
     attempts = max(0, retries) + 1
     last_error: Exception | None = None
     for attempt in range(attempts):
         try:
+            if metadata is not None:
+                metadata["attempts"] = attempt + 1
             _fetch_to_explicit_target(
                 image_url,
                 target=target,
@@ -426,13 +478,18 @@ def _download_to_explicit_target_with_retries(
                 headers=headers,
                 referer=referer,
                 cancel_check=cancel_check,
+                fetcher=fetcher,
+                metadata=metadata,
             )
             return
-        except _ImageHTTPError:
-            raise  # 444/429 — don't retry
+        except _ImageHTTPError as exc:
+            last_error = exc
+            if exc.status_code in {429, 444} or not exc.retryable or attempt + 1 >= attempts:
+                raise
+            time.sleep(min(0.5 * (attempt + 1), 2.0))
         except Exception as exc:  # noqa: BLE001
             last_error = exc
-            if attempt + 1 >= attempts:
+            if attempt + 1 >= attempts or not _should_retry_exception(exc, metadata=metadata):
                 break
             time.sleep(min(0.5 * (attempt + 1), 2.0))
     assert last_error is not None
@@ -449,6 +506,8 @@ def _fetch_to_path(
     headers: Mapping[str, str] | None = None,
     referer: str | None = None,
     cancel_check: Callable[[], None] | None = None,
+    fetcher: ImageFetcher | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> Path:
     staging_dir.mkdir(parents=True, exist_ok=True)
     parsed = urllib.parse.urlparse(image_url)
@@ -473,10 +532,33 @@ def _fetch_to_path(
             request_headers = dict(headers or {})
             if referer:
                 request_headers.setdefault("Referer", referer)
+            if fetcher is not None:
+                response = fetcher(image_url, referer=referer, timeout=timeout)
+                status = int(getattr(response, "status_code", 200))
+                body = bytes(getattr(response, "content", b""))
+                first_bytes = body[:64]
+                response_headers = getattr(response, "headers", {})
+                if metadata is not None:
+                    metadata.update(status_code=status, final_url=getattr(response, "final_url", image_url), content_type=_header_value(response_headers, "Content-Type"), bytes=len(body))
+                if status >= 400:
+                    raise _ImageHTTPError(status)
+                suffix = _suffix_from_response_headers(response_headers, image_url=image_url, final_url=getattr(response, "final_url", image_url), first_bytes=first_bytes)
+                target = staging_dir / f"{stem}{suffix}"
+                part_target = target.with_name(target.name + ".part")
+                part_target.write_bytes(body)
+                try:
+                    _require_valid_image_file(part_target)
+                except ValueError as exc:
+                    error_type = "waf" if is_soft_block_page(body.decode("utf-8", errors="ignore")) else "non_image_response"
+                    raise _ImageContentError(error_type) from exc
+                os.replace(part_target, target)
+                return target
             request = urllib.request.Request(image_url, headers=request_headers)
             with opener.open(request, timeout=timeout) as response:
                 status = getattr(response, "status", 200)
-                if status in {444, 429}:
+                if metadata is not None:
+                    metadata.update(status_code=int(status), final_url=getattr(response, "geturl", lambda: image_url)(), content_type=_header_value(response.headers, "Content-Type"), bytes=0)
+                if status >= 400:
                     LOG.warning("Image download returned HTTP %d for %s", status, image_url)
                     raise _ImageHTTPError(status)
                 first_bytes = response.read(64)
@@ -495,6 +577,8 @@ def _fetch_to_path(
                         if not chunk:
                             break
                         fp.write(chunk)
+                if metadata is not None:
+                    metadata["bytes"] = part_target.stat().st_size
                 _require_valid_image_file(part_target)
                 os.replace(part_target, target)
             return target
@@ -529,6 +613,8 @@ def _fetch_to_explicit_target(
     headers: Mapping[str, str] | None = None,
     referer: str | None = None,
     cancel_check: Callable[[], None] | None = None,
+    fetcher: ImageFetcher | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     part_target = target.with_name(target.name + ".part")
@@ -544,19 +630,30 @@ def _fetch_to_explicit_target(
             request_headers = dict(headers or {})
             if referer:
                 request_headers.setdefault("Referer", referer)
-            request = urllib.request.Request(image_url, headers=request_headers)
-            with opener.open(request, timeout=timeout) as response, part_target.open("wb") as fp:
-                status = getattr(response, "status", 200)
-                if status in {444, 429}:
-                    LOG.warning("Image download returned HTTP %d for %s", status, image_url)
+            if fetcher is not None:
+                response = fetcher(image_url, referer=referer, timeout=timeout)
+                status = int(getattr(response, "status_code", 200))
+                if metadata is not None:
+                    metadata.update(status_code=status, final_url=getattr(response, "final_url", image_url), content_type=_header_value(getattr(response, "headers", {}), "Content-Type"), bytes=len(getattr(response, "content", b"")))
+                if status >= 400:
                     raise _ImageHTTPError(status)
-                while True:
-                    if cancel_check is not None:
-                        cancel_check()
-                    chunk = response.read(64 * 1024)
-                    if not chunk:
-                        break
-                    fp.write(chunk)
+                part_target.write_bytes(bytes(getattr(response, "content", b"")))
+            else:
+                request = urllib.request.Request(image_url, headers=request_headers)
+                with opener.open(request, timeout=timeout) as response, part_target.open("wb") as fp:
+                    status = getattr(response, "status", 200)
+                    if metadata is not None:
+                        metadata.update(status_code=int(status), final_url=getattr(response, "geturl", lambda: image_url)(), content_type=_header_value(response.headers, "Content-Type"))
+                    if status >= 400:
+                        LOG.warning("Image download returned HTTP %d for %s", status, image_url)
+                        raise _ImageHTTPError(status)
+                    while True:
+                        if cancel_check is not None:
+                            cancel_check()
+                        chunk = response.read(64 * 1024)
+                        if not chunk:
+                            break
+                        fp.write(chunk)
         else:
             source = Path(image_url)
             if not source.exists():
@@ -564,7 +661,16 @@ def _fetch_to_explicit_target(
             if cancel_check is not None:
                 cancel_check()
             shutil.copy2(source, part_target)
-        _require_valid_image_file(part_target)
+        try:
+            _require_valid_image_file(part_target)
+        except ValueError as exc:
+            if fetcher is not None:
+                body = part_target.read_bytes()
+                error_type = "waf" if is_soft_block_page(body.decode("utf-8", errors="ignore")) else "non_image_response"
+                raise _ImageContentError(error_type) from exc
+            raise
+        if metadata is not None:
+            metadata["bytes"] = part_target.stat().st_size
         os.replace(part_target, target)
         if cancel_check is not None:
             cancel_check()
@@ -577,7 +683,11 @@ def _fetch_to_explicit_target(
 
 
 def _suffix_from_response(response, *, image_url: str, first_bytes: bytes = b"") -> str:
-    content_type = (response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+    return _suffix_from_response_headers(response.headers, image_url=image_url, final_url=getattr(response, "geturl", lambda: image_url)(), first_bytes=first_bytes)
+
+
+def _suffix_from_response_headers(headers, *, image_url: str, final_url: str, first_bytes: bytes = b"") -> str:
+    content_type = (_header_value(headers, "Content-Type") or "").split(";", 1)[0].strip().lower()
     if content_type.startswith("image/"):
         mapped = guess_extension(content_type)
         if mapped == ".jpe":
@@ -587,11 +697,186 @@ def _suffix_from_response(response, *, image_url: str, first_bytes: bytes = b"")
     sniffed = _suffix_from_bytes(first_bytes)
     if sniffed is not None:
         return sniffed
-    final_url = getattr(response, "geturl", lambda: image_url)()
     suffix = _guess_suffix(final_url)
     if suffix != ".bin":
         return suffix
     return _guess_suffix(image_url)
+
+
+def _transport(fetcher: ImageFetcher | None) -> str:
+    return "yamibo_session" if fetcher is not None else "urllib"
+
+
+def _use_authenticated_fetcher(url: str, fetcher: ImageFetcher | None) -> bool:
+    return fetcher is not None and stable_attachment_id(url) is not None
+
+
+def _header_value(headers: Mapping[str, Any], name: str) -> str | None:
+    wanted = name.casefold()
+    for key, value in headers.items():
+        if str(key).casefold() == wanted:
+            return str(value)
+    return None
+
+
+def _elapsed_ms(started_at: float) -> float:
+    return round((time.monotonic() - started_at) * 1000.0, 1)
+
+
+def _diagnostic(
+    url: str,
+    *,
+    status: str = "error",
+    exc: Exception | None = None,
+    attempts: int = 1,
+    duration_ms: float = 0.0,
+    transport: str = "urllib",
+    final_url: str | None = None,
+    bytes: int = 0,
+    metadata: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    info = dict(metadata or {})
+    details = getattr(exc, "details", {}) if exc is not None else {}
+    if not isinstance(details, Mapping):
+        details = {}
+    http_status = info.get("status_code")
+    if http_status is None and exc is not None:
+        http_status = getattr(exc, "status_code", None) or getattr(exc, "code", None) or details.get("status_code")
+    error_type = _error_type(exc, http_status=http_status)
+    retryable = _is_retryable_image_error(exc, http_status=http_status, details=details)
+    return {
+        "url": url,
+        "final_url": info.get("final_url") or final_url or url,
+        "content_type": info.get("content_type"),
+        "http_status": http_status,
+        "bytes": info.get("bytes", bytes),
+        "attempts": attempts,
+        "duration_ms": duration_ms,
+        "transport": transport,
+        "status": status,
+        "error_type": error_type,
+        "error_message": None if exc is None else _sanitize_error_message(str(exc)),
+        "retryable": retryable,
+    }
+
+
+def _error_type(exc: Exception | None, *, http_status: Any = None) -> str | None:
+    if exc is None:
+        return None
+    explicit = getattr(exc, "error_type", None)
+    if explicit:
+        return str(explicit)
+    if isinstance(exc, urllib.error.HTTPError) or (http_status is not None and int(http_status) >= 400):
+        return "http_error"
+    name = exc.__class__.__name__.lower()
+    message = str(exc).lower()
+    if isinstance(exc, TimeoutError) or "timed out" in message or "timeout" in name:
+        return "timeout"
+    if isinstance(exc, ValueError) and "image" in message:
+        return "non_image_response"
+    if "waf" in name or "challenge" in message or "soft block" in message:
+        return "waf"
+    if isinstance(exc, FileNotFoundError):
+        return "not_found"
+    return "network_error"
+
+
+def _is_retryable_image_error(exc: Exception | None, *, http_status: Any, details: Mapping[str, Any]) -> bool | None:
+    if exc is None:
+        return None
+    explicit = getattr(exc, "retryable", None)
+    if explicit is not None:
+        return bool(explicit)
+    if "retryable" in details:
+        return bool(details["retryable"])
+    if http_status is not None and int(http_status) >= 400:
+        status = int(http_status)
+        return status in {408, 425, 429} or status >= 500
+    if isinstance(exc, FileNotFoundError):
+        return False
+    return _error_type(exc, http_status=http_status) in {"timeout", "network_error", "waf"}
+
+
+def _should_retry_exception(exc: Exception, *, metadata: Mapping[str, Any] | None) -> bool:
+    info = dict(metadata or {})
+    details = getattr(exc, "details", {})
+    if not isinstance(details, Mapping):
+        details = {}
+    http_status = info.get("status_code")
+    if http_status is None:
+        http_status = getattr(exc, "status_code", None) or getattr(exc, "code", None) or details.get("status_code")
+    return bool(_is_retryable_image_error(exc, http_status=http_status, details=details))
+
+
+def _sanitize_error_message(message: str) -> str:
+    def _strip_query(match: re.Match[str]) -> str:
+        parsed = urllib.parse.urlsplit(match.group(0))
+        return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+
+    return re.sub(r"https?://[^\s]+", _strip_query, message)[:1000]
+
+
+def _safe_diagnostic_payload(item: Mapping[str, Any]) -> dict[str, Any]:
+    payload = {key: value for key, value in item.items() if key not in {"url", "final_url"}}
+    for key in ("url", "final_url"):
+        value = item.get(key)
+        if not value:
+            continue
+        parsed = urllib.parse.urlsplit(str(value))
+        payload[f"{key}_host"] = parsed.netloc
+        payload[f"{key}_path"] = parsed.path
+        attachment_id = stable_attachment_id(str(value))
+        if attachment_id is not None:
+            payload["remote_identity"] = attachment_id
+    return payload
+
+
+def _emit_download_diagnostics(*, job_id: str, tid: int, result: ImageDownloadResult) -> None:
+    failures = [item for item in result.diagnostics if item.get("status") != "ok"]
+    stopped = result.stopped_reason is not None
+    for item in failures:
+        payload = _safe_diagnostic_payload(item)
+        error_type = str(item.get("error_type") or "download_failed")
+        emit(
+            LOG,
+            logging.WARNING,
+            "image.download.result",
+            f"Image download failed: {error_type}",
+            result="failure",
+            status="missing",
+            error_code=f"IMAGE_{error_type.upper()}",
+            error_message=str(item.get("error_message") or error_type),
+            retryable=bool(item.get("retryable")),
+            attempt=int(item.get("attempts") or 1),
+            duration_ms=float(item.get("duration_ms") or 0.0),
+            operation="image_download",
+            tags=["image", "download"],
+            job_id=job_id,
+            tid=tid,
+            payload=payload,
+        )
+    emit(
+        LOG,
+        logging.INFO if not failures and not stopped else logging.WARNING,
+        "image.download.summary",
+        "Image download stage completed",
+        result="success" if not failures and not stopped else "partial",
+        status="ok" if not failures and not stopped else "partial",
+        error_code=None if not stopped else f"IMAGE_{result.stopped_reason.upper()}",
+        error_message=None if not stopped else result.stopped_reason,
+        retryable=any(bool(item.get("retryable")) for item in failures),
+        operation="image_download",
+        tags=["image", "download", "summary"],
+        job_id=job_id,
+        tid=tid,
+        payload={
+            "attempted": len(result.diagnostics),
+            "succeeded": len(result.diagnostics) - len(failures),
+            "failed": len(failures),
+            "stopped_reason": result.stopped_reason,
+            "transports": sorted({str(item.get("transport")) for item in result.diagnostics}),
+        },
+    )
 
 
 def _suffix_from_bytes(data: bytes) -> str | None:

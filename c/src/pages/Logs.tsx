@@ -55,6 +55,9 @@ export function Logs() {
   const [minLevel, setMinLevel] = useState<LevelFilter>('INFO')
   const [filterCat, setFilterCat] = useState('')
   const [filterJob, setFilterJob] = useState('')
+  const [filterTid, setFilterTid] = useState('')
+  const [filterEvent, setFilterEvent] = useState('')
+  const [filterText, setFilterText] = useState('')
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null)
   const tailRef = useRef<HTMLDivElement>(null)
   const lastTsRef = useRef<string | undefined>(undefined)
@@ -62,7 +65,7 @@ export function Logs() {
   const fetchLogs = useCallback(async () => {
     if (paused) return
     try {
-      const data = await api.logs(300)
+      const data = await api.logs({ limit: 500, since: lastTsRef.current })
       if (data.entries.length > 0) {
         setEntries(prev => {
           const seen = new Set(prev.map(e => e.ts + e.event_type + e.message))
@@ -98,8 +101,14 @@ export function Logs() {
     let list = entries.filter(e => LEVEL_ORDER.indexOf(e.level as LevelFilter) >= minIdx)
     if (filterCat) list = list.filter(e => eventCategory(e.event_type) === filterCat)
     if (filterJob) list = list.filter(e => e.job_id?.includes(filterJob))
+    if (filterTid) list = list.filter(e => String(e.tid ?? '').includes(filterTid))
+    if (filterEvent) list = list.filter(e => e.event_type.toLowerCase().includes(filterEvent.toLowerCase()))
+    if (filterText) {
+      const needle = filterText.toLowerCase()
+      list = list.filter(e => JSON.stringify(e).toLowerCase().includes(needle))
+    }
     return list
-  }, [entries, minIdx, filterCat, filterJob])
+  }, [entries, minIdx, filterCat, filterJob, filterTid, filterEvent, filterText])
 
   const categories = useMemo(() => {
     const cats = new Set<string>()
@@ -125,6 +134,12 @@ export function Logs() {
         </select>
         <input type="text" placeholder="job_id…" value={filterJob}
           onChange={e => setFilterJob(e.target.value)} className="log-toolbar-input" />
+        <input type="text" placeholder="tid…" value={filterTid}
+          onChange={e => setFilterTid(e.target.value)} className="log-toolbar-input" />
+        <input type="text" placeholder="event_type…" value={filterEvent}
+          onChange={e => setFilterEvent(e.target.value)} className="log-toolbar-input" />
+        <input type="text" placeholder="message / payload…" value={filterText}
+          onChange={e => setFilterText(e.target.value)} className="log-toolbar-input" />
         <span className="log-toolbar-sep" />
         <label className="log-toolbar-check">
           <input type="checkbox" checked={autoScroll} onChange={e => setAutoScroll(e.target.checked)} />
@@ -191,13 +206,23 @@ function DetailTable({ entry: e }: { entry: LogEntry }) {
         <Row k="fallback_reason" v={e.fallback_reason} />
         <Row k="agent_hint" v={e.agent_hint} />
         <Row k="next_action" v={e.next_action} />
+        <Row k="operation" v={e.operation} />
+        <Row k="resource_uri" v={e.resource_uri} />
+        <Row k="data_version" v={e.data_version} />
         <Row k="trace_id" v={e.trace_id} />
         <Row k="warning_codes" v={e.warning_codes?.join(', ')} />
         <Row k="tags" v={e.tags?.join(', ')} />
+        <Row k="payload" v={formatStructuredValue(e.payload)} />
+        <Row k="context" v={formatStructuredValue(e.context)} />
         <Row k="message" v={e.message} />
       </tbody>
     </table>
   )
+}
+
+function formatStructuredValue(value?: Record<string, unknown>): string | undefined {
+  if (!value || Object.keys(value).length === 0) return undefined
+  return JSON.stringify(value, null, 2)
 }
 
 function Row({ k, v, err }: { k: string; v?: string; err?: boolean }) {

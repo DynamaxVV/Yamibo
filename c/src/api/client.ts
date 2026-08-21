@@ -316,6 +316,31 @@ export interface LogEntry {
   trace_id?: string
   correlation_id?: string
   tags?: string[]
+  payload?: Record<string, unknown>
+  context?: Record<string, unknown>
+  data_version?: string
+  operation?: string
+  resource_uri?: string
+}
+
+export interface LogQuery {
+  limit?: number
+  since?: string
+  job_id?: string
+  tid?: number
+  event_type?: string
+  level?: string
+  component?: string
+  q?: string
+  errors_only?: boolean
+}
+
+export interface LogsResponse {
+  entries: LogEntry[]
+  count: number
+  oldest_ts: string | null
+  newest_ts: string | null
+  applied_filters: Record<string, unknown>
 }
 
 export interface DashboardData {
@@ -693,12 +718,27 @@ export const api = {
   updateSeries: (data: Record<string, unknown>) => postJson<{ ok: boolean }>('/review/update-series', data),
   rebuildSeries: () => postJson<{ ok: boolean; job_id: string }>('/review/rebuild-series', {}),
   debugInfo: () => fetchJson<Record<string, unknown>>('/debug/info'),
-  logs: (limit?: number, since?: number) => {
+  logs: (query?: number | LogQuery, legacySince?: number | string) => {
+    const params: LogQuery = typeof query === 'number'
+      ? {
+          limit: query,
+          since: typeof legacySince === 'number'
+            ? new Date(legacySince * 1000).toISOString()
+            : legacySince,
+        }
+      : (query || {})
     const qs = new URLSearchParams()
-    if (limit) qs.set('limit', String(limit))
-    if (since) qs.set('since', String(since))
+    if (params.limit) qs.set('limit', String(params.limit))
+    if (params.since) qs.set('since', params.since)
+    if (params.job_id) qs.set('job_id', params.job_id)
+    if (params.tid != null) qs.set('tid', String(params.tid))
+    if (params.event_type) qs.set('event_type', params.event_type)
+    if (params.level) qs.set('level', params.level)
+    if (params.component) qs.set('component', params.component)
+    if (params.q) qs.set('q', params.q)
+    if (params.errors_only) qs.set('errors_only', 'true')
     const s = qs.toString()
-    return fetchJson<{ entries: LogEntry[]; count: number }>(`/logs${s ? `?${s}` : ''}`)
+    return fetchJson<LogsResponse>(`/logs${s ? `?${s}` : ''}`)
   },
   ragOverview: () => fetchJson<RagOverview>('/rag/overview'),
   settings: () => fetchJson<SettingsResponse>('/settings'),

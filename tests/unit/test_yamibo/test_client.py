@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from unittest.mock import MagicMock
 
 import pytest
@@ -37,8 +38,10 @@ class _FakeSession:
         self._post = post_response
         self.cookies = MagicMock()
         self.proxies = {}
+        self.last_headers = None
 
     def get(self, url, *, headers=None, timeout=None):
+        self.last_headers = headers
         if self._get is None:
             return _FakeResponse(url=url)
         return self._get
@@ -57,6 +60,52 @@ def test_fetch_url_wraps_read_timeout_as_remote_fetch_error():
     client._session = _FakeSession(get_response=_ReadTimeoutResponse())  # type: ignore[arg-type]
     with pytest.raises(RemoteFetchError, match="failed to fetch"):
         client.fetch_url("https://bbs.yamibo.com/forum.php?mod=viewthread&tid=1")
+
+
+def test_fetch_image_uses_current_session_and_returns_binary_metadata():
+    client = YamiboClient(timeout=0.1, retries=0)
+    response = _FakeResponse(
+        url="https://bbs.yamibo.com/forum.php?mod=attachment&aid=abc",
+        content=b"\xff\xd8\xffbinary",
+        headers={"Content-Type": "image/jpeg"},
+    )
+    session = _FakeSession(get_response=response)
+    client._session = session  # type: ignore[arg-type]
+    result = client.fetch_image(
+        "https://bbs.yamibo.com/forum.php?mod=attachment&aid=abc",
+        referer="https://bbs.yamibo.com/forum.php?mod=viewthread&tid=1",
+    )
+    assert result.status_code == 200
+    assert result.content.startswith(b"\xff\xd8\xff")
+    assert result.headers["Content-Type"] == "image/jpeg"
+    assert session.last_headers["Sec-Fetch-Dest"] == "image"
+    assert session.last_headers["Sec-Fetch-Mode"] == "no-cors"
+    assert session.last_headers["Referer"].endswith("tid=1")
+    assert "Sec-Fetch-User" not in session.last_headers
+
+
+def test_cookie_saves_merge_across_clients_and_replace_atomically(tmp_path):
+    cookie_file = tmp_path / "shared.cookie"
+    cookie_file.write_text("existing=one", encoding="utf-8")
+    first = YamiboClient(cookie_file=str(cookie_file))
+    second = YamiboClient(cookie_file=str(cookie_file))
+    first._session.cookies.set("first", "a", domain="bbs.yamibo.com", path="/")
+    second._session.cookies.set("second", "b", domain="bbs.yamibo.com", path="/")
+    barrier = threading.Barrier(2)
+
+    def save(client):
+        barrier.wait()
+        client._save_cookies()
+
+    threads = [threading.Thread(target=save, args=(client,)) for client in (first, second)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    saved = dict(line.split("=", 1) for line in cookie_file.read_text(encoding="utf-8").splitlines())
+    assert saved == {"existing": "one", "first": "a", "second": "b"}
+    assert not list(tmp_path.glob(".*.tmp"))
 
 
 def test_login_read_timeout_wraps_as_remote_fetch_error():

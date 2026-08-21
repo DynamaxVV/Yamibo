@@ -362,6 +362,7 @@ def handle_update_thread(repo: JobsRepository, job: Job, worker_id: str, lease_s
             use_system_proxy=client.use_system_proxy,
             proxy_url=getattr(client, "proxy_url", None),
             referer=tail_page.final_url,
+            fetcher=getattr(client, "fetch_image", None),
             on_progress=_progress,
             cancel_check=_cancel_check,
             stage_deadline_seconds=download_stage_timeout_seconds,

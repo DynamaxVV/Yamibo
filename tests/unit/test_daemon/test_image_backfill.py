@@ -23,6 +23,7 @@ from yamibo_mcp.daemon.handlers.image_backfill import (
 )
 from yamibo_mcp.daemon.image_backfill_scheduler import maybe_enqueue_image_backfill_dry_run
 from yamibo_mcp.db.repositories.jobs import JobsRepository
+from yamibo_mcp.db.repositories.job_events import JobEventsRepository
 from yamibo_mcp.db.repositories.system_state import SystemStateRepository
 from yamibo_mcp.errors import ThreadPermissionRequiredError
 from yamibo_mcp.storage.images import ImageDownloadResult, download_images_to_staging
@@ -718,6 +719,20 @@ def test_image_backfill_apply_downloads_and_persists_missing_images(db, tmp_path
             shared_relpaths={tid * 10 + 2: ["shared/bbs.yamibo.com/static/image/smiley/gexing/008.gif"]},
             downloaded_count=1,
             shared_downloaded_count=1,
+            diagnostics=[{
+                "url": content_url,
+                "final_url": content_url,
+                "content_type": "image/jpeg",
+                "http_status": 200,
+                "bytes": 1024,
+                "attempts": 1,
+                "duration_ms": 12.5,
+                "transport": "urllib",
+                "status": "ok",
+                "error_type": None,
+                "error_message": None,
+                "retryable": None,
+            }],
         )
 
     monkeypatch.setattr("yamibo_mcp.daemon.handlers.image_backfill.download_images_to_staging", _download)
@@ -742,6 +757,14 @@ def test_image_backfill_apply_downloads_and_persists_missing_images(db, tmp_path
     assert download_kwargs[0]["proxy_url"] == "http://127.0.0.1:9999"
     assert completed.artifacts["proxy_pool.enabled"] is True
     assert completed.artifacts["proxy_pool.node"] == "n1"
+    assert completed.artifacts["image_download_summary"]["attempted"] == 1
+    assert completed.artifacts["image_download_summary"]["succeeded"] == 1
+    assert completed.artifacts["image_download_diagnostics"][0]["url_host"] == "bbs.yamibo.com"
+    assert "url" not in completed.artifacts["image_download_diagnostics"][0]
+    events = JobEventsRepository(db).list(job_id=job.job_id, limit=100)
+    image_events = [event for event in events if event.event_type == "image.download.result"]
+    assert len(image_events) == 1
+    assert image_events[0].payload["summary"]["failed"] == 0
     assets = db.execute("SELECT remote_url, local_path, status FROM assets WHERE tid = ? ORDER BY remote_url", (tid,)).fetchall()
     assert {row["remote_url"]: row["local_path"] for row in assets} == {
         content_url: "images/floor_002_01.jpg",

@@ -6,6 +6,7 @@ import logging
 import random
 import re
 import time
+import threading
 import urllib.parse
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -43,6 +44,7 @@ from yamibo_mcp.yamibo.urls import (
     normalize_thread_url,
     thread_page_url_from_tid,
     thread_url_from_tid,
+    stable_attachment_id,
 )
 
 # ── Browser-like UA pool ──────────────────────────────────────────────────
@@ -72,6 +74,33 @@ DEFAULT_HEADERS: dict[str, str] = {
     "Sec-Fetch-User": "?1",
     "Upgrade-Insecure-Requests": "1",
 }
+
+_COOKIE_FILE_LOCKS: dict[Path, threading.Lock] = {}
+_COOKIE_FILE_LOCKS_GUARD = threading.Lock()
+
+
+def _cookie_file_lock(path: Path) -> threading.Lock:
+    normalized = path.expanduser().resolve()
+    with _COOKIE_FILE_LOCKS_GUARD:
+        return _COOKIE_FILE_LOCKS.setdefault(normalized, threading.Lock())
+
+
+def _parse_cookie_text(raw: str) -> dict[str, str]:
+    stripped = raw.strip()
+    if not stripped:
+        return {}
+    if ";" in stripped and "\n" not in stripped:
+        pairs = [segment.strip() for segment in stripped.split(";") if "=" in segment]
+    else:
+        pairs = [line.strip() for line in stripped.splitlines() if line.strip() and not line.strip().startswith("#")]
+    cookies: dict[str, str] = {}
+    for pair in pairs:
+        if "=" not in pair:
+            continue
+        name, value = pair.split("=", 1)
+        if name.strip():
+            cookies[name.strip()] = value.strip()
+    return cookies
 
 # ── Natural burst timing ──────────────────────────────────────────────────
 
@@ -110,6 +139,16 @@ class FetchResult:
     final_url: str
     status_code: int
     html: str
+
+
+@dataclass(frozen=True)
+class ImageFetchResponse:
+    """Binary response returned by the authenticated forum session."""
+    url: str
+    final_url: str
+    status_code: int
+    headers: dict[str, str]
+    content: bytes
 
 
 def daily_checkin_already_done(html: str) -> bool:
@@ -239,6 +278,9 @@ class YamiboClient:
         self._request_interval = request_interval
         self._request_interval_jitter = request_interval_jitter
         self._burst = BurstThrottle()
+        # curl_cffi sessions share connection/cookie state and are not safe to
+        # use concurrently from the image download pool.
+        self._session_lock = threading.RLock()
 
         # Build public headers dict for external consumers (image downloader etc.)
         resolved: dict[str, str] = dict(DEFAULT_HEADERS)
@@ -295,10 +337,61 @@ class YamiboClient:
             h["Sec-Fetch-Site"] = "same-origin"
         return h
 
+    def _image_request_headers(self, *, referer: str | None = None) -> dict[str, str]:
+        headers = self._request_headers(referer=referer)
+        headers.update({
+            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+            "Sec-Fetch-Dest": "image",
+            "Sec-Fetch-Mode": "no-cors",
+        })
+        headers.pop("Sec-Fetch-User", None)
+        headers.pop("Upgrade-Insecure-Requests", None)
+        return headers
+
     # ── Public fetch API ─────────────────────────────────────────────────
 
     def fetch_url(self, url: str, *, referer: str | None = None) -> FetchResult:
         return self._fetch_with_validation(url, self._validate_thread_page, referer=referer)
+
+    def fetch_image(
+        self,
+        url: str,
+        *,
+        referer: str | None = None,
+        timeout: float | None = None,
+    ) -> ImageFetchResponse:
+        """Fetch an image through this client's current session.
+
+        This deliberately returns a small immutable response instead of the
+        curl_cffi response object so worker threads cannot retain mutable
+        session state.  A soft-block/challenge page is first opened through
+        the normal WAF path, then the binary request is retried with the
+        resulting cookies.
+        """
+        request_headers = self._image_request_headers(referer=referer)
+        request_timeout = self.timeout if timeout is None else timeout
+        with self._session_lock:
+            try:
+                response = self._session.get(url, headers=request_headers, timeout=request_timeout)
+            except (TimeoutError, curl_requests.errors.RequestsError) as exc:
+                if self._is_protocol_error(exc):
+                    self._reset_session()
+                raise
+            body = bytes(response.content)
+            if stable_attachment_id(url) is not None and is_soft_block_page(body.decode("utf-8", errors="ignore")):
+                # _open_html solves nox/acw challenges and persists cookies.
+                self._open_html(url, referer=referer)
+                request_headers = self._image_request_headers(referer=referer)
+                response = self._session.get(url, headers=request_headers, timeout=request_timeout)
+                body = bytes(response.content)
+            self._save_cookies()
+            return ImageFetchResponse(
+                url=url,
+                final_url=str(response.url),
+                status_code=int(response.status_code),
+                headers={str(k): str(v) for k, v in response.headers.items()},
+                content=body,
+            )
 
     def sign_daily_checkin(
         self,
@@ -839,21 +932,11 @@ class YamiboClient:
     def _load_cookies(self) -> None:
         if self.cookie_file is None or not self.cookie_file.exists():
             return
-        raw = self.cookie_file.read_text(encoding="utf-8", errors="ignore").strip()
-        if not raw:
-            return
-        if ";" in raw and "\n" not in raw:
-            pairs = [seg.strip() for seg in raw.split(";") if "=" in seg]
-        else:
-            pairs = [line.strip() for line in raw.splitlines() if line.strip() and not line.strip().startswith("#")]
-        for pair in pairs:
-            if "=" not in pair:
-                continue
-            name, value = pair.split("=", 1)
-            name = name.strip()
+        cookies = _parse_cookie_text(self.cookie_file.read_text(encoding="utf-8", errors="ignore"))
+        for name, value in cookies.items():
             if name in self._session.cookies:
                 continue
-            self._session.cookies.set(name, value.strip(), domain="bbs.yamibo.com", path="/")
+            self._session.cookies.set(name, value, domain="bbs.yamibo.com", path="/")
 
     def _bootstrap_login_if_needed(self) -> None:
         if self.cookie_file is None or self.cookie_file.exists():
@@ -870,12 +953,23 @@ class YamiboClient:
     def _save_cookies(self) -> None:
         if self.cookie_file is None or not self.persist_cookies:
             return
-        self.cookie_file.parent.mkdir(parents=True, exist_ok=True)
-        cookies: dict[str, str] = {}
-        for name, value in self._session.cookies.items():
-            cookies[name] = value
-        lines = [f"{name}={value}" for name, value in cookies.items()]
-        self.cookie_file.write_text("\n".join(lines), encoding="utf-8")
+        cookie_file = self.cookie_file
+        with _cookie_file_lock(cookie_file):
+            cookie_file.parent.mkdir(parents=True, exist_ok=True)
+            cookies = _parse_cookie_text(
+                cookie_file.read_text(encoding="utf-8", errors="ignore") if cookie_file.exists() else ""
+            )
+            cookies.update({name: value for name, value in self._session.cookies.items()})
+            content = "\n".join(f"{name}={value}" for name, value in cookies.items())
+            temp_file = cookie_file.with_name(f".{cookie_file.name}.{threading.get_ident()}.tmp")
+            try:
+                temp_file.write_text(content, encoding="utf-8")
+                temp_file.replace(cookie_file)
+            finally:
+                try:
+                    temp_file.unlink()
+                except FileNotFoundError:
+                    pass
 
 
 # ── Standalone helpers ───────────────────────────────────────────────────────

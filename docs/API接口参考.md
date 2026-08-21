@@ -669,6 +669,7 @@ Web 控制台基于 HTTP，提供 JSON API 和页面路由。
 |------|------|------|
 | `/api/threads/{tid}/active-sync-job` | GET | 返回指定帖子的最新活动 `sync_thread` Job；无活动任务时返回 `{ "job": null }`，不包含 payload、artifact 或事件列表 |
 | `/api/threads/{tid}/images/{asset_id}/retry` | POST | 为指定图片创建或复用交互式 selected `image_backfill` Job；只处理目标图片，不重跑原归档 Job |
+| `/api/logs?limit=&since=&job_id=&tid=&event_type=&level=&component=&q=&errors_only=` | GET | 查询结构化实时日志；`since` 支持 ISO-8601 或 epoch 秒，`errors_only` 包含失败、部分成功、阻塞和缺失状态；返回时间范围与实际过滤条件 |
 
 单图补取成功响应：
 
@@ -682,6 +683,14 @@ Web 控制台基于 HTTP，提供 JSON API 和页面路由。
 ```
 
 相同 `tid + asset_id + remote_url` 已存在活动 selected Job 时，返回同一个 `job_id`，并令 `created=false`。调用方应只轮询该 Job；所选图片恢复后 Job 可以是 `succeeded`，即使帖子因其他缺图仍保持 `partial`。
+
+站内 `bbs.yamibo.com/forum.php?mod=attachment...` 图片会复用帖子抓取使用的 `curl_cffi` 会话、Cookie、代理和浏览器请求头。下载结果以 `image.download.result` / `image.download.summary` 写入结构化日志；selected 回填还会把脱敏后的逐图诊断写入 Job artifacts 和 `/api/jobs/{job_id}/events`。诊断字段包含稳定附件身份、HTTP 状态、内容类型、响应字节数、尝试次数、耗时、传输方式、错误分类和可重试性，不包含 Cookie、Authorization 或签名查询串。
+
+```text
+/api/logs?job_id=<job_id>&event_type=image.download.result&limit=100
+/api/logs?tid=575256&event_type=image.download.result&errors_only=true&limit=100
+/api/jobs/<job_id>/events
+```
 
 错误映射：`LoginRequiredError`→401, `ThreadPermissionRequiredError`→403, `RemoteMaintenanceError`→503, `RemoteFetchError`/`UnexpectedPageError`→502
 

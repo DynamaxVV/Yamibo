@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import replace
 import time
+from types import SimpleNamespace
 import urllib.request
 
 import yamibo_mcp.storage.images as images
@@ -57,7 +58,7 @@ def _make_snapshot() -> ThreadSnapshot:
     )
 
 
-def test_download_images_to_staging_returns_partial_on_stage_timeout(tmp_path):
+def test_download_images_to_staging_returns_partial_on_stage_timeout(tmp_path, caplog):
     data_dir = tmp_path / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
     paths = StoragePaths(data_dir, export_dir=tmp_path / "exports", novel_txt_export_dir=tmp_path / "novel_exports")
@@ -75,9 +76,12 @@ def test_download_images_to_staging_returns_partial_on_stage_timeout(tmp_path):
     assert result.stopped_reason == "stage_timeout"
     assert result.downloaded_count == 0
     assert result.missing_urls == []
+    summary = next(record for record in caplog.records if getattr(record, "event_type", None) == "image.download.summary")
+    assert summary.result == "partial"
+    assert summary.error_code == "IMAGE_STAGE_TIMEOUT"
 
 
-def test_download_images_to_staging_times_out_waiting_for_download_slot(tmp_path, monkeypatch):
+def test_download_images_to_staging_times_out_waiting_for_download_slot(tmp_path, monkeypatch, caplog):
     data_dir = tmp_path / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
     paths = StoragePaths(data_dir, export_dir=tmp_path / "exports", novel_txt_export_dir=tmp_path / "novel_exports")
@@ -101,6 +105,9 @@ def test_download_images_to_staging_times_out_waiting_for_download_slot(tmp_path
     assert result.stopped_reason == "download_slot_timeout"
     assert result.downloaded_count == 0
     assert result.missing_urls == []
+    summary = next(record for record in caplog.records if getattr(record, "event_type", None) == "image.download.summary")
+    assert summary.result == "partial"
+    assert summary.error_code == "IMAGE_DOWNLOAD_SLOT_TIMEOUT"
 
 
 def test_download_with_retries_stops_at_retry_limit(tmp_path, monkeypatch):
@@ -141,6 +148,149 @@ def test_image_validation_rejects_truncated_jpeg_after_size_header(tmp_path):
     assert _is_valid_image_file(complete) is True
 
 
+def test_yamibo_attachment_uses_authenticated_fetcher_and_records_diagnostics(tmp_path):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    paths = StoragePaths(data_dir, export_dir=tmp_path / "exports", novel_txt_export_dir=tmp_path / "novel_exports")
+    url = "https://bbs.yamibo.com/forum.php?mod=attachment&aid=1640438"
+    floor = replace(_make_snapshot().floors[0], image_urls=[url])
+    snapshot = replace(_make_snapshot(), floors=[floor], image_count=1)
+    calls = []
+    jpeg = b"\xff\xd8\xff\xc0\x00\x0b\x08\x01\xe0\x02\x80\x03\x01\x11\x00" + b"\x00" * 80 + b"\xff\xd9"
+
+    def fetcher(image_url, **kwargs):
+        calls.append((image_url, kwargs))
+        return SimpleNamespace(
+            status_code=200,
+            final_url=image_url,
+            headers={"content-type": "image/jpeg"},
+            content=jpeg,
+        )
+
+    result = download_images_to_staging(
+        paths,
+        "job-authenticated-image",
+        snapshot,
+        timeout=1,
+        retries=0,
+        fetcher=fetcher,
+        referer=snapshot.url,
+        target_urls={url},
+    )
+
+    assert calls == [(url, {"referer": snapshot.url, "timeout": 1})]
+    assert result.relative_path_by_url[url] == "images/floor_001_01.jpg"
+    assert result.diagnostics[0]["transport"] == "yamibo_session"
+    assert result.diagnostics[0]["content_type"] == "image/jpeg"
+    assert result.diagnostics[0]["http_status"] == 200
+    assert result.diagnostics[0]["bytes"] == len(jpeg)
+
+
+def test_authenticated_fetch_failure_keeps_http_diagnostics_and_cleans_part(tmp_path):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    paths = StoragePaths(data_dir, export_dir=tmp_path / "exports", novel_txt_export_dir=tmp_path / "novel_exports")
+    url = "https://bbs.yamibo.com/forum.php?mod=attachment&aid=1640438"
+    floor = replace(_make_snapshot().floors[0], image_urls=[url])
+    snapshot = replace(_make_snapshot(), floors=[floor], image_count=1)
+
+    def fetcher(image_url, **kwargs):
+        return SimpleNamespace(
+            status_code=403,
+            final_url=image_url,
+            headers={"Content-Type": "text/html"},
+            content=b"<html>forbidden</html>",
+        )
+
+    result = download_images_to_staging(
+        paths,
+        "job-authenticated-failure",
+        snapshot,
+        timeout=1,
+        retries=2,
+        fetcher=fetcher,
+        target_urls={url},
+    )
+
+    assert result.missing_urls == [url]
+    assert result.diagnostics[0] == {
+        "url": url,
+        "final_url": url,
+        "content_type": "text/html",
+        "http_status": 403,
+        "bytes": len(b"<html>forbidden</html>"),
+        "attempts": 1,
+        "duration_ms": result.diagnostics[0]["duration_ms"],
+        "transport": "yamibo_session",
+        "status": "error",
+        "error_type": "http_error",
+        "error_message": "HTTP 403",
+        "retryable": False,
+    }
+    assert not list(paths.staging_job_images_dir("job-authenticated-failure").glob("*.part"))
+
+
+def test_authenticated_html_response_is_non_image_and_not_retried(tmp_path):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    paths = StoragePaths(data_dir, export_dir=tmp_path / "exports", novel_txt_export_dir=tmp_path / "novel_exports")
+    url = "https://bbs.yamibo.com/forum.php?mod=attachment&aid=1640438"
+    floor = replace(_make_snapshot().floors[0], image_urls=[url])
+    snapshot = replace(_make_snapshot(), floors=[floor], image_count=1)
+    calls = 0
+
+    def fetcher(image_url, **kwargs):
+        nonlocal calls
+        calls += 1
+        return SimpleNamespace(
+            status_code=200,
+            final_url=image_url,
+            headers={"Content-Type": "text/html"},
+            content=b"<html>not an image</html>",
+        )
+
+    result = download_images_to_staging(
+        paths,
+        "job-authenticated-html",
+        snapshot,
+        timeout=1,
+        retries=2,
+        fetcher=fetcher,
+        target_urls={url},
+    )
+
+    assert calls == 1
+    assert result.missing_urls == [url]
+    assert result.diagnostics[0]["http_status"] == 200
+    assert result.diagnostics[0]["error_type"] == "non_image_response"
+    assert result.diagnostics[0]["retryable"] is False
+
+
+def test_external_image_does_not_use_yamibo_fetcher(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    paths = StoragePaths(data_dir, export_dir=tmp_path / "exports", novel_txt_export_dir=tmp_path / "novel_exports")
+    calls = []
+
+    def fetcher(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("external image must not use Yamibo session")
+
+    def fake_download(image_url, *, staging_dir, stem, metadata, **kwargs):
+        metadata.update(attempts=1, status_code=200, content_type="image/jpeg", bytes=100, final_url=image_url)
+        target = staging_dir / f"{stem}.jpg"
+        target.write_bytes(b"not inspected in this test")
+        return target
+
+    monkeypatch.setattr(images, "_download_with_retries", fake_download)
+    monkeypatch.setattr(images, "_should_exclude_from_export", lambda *args, **kwargs: False)
+
+    result = download_images_to_staging(paths, "job-external", _make_snapshot(), fetcher=fetcher)
+
+    assert calls == []
+    assert result.diagnostics[0]["transport"] == "urllib"
+
+
 def test_download_images_to_staging_keeps_input_order_with_parallel_completion(tmp_path, monkeypatch):
     data_dir = tmp_path / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -162,7 +312,7 @@ def test_download_images_to_staging_keeps_input_order_with_parallel_completion(t
     )
     snapshot = replace(_make_snapshot(), floors=[floor], image_count=3)
 
-    def _fake_download(image_url, *, staging_dir, stem, timeout, retries, opener, headers=None, referer=None, cancel_check=None):
+    def _fake_download(image_url, *, staging_dir, stem, timeout, retries, opener, headers=None, referer=None, cancel_check=None, **kwargs):
         delay = {"floor_001_01": 0.03, "floor_001_02": 0.01, "floor_001_03": 0.02}[stem]
         time.sleep(delay)
         target = staging_dir / f"{stem}.jpg"
