@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-import logging
+import base64
+import binascii
 import json
+import logging
 import shutil
 from collections import Counter
 from contextlib import ExitStack
@@ -149,6 +151,20 @@ def handle_image_backfill(
                     snapshot = parse_thread_snapshot(first_page.html, url=first_page.final_url, tid=tid)
 
                 repo.update_stage(job.job_id, "diff_images", progress_current=3, progress_total=4)
+                selected_url_map = (
+                    _resolve_selected_remote_urls(snapshot, target_urls, target_positions)
+                    if selected_scope and target_urls
+                    else {}
+                )
+                selected_remote_urls = set(selected_url_map.values())
+                if selected_scope and target_urls and not selected_remote_urls:
+                    repo.fail(
+                        job.job_id,
+                        "IMAGE_TARGET_NOT_FOUND",
+                        "selected image target was not found at its recorded position or stable attachment id",
+                        {"tid": tid, "scope": "selected", "target_urls": target_urls},
+                    )
+                    return
                 diff = _diff_snapshot_images(
                     snapshot,
                     local_assets=local_assets,
@@ -156,7 +172,11 @@ def handle_image_backfill(
                     include_shared_static=True,
                     scope=scope,
                     include_first_floor=include_first_floor,
-                    target_urls=set(target_urls) if target_urls else None,
+                    target_urls=(
+                        selected_remote_urls
+                        if selected_scope and target_urls
+                        else (set(target_urls) if target_urls else None)
+                    ),
                 )
 
                 artifacts: dict[str, Any] = {
@@ -211,13 +231,15 @@ def handle_image_backfill(
                     local_assets=local_assets,
                     local_path_by_url=local_path_by_url,
                     image_result=image_result,
-                    protected_urls=set(target_urls) if selected_scope else set(),
+                    protected_urls=selected_remote_urls if selected_scope else set(),
                     expected_paths=expected_paths,
                 )
                 archive_maps = _archive_maps_from_assets(apply_snapshot, synced_assets)
                 previous_missing = _thread_missing_urls(thread)
                 previous_missing_shared = _archive_missing_shared_urls(paths, tid)
                 successful_urls = set(image_result.relative_path_by_url)
+                if selected_scope:
+                    successful_urls = _successful_selected_url_aliases(successful_urls, selected_url_map)
                 missing_image_urls = _unique([
                     *[url for url in previous_missing if url not in successful_urls],
                     *image_result.missing_urls,
@@ -230,7 +252,7 @@ def handle_image_backfill(
                 resolved_selected_urls = {
                     asset.remote_url
                     for asset in synced_assets
-                    if asset.remote_url in target_urls and asset.local_path
+                    if asset.remote_url in (selected_remote_urls or set(target_urls)) and asset.local_path
                 }
 
                 repo.update_stage(job.job_id, "db_commit", progress_current=5, progress_total=6)
@@ -243,11 +265,20 @@ def handle_image_backfill(
                         archive_status=archive_status,
                         missing_image_urls=[*missing_image_urls, *missing_shared_image_urls],
                     )
-                    ContentBlocksRepository(repo.conn).upsert_blocks(
-                        apply_snapshot.tid,
-                        [block for post in content.posts for block in post.blocks],
-                    )
-                    AssetsRepository(repo.conn).upsert_assets(apply_snapshot.tid, synced_assets)
+                    if selected_scope:
+                        _update_selected_assets(
+                            repo.conn,
+                            tid=apply_snapshot.tid,
+                            remote_assets=synced_assets,
+                            local_assets=local_assets,
+                            local_path_by_url=local_path_by_url,
+                        )
+                    else:
+                        ContentBlocksRepository(repo.conn).upsert_blocks(
+                            apply_snapshot.tid,
+                            [block for post in content.posts for block in post.blocks],
+                        )
+                        AssetsRepository(repo.conn).upsert_assets(apply_snapshot.tid, synced_assets)
 
                 repo.update_stage(job.job_id, "materialize", progress_current=6, progress_total=6)
                 context_metadata, cleaner_output = build_obsidian_context_payload(
@@ -293,7 +324,14 @@ def handle_image_backfill(
                         "backfilled_image_count": image_result.downloaded_count + image_result.non_export_count + image_result.shared_downloaded_count,
                     }
                 )
-                if selected_scope and set(target_urls).issubset(resolved_selected_urls):
+                if selected_scope and not resolved_selected_urls:
+                    repo.fail(
+                        job.job_id,
+                        "IMAGE_TARGET_NOT_DOWNLOADED",
+                        "selected image target was not downloaded or reconciled",
+                        artifacts,
+                    )
+                elif selected_scope and set(selected_remote_urls or target_urls).issubset(resolved_selected_urls):
                     repo.succeed(job.job_id, artifacts)
                 elif archive_status == "partial":
                     repo.partial(job.job_id, artifacts)
@@ -727,7 +765,7 @@ def _diff_snapshot_images(
                 tid=snapshot.tid,
                 url=url,
                 image_class=image_class,
-                asset=local_assets.get(url),
+                asset=_local_asset_for_url(local_assets, url),
                 paths=paths,
             )
             if availability == "ok":
@@ -816,7 +854,7 @@ def _merge_assets(
     missing = set(image_result.missing_urls) | set(image_result.missing_shared_urls)
     protected_urls = protected_urls or set()
     for asset in remote_assets:
-        existing = local_assets.get(asset.remote_url)
+        existing = _local_asset_for_url(local_assets, asset.remote_url)
         if asset.remote_url in local_path_by_url:
             local_path = local_path_by_url[asset.remote_url]
         elif asset.remote_url in protected_urls:
@@ -831,6 +869,112 @@ def _merge_assets(
         status = "downloaded" if local_path else ("missing" if asset.remote_url in missing else (existing.status if existing and existing.status else asset.status))
         merged.append(replace(asset, local_path=local_path, status=status))
     return merged
+
+
+def _local_asset_for_url(local_assets: dict[str, _LocalAsset], url: str) -> _LocalAsset | None:
+    existing = local_assets.get(url)
+    if existing is not None:
+        return existing
+    stable_id = _stable_attachment_id(url)
+    if stable_id is None:
+        return None
+    return next(
+        (candidate for candidate in local_assets.values() if _stable_attachment_id(candidate.remote_url) == stable_id),
+        None,
+    )
+
+
+def _resolve_selected_remote_urls(
+    snapshot,
+    target_urls: list[str],
+    target_positions: dict[str, dict[str, Any]],
+) -> dict[str, str]:
+    """Map submitted URLs to the current remote URLs after a signature rotation.
+
+    Position is the primary identity.  For Yamibo attachments, the decoded aid
+    is then checked as a stable identity so a reused slot cannot download the
+    wrong attachment.  External URLs retain exact URL matching.
+    """
+    result: dict[str, str] = {}
+    by_position = {
+        (floor.pid, index): url
+        for floor in snapshot.floors
+        for index, url in enumerate(floor.image_urls, start=1)
+    }
+    for submitted in target_urls:
+        position = target_positions.get(submitted) or {}
+        pid = position.get("pid")
+        image_index = position.get("image_index")
+        candidate = by_position.get((int(pid), int(image_index))) if pid is not None and image_index else None
+        if candidate is not None:
+            submitted_aid = _stable_attachment_id(submitted)
+            candidate_aid = _stable_attachment_id(candidate)
+            if (submitted_aid is not None and submitted_aid == candidate_aid) or (
+                submitted_aid is None and candidate == submitted
+            ):
+                result[submitted] = candidate
+                continue
+        if any(url == submitted for floor in snapshot.floors for url in floor.image_urls):
+            result[submitted] = submitted
+    return result
+
+
+def _successful_selected_url_aliases(
+    successful_urls: set[str],
+    selected_url_map: dict[str, str],
+) -> set[str]:
+    """Include stale submitted signatures when their current URL succeeded."""
+    return successful_urls | {
+        submitted_url
+        for submitted_url, current_url in selected_url_map.items()
+        if current_url in successful_urls
+    }
+
+
+def _stable_attachment_id(url: str) -> str | None:
+    """Return the stable first component of a Yamibo attachment ``aid``."""
+    if not _is_site_attachment(url):
+        return None
+    query = parse_qs(urlparse(url).query)
+    raw = query.get("aid", [""])[0]
+    decoded = unquote(raw)
+    try:
+        padded = decoded + "=" * (-len(decoded) % 4)
+        decoded = base64.urlsafe_b64decode(padded).decode("utf-8")
+    except (ValueError, UnicodeDecodeError, binascii.Error):
+        # Keep compatibility with fixtures or legacy URLs carrying a plain aid.
+        pass
+    stable = decoded.split("|", 1)[0].strip()
+    return stable or None
+
+
+def _update_selected_assets(
+    conn,
+    *,
+    tid: int,
+    remote_assets,
+    local_assets: dict[str, _LocalAsset],
+    local_path_by_url: dict[str, str],
+) -> None:
+    """Update only selected rows, retaining every other asset untouched."""
+    downloaded = set(local_path_by_url)
+    rows = AssetsRepository(conn).list_assets(tid)
+    for asset in remote_assets:
+        if asset.remote_url not in downloaded:
+            continue
+        old = _local_asset_for_url(local_assets, asset.remote_url)
+        if old is None:
+            continue
+        row = next((candidate for candidate in rows if str(candidate["remote_url"]) == old.remote_url), None)
+        if row is None:
+            continue
+        local_path = local_path_by_url.get(asset.remote_url)
+        if not local_path:
+            continue
+        conn.execute(
+            "UPDATE assets SET pid = ?, remote_url = ?, local_path = ?, status = 'downloaded' WHERE tid = ? AND asset_id = ?",
+            (asset.pid, asset.remote_url, local_path, tid, row["asset_id"]),
+        )
 
 
 def _archive_maps_from_assets(snapshot, assets) -> dict[str, dict[int, list[str]]]:

@@ -79,6 +79,7 @@ class DaemonRunner:
         if not getattr(settings, "jobs_enabled", True):
             return DaemonResult(processed=0)
         conn = connect(settings.db_path, pool_role="daemon")
+        job = None
         try:
             repo = JobsRepository(conn)
             recover_expired_jobs(repo)
@@ -142,10 +143,11 @@ class DaemonRunner:
             job = repo.acquire_next(self.worker_id, settings.worker_lease_seconds)
             if job is None:
                 # 空闲时尝试入队闲时任务（image_backfill）
-                try:
-                    maybe_enqueue_image_backfill_dry_run(repo, settings)
-                except Exception:
-                    LOG.debug("Image backfill scheduler failed", exc_info=True)
+                if maintenance_state is None and remote_access_state is None:
+                    try:
+                        maybe_enqueue_image_backfill_dry_run(repo, settings)
+                    except Exception:
+                        LOG.debug("Image backfill scheduler failed", exc_info=True)
                 return DaemonResult(processed=0)
             in_maintenance = maintenance_state is not None
             if in_maintenance and job.status not in (JobStatus.QUEUED.value,):
@@ -303,7 +305,7 @@ class DaemonRunner:
             return DaemonResult(processed=0)
         finally:
             from yamibo_mcp.yamibo.proxy_pool import clear_job_state
-            if 'job' in locals():
+            if job is not None:
                 clear_job_state(job.job_id)
             conn.close()
 

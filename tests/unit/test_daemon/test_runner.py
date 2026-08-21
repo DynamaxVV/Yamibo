@@ -112,6 +112,74 @@ def test_run_once_does_not_acquire_jobs_when_jobs_disabled(tmp_path, monkeypatch
     assert result.processed == 0
 
 
+def test_run_once_with_empty_queue_does_not_clear_missing_job_state(tmp_path, monkeypatch):
+    db_path = tmp_path / "test.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    migrate(conn)
+    conn.close()
+
+    settings = SimpleNamespace(
+        db_path=db_path,
+        worker_id="daemon-test",
+        jobs_enabled=True,
+        worker_poll_seconds=0.0,
+        worker_lease_seconds=300,
+    )
+    runner = DaemonRunner(settings, worker_id="daemon-test-1")
+
+    monkeypatch.setattr("yamibo_mcp.daemon.runner.recover_expired_jobs", lambda repo: None)
+    monkeypatch.setattr("yamibo_mcp.daemon.runner._restore_444_events", lambda conn: None)
+    monkeypatch.setattr("yamibo_mcp.daemon.runner.maybe_enqueue_daily_sign_ins", lambda *args, **kwargs: None)
+    monkeypatch.setattr("yamibo_mcp.daemon.runner.get_maintenance_pause_state", lambda conn: None)
+    monkeypatch.setattr("yamibo_mcp.daemon.runner.get_remote_access_pause_state", lambda conn: None)
+    monkeypatch.setattr("yamibo_mcp.daemon.runner.JobsRepository.acquire_next", lambda *args, **kwargs: None)
+    monkeypatch.setattr("yamibo_mcp.daemon.runner.maybe_enqueue_image_backfill_dry_run", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        "yamibo_mcp.yamibo.proxy_pool.clear_job_state",
+        lambda job_id: (_ for _ in ()).throw(AssertionError(f"unexpected job cleanup: {job_id}")),
+    )
+
+    result = runner.run_once()
+
+    assert result.processed == 0
+
+
+def test_run_once_does_not_schedule_image_backfill_while_remote_access_is_paused(tmp_path, monkeypatch):
+    db_path = tmp_path / "test.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    migrate(conn)
+    conn.close()
+
+    settings = SimpleNamespace(
+        db_path=db_path,
+        worker_id="daemon-test",
+        jobs_enabled=True,
+        worker_poll_seconds=0.0,
+        worker_lease_seconds=300,
+    )
+    runner = DaemonRunner(settings, worker_id="daemon-test-1")
+
+    monkeypatch.setattr("yamibo_mcp.daemon.runner.recover_expired_jobs", lambda repo: None)
+    monkeypatch.setattr("yamibo_mcp.daemon.runner._restore_444_events", lambda conn: None)
+    monkeypatch.setattr("yamibo_mcp.daemon.runner.maybe_enqueue_daily_sign_ins", lambda *args, **kwargs: None)
+    monkeypatch.setattr("yamibo_mcp.daemon.runner.get_maintenance_pause_state", lambda conn: None)
+    monkeypatch.setattr("yamibo_mcp.daemon.runner.get_remote_access_pause_state", lambda conn: {"active": True})
+    monkeypatch.setattr("yamibo_mcp.daemon.runner.should_probe_remote_access", lambda conn: False)
+    monkeypatch.setattr("yamibo_mcp.daemon.runner.JobsRepository.acquire_next", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.runner.maybe_enqueue_image_backfill_dry_run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("scheduler must remain paused")),
+    )
+
+    result = runner.run_once()
+
+    assert result.processed == 0
+
+
 def test_run_once_rolls_back_handler_transaction_before_marking_failed(tmp_path, monkeypatch):
     db_path = tmp_path / "test.db"
     conn = sqlite3.connect(str(db_path))

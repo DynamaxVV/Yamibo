@@ -9,8 +9,13 @@ import pytest
 
 from yamibo_mcp.daemon.handlers.image_backfill import (
     _diff_snapshot_images,
+    _local_assets_by_url,
+    _merge_assets,
+    _resolve_selected_remote_urls,
     _selected_download_retries,
     _snapshot_for_missing_images,
+    _stable_attachment_id,
+    _successful_selected_url_aliases,
     handle_image_backfill,
 )
 from yamibo_mcp.daemon.image_backfill_scheduler import maybe_enqueue_image_backfill_dry_run
@@ -18,7 +23,7 @@ from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.db.repositories.system_state import SystemStateRepository
 from yamibo_mcp.errors import ThreadPermissionRequiredError
 from yamibo_mcp.storage.images import ImageDownloadResult, download_images_to_staging
-from yamibo_mcp.domain.models import FloorSnapshot, ThreadSnapshot, TitleSnapshot
+from yamibo_mcp.domain.models import AssetSnapshot, FloorSnapshot, ThreadSnapshot, TitleSnapshot
 from yamibo_mcp.storage.paths import StoragePaths
 
 
@@ -102,6 +107,61 @@ def test_image_backfill_diff_counts_content_missing_separately_from_static(tmp_p
     assert result["shared_static_missing_count"] == 1
     assert result["need_fetch_by_class"]["content"] == 1
     assert result["need_fetch_by_class"]["decorative"] == 1
+
+
+def test_selected_attachment_signature_rotation_matches_stable_aid():
+    old = "https://bbs.yamibo.com/forum.php?mod=attachment&aid=MTYzODQzNHw1MWU2OTRkM3wxNzg3MjIyNzU3fDczNzQ5M3w1NzUwOTA%3D&nothumb=yes"
+    current = "https://bbs.yamibo.com/forum.php?mod=attachment&aid=MTYzODQzNHwzNTJjOTA2M3wxNzg3MzI1MzE5fDczNzQ5M3w1NzUwOTA%3D&nothumb=yes"
+    assert _stable_attachment_id(old) == "1638434"
+    assert _stable_attachment_id(current) == "1638434"
+    snapshot = _snapshot(575090, [current])
+    target = {old: {"pid": 575090 * 10 + 2, "floor_no": 2, "image_index": 1}}
+    assert _resolve_selected_remote_urls(snapshot, [old], target) == {old: current}
+
+
+def test_selected_attachment_identity_mismatch_is_not_silently_retargeted():
+    old = "https://bbs.yamibo.com/forum.php?mod=attachment&aid=MQ%3D%3D"
+    current = "https://bbs.yamibo.com/forum.php?mod=attachment&aid=Mg%3D%3D"
+    snapshot = _snapshot(575091, [current])
+    target = {old: {"pid": 575091 * 10 + 2, "floor_no": 2, "image_index": 1}}
+    assert _resolve_selected_remote_urls(snapshot, [old], target) == {}
+
+
+def test_selected_external_url_does_not_follow_a_changed_position():
+    old = "https://external.invalid/old.jpg"
+    current = "https://external.invalid/replacement.jpg"
+    snapshot = _snapshot(575092, [current])
+    target = {old: {"pid": 575092 * 10 + 2, "floor_no": 2, "image_index": 1}}
+    assert _resolve_selected_remote_urls(snapshot, [old], target) == {}
+
+
+def test_rotated_selected_success_clears_the_submitted_missing_url():
+    old = "https://bbs.yamibo.com/forum.php?mod=attachment&aid=MQ%3D%3D"
+    current = "https://bbs.yamibo.com/forum.php?mod=attachment&aid=MXxuZXc%3D"
+    assert _successful_selected_url_aliases({current}, {old: current}) == {old, current}
+
+
+def test_rotated_selected_asset_keeps_existing_local_path_for_other_assets(tmp_path):
+    old = "https://bbs.yamibo.com/forum.php?mod=attachment&aid=MQ%3D%3D"
+    current = "https://bbs.yamibo.com/forum.php?mod=attachment&aid=MXwz%3D"
+    untouched = "https://bbs.yamibo.com/data/attachment/forum/other.jpg"
+    assets = [
+        AssetSnapshot("asset-old", 1, 2, "attachment", current, None, True, True, "pending"),
+        AssetSnapshot("asset-other", 1, 2, "image", untouched, "images/floor_002_02.jpg", True, True, "downloaded"),
+    ]
+    local = {
+        old: SimpleNamespace(remote_url=old, asset_type="attachment", local_path=None, status="missing"),
+        untouched: SimpleNamespace(remote_url=untouched, asset_type="image", local_path="images/floor_002_02.jpg", status="downloaded"),
+    }
+    result = SimpleNamespace(missing_urls=[], missing_shared_urls=[])
+    merged = _merge_assets(
+        assets,
+        local_assets=local,
+        local_path_by_url={current: "images/floor_002_01.jpg"},
+        image_result=result,
+    )
+    assert merged[0].local_path == "images/floor_002_01.jpg"
+    assert merged[1].local_path == "images/floor_002_02.jpg"
 
 
 def test_selected_first_floor_download_keeps_original_image_index(tmp_path):
