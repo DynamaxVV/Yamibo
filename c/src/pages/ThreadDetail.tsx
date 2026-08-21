@@ -494,6 +494,7 @@ export function ThreadDetail() {
           images={images}
           page={previewPageParam}
           totalPages={isNovel ? (thread?.floor_total_pages ?? null) : null}
+          onImageRecovered={refreshThreadSnapshot}
           onPageChange={isNovel ? (p) => {
             const next = new URLSearchParams(searchParams)
             if (p <= 1) next.delete('preview_page')

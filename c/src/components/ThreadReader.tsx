@@ -219,6 +219,7 @@ export interface ThreadReaderProps {
   page: number
   totalPages: number | null
   onPageChange?: (page: number) => void
+  onImageRecovered?: () => Promise<void> | void
 }
 
 // ── Small Image Detection ────────────────────────────────────────────
@@ -274,7 +275,7 @@ function LazyImage({ src, alt, className }: { src: string; alt: string; classNam
 
 // ── Component ─────────────────────────────────────────────────────────
 
-export function ThreadReader({ tid, source, contentKind, floors: floorSource, images, page, totalPages: totalPagesProp, onPageChange }: ThreadReaderProps) {
+export function ThreadReader({ tid, source, contentKind, floors: floorSource, images, page, totalPages: totalPagesProp, onPageChange, onImageRecovered }: ThreadReaderProps) {
   const { t, lang } = useI18n()
   const { dark } = useTheme()
   const isMobile = typeof window !== 'undefined' && window.innerWidth <= 768
@@ -437,9 +438,14 @@ export function ThreadReader({ tid, source, contentKind, floors: floorSource, im
           const job = await api.job(created.job_id)
           if (job.status === 'succeeded') {
             setRetryStatuses(prev => ({ ...prev, [slot.remote_url]: 'succeeded' }))
-            // The API rewrites metadata and the exact floor slot. Reloading
-            // the parent is intentionally narrow and avoids polling /jobs.
-            window.location.reload()
+            // Update only the thread/image state. A full reload would follow
+            // the page's #top fragment and discard the reader's position.
+            try {
+              await onImageRecovered?.()
+            } catch {
+              // The backfill job already succeeded; a transient UI refresh
+              // failure must not turn the image status into a false failure.
+            }
             return
           }
           if (job.status === 'failed' || job.status === 'partial' || job.status === 'interrupted') {
