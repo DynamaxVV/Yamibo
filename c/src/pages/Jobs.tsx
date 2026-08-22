@@ -48,6 +48,7 @@ export function Jobs() {
   const [totalPages, setTotalPages] = useState(1)
   const [totalCount, setTotalCount] = useState(0)
   const [failureKindCounts, setFailureKindCounts] = useState<Record<string, number>>({})
+  const [failureKindCountsLoaded, setFailureKindCountsLoaded] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState<JobSummary | null>(null)
   const [confirmBatchDelete, setConfirmBatchDelete] = useState<string | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
@@ -120,6 +121,7 @@ export function Jobs() {
       setTotalCount(nextJobs.total_count)
       setStatusCounts(nextCounts)
       setFailureKindCounts(nextFailureCounts)
+      setFailureKindCountsLoaded(status === 'failed')
       jobsRef.current = nextJobs.items
       countsRef.current = nextCounts
     } catch {
@@ -179,6 +181,7 @@ export function Jobs() {
             setTotalCount(nextJobs.total_count)
             setStatusCounts(nextCounts)
             setFailureKindCounts(nextFailureCounts)
+            setFailureKindCountsLoaded(status === 'failed')
             jobsRef.current = nextJobs.items
             countsRef.current = nextCounts
           }
@@ -224,6 +227,14 @@ export function Jobs() {
     setFailureKind(kind)
     try { kind ? localStorage.setItem(FAILURE_STORAGE_KEY, kind) : localStorage.removeItem(FAILURE_STORAGE_KEY) } catch {}
   }
+
+  useEffect(() => {
+    if (!failureKindCountsLoaded || !failureKind) return
+    if ((failureKindCounts[failureKind] || 0) > 0) return
+    setFailureKindAndRemember(null)
+    setPage(1)
+    setSelectedIds(new Set())
+  }, [failureKind, failureKindCounts, failureKindCountsLoaded])
 
   const setPageSizeAndRemember = (nextPageSize: number) => {
     setPageSize(nextPageSize)
@@ -459,7 +470,7 @@ export function Jobs() {
                 setSelectedIds(new Set())
               }}
             >
-              {FAILURE_KINDS.map(kind => (
+              {FAILURE_KINDS.filter(kind => kind === null || (failureKindCounts[kind] || 0) > 0).map(kind => (
                 <option key={kind || 'all'} value={kind || ''}>
                   {kind ? `${formatJobFailureKind(kind, lang)} (${failureKindCounts[kind] || 0})` : `${lang === 'en' ? 'All failure kinds' : '全部失败类型'} (${statusCounts.failed || 0})`}
                 </option>
