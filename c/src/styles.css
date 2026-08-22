@@ -264,6 +264,20 @@ tr:hover td { background: var(--bg-muted, #f6f8fa); }
 td.mono { font-family: var(--font-mono, monospace); font-size: 12px; }
 td.nowrap { white-space: nowrap; }
 td.truncate { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+td.thread-title {
+  overflow: hidden;
+  text-align: left;
+  white-space: normal;
+}
+td.thread-title .thread-title-link {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
+  max-height: 2.8em;
+}
 td.col-time {
   min-width: 108px;
   white-space: normal;

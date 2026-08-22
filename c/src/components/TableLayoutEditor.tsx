@@ -24,6 +24,25 @@ const DEFAULTS: TableLayouts = {
   jobs: DEFINITIONS.jobs.map((_, i) => ({ key: DEFINITIONS.jobs[i].key, visible: true, width: [65, 420, 80, 120, 80, 110, 110][i] })),
 }
 
+const TABLE_LAYOUT_STORAGE_KEY = 'yamibo_table_layouts'
+
+function readCachedLayouts(): unknown {
+  try {
+    const raw = window.localStorage.getItem(TABLE_LAYOUT_STORAGE_KEY)
+    return raw ? JSON.parse(raw) : null
+  } catch {
+    return null
+  }
+}
+
+function cacheLayouts(value: unknown) {
+  try {
+    window.localStorage.setItem(TABLE_LAYOUT_STORAGE_KEY, JSON.stringify(normalizeLayouts(value)))
+  } catch {
+    // localStorage may be unavailable; the server remains the source of truth.
+  }
+}
+
 function normalizeLayouts(value: unknown): TableLayouts {
   const raw = value as Partial<TableLayouts> | null
   return (['threads', 'jobs'] as TableName[]).reduce((result, table) => {
@@ -39,8 +58,13 @@ export function getTableLayout(value: unknown, table: TableName): TableLayout[] 
 }
 
 export function useTableLayout(table: TableName) {
-  const [layouts, setLayouts] = useState<TableLayout[]>(() => getTableLayout(null, table))
-  useEffect(() => { api.settings().then(result => setLayouts(getTableLayout(result.values.table_layouts, table))).catch(() => {}) }, [table])
+  const [layouts, setLayouts] = useState<TableLayout[]>(() => getTableLayout(readCachedLayouts(), table))
+  useEffect(() => {
+    api.settings().then(result => {
+      cacheLayouts(result.values.table_layouts)
+      setLayouts(getTableLayout(result.values.table_layouts, table))
+    }).catch(() => {})
+  }, [table])
   return layouts
 }
 
@@ -51,7 +75,11 @@ export function TableLayoutEditor({ value, onSaved }: { value: unknown; onSaved:
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
 
-  useEffect(() => setLayouts(normalizeLayouts(value)), [value])
+  useEffect(() => {
+    const normalized = normalizeLayouts(value)
+    cacheLayouts(normalized)
+    setLayouts(normalized)
+  }, [value])
   const definitions = DEFINITIONS[table]
   const current = layouts[table]
   const ordered = useMemo(() => current.map(item => definitions.find(def => def.key === item.key)!).filter(Boolean), [current, definitions])
@@ -62,6 +90,7 @@ export function TableLayoutEditor({ value, onSaved }: { value: unknown; onSaved:
     setMessage(null)
     try {
       const result = await api.updateSettings({ table_layouts: layouts })
+      cacheLayouts(result.values.table_layouts)
       onSaved(normalizeLayouts(result.values.table_layouts))
       setMessage(t('settings_table_layout_saved'))
     } catch (error: any) {

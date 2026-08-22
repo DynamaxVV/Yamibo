@@ -309,7 +309,7 @@ export function Threads() {
             <tr key={t_.tid}>
               <td><input type="checkbox" checked={selectedTids.has(t_.tid)} onChange={() => toggleSelect(t_.tid)} /></td>
               {column('tid')?.visible && <td className="mono"><Link to={`/threads/${t_.tid}`}>{t_.tid}</Link></td>}
-              {column('title')?.visible && <td className="truncate" title={titleText}><Link to={`/threads/${t_.tid}`}>{titleText}</Link></td>}
+              {column('title')?.visible && <td className="thread-title" title={titleText}><Link className="thread-title-link" to={`/threads/${t_.tid}`}>{titleText}</Link></td>}
               {column('forum')?.visible && <td className="nowrap">{forums.find(f => f.forum_id === t_.forum_id)?.[lang === 'en' ? 'name_en' : 'name'] || t_.forum_id || '-'}</td>}
               {column('category')?.visible && <td className="nowrap hide-mobile">{t_.category || '-'}</td>}
               {column('archive')?.visible && <td className="hide-mobile"><ContentBadge kind={t_.content_kind} /></td>}
