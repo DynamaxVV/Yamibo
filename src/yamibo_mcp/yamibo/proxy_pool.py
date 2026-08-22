@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import copy
 import logging
 import re
 import threading
@@ -57,12 +58,17 @@ class MihomoProxyPoolConfig:
         )
 
 LOG = logging.getLogger(__name__)
+YAMIBO_HEALTH_CHECK_URL = "https://bbs.yamibo.com/"
+NETWORK_HEALTH_CHECK_URL = "https://www.gstatic.com/generate_204"
+DIRECT_NODE_NAME = "DIRECT"
 
 # --- cache ---
 
 _CACHE_TTL_SECONDS = 30.0
 _cache: dict[tuple[str, str], tuple[list[tuple[str, int]], float]] = {}
 _cache_lock = threading.Lock()
+_HEALTH_CACHE_TTL_SECONDS = 60.0
+_health_cache: dict[tuple[str, str, str], tuple[dict, float]] = {}
 _selector_locks: dict[tuple[str, str], threading.Lock] = {}
 _selector_locks_lock = threading.Lock()
 
@@ -93,6 +99,7 @@ def clear_proxy_cache() -> int:
     with _cache_lock:
         count = len(_cache)
         _cache.clear()
+        _health_cache.clear()
         return count
 
 
@@ -288,7 +295,11 @@ class MihomoControllerClient:
         self._selector_group = selector_group
         self._test_url = test_url
         self._test_timeout_ms = test_timeout_ms
-        self._opener = urllib.request.build_opener()
+        # The controller is a local control-plane endpoint.  Do not inherit
+        # HTTP(S)_PROXY here: in this setup 7890 is Mihomo's traffic proxy,
+        # and sending the controller request through it turns a healthy
+        # 127.0.0.1:9097 API call into HTTP 502.
+        self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
     def _request(self, path: str, method: str = "GET", body: bytes | None = None, timeout: float | None = None) -> dict:
         url = f"{self._controller_url}{path}"
@@ -316,11 +327,11 @@ class MihomoControllerClient:
             return []
         return list(group_data.get("all", []))
 
-    def test_node_delay(self, node: str) -> int | None:
+    def test_node_delay(self, node: str, *, test_url: str | None = None) -> int | None:
         import urllib.parse as _up
 
         params = _up.urlencode(
-            {"url": self._test_url, "timeout": str(self._test_timeout_ms)}
+            {"url": test_url or self._test_url, "timeout": str(self._test_timeout_ms)}
         )
         path = f"/proxies/{_up.quote(node)}/delay?{params}"
         # delay test 用短超时：test_timeout_ms 加 2s 缓冲，至少 3s 而不是 10s。
@@ -342,7 +353,13 @@ class MihomoControllerClient:
             return int(delay)
         return None
 
-    def test_all_nodes_parallel(self, nodes: list[str], max_workers: int = 8) -> list[tuple[str, int]]:
+    def test_all_nodes_parallel(
+        self,
+        nodes: list[str],
+        max_workers: int = 8,
+        *,
+        test_url: str | None = None,
+    ) -> list[tuple[str, int]]:
         """Test delay of all nodes in parallel, returning (node, delay_ms) for usable nodes.
 
         Stops waiting once at least one node passes AND deadline is reached,
@@ -355,10 +372,16 @@ class MihomoControllerClient:
 
         results: list[tuple[str, int]] = []
         with ThreadPoolExecutor(max_workers=min(max_workers, len(nodes))) as executor:
-            future_to_node = {
-                executor.submit(self.test_node_delay, node): node
-                for node in nodes
-            }
+            if test_url is None:
+                future_to_node = {
+                    executor.submit(self.test_node_delay, node): node
+                    for node in nodes
+                }
+            else:
+                future_to_node = {
+                    executor.submit(self.test_node_delay, node, test_url=test_url): node
+                    for node in nodes
+                }
             for future in as_completed(future_to_node):
                 node = future_to_node[future]
                 try:
@@ -519,7 +542,7 @@ def activate_proxy_binding(settings: Settings, binding: ProxyBinding | None) -> 
         lock.release()
 
 
-def check_proxy_pool_health(settings: Settings) -> dict:
+def check_proxy_pool_health(settings: Settings, *, test_url: str | None = None) -> dict:
     """Diagnostic check for mihomo proxy pool connectivity.
 
     Always performs fresh discovery + delay tests (bypasses cache).
@@ -542,6 +565,7 @@ def check_proxy_pool_health(settings: Settings) -> dict:
         "controller": {"reachable": False, "error": None},
         "selector_group": {"exists": False, "current_node": None, "node_count": 0},
         "nodes": [],
+        "probe_url": test_url or cfg.test_url,
         "cache": _cache_info(),
     }
 
@@ -550,11 +574,12 @@ def check_proxy_pool_health(settings: Settings) -> dict:
         report["error"] = "proxy_pool is disabled"
         return report
 
+    probe_url = test_url or cfg.test_url
     client = MihomoControllerClient(
         controller_url=cfg.controller_url,
         secret=cfg.secret,
         selector_group=cfg.selector_group,
-        test_url=cfg.test_url,
+        test_url=probe_url,
         test_timeout_ms=cfg.test_timeout_ms,
     )
 
@@ -590,9 +615,22 @@ def check_proxy_pool_health(settings: Settings) -> dict:
         "max_delay_ms": cfg.max_delay_ms if cfg.max_delay_ms > 0 else None,
     }
 
-    # Step 3: test all nodes in parallel
-    if all_nodes:
-        usable_pairs = client.test_all_nodes_parallel(all_nodes)
+    # Step 3: test all nodes against Yamibo and a neutral network endpoint.
+    # A neutral endpoint distinguishes a dead node from a node that reaches
+    # the Internet but is currently blocked by Yamibo.
+    test_nodes = list(all_nodes)
+    if DIRECT_NODE_NAME not in test_nodes:
+        test_nodes.append(DIRECT_NODE_NAME)
+    if test_nodes:
+        usable_pairs = client.test_all_nodes_parallel(test_nodes)
+        network_client = MihomoControllerClient(
+            controller_url=cfg.controller_url,
+            secret=cfg.secret,
+            selector_group=cfg.selector_group,
+            test_url=NETWORK_HEALTH_CHECK_URL,
+            test_timeout_ms=cfg.test_timeout_ms,
+        )
+        network_pairs = network_client.test_all_nodes_parallel(test_nodes)
         filtered_pairs = _filter_nodes(
             usable_pairs,
             allowed_patterns=cfg.allowed_patterns,
@@ -601,14 +639,37 @@ def check_proxy_pool_health(settings: Settings) -> dict:
         )
         filtered_names = {name for name, _ in filtered_pairs}
         usable_map = {node: delay for node, delay in usable_pairs}
-        for node in all_nodes:
-            delay = usable_map.get(node)
+        network_map = {node: delay for node, delay in network_pairs}
+        blacklisted_names = set(get_blacklisted_nodes())
+        for node in test_nodes:
+            forum_delay = usable_map.get(node)
+            network_delay = network_map.get(node)
+            delay = forum_delay if forum_delay is not None else network_delay
+            is_direct = node == DIRECT_NODE_NAME
+            yamibo_accessible = forum_delay is not None
+            if forum_delay is None and network_delay is not None:
+                status = "forum_blocked"
+            elif forum_delay is None:
+                status = "unreachable"
+            elif node in blacklisted_names:
+                status = "blacklisted"
+            elif node in filtered_names:
+                status = "usable"
+            else:
+                status = "filtered"
             node_info: dict = {
                 "name": node,
+                "display_name": "本地直连" if is_direct else node,
                 "delay_ms": delay,
+                "forum_delay_ms": forum_delay,
+                "network_delay_ms": network_delay,
                 "error": None if delay is not None else "no delay data returned",
+                "status": status,
+                "blacklisted": node in blacklisted_names,
+                "yamibo_accessible": yamibo_accessible,
+                "is_direct": is_direct,
             }
-            if delay is not None and node not in filtered_names:
+            if forum_delay is not None and node not in filtered_names:
                 node_info["filtered"] = True
             report["nodes"].append(node_info)
     else:
@@ -626,6 +687,40 @@ def check_proxy_pool_health(settings: Settings) -> dict:
         report["ok"] = False
         report["error"] = "no usable nodes (all delay tests failed)"
 
+    return report
+
+
+def get_cached_proxy_pool_health(
+    settings: Settings,
+    *,
+    test_url: str | None = None,
+    force_refresh: bool = False,
+) -> dict:
+    """Return a health report without re-testing until the short TTL expires."""
+    cfg = getattr(settings, "proxy_pool", None)
+    if cfg is None:
+        report = check_proxy_pool_health(settings, test_url=test_url)
+        report.update({"cached": False, "cache_age_seconds": None})
+        return report
+
+    probe_url = test_url or cfg.test_url
+    key = (cfg.controller_url.rstrip("/"), cfg.selector_group, probe_url)
+    now = time.monotonic()
+    if not force_refresh:
+        with _cache_lock:
+            entry = _health_cache.get(key)
+        if entry is not None:
+            cached_report, checked_at = entry
+            age = now - checked_at
+            if age <= _HEALTH_CACHE_TTL_SECONDS:
+                report = copy.deepcopy(cached_report)
+                report.update({"cached": True, "cache_age_seconds": round(age, 1)})
+                return report
+
+    report = check_proxy_pool_health(settings, test_url=probe_url)
+    with _cache_lock:
+        _health_cache[key] = (copy.deepcopy(report), time.monotonic())
+    report.update({"cached": False, "cache_age_seconds": 0.0})
     return report
 
 

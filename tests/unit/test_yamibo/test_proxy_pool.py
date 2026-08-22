@@ -19,6 +19,7 @@ from yamibo_mcp.yamibo.proxy_pool import (
     check_proxy_pool_health,
     clear_node_blacklist,
     clear_proxy_cache,
+    get_cached_proxy_pool_health,
     get_blacklisted_nodes,
     get_job_node,
     mark_node_444,
@@ -114,6 +115,23 @@ def test_client_discovers_nodes():
 
     nodes = client.discover_nodes()
     assert nodes == ["node-a", "node-b", "node-c"]
+
+
+def test_client_controller_requests_bypass_environment_proxy(monkeypatch):
+    monkeypatch.setenv("http_proxy", "http://127.0.0.1:7890")
+    monkeypatch.setenv("https_proxy", "http://127.0.0.1:7890")
+    client = MihomoControllerClient(
+        controller_url="http://127.0.0.1:9090",
+        secret="",
+        selector_group="yamibo",
+        test_url="https://www.gstatic.com/generate_204",
+        test_timeout_ms=3000,
+    )
+    proxy_handlers = [
+        handler for handler in client._opener.handlers
+        if isinstance(handler, urllib.request.ProxyHandler)
+    ]
+    assert proxy_handlers == []
 
 
 def test_client_discover_no_group():
@@ -357,7 +375,7 @@ def test_select_thread_proxy_fallback_on_no_nodes():
 
 def test_check_proxy_pool_health_disabled_reports_error():
     settings = _make_settings(enabled=False)
-    result = check_proxy_pool_health(settings)
+    result = check_proxy_pool_health(settings, test_url="https://bbs.yamibo.com")
     assert result["ok"] is False
     assert result["error"] == "proxy_pool is disabled"
 
@@ -431,10 +449,56 @@ def test_check_proxy_pool_health_all_nodes_tested(monkeypatch):
     assert result["selector_group"]["exists"] is True
     assert result["selector_group"]["current_node"] == "node-a"
     assert result["selector_group"]["node_count"] == 3
-    assert result["usable_count"] == 3
+    assert result["usable_count"] == 4
     assert result["min_delay_ms"] == 150
     assert result["max_delay_ms"] == 150
-    assert [n["name"] for n in result["nodes"]] == ["node-a", "node-b", "node-c"]
+    assert [n["name"] for n in result["nodes"]] == ["node-a", "node-b", "node-c", "DIRECT"]
+    assert [n["status"] for n in result["nodes"]] == ["usable", "usable", "usable", "usable"]
+    assert result["nodes"][-1]["is_direct"] is True
+    assert all(n["blacklisted"] is False for n in result["nodes"])
+
+
+def test_cached_proxy_pool_health_reuses_report_until_forced(monkeypatch):
+    clear_proxy_cache()
+    settings = _make_settings(enabled=True)
+    calls = {"count": 0}
+
+    def _fake_health(settings_arg, *, test_url=None):
+        calls["count"] += 1
+        return {"ok": True, "nodes": [{"name": "node-a"}], "probe_url": test_url}
+
+    monkeypatch.setattr("yamibo_mcp.yamibo.proxy_pool.check_proxy_pool_health", _fake_health)
+    first = get_cached_proxy_pool_health(settings, test_url="https://bbs.yamibo.com")
+    second = get_cached_proxy_pool_health(settings, test_url="https://bbs.yamibo.com")
+    forced = get_cached_proxy_pool_health(settings, test_url="https://bbs.yamibo.com", force_refresh=True)
+
+    assert calls["count"] == 2
+    assert first["cached"] is False
+    assert second["cached"] is True
+    assert forced["cached"] is False
+
+
+def test_proxy_health_distinguishes_forum_block_from_dead_node(monkeypatch):
+    settings = _make_settings(enabled=True)
+
+    def _fake_request(self, path, method="GET", body=None, timeout=None):
+        if path == "/proxies":
+            return {"proxies": {"yamibo": {"type": "Selector", "now": "node-a", "all": ["node-a"]}}}
+        return {}
+
+    def _fake_test_all(self, nodes):
+        if self._test_url == "https://www.gstatic.com/generate_204":
+            return [("node-a", 80), ("DIRECT", 30)]
+        return [("DIRECT", 100)]
+
+    monkeypatch.setattr("yamibo_mcp.yamibo.proxy_pool.MihomoControllerClient._request", _fake_request)
+    monkeypatch.setattr("yamibo_mcp.yamibo.proxy_pool.MihomoControllerClient.test_all_nodes_parallel", _fake_test_all)
+    result = check_proxy_pool_health(settings, test_url="https://bbs.yamibo.com")
+    by_name = {node["name"]: node for node in result["nodes"]}
+
+    assert by_name["node-a"]["status"] == "forum_blocked"
+    assert by_name["node-a"]["yamibo_accessible"] is False
+    assert by_name["DIRECT"]["status"] == "usable"
 
 
 def test_select_thread_proxy_uses_cache_on_second_call(monkeypatch):

@@ -18,6 +18,15 @@ def test_dashboard_returns_expected_keys(client):
     assert "workers" in data
 
 
+def test_proxy_pool_health_returns_non_secret_report(client):
+    resp = client.get("/api/proxy-pool/health")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ok"] is False
+    assert data["nodes"] == []
+    assert "secret" not in data
+
+
 def test_health_returns_runtime_info(client):
     resp = client.get("/api/health")
     assert resp.status_code == 200
@@ -397,6 +406,14 @@ def test_forums_sign_in_stats_returns_configured_accounts(client):
     data = resp.json()
     assert "fetched_at" in data
     assert isinstance(data["accounts"], list)
+
+
+def test_forums_sign_in_accounts_returns_roster_before_remote_fetch(client):
+    resp = client.get("/api/forums/sign-in-accounts")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["accounts"]) == 1
+    assert data["accounts"][0]["account_id"] == "default"
 
 
 def test_daemon_status(client):

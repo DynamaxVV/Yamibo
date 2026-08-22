@@ -9,10 +9,26 @@ from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.db.repositories.series import SeriesRepository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
 from yamibo_mcp.web_fastapi.converters import job_rows_to_dicts, thread_summary_dict, audit_to_dict
-from yamibo_mcp.web_fastapi.deps import get_conn
+from yamibo_mcp.web_fastapi.deps import get_conn, get_settings
 from yamibo_mcp.yamibo.anti_bot import get_remote_access_pause_state
+from yamibo_mcp.yamibo.proxy_pool import YAMIBO_HEALTH_CHECK_URL, get_cached_proxy_pool_health
 
 router = APIRouter(prefix="/api", tags=["dashboard"])
+
+
+@router.get("/proxy-pool/health")
+def get_proxy_pool_health(
+    refresh: bool = Query(default=False),
+    settings=Depends(get_settings),
+):
+    """Return a cached report; refresh=true forces a new node test."""
+    report = get_cached_proxy_pool_health(
+        settings,
+        test_url=YAMIBO_HEALTH_CHECK_URL,
+        force_refresh=refresh,
+    )
+    report.setdefault("nodes", [])
+    return report
 
 
 @router.get("/dashboard")

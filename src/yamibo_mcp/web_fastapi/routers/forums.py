@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from yamibo_mcp.db.connection import DatabaseConnection
 from yamibo_mcp.db.repositories.forums import ForumsRepository
@@ -24,21 +24,27 @@ from yamibo_mcp.yamibo.proxy_pool import select_random_proxy
 router = APIRouter(prefix="/api", tags=["forums"])
 
 
-def _daily_sign_in_stats(settings) -> dict[str, object]:
+def _empty_sign_in_account(account_id: str) -> dict[str, object]:
+    return {
+        "account_id": account_id,
+        "recent_checkin": None,
+        "month_days": None,
+        "consecutive_days": None,
+        "total_days": None,
+        "level": None,
+        "today_status": "unavailable",
+        "error": None,
+    }
+
+
+def _daily_sign_in_stats(settings, account_id: str | None = None) -> dict[str, object]:
     identities = get_account_identities(settings)
+    if account_id is not None:
+        identities = tuple(identity for identity in identities if identity.account_id == account_id)
     cached_accounts = read_sign_in_cache(settings)
     accounts: list[dict[str, object]] = []
     for identity in identities:
-        account: dict[str, object] = {
-            "account_id": identity.account_id,
-            "recent_checkin": None,
-            "month_days": None,
-            "consecutive_days": None,
-            "total_days": None,
-            "level": None,
-            "today_status": "unavailable",
-            "error": None,
-        }
+        account: dict[str, object] = _empty_sign_in_account(identity.account_id)
         cached = cached_accounts.get(identity.account_id)
         cached_data = cached.get("data") if isinstance(cached, dict) else None
         if isinstance(cached, dict) and isinstance(cached_data, dict) and is_fresh(cached):
@@ -97,8 +103,18 @@ def list_forums(conn: DatabaseConnection = Depends(get_conn), settings=Depends(g
 
 
 @router.get("/forums/sign-in-stats")
-def sign_in_stats(settings=Depends(get_settings)):
-    return _daily_sign_in_stats(settings)
+def sign_in_stats(account_id: str | None = Query(default=None), settings=Depends(get_settings)):
+    return _daily_sign_in_stats(settings, account_id=account_id)
+
+
+@router.get("/forums/sign-in-accounts")
+def sign_in_accounts(settings=Depends(get_settings)):
+    return {
+        "accounts": [
+            _empty_sign_in_account(identity.account_id)
+            for identity in get_account_identities(settings)
+        ]
+    }
 
 
 @router.post("/forums/sign-in")

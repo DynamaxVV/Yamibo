@@ -374,6 +374,31 @@ export interface DashboardData {
   }
 }
 
+export interface ProxyPoolNode {
+  name: string
+  display_name?: string
+  delay_ms: number | null
+  forum_delay_ms?: number | null
+  network_delay_ms?: number | null
+  error: string | null
+  status: 'usable' | 'filtered' | 'blacklisted' | 'forum_blocked' | 'unreachable' | string
+  blacklisted: boolean
+  filtered?: boolean
+  yamibo_accessible: boolean | null
+  is_direct?: boolean
+}
+
+export interface ProxyPoolHealth {
+  ok: boolean
+  error?: string
+  config?: { enabled: boolean; selector_group: string; test_timeout_ms: number }
+  selector_group?: { exists: boolean; current_node: string | null; node_count: number }
+  nodes: ProxyPoolNode[]
+  probe_url?: string
+  cached?: boolean
+  cache_age_seconds?: number | null
+}
+
 export interface DaemonStatus {
   operational_mode: 'active' | 'idle' | 'paused' | 'remote_paused'
   jobs_enabled: boolean
@@ -657,6 +682,7 @@ export interface BackfillStatus {
 // API methods
 export const api = {
   dashboard: (limit?: number) => fetchJson<DashboardData>(`/dashboard${limit ? `?limit=${limit}` : ''}`),
+  proxyPoolHealth: (forceRefresh = false) => fetchJson<ProxyPoolHealth>(`/proxy-pool/health${forceRefresh ? '?refresh=true' : ''}`),
   jobs: (params?: { status?: string; failure_kind?: string; page?: number; page_size?: number }) => {
     const qs = new URLSearchParams()
     if (params?.status) qs.set('status', params.status)
@@ -705,7 +731,8 @@ export const api = {
   deleteSeries: (seriesId: number) => postJson<{ ok: boolean }>('/series/delete', { series_id: seriesId }),
   similarSeries: (seriesId: number) => fetchJson<SeriesSummary[]>(`/series/${seriesId}/similar`),
   forums: () => fetchJson<Forum[]>('/forums'),
-  signInStats: () => fetchJson<SignInStats>('/forums/sign-in-stats'),
+  signInAccounts: () => fetchJson<{ accounts: SignInAccountStats[] }>('/forums/sign-in-accounts'),
+  signInStats: (accountId?: string) => fetchJson<SignInStats>(`/forums/sign-in-stats${accountId ? `?account_id=${encodeURIComponent(accountId)}` : ''}`),
   signIn: (accountId: string) => postJson<{ ok: boolean; account_id: string; today_status: string }>('/forums/sign-in', { account_id: accountId }),
   refreshForumSizeCache: () => postJson<{ ok: boolean; updated_at: string | null; forum_count: number }>('/forums/refresh-size-cache', {}),
   fonts: () => fetchJson<FontAsset[]>('/fonts'),
