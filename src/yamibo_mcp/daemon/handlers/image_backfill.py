@@ -307,11 +307,11 @@ def handle_image_backfill(
                     missing_image_urls, missing_shared_image_urls = _missing_urls_from_assets(synced_assets)
                 else:
                     missing_image_urls = _unique([
-                        *[url for url in previous_missing if url not in successful_urls],
+                        *[url for url in previous_missing if not _url_was_successfully_downloaded(url, successful_urls)],
                         *image_result.missing_urls,
                     ])
                     missing_shared_image_urls = _unique([
-                        *[url for url in previous_missing_shared if url not in successful_urls],
+                        *[url for url in previous_missing_shared if not _url_was_successfully_downloaded(url, successful_urls)],
                         *image_result.missing_shared_urls,
                     ])
                 archive_status = "partial" if (missing_image_urls or missing_shared_image_urls or image_result.stopped_reason) else "complete"
@@ -1002,6 +1002,12 @@ def _successful_selected_url_aliases(
         for submitted_url, current_url in selected_url_map.items()
         if current_url in successful_urls
     }
+
+
+def _url_was_successfully_downloaded(url: str, successful_urls: set[str]) -> bool:
+    """Match rotated Yamibo attachment signatures by stable attachment identity."""
+    identity = remote_image_identity(url)
+    return any(remote_image_identity(candidate) == identity for candidate in successful_urls)
 
 
 def _stable_attachment_id(url: str) -> str | None:

@@ -19,6 +19,7 @@ from yamibo_mcp.daemon.handlers.image_backfill import (
     _snapshot_for_missing_images,
     _stable_attachment_id,
     _successful_selected_url_aliases,
+    _url_was_successfully_downloaded,
     handle_image_backfill,
 )
 from yamibo_mcp.daemon.image_backfill_scheduler import maybe_enqueue_image_backfill_dry_run
@@ -143,6 +144,13 @@ def test_rotated_selected_success_clears_the_submitted_missing_url():
     old = "https://bbs.yamibo.com/forum.php?mod=attachment&aid=MQ%3D%3D"
     current = "https://bbs.yamibo.com/forum.php?mod=attachment&aid=MXxuZXc%3D"
     assert _successful_selected_url_aliases({current}, {old: current}) == {old, current}
+
+
+def test_successful_download_matches_rotated_missing_attachment_signature():
+    old = "https://bbs.yamibo.com/forum.php?mod=attachment&aid=MTYzODQzNHw1MWU2OTRkM3wxNzg3MjIyNzU3fDczNzQ5M3w1NzUwOTA%3D&nothumb=yes"
+    current = "https://bbs.yamibo.com/forum.php?mod=attachment&aid=MTYzODQzNHwzNTJjOTA2M3wxNzg3MzI1MzE5fDczNzQ5M3w1NzUwOTA%3D&nothumb=yes"
+    assert _url_was_successfully_downloaded(old, {current}) is True
+    assert _url_was_successfully_downloaded("https://external.invalid/old.jpg", {"https://external.invalid/new.jpg"}) is False
 
 
 def test_selected_asset_state_keeps_only_the_downloaded_slot_available():
