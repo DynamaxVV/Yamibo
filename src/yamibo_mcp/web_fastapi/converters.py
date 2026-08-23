@@ -246,6 +246,8 @@ def job_failure_kind(job, *, artifacts: dict[str, object] | None = None) -> str 
     if isinstance(artifacts, dict):
         failure_context = artifacts.get("failure_context") if isinstance(artifacts.get("failure_context"), dict) else {}
     remote_fetch = failure_context.get("remote_fetch") if isinstance(failure_context, dict) and isinstance(failure_context.get("remote_fetch"), dict) else {}
+    if not remote_fetch and isinstance(artifacts, dict) and isinstance(artifacts.get("remote_attempt"), dict):
+        remote_fetch = artifacts["remote_attempt"]
     page_type = str(remote_fetch.get("page_type") or "").strip().lower() if isinstance(remote_fetch, dict) else ""
     prompt_text = str(remote_fetch.get("prompt_text") or "").strip() if isinstance(remote_fetch, dict) else ""
     combined = f"{error_code} {error_message} {page_type} {prompt_text}".lower()
@@ -258,6 +260,8 @@ def job_failure_kind(job, *, artifacts: dict[str, object] | None = None) -> str 
         return "empty_content"
     if page_type == "prompt_forum_closed" or any(marker in combined for marker in ("查无此区", "此区已关闭", "版块已关闭")):
         return "forum_closed"
+    if "本帖已经删除" in combined or error_code == "thread_deleted":
+        return "thread_deleted"
     if page_type == "prompt_thread_missing_or_removed_or_review" or any(marker in combined for marker in ("指定的主题不存在", "正在被审核")):
         return "thread_missing"
     # "已被删除" + thread_deleted = 真删除（错误权限代码 255）

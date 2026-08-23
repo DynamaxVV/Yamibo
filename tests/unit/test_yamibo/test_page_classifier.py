@@ -92,6 +92,15 @@ class TestClassifyDiscuzPrompt:
         assert result.page_type == PageType.PROMPT_THREAD_MISSING_OR_REMOVED_OR_REVIEW
         assert "指定的主题不存在" in result.reason
 
+    def test_thread_deleted_permission_255_prompt(self):
+        html = (
+            "<html><head><title>提示信息 - 百合会 - Powered by Discuz!</title></head>"
+            '<body><div id="messagetext" class="alert_error">本帖已经删除，错误权限代码255</div></body></html>'
+        )
+        result = classify_html(html)
+        assert result.page_type == PageType.PROMPT_THREAD_MISSING_OR_REMOVED_OR_REVIEW
+        assert "本帖已经删除" in result.reason
+
     def test_thread_permission_required_prompt(self):
         html = (
             "<html><head><title>提示信息 - 百合会 - Powered by Discuz!</title></head>"

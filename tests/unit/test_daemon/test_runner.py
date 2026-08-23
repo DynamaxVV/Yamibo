@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from yamibo_mcp.daemon.runner import DaemonRunner
 from yamibo_mcp.db.migrations import migrate
 from yamibo_mcp.db.repositories.jobs import JobsRepository
-from yamibo_mcp.errors import RemoteFetchError, ThreadPermissionRequiredError
+from yamibo_mcp.errors import RemoteFetchError, ThreadPermissionRequiredError, UnexpectedPageError
 
 
 def test_worker_loop_logs_and_recovers_from_outer_exception(monkeypatch, caplog):
@@ -92,6 +92,56 @@ def test_run_once_moves_retryable_remote_fetch_error_to_retrying(tmp_path, monke
     assert calls["artifacts"]["remote_attempt"]["rotation_required"] is True
     assert calls["artifacts"]["remote_attempt"]["proxy_cache_cleared"] >= 0
     assert calls["artifacts"]["failure_context"]["exception_type"] == "RemoteFetchError"
+
+
+def test_run_once_does_not_retry_deleted_thread_prompt_even_if_page_type_is_unknown(tmp_path, monkeypatch):
+    db_path = tmp_path / "test.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    migrate(conn)
+    job = JobsRepository(conn).create("sync_thread", tid=42)
+    conn.close()
+
+    settings = SimpleNamespace(
+        db_path=db_path,
+        worker_id="daemon-test",
+        jobs_enabled=True,
+        worker_poll_seconds=0.0,
+        worker_lease_seconds=300,
+    )
+    runner = DaemonRunner(settings, worker_id="daemon-test-1")
+    calls = {}
+
+    def _handler(repo, current_job, worker_id, lease_seconds, handler_settings):
+        raise UnexpectedPageError(
+            "expected thread detail page but got prompt page for https://bbs.yamibo.com: 本帖已经删除，错误权限代码255",
+            details={
+                "url": "https://bbs.yamibo.com/forum.php?mod=viewthread&tid=42",
+                "page_type": "unknown",
+                "prompt_text": "本帖已经删除，错误权限代码255",
+            },
+        )
+
+    monkeypatch.setattr("yamibo_mcp.daemon.runner.get_handler", lambda _job: _handler)
+    monkeypatch.setattr("yamibo_mcp.daemon.runner.recover_expired_jobs", lambda repo: None)
+    monkeypatch.setattr("yamibo_mcp.daemon.runner.JobsRepository.acquire_next", lambda self, worker_id, lease_seconds: job)
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.runner.JobsRepository.fail",
+        lambda self, job_id, error_code, error_message, artifacts=None: calls.update(
+            {"job_id": job_id, "error_code": error_code, "error_message": error_message, "artifacts": artifacts}
+        ),
+    )
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.runner.JobsRepository.retry_later",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("deleted thread must not be retried")),
+    )
+
+    result = runner.run_once()
+
+    assert result.processed == 1
+    assert calls["job_id"] == job.job_id
+    assert calls["error_code"] == "THREAD_DELETED"
 
 
 def test_run_once_does_not_acquire_jobs_when_jobs_disabled(tmp_path, monkeypatch):

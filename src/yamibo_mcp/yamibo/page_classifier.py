@@ -50,7 +50,7 @@ def classify_html(html: str) -> PageClassification:
         prompt_text_lower = prompt_text.lower()
         if any(marker in prompt_text for marker in ("查无此区", "此区已关闭", "版块已关闭")):
             return PageClassification(PageType.PROMPT_FORUM_CLOSED, f"discuz prompt: {prompt_text}")
-        if any(marker in prompt_text for marker in ("指定的主题不存在", "已被删除", "正在被审核")):
+        if any(marker in prompt_text for marker in ("指定的主题不存在", "已被删除", "本帖已经删除", "正在被审核")):
             return PageClassification(
                 PageType.PROMPT_THREAD_MISSING_OR_REMOVED_OR_REVIEW,
                 f"discuz prompt: {prompt_text}",

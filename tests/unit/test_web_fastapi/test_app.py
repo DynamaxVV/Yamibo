@@ -89,6 +89,32 @@ def test_retrying_job_exposes_remote_attempt_and_retry_metadata(client, test_set
     assert "job.remote_attempt" in event_types
 
 
+def test_deleted_prompt_in_remote_attempt_is_classified_as_thread_deleted(client, test_settings):
+    from yamibo_mcp.db.connection import connect
+
+    conn = connect(test_settings.db_path)
+    try:
+        repo = JobsRepository(conn)
+        job = repo.create("sync_thread", tid=42)
+        repo.acquire(job.job_id, "worker", 300)
+        repo.fail(
+            job.job_id,
+            "REMOTE_SOFT_BLOCK",
+            "legacy soft block",
+            artifacts={
+                "remote_attempt": {
+                    "page_type": "unknown",
+                    "prompt_text": "本帖已经删除，错误权限代码255",
+                }
+            },
+        )
+    finally:
+        conn.close()
+
+    body = client.get(f"/api/jobs/{job.job_id}").json()
+    assert body["failure_kind"] == "thread_deleted"
+
+
 def test_jobs_list_filters_other_failure_kind(client, test_settings):
     from yamibo_mcp.db.connection import connect
 

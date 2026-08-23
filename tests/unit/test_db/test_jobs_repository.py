@@ -60,6 +60,46 @@ def test_remote_attempt_nested_merge_survives_terminal_and_retry_artifacts(db):
     assert attempt["account_id"] == "acct-c" and attempt["outcome"] == "success" and attempt["duration_ms"] == 12
 
 
+def test_remote_attempt_history_survives_stale_retry_artifacts(db):
+    repo = JobsRepository(db)
+    job = repo.create("sync_thread", tid=46)
+    repo.record_remote_attempt(job.job_id, {
+        "account_id": "acct-a",
+        "node": "node-a",
+        "nodes_tried": ["node-a"],
+        "account_ids_tried": ["acct-a"],
+    })
+    repo.record_remote_attempt(job.job_id, {
+        "account_id": "acct-b",
+        "node": "node-b",
+        "nodes_tried": ["node-a", "node-b"],
+        "account_ids_tried": ["acct-a", "acct-b"],
+    })
+    repo.acquire(job.job_id, "worker", 300)
+
+    # This resembles a runner writing the artifacts captured before the
+    # handler recorded its latest proxy/account attempt.
+    repo.retry_later(
+        job.job_id,
+        error_code="REMOTE_SOFT_BLOCK",
+        error_message="blocked",
+        artifacts={
+            "remote_attempt": {
+                "node": "node-a",
+                "account_id": "acct-a",
+                "nodes_tried": ["node-a"],
+                "account_ids_tried": ["acct-a"],
+                "outcome": "soft_block",
+            }
+        },
+        delay_seconds=1,
+    )
+
+    attempt = repo.get(job.job_id).artifacts["remote_attempt"]
+    assert attempt["nodes_tried"] == ["node-a", "node-b"]
+    assert attempt["account_ids_tried"] == ["acct-a", "acct-b"]
+
+
 def test_exclude_finishes_job_without_archiving_and_marks_remote_attempt(db):
     repo = JobsRepository(db)
     job = repo.create("sync_thread", tid=45)

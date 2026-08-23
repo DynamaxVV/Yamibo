@@ -18,6 +18,7 @@ LOG = logging.getLogger(__name__)
 T = TypeVar("T")
 
 _LOCK_RETRY_DELAYS_SECONDS = (0.1, 0.2, 0.5, 1.0, 2.0)
+_REMOTE_ATTEMPT_HISTORY_KEYS = ("nodes_tried", "account_ids_tried")
 
 _LIVE_JOB_STATUSES = (
     JobStatus.QUEUED.value,
@@ -37,7 +38,18 @@ def _merge_artifacts(current: dict[str, Any], update: dict[str, Any] | None) -> 
     for key, value in update.items():
         if key == "remote_attempt" and isinstance(value, dict):
             previous = merged.get(key) if isinstance(merged.get(key), dict) else {}
-            merged[key] = {**previous, **value}
+            remote_attempt = {**previous, **value}
+            for history_key in _REMOTE_ATTEMPT_HISTORY_KEYS:
+                history: list[Any] = []
+                for source in (previous.get(history_key), value.get(history_key)):
+                    if not isinstance(source, list):
+                        continue
+                    for item in source:
+                        if item and item not in history:
+                            history.append(item)
+                if history:
+                    remote_attempt[history_key] = history
+            merged[key] = remote_attempt
         else:
             merged[key] = value
     return merged

@@ -116,16 +116,19 @@ export function getJobFailureKind(job: JobFailureLike): JobFailureKind | null {
   const artifacts = getRecord(job.artifacts)
   const failureContext = artifacts ? getRecord(artifacts.failure_context) : null
   const remoteFetch = failureContext ? getRecord(failureContext.remote_fetch) : null
-  const pageType = getString(remoteFetch?.page_type).toLowerCase()
-  const promptText = getString(remoteFetch?.prompt_text)
+  const remoteAttempt = artifacts ? getRecord(artifacts.remote_attempt) : null
+  const remoteDetails = remoteFetch || remoteAttempt
+  const pageType = getString(remoteDetails?.page_type).toLowerCase()
+  const promptText = getString(remoteDetails?.prompt_text)
   const combined = `${errorCode} ${errorMessage} ${pageType} ${promptText}`.toLowerCase()
 
   if (errorCode === 'cancelled' || combined.includes('was cancelled by user')) return 'cancelled'
   if (includesAny(combined, ['local_archive_not_found', 'export_precheck_failed', 'not archived locally', 'thread archive is partial', 'thread archive is not complete'])) return 'local_missing'
   if (includesAny(combined, ['content is required when no images are present'])) return 'empty_content'
   if (pageType === 'prompt_forum_closed' || includesAny(combined, ['查无此区', '此区已关闭', '版块已关闭'])) return 'forum_closed'
+  if (includesAny(combined, ['本帖已经删除', 'thread_deleted'])) return 'thread_deleted'
   if (pageType === 'prompt_thread_missing_or_removed_or_review' || includesAny(combined, ['指定的主题不存在', '正在被审核'])) return 'thread_missing'
-  if (includesAny(combined, ['已被删除', 'thread_deleted'])) return 'thread_deleted'
+  if (includesAny(combined, ['已被删除'])) return 'thread_deleted'
   // 权限不足（非 255 的删除码 / 群组限制 / 用户组升级）
   if (includesAny(errorCode, ['remote_thread_permission_required', 'group_access_denied', 'user_group_upgrade_required'])) return 'thread_permission'
   if (includesAny(errorCode, ['loginrequirederror', 'remote_login_required']) || includesAny(combined, ['login required', 'login_required'])) return 'login_required'

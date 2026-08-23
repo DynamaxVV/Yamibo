@@ -74,6 +74,35 @@ def _record_account_feedback(repo: JobsRepository, job_id: str, outcome: str) ->
     record_account_outcome(_remote_attempt_account(repo, job_id), outcome)
 
 
+def _current_remote_attempt(
+    repo: JobsRepository,
+    job_id: str,
+    *,
+    fallback_artifacts: object = None,
+) -> dict:
+    """Read the latest attempt before terminal/retry persistence.
+
+    Handlers record proxy/account selection in their own committed transaction.
+    The acquired Job object is therefore only a snapshot and may be stale by
+    the time the exception path writes the final outcome.
+    """
+    try:
+        current = repo.get(job_id)
+    except Exception:  # noqa: BLE001 - diagnostics must not mask the job outcome
+        current = None
+    candidates = [
+        current.artifacts if current is not None else None,
+        fallback_artifacts,
+    ]
+    for artifacts in candidates:
+        if not isinstance(artifacts, dict):
+            continue
+        attempt = artifacts.get("remote_attempt")
+        if isinstance(attempt, dict):
+            return dict(attempt)
+    return {}
+
+
 def _retry_or_fail(
     repo: JobsRepository,
     job_id: str,
@@ -236,7 +265,7 @@ class DaemonRunner:
                 except ThreadPermissionRequiredError as exc:
                     LOG.warning("Job %s requires higher read permission: %s", job.job_id, exc)
                     _record_account_feedback(repo, job.job_id, "permission_required")
-                    attempt = {**(job.artifacts.get("remote_attempt", {}) if isinstance(job.artifacts, dict) else {}),
+                    attempt = {**_current_remote_attempt(repo, job.job_id, fallback_artifacts=job.artifacts),
                                "finished_at": now_iso(), "outcome": "permission_required",
                                "node": get_job_node(job.job_id)}
                     repo.fail(job.job_id, classify_error(exc), str(exc), artifacts={"remote_attempt": attempt})
@@ -276,7 +305,7 @@ class DaemonRunner:
                             bump_retry_hint(job.job_id)
                             record_node_outcome(node, "http_444")
                             attempt = {
-                                **(job.artifacts.get("remote_attempt", {}) if isinstance(job.artifacts, dict) else {}),
+                                **_current_remote_attempt(repo, job.job_id, fallback_artifacts=job.artifacts),
                                 **sanitize_remote_details(getattr(exc, "details", None)),
                                 "finished_at": now_iso(), "outcome": "http_444", "node": node,
                             }
@@ -312,7 +341,7 @@ class DaemonRunner:
                             )
                         retry_delay = _jittered_retry_delay(job.retry_count)
                         attempt = {
-                            **(job.artifacts.get("remote_attempt", {}) if isinstance(job.artifacts, dict) else {}),
+                            **_current_remote_attempt(repo, job.job_id, fallback_artifacts=job.artifacts),
                             **sanitize_remote_details(getattr(exc, "details", None)),
                             "finished_at": now_iso(), "outcome": "soft_block", "node": node,
                             "retry_delay_seconds": retry_delay,
@@ -335,7 +364,10 @@ class DaemonRunner:
                     # 未知页面类型（很可能是反爬页面 / CF 挑战变体）：清除代理缓存后重试
                     if isinstance(exc, UnexpectedPageError):
                         exc_details = getattr(exc, "details", None) or {}
-                        if exc_details.get("page_type") == "unknown":
+                        if (
+                            exc_details.get("page_type") == "unknown"
+                            and classify_error(exc) == "UNEXPECTED_REMOTE_PAGE"
+                        ):
                             cleared = clear_proxy_cache()
                             if cleared:
                                 LOG.info(
@@ -353,7 +385,7 @@ class DaemonRunner:
                             _record_account_feedback(repo, job.job_id, "soft_block")
                             retry_delay = _jittered_retry_delay(job.retry_count)
                             attempt = {
-                                **(job.artifacts.get("remote_attempt", {}) if isinstance(job.artifacts, dict) else {}),
+                                **_current_remote_attempt(repo, job.job_id, fallback_artifacts=job.artifacts),
                                 **sanitize_remote_details(exc_details),
                                 "finished_at": now_iso(), "outcome": "soft_block", "page_type": "unknown", "node": node,
                                 "retry_delay_seconds": retry_delay,
@@ -382,7 +414,7 @@ class DaemonRunner:
                         _record_account_feedback(repo, job.job_id, "rate_limited")
                         cleared = clear_proxy_cache()
                         attempt = {
-                            **(job.artifacts.get("remote_attempt", {}) if isinstance(job.artifacts, dict) else {}),
+                            **_current_remote_attempt(repo, job.job_id, fallback_artifacts=job.artifacts),
                             **sanitize_remote_details(getattr(exc, "details", None)),
                             "finished_at": now_iso(), "outcome": "rate_limited", "node": node,
                         }
@@ -429,7 +461,7 @@ class DaemonRunner:
                         else:
                             cleared = 0
                         artifacts["remote_attempt"] = {
-                            **(job.artifacts.get("remote_attempt", {}) if isinstance(job.artifacts, dict) else {}),
+                            **_current_remote_attempt(repo, job.job_id, fallback_artifacts=job.artifacts),
                             **details,
                             "finished_at": now_iso(), "outcome": outcome, "node": node,
                             "retry_delay_seconds": retry_delay,

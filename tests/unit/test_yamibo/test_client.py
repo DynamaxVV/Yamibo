@@ -265,6 +265,22 @@ def test_validate_thread_page_reports_removed_thread_prompt():
     assert excinfo.value.details["page_type"] == "prompt_thread_missing_or_removed_or_review"
 
 
+def test_validate_thread_page_reports_deleted_permission_255_prompt():
+    client = YamiboClient()
+    result = FetchResult(
+        url="https://bbs.yamibo.com/forum.php?mod=viewthread&tid=129",
+        final_url="https://bbs.yamibo.com/forum.php?mod=viewthread&tid=129",
+        status_code=200,
+        html=('<html><body>'
+              '<div id="messagetext" class="alert_error">本帖已经删除，错误权限代码255</div>'
+              "</body></html>"),
+    )
+    with pytest.raises(UnexpectedPageError) as excinfo:
+        client._validate_thread_page(result)
+    assert excinfo.value.details["page_type"] == "prompt_thread_missing_or_removed_or_review"
+    assert excinfo.value.details["prompt_text"] == "本帖已经删除，错误权限代码255"
+
+
 def test_validate_thread_page_reports_permission_required_prompt():
     client = YamiboClient()
     result = FetchResult(
