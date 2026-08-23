@@ -26,7 +26,7 @@ from yamibo_mcp.daemon.image_backfill_scheduler import maybe_enqueue_image_backf
 from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.db.repositories.job_events import JobEventsRepository
 from yamibo_mcp.db.repositories.system_state import SystemStateRepository
-from yamibo_mcp.errors import ThreadPermissionRequiredError
+from yamibo_mcp.errors import RemoteFetchError, ThreadPermissionRequiredError
 from yamibo_mcp.storage.images import ImageDownloadResult, download_images_to_staging
 from yamibo_mcp.domain.models import AssetSnapshot, FloorSnapshot, ThreadSnapshot, TitleSnapshot
 from yamibo_mcp.storage.paths import StoragePaths
@@ -761,7 +761,7 @@ def test_image_backfill_apply_downloads_and_persists_missing_images(db, tmp_path
     assert completed.status == "succeeded"
     assert completed.artifacts["dry_run"] is False
     assert completed.artifacts["backfilled_image_count"] == 2
-    assert borrow_kwargs == [{"min_permission": None, "proxy_url": "http://127.0.0.1:9999"}]
+    assert borrow_kwargs == [{"min_permission": None, "proxy_url": "http://127.0.0.1:9999", "force_direct": False}]
     assert download_kwargs[0]["proxy_url"] == "http://127.0.0.1:9999"
     assert completed.artifacts["proxy_pool.enabled"] is True
     assert completed.artifacts["proxy_pool.node"] == "n1"
@@ -779,6 +779,108 @@ def test_image_backfill_apply_downloads_and_persists_missing_images(db, tmp_path
         static_url: "shared/bbs.yamibo.com/static/image/smiley/gexing/008.gif",
     }
     assert {row["status"] for row in assets} == {"downloaded"}
+
+
+def test_interactive_image_backfill_prefers_direct_then_falls_back_to_proxy(db, tmp_path, monkeypatch):
+    tid = 2004
+    db.execute(
+        """
+        INSERT INTO threads (tid, raw_title, display_title, sync_time, image_count, archive_status, forum_id, context_path)
+        VALUES (?, 'raw', 'display', '2026-07-01T00:00:00+00:00', 0, 'complete', 5, ?)
+        """,
+        (tid, f"threads/{tid}/context.md"),
+    )
+    db.execute(
+        """
+        INSERT INTO floors (pid, tid, floor_no, content, has_images)
+        VALUES (?, ?, 1, 'first', 0)
+        """,
+        (tid * 10 + 1, tid),
+    )
+    db.commit()
+    repo = JobsRepository(db)
+    job = repo.create(
+        "image_backfill",
+        tid=tid,
+        payload={"tid": tid, "dry_run": True, "max_pages": 1, "priority": "interactive"},
+    )
+
+    class _Fetch:
+        html = "<html></html>"
+        final_url = f"https://bbs.yamibo.com/forum.php?mod=viewthread&tid={tid}"
+
+    class _Client:
+        headers = {}
+        cookie_jar = None
+        cookie_file = None
+        use_system_proxy = False
+
+        def __init__(self, proxy_url):
+            self.proxy_url = proxy_url
+
+        def fetch_thread_page(self, **kwargs):
+            if self.proxy_url is None:
+                raise RemoteFetchError(
+                    "soft block detected",
+                    details={"status_code": 403, "retryable": True},
+                )
+            return _Fetch()
+
+    borrow_kwargs = []
+
+    @contextmanager
+    def _borrow(settings, **kwargs):
+        borrow_kwargs.append(kwargs)
+        account_id = f"account-{len(borrow_kwargs)}"
+        yield SimpleNamespace(account_id=account_id, permission_level=10), _Client(kwargs.get("proxy_url"))
+
+    selected_proxy_calls = []
+    proxy_binding = SimpleNamespace(
+        proxy_url="http://127.0.0.1:9999",
+        group="archive",
+        node="node-proxy",
+        best_effort=False,
+        diagnostics={"retry_hint": 1, "candidate_tier": "A"},
+    )
+
+    def _select_proxy(*args, **kwargs):
+        selected_proxy_calls.append(kwargs)
+        return proxy_binding
+
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.image_backfill.select_thread_proxy",
+        _select_proxy,
+    )
+    monkeypatch.setattr("yamibo_mcp.daemon.handlers.image_backfill.borrow_yamibo_client", _borrow)
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.image_backfill.parse_thread_snapshot",
+        lambda *args, **kwargs: _snapshot(tid, []),
+    )
+
+    settings = SimpleNamespace(
+        data_dir=tmp_path,
+        export_dir=tmp_path / "exports",
+        novel_txt_export_dir=tmp_path / "novel_exports",
+        image_backfill_max_pages=1,
+        image_backfill_fixed_after=None,
+        use_system_proxy=True,
+        proxy_pool=SimpleNamespace(enabled=True),
+    )
+
+    handle_image_backfill(repo, repo.get(job.job_id), "worker", 60, settings)
+
+    completed = repo.get(job.job_id)
+    assert completed.status == "succeeded"
+    assert [kwargs["force_direct"] for kwargs in borrow_kwargs] == [True, False]
+    assert borrow_kwargs[0]["proxy_url"] is None
+    assert borrow_kwargs[1]["proxy_url"] == "http://127.0.0.1:9999"
+    assert borrow_kwargs[1]["exclude_account_ids"] == {"account-1"}
+    assert selected_proxy_calls[0]["exclude_nodes"] == {"DIRECT"}
+    assert completed.artifacts["remote_transport"] == "proxy"
+    assert completed.artifacts["direct_fallback_error"] == "soft block detected"
+    attempt = completed.artifacts["remote_attempt"]
+    assert attempt["nodes_tried"] == ["DIRECT", "node-proxy"]
+    assert attempt["account_ids_tried"] == ["account-1", "account-2"]
 
 
 def test_image_backfill_reborrows_with_higher_permission_after_permission_gate(db, tmp_path, monkeypatch):

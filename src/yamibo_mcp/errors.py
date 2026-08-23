@@ -59,6 +59,43 @@ class ThreadPermissionRequiredError(UnexpectedPageError):
         self.required_permission = required_permission
 
 
+_DIRECT_TRANSPORT_FALLBACK_CODES = frozenset(
+    {
+        "REMOTE_SOFT_BLOCK",
+        "REMOTE_TIMEOUT",
+        "REMOTE_CONNECTION_ERROR",
+        "REMOTE_HTTP_403",
+        "REMOTE_HTTP_5XX",
+        "REMOTE_HTTP_XXX",
+        "UNEXPECTED_REMOTE_PAGE",
+    }
+)
+
+
+def is_direct_transport_fallback_error(exc: BaseException) -> bool:
+    """Whether a failed direct request should be retried through a proxy.
+
+    Authentication, permission, maintenance, and deleted-thread responses are
+    semantic results rather than transport failures; changing the route cannot
+    fix those and may repeat a side effect.  Unknown pages remain eligible
+    because they are commonly anti-bot responses on a direct route.
+    """
+    if not isinstance(exc, RemoteFetchError):
+        return False
+    code = classify_error(exc)
+    if code in _DIRECT_TRANSPORT_FALLBACK_CODES:
+        return True
+    if code != "REMOTE_FETCH_FAILED":
+        return False
+    details = getattr(exc, "details", None) or {}
+    return bool(
+        details.get("retryable")
+        and (details.get("status_code") is not None
+             or details.get("last_error_type")
+             or details.get("last_error_message"))
+    )
+
+
 # ── 错误分类 ──────────────────────────────────────────────
 # daemon 和 agent adapter 共用，将异常映射为结构化的 error_code，
 # 避免直接用 exc.__class__.__name__ 导致不同根因被归入同一个桶。

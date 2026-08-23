@@ -30,12 +30,17 @@ from yamibo_mcp.storage.paths import StoragePaths
 from yamibo_mcp.storage.thread_archive import materialize_thread
 from yamibo_mcp.daemon.handlers.update_thread import _load_local_thread_snapshot
 from yamibo_mcp.daemon.handlers.sync_thread import _check_cancelled, _check_paused
-from yamibo_mcp.errors import ThreadPermissionRequiredError, RemoteMaintenanceError, UnexpectedPageError, _extract_permission_code
+from yamibo_mcp.errors import (
+    ThreadPermissionRequiredError,
+    UnexpectedPageError,
+    _extract_permission_code,
+    is_direct_transport_fallback_error,
+)
 from yamibo_mcp.structured_logging import emit
 from yamibo_mcp.yamibo.account_pool import borrow_yamibo_client, next_permission_threshold
 from yamibo_mcp.yamibo.anti_bot import ensure_no_maintenance_pause
 from yamibo_mcp.yamibo.parsers.thread_detail import parse_thread_snapshot
-from yamibo_mcp.yamibo.proxy_pool import activate_proxy_binding, select_thread_proxy
+from yamibo_mcp.yamibo.proxy_pool import DIRECT_NODE_NAME, activate_proxy_binding, select_thread_proxy
 from yamibo_mcp.daemon.remote_attempt import build_attempt
 from yamibo_mcp.yamibo.urls import remote_image_identity, stable_attachment_id
 
@@ -121,16 +126,64 @@ def handle_image_backfill(
             )
             return
     archive_generation = _archive_generation(thread, fixed_after=fixed_after)
-    proxy_binding = select_thread_proxy(settings, tid=tid, job_id=job.job_id)
+    direct_first = _prefers_direct_transport(job)
+    direct = direct_first
+    proxy_binding = None
+    proxy_pool_artifacts: dict[str, object] = {}
+    if not direct:
+        proxy_binding, proxy_pool_artifacts = _select_backfill_proxy(
+            settings,
+            repo,
+            tid=tid,
+            job_id=job.job_id,
+        )
     record_attempt = getattr(repo, "record_remote_attempt", None)
     if callable(record_attempt):
         record_attempt(job.job_id, build_attempt(
-            source="image_thread_detail", node=getattr(proxy_binding, "node", None),
+            source="image_thread_detail",
+            node=DIRECT_NODE_NAME if direct else getattr(proxy_binding, "node", None),
             retry_hint=(proxy_binding.diagnostics or {}).get("retry_hint") if proxy_binding else None,
             candidate_tier=(proxy_binding.diagnostics or {}).get("candidate_tier") if proxy_binding else None,
+            transport="direct" if direct else "proxy",
         ))
     proxy_url = proxy_binding.proxy_url if proxy_binding else None
-    proxy_pool_artifacts = _proxy_pool_artifacts(settings, proxy_binding)
+    direct_fallback_error: str | None = None
+    used_account_ids = _attempted_account_ids(repo, job.job_id)
+
+    def _switch_to_proxy_after_direct_failure(exc: BaseException) -> bool:
+        nonlocal direct, direct_fallback_error, proxy_binding, proxy_pool_artifacts, proxy_url
+        if not direct or not is_direct_transport_fallback_error(exc):
+            return False
+        next_binding, next_artifacts = _select_backfill_proxy(
+            settings,
+            repo,
+            tid=tid,
+            job_id=job.job_id,
+            exclude_nodes={DIRECT_NODE_NAME},
+        )
+        if next_binding is None:
+            return False
+        direct = False
+        direct_fallback_error = str(exc)
+        proxy_binding = next_binding
+        proxy_pool_artifacts = next_artifacts
+        proxy_url = proxy_binding.proxy_url
+        if callable(record_attempt):
+            record_attempt(job.job_id, build_attempt(
+                source="image_thread_detail",
+                node=proxy_binding.node,
+                retry_hint=(proxy_binding.diagnostics or {}).get("retry_hint"),
+                candidate_tier=(proxy_binding.diagnostics or {}).get("candidate_tier"),
+                transport="proxy",
+                direct_fallback_error=direct_fallback_error,
+            ))
+        LOG.info(
+            "image_backfill job=%s tid=%s retrying through proxy after direct transport failure node=%s",
+            job.job_id,
+            tid,
+            proxy_binding.node,
+        )
+        return True
 
     repo.update_stage(job.job_id, "fetch_remote", progress_current=2, progress_total=4)
     fetch_lease_seconds = max(
@@ -149,11 +202,21 @@ def handle_image_backfill(
 
             with ExitStack() as stack:
                 stack.enter_context(activate_proxy_binding(settings, proxy_binding))
+                borrow_kwargs: dict[str, Any] = {
+                    "min_permission": min_permission,
+                    "proxy_url": proxy_url,
+                    "force_direct": direct,
+                }
+                if used_account_ids:
+                    borrow_kwargs["exclude_account_ids"] = set(used_account_ids)
                 identity, client = stack.enter_context(
-                    borrow_yamibo_client(settings, min_permission=min_permission, proxy_url=proxy_url)
+                    borrow_yamibo_client(settings, **borrow_kwargs)
                 )
+                selected_account_id = getattr(identity, "account_id", None)
+                if selected_account_id:
+                    used_account_ids.add(str(selected_account_id))
                 if callable(record_attempt):
-                    record_attempt(job.job_id, {"account_id": getattr(identity, "account_id", None)})
+                    record_attempt(job.job_id, {"account_id": selected_account_id})
                 borrowed_client = True
                 first_page = client.fetch_thread_page(tid=tid, page=1, base_url=base_url)
                 if max_pages > 1:
@@ -210,6 +273,8 @@ def handle_image_backfill(
                     "tid": tid,
                     "base_url": base_url,
                     "remote_access_pattern": "direct_tid_thread_pages",
+                    "remote_transport": "direct" if direct else "proxy",
+                    "direct_fallback_error": direct_fallback_error,
                     "account_id": identity.account_id,
                     "account_permission_level": identity.permission_level,
                     "account_min_permission": min_permission,
@@ -446,6 +511,8 @@ def handle_image_backfill(
                 )
                 min_permission = next_min_permission
                 continue
+            if _switch_to_proxy_after_direct_failure(exc):
+                continue
             raise
         except ValueError:
             if min_permission and not borrowed_client:
@@ -462,6 +529,10 @@ def handle_image_backfill(
                 raise ThreadPermissionRequiredError(
                     f"no account with permission >= {min_permission} available in pool"
                 ) from None
+            raise
+        except Exception as exc:  # noqa: BLE001 - direct transport may need a proxy fallback
+            if _switch_to_proxy_after_direct_failure(exc):
+                continue
             raise
 
 
@@ -680,6 +751,54 @@ def _archive_missing_shared_urls(paths: StoragePaths, tid: int) -> list[str]:
     metadata = _load_archive_metadata(paths, tid)
     values = metadata.get("missing_shared_image_urls") or []
     return [str(value) for value in values if str(value).strip()]
+
+
+def _prefers_direct_transport(job: Job) -> bool:
+    """Interactive image repair starts direct; automatic idle scans keep pool routing."""
+    payload = job.payload if isinstance(job.payload, dict) else {}
+    if bool(payload.get("internal_auto")):
+        return False
+    preference = str(payload.get("transport_preference") or "").strip().lower()
+    if preference == "direct":
+        return True
+    if str(payload.get("priority") or "").strip().lower() == "interactive":
+        return True
+    # Older manually-created selected jobs predate transport_preference.
+    return str(payload.get("scope") or "").strip().lower() == "selected"
+
+
+def _remote_attempt_history(repo: JobsRepository, job_id: str) -> dict[str, Any]:
+    try:
+        current = repo.get(job_id)
+        attempt = current.artifacts.get("remote_attempt") if isinstance(current.artifacts, dict) else None
+        return attempt if isinstance(attempt, dict) else {}
+    except Exception:  # noqa: BLE001 - selection diagnostics must not mask the job
+        LOG.debug("Unable to read remote attempt history for image_backfill job %s", job_id, exc_info=True)
+        return {}
+
+
+def _attempted_account_ids(repo: JobsRepository, job_id: str) -> set[str]:
+    values = _remote_attempt_history(repo, job_id).get("account_ids_tried")
+    return {str(value) for value in values if value} if isinstance(values, list) else set()
+
+
+def _select_backfill_proxy(
+    settings: Settings,
+    repo: JobsRepository,
+    *,
+    tid: int,
+    job_id: str,
+    exclude_nodes: set[str] | None = None,
+) -> tuple[object | None, dict[str, object]]:
+    history = _remote_attempt_history(repo, job_id)
+    tried = history.get("nodes_tried")
+    excluded = {str(value) for value in tried if value} if isinstance(tried, list) else set()
+    excluded.update(str(value) for value in (exclude_nodes or set()) if value)
+    if excluded:
+        binding = select_thread_proxy(settings, tid=tid, job_id=job_id, exclude_nodes=excluded)
+    else:
+        binding = select_thread_proxy(settings, tid=tid, job_id=job_id)
+    return binding, _proxy_pool_artifacts(settings, binding)
 
 
 def _proxy_pool_artifacts(settings: Settings, proxy_binding) -> dict[str, object]:

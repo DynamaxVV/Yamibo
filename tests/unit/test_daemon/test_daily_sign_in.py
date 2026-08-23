@@ -17,6 +17,7 @@ def _settings(tmp_path: Path, *, account_pool=()):
         account_pool=account_pool,
         cookie_file=tmp_path / "default.cookie",
         data_dir=tmp_path,
+        use_system_proxy=False,
         login_username=None,
         login_password=None,
         request_interval_seconds=0.0,
@@ -127,6 +128,7 @@ def test_daily_sign_in_handler_checks_status_without_clicking(monkeypatch, db, t
         payload={"account_id": "two", "local_day": "2026-08-16", "check_only": True},
     )
     calls = []
+    borrow_kwargs = []
 
     class _Client:
         def fetch_daily_checkin_page(self):
@@ -145,17 +147,18 @@ def test_daily_sign_in_handler_checks_status_without_clicking(monkeypatch, db, t
             return None
 
     monkeypatch.setattr(
-        "yamibo_mcp.daemon.handlers.daily_sign_in.borrow_yamibo_client",
-        lambda settings, **kwargs: _Context(),
+        "yamibo_mcp.yamibo.sign_in.borrow_yamibo_client",
+        lambda settings, **kwargs: borrow_kwargs.append(kwargs) or _Context(),
     )
     monkeypatch.setattr(
-        "yamibo_mcp.daemon.handlers.daily_sign_in.select_random_proxy",
+        "yamibo_mcp.yamibo.sign_in.select_random_proxy",
         lambda settings: None,
     )
 
     handle_daily_sign_in(repo, job, "worker", 60, _settings(tmp_path))
 
     assert calls == ["check"]
+    assert borrow_kwargs == [{"account_id": "two", "proxy_url": None, "force_direct": True}]
     assert repo.get(job.job_id).artifacts["check_only"] is True
 
 
@@ -198,14 +201,14 @@ def test_daily_sign_in_handler_borrows_the_job_account(monkeypatch, db, tmp_path
             calls.append("release")
 
     monkeypatch.setattr(
-        "yamibo_mcp.daemon.handlers.daily_sign_in.borrow_yamibo_client",
+        "yamibo_mcp.yamibo.sign_in.borrow_yamibo_client",
         lambda settings, **kwargs: calls.append(kwargs) or _Context(),
     )
     monkeypatch.setattr(
-        "yamibo_mcp.daemon.handlers.daily_sign_in.select_random_proxy",
+        "yamibo_mcp.yamibo.sign_in.select_random_proxy",
         lambda settings: None,
     )
     handle_daily_sign_in(repo, job, "worker", 60, _settings(tmp_path))
 
-    assert calls == [{"account_id": "two", "proxy_url": None}, "borrow", "sign", "release"]
+    assert calls == [{"account_id": "two", "proxy_url": None, "force_direct": True}, "borrow", "sign", "release"]
     assert repo.get(job.job_id).status == JobStatus.SUCCEEDED.value

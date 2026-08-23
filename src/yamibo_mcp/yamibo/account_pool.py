@@ -289,7 +289,10 @@ def borrow_yamibo_client(
     prefer_high_permission: bool = False,
     exclude_account_ids: Collection[str] | None = None,
     proxy_url: str | None = None,
+    force_direct: bool = False,
 ) -> Iterator[tuple[AccountIdentity, YamiboClient]]:
+    use_system_proxy = False if force_direct else settings.use_system_proxy
+    effective_proxy_url = None if force_direct else proxy_url
     if cookie_file is not None:
         identity = AccountIdentity(
             account_id="explicit_cookie_file",
@@ -309,8 +312,8 @@ def borrow_yamibo_client(
             timeout=getattr(settings, "request_timeout_seconds", 15.0),
             cookie_file=identity.cookie_file,
             persist_cookies=True,
-            use_system_proxy=settings.use_system_proxy,
-            proxy_url=proxy_url,
+            use_system_proxy=use_system_proxy,
+            proxy_url=effective_proxy_url,
             login_username=identity.username,
             login_password=identity.password,
             request_interval=identity.request_interval_seconds,
@@ -339,8 +342,8 @@ def borrow_yamibo_client(
             timeout=getattr(settings, "request_timeout_seconds", 15.0),
             cookie_file=identity.cookie_file,
             persist_cookies=True,
-            use_system_proxy=settings.use_system_proxy,
-            proxy_url=proxy_url,
+            use_system_proxy=use_system_proxy,
+            proxy_url=effective_proxy_url,
             login_username=identity.username,
             login_password=identity.password,
             request_interval=identity.request_interval_seconds,
