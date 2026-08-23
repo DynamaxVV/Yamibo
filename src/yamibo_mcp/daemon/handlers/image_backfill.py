@@ -36,6 +36,7 @@ from yamibo_mcp.yamibo.account_pool import borrow_yamibo_client, next_permission
 from yamibo_mcp.yamibo.anti_bot import ensure_no_maintenance_pause
 from yamibo_mcp.yamibo.parsers.thread_detail import parse_thread_snapshot
 from yamibo_mcp.yamibo.proxy_pool import activate_proxy_binding, select_thread_proxy
+from yamibo_mcp.daemon.remote_attempt import build_attempt
 from yamibo_mcp.yamibo.urls import remote_image_identity, stable_attachment_id
 
 
@@ -121,6 +122,13 @@ def handle_image_backfill(
             return
     archive_generation = _archive_generation(thread, fixed_after=fixed_after)
     proxy_binding = select_thread_proxy(settings, tid=tid, job_id=job.job_id)
+    record_attempt = getattr(repo, "record_remote_attempt", None)
+    if callable(record_attempt):
+        record_attempt(job.job_id, build_attempt(
+            source="image_thread_detail", node=getattr(proxy_binding, "node", None),
+            retry_hint=(proxy_binding.diagnostics or {}).get("retry_hint") if proxy_binding else None,
+            candidate_tier=(proxy_binding.diagnostics or {}).get("candidate_tier") if proxy_binding else None,
+        ))
     proxy_url = proxy_binding.proxy_url if proxy_binding else None
     proxy_pool_artifacts = _proxy_pool_artifacts(settings, proxy_binding)
 
@@ -144,6 +152,8 @@ def handle_image_backfill(
                 identity, client = stack.enter_context(
                     borrow_yamibo_client(settings, min_permission=min_permission, proxy_url=proxy_url)
                 )
+                if callable(record_attempt):
+                    record_attempt(job.job_id, {"account_id": getattr(identity, "account_id", None)})
                 borrowed_client = True
                 first_page = client.fetch_thread_page(tid=tid, page=1, base_url=base_url)
                 if max_pages > 1:

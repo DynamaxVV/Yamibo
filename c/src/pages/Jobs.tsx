@@ -8,7 +8,7 @@ import { formatDateTime } from '../utils/time'
 import { formatJobFailureKind, getJobFailureKind, type JobFailureKind } from '../utils/jobMessages'
 import { useTableLayout } from '../components/TableLayoutEditor'
 
-const STATUSES = [null, 'queued', 'running', 'paused', 'succeeded', 'partial', 'failed', 'interrupted'] as const
+const STATUSES = [null, 'queued', 'running', 'retrying', 'paused', 'succeeded', 'partial', 'failed', 'interrupted'] as const
 const FAILURE_KINDS: Array<JobFailureKind | null> = [null, 'forum_closed', 'thread_deleted', 'thread_permission', 'thread_missing', 'login_required', 'maintenance', 'remote_http_404', 'remote_http_error', 'remote_timeout', 'remote_connection', 'remote_blocked', 'remote_fetch', 'unexpected_page', 'empty_content', 'local_missing', 'validation', 'cancelled', 'other']
 const PAGE_SIZE_OPTIONS = [25, 50, 100] as const
 const STORAGE_KEY = 'yamibo_jobs_status'
@@ -612,9 +612,11 @@ export function Jobs() {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'center', justifyContent: 'center' }}>
                   <Badge status={j.status} />
                   {(() => {
-                    const kind = j.failure_kind || getJobFailureKind(j)
+                    const kind = j.status === 'retrying' || j.status === 'failed' || j.status === 'partial' || j.status === 'interrupted'
+                      ? (j.failure_kind || getJobFailureKind(j)) : null
                     return kind ? <span className="badge badge-muted">{formatJobFailureKind(kind, lang)}</span> : null
                   })()}
+                  {j.status === 'retrying' && <span className="badge badge-muted">{lang === 'en' ? `backoff ${j.retry_count}/${j.max_retries}` : `退避中 ${j.retry_count}/${j.max_retries}`}</span>}
                 </div>
               </td>}
               {column('stage')?.visible && <td className="nowrap hide-mobile">{j.stage || '-'}</td>}

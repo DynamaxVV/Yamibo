@@ -320,6 +320,10 @@ def job_to_dict(
     allow_thread_lookup = thread_titles_by_tid is None
     description = describe_job(conn, job, thread_title=thread_title, allow_thread_lookup=allow_thread_lookup) if conn else job.job_type
     description_en = describe_job_en(conn, job, thread_title=thread_title, allow_thread_lookup=allow_thread_lookup) if conn else job.job_type
+    terminal_error_statuses = {JobStatus.RETRYING.value, JobStatus.FAILED.value, JobStatus.PARTIAL.value, JobStatus.INTERRUPTED.value}
+    active_error = None
+    if job.status in terminal_error_statuses and (job.error_code or job.error_message):
+        active_error = {"code": job.error_code, "message": job.error_message}
     data = {
         "job_id": job.job_id, "job_type": job.job_type, "status": job.status,
         "stage": job.stage, "tid": job.tid,
@@ -328,7 +332,12 @@ def job_to_dict(
         "worker_id": job.worker_id, "error_code": job.error_code,
         "error_message": job.error_message, "paused_at": getattr(job, "paused_at", None), "created_at": job.created_at,
         "updated_at": job.updated_at, "finished_at": job.finished_at,
-        "failure_kind": job_failure_kind(job, artifacts=artifacts),
+        "failure_kind": job_failure_kind(job, artifacts=artifacts) if job.status in terminal_error_statuses else None,
+        "active_error": active_error,
+        "retry_count": job.retry_count,
+        "max_retries": job.max_retries,
+        "lease_until": job.lease_until,
+        "remote_attempt": artifacts.get("remote_attempt") if isinstance(artifacts.get("remote_attempt"), dict) else None,
     }
     data["url"] = thread_url_from_tid(int(_tid)) if _tid is not None else None
     if include_details:

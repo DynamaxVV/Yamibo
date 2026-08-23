@@ -16,6 +16,14 @@ LOG = logging.getLogger(__name__)
 # Per-cookie-file last refresh timestamp (UTC epoch seconds).
 _REFRESH_REGISTRY: dict[str, float] = {}
 _REFRESH_LOCK = Lock()
+_ACCOUNT_PENALTIES: dict[str, tuple[float, float]] = {}  # account_id -> (score, cooldown_until)
+_ACCOUNT_PENALTY_LOCK = Lock()
+_ACCOUNT_COOLDOWN_SECONDS = {
+    "soft_block": 45.0,
+    "timeout": 20.0,
+    "connection_error": 20.0,
+    "rate_limited": 10.0,
+}
 
 
 @dataclass(frozen=True)
@@ -31,6 +39,29 @@ class AccountIdentity:
     request_interval_jitter_seconds: float
     max_concurrent_leases: int
     login_mode: str
+
+
+def record_account_outcome(account_id: str | None, outcome: str) -> None:
+    """Apply short-lived feedback to account selection without persisting health state."""
+    if not account_id:
+        return
+    if outcome in {"success", "permission_required", "login_required"}:
+        with _ACCOUNT_PENALTY_LOCK:
+            _ACCOUNT_PENALTIES.pop(account_id, None)
+        return
+    cooldown = _ACCOUNT_COOLDOWN_SECONDS.get(outcome)
+    if cooldown is None:
+        return
+    weight = {"soft_block": 3.0, "timeout": 1.0, "connection_error": 1.0, "rate_limited": 0.5}.get(outcome, 1.0)
+    with _ACCOUNT_PENALTY_LOCK:
+        score, _ = _ACCOUNT_PENALTIES.get(account_id, (0.0, 0.0))
+        _ACCOUNT_PENALTIES[account_id] = (score + weight, time.monotonic() + cooldown)
+
+
+def clear_account_penalties() -> None:
+    """Clear process-local account feedback; intended for lifecycle/tests."""
+    with _ACCOUNT_PENALTY_LOCK:
+        _ACCOUNT_PENALTIES.clear()
 
 
 def next_permission_threshold(required_permission: int | None, current_min: int | None = None) -> int:
@@ -117,6 +148,22 @@ class AccountPool:
                 if min_permission is None:
                     raise ValueError("no enabled account identities configured")
                 raise ValueError(f"no enabled account identities configured for permission >= {min_permission}")
+
+            # A recent remote block should move the next normal borrow to a
+            # different account when possible. Explicit account selection is
+            # an operator-level request and remains exact.
+            if account_id is None:
+                now = time.monotonic()
+                with _ACCOUNT_PENALTY_LOCK:
+                    expired = [key for key, (_, until) in _ACCOUNT_PENALTIES.items() if until <= now]
+                    for key in expired:
+                        _ACCOUNT_PENALTIES.pop(key, None)
+                    active_penalties = {
+                        key: value for key, value in _ACCOUNT_PENALTIES.items() if value[1] > now
+                    }
+                preferred = [identity for identity in available if identity.account_id not in active_penalties]
+                if preferred:
+                    available = preferred
 
             def _score(identity: AccountIdentity) -> tuple[float, int, str]:
                 load = self._inflight[identity.account_id] / max(identity.weight, 1)

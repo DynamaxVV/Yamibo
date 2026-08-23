@@ -13,18 +13,23 @@ from yamibo_mcp.yamibo.account_pool import (
     _refresh_cookie_if_stale,
     AccountIdentity,
     borrow_yamibo_client,
+    clear_account_penalties,
     get_account_pool,
     next_permission_threshold,
+    record_account_outcome,
 )
 
 
 @pytest.fixture(autouse=True)
 def _no_network(monkeypatch):
     """Prevent _bootstrap_login_if_needed from making real HTTP calls."""
+    clear_account_penalties()
     monkeypatch.setattr(
         "yamibo_mcp.yamibo.client.YamiboClient._bootstrap_login_if_needed",
         lambda self: None,
     )
+    yield
+    clear_account_penalties()
 
 
 def _settings(tmp_path: Path, *, account_pool=()):
@@ -274,6 +279,37 @@ def test_account_pool_rotates_between_configured_identities(tmp_path):
 
     assert first.account_id == "a"
     assert second.account_id == "b"
+
+
+def test_account_pool_avoids_recently_blocked_account_when_another_is_available(tmp_path):
+    settings = _settings(
+        tmp_path,
+        account_pool=(
+            AccountConfig(
+                account_id="a", username="user_a", password="pass_a", cookie_file=tmp_path / "a.cookie",
+                enabled=True, weight=1, permission_level=0, request_interval_seconds=0.0,
+                request_interval_jitter_seconds=0.0, max_concurrent_leases=1, login_mode="refresh_on_login_required",
+            ),
+            AccountConfig(
+                account_id="b", username="user_b", password="pass_b", cookie_file=tmp_path / "b.cookie",
+                enabled=True, weight=1, permission_level=0, request_interval_seconds=0.0,
+                request_interval_jitter_seconds=0.0, max_concurrent_leases=1, login_mode="refresh_on_login_required",
+            ),
+        ),
+    )
+    pool = get_account_pool(settings)
+    first = pool.acquire()
+    pool.release(first)
+    record_account_outcome(first.account_id, "soft_block")
+
+    second = pool.acquire()
+    pool.release(second)
+    assert second.account_id != first.account_id
+
+    record_account_outcome(first.account_id, "permission_required")
+    third = pool.acquire()
+    pool.release(third)
+    assert third.account_id == "a"
 
 
 def test_borrow_yamibo_client_uses_explicit_cookie_override(tmp_path):

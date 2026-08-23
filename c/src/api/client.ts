@@ -50,6 +50,11 @@ export interface JobSummary {
   error_code: string | null
   error_message: string | null
   failure_kind: string | null
+  active_error: { code: string | null; message: string | null } | null
+  retry_count: number
+  max_retries: number
+  lease_until: string | null
+  remote_attempt: Record<string, unknown> | null
   paused_at: string | null
   created_at: string
   updated_at: string

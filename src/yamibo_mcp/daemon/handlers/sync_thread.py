@@ -31,6 +31,7 @@ from yamibo_mcp.errors import LoginRequiredError, ThreadPermissionRequiredError,
 from yamibo_mcp.yamibo.client import YamiboClient
 from yamibo_mcp.yamibo.parsers.thread_detail import parse_thread_snapshot
 from yamibo_mcp.yamibo.proxy_pool import activate_proxy_binding, select_thread_proxy
+from yamibo_mcp.daemon.remote_attempt import build_attempt
 from yamibo_mcp.yamibo.urls import thread_page_url_from_tid
 from yamibo_mcp.yamibo.urls import extract_tid_from_input
 
@@ -95,6 +96,13 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
 
     # Select proxy binding (no-op when disabled or not configured).
     proxy_binding, proxy_pool_artifacts = _proxy_pool_artifacts(settings, tid, job.job_id)
+    record_attempt = getattr(repo, "record_remote_attempt", None)
+    if callable(record_attempt) and not html_path_value:
+        record_attempt(job.job_id, build_attempt(
+            source="thread_detail", node=getattr(proxy_binding, "node", None),
+            retry_hint=(proxy_binding.diagnostics or {}).get("retry_hint") if proxy_binding else None,
+            candidate_tier=(proxy_binding.diagnostics or {}).get("candidate_tier") if proxy_binding else None,
+        ))
     proxy_url = proxy_binding.proxy_url if proxy_binding else None
 
     try:
@@ -143,6 +151,8 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
                             identity, client = stack.enter_context(
                                 borrow_yamibo_client(settings, min_permission=min_permission, proxy_url=proxy_url)
                             )
+                            if callable(record_attempt):
+                                record_attempt(job.job_id, {"account_id": getattr(identity, "account_id", None)})
                             LOG.info(
                                 "sync_thread job=%s fetching with account_id=%s permission_level=%s cookie_file=%s min_permission=%s",
                                 job.job_id,

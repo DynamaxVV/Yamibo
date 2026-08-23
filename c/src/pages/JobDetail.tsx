@@ -57,13 +57,13 @@ export function JobDetail() {
   const rows = [
     [t('description'), <span style={{ fontSize: 14, fontWeight: 500 }}>{desc(job)}</span>],
     ['ID', <span className="mono" style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{job.job_id}</span>],
-    [t('status'), <Badge status={job.status} />],
+    [t('status'), <><Badge status={job.status} />{job.status === 'retrying' && <span className="badge badge-muted" style={{ marginLeft: 6 }}>{lang === 'en' ? `backoff ${job.retry_count}/${job.max_retries}` : `退避中 ${job.retry_count}/${job.max_retries}`}</span>}</>],
     [t('stage'), job.stage || '-'],
     [t('paused_at'), formatDateTime(job.paused_at)],
     [t('original_url'), job.url ? <a href={job.url} target="_blank" rel="noreferrer">{job.url}</a> : '-'],
     [t('tid'), job.tid ? <Link to={`/threads/${job.tid}`}>{job.tid}</Link> : '-'],
     [lang === 'en' ? 'Failure type' : '失败类型', (() => {
-      const kind = job.failure_kind || getJobFailureKind(job)
+      const kind = ['retrying', 'failed', 'partial', 'interrupted'].includes(job.status) ? (job.failure_kind || getJobFailureKind(job)) : null
       return kind ? <span className="badge badge-muted">{formatJobFailureKind(kind, lang)}</span> : '-'
     })()],
     ...(isImageBackfill ? [
@@ -73,9 +73,16 @@ export function JobDetail() {
     [t('progress'), `${job.progress_current}/${job.progress_total ?? '?'}`],
     [t('worker'), job.worker_id || '-'],
     [t('error'), (() => {
+      const text = formatJobErrorMessage(job.active_error?.code || null, job.active_error?.message || null, lang)
+      return text === '-' ? '-' : <span style={{ textAlign: 'left' }}>{renderBbsLinks(text)}</span>
+    })()],
+    [lang === 'en' ? 'Latest error' : '最近一次错误', (() => {
       const text = formatJobErrorMessage(job.error_code, job.error_message, lang)
       return text === '-' ? '-' : <span style={{ textAlign: 'left' }}>{renderBbsLinks(text)}</span>
     })()],
+    [lang === 'en' ? 'Lease / next retry' : '租约 / 下次重试', formatDateTime(job.lease_until)],
+    [lang === 'en' ? 'Retry count' : '重试次数', `${job.retry_count}/${job.max_retries}`],
+    [lang === 'en' ? 'Remote attempt' : '远程尝试', job.remote_attempt ? <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 12 }}>{JSON.stringify(job.remote_attempt, null, 2)}</pre> : '-'],
     [t('created_at'), formatDateTime(job.created_at)],
     [t('updated'), formatDateTime(job.updated_at)],
     [t('finished_at'), formatDateTime(job.finished_at)],

@@ -44,6 +44,51 @@ def test_jobs_list_returns_paginated(client):
     assert "items" in data
 
 
+def test_running_job_does_not_expose_stale_error_as_active_failure(client, test_settings):
+    from yamibo_mcp.db.connection import connect
+    conn = connect(test_settings.db_path)
+    try:
+        repo = JobsRepository(conn)
+        job = repo.create("sync_thread", tid=42)
+        repo.acquire(job.job_id, "worker", 300)
+        repo.fail(job.job_id, "REMOTE_SOFT_BLOCK", "old block")
+        # Requeue through a fresh job is not needed to assert the converter contract;
+        # acquire preserves the historical fields, while active_error is status-gated.
+        conn.execute("UPDATE jobs SET status = 'running', finished_at = NULL")
+        conn.commit()
+    finally:
+        conn.close()
+    body = client.get(f"/api/jobs/{job.job_id}").json()
+    assert body["status"] == "running"
+    assert body["error_code"] == "REMOTE_SOFT_BLOCK"
+    assert body["active_error"] is None
+    assert body["failure_kind"] is None
+    assert "retry_count" in body and "lease_until" in body
+
+
+def test_retrying_job_exposes_remote_attempt_and_retry_metadata(client, test_settings):
+    from yamibo_mcp.db.connection import connect
+    conn = connect(test_settings.db_path)
+    try:
+        repo = JobsRepository(conn)
+        job = repo.create("sync_thread", tid=42)
+        repo.acquire(job.job_id, "worker", 300)
+        repo.record_remote_attempt(job.job_id, {"node": "node-a", "account_id": "acct-a", "outcome": "soft_block"})
+        repo.retry_later(job.job_id, error_code="REMOTE_SOFT_BLOCK", error_message="blocked", artifacts={
+            "remote_attempt": {"node": "node-a", "account_id": "acct-a", "outcome": "soft_block"},
+        }, delay_seconds=20)
+    finally:
+        conn.close()
+    body = client.get(f"/api/jobs/{job.job_id}").json()
+    assert body["status"] == "retrying"
+    assert body["remote_attempt"]["node"] == "node-a"
+    assert body["remote_attempt"]["account_id"] == "acct-a"
+    assert body["retry_count"] == 1
+    assert body["lease_until"]
+    event_types = [event["event_type"] for event in client.get(f"/api/jobs/{job.job_id}/events").json()]
+    assert "job.remote_attempt" in event_types
+
+
 def test_jobs_list_filters_other_failure_kind(client, test_settings):
     from yamibo_mcp.db.connection import connect
 

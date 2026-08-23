@@ -23,6 +23,8 @@ from yamibo_mcp.yamibo.proxy_pool import (
     get_blacklisted_nodes,
     get_job_node,
     mark_node_444,
+    clear_node_penalties,
+    record_node_outcome,
     select_thread_proxy,
 )
 from yamibo_mcp.yamibo.anti_bot import get_remote_access_pause_state
@@ -458,6 +460,32 @@ def test_check_proxy_pool_health_all_nodes_tested(monkeypatch):
     assert all(n["blacklisted"] is False for n in result["nodes"])
 
 
+def test_check_proxy_pool_health_defaults_to_forum_probe_for_neutral_config(monkeypatch):
+    settings = _make_settings(enabled=True)
+    from yamibo_mcp.yamibo import proxy_pool as mod
+    probe_urls: list[str] = []
+
+    def _fake_request(self, path, method="GET", body=None, timeout=None):
+        if path == "/proxies":
+            return {"proxies": {"yamibo": {"type": "Selector", "now": "node-a", "all": ["node-a"]}}}
+        return {}
+
+    def _fake_test_all(self, nodes):
+        probe_urls.append(self._test_url)
+        if self._test_url == mod.NETWORK_HEALTH_CHECK_URL:
+            return [("node-a", 80), ("DIRECT", 30)]
+        return [("DIRECT", 100)]
+
+    monkeypatch.setattr(mod.MihomoControllerClient, "_request", _fake_request)
+    monkeypatch.setattr(mod.MihomoControllerClient, "test_all_nodes_parallel", _fake_test_all)
+
+    result = check_proxy_pool_health(settings)
+    by_name = {node["name"]: node for node in result["nodes"]}
+    assert result["probe_url"] == mod.YAMIBO_HEALTH_CHECK_URL
+    assert probe_urls == [mod.YAMIBO_HEALTH_CHECK_URL, mod.NETWORK_HEALTH_CHECK_URL]
+    assert by_name["node-a"]["status"] == "forum_blocked"
+
+
 def test_cached_proxy_pool_health_reuses_report_until_forced(monkeypatch):
     clear_proxy_cache()
     settings = _make_settings(enabled=True)
@@ -854,6 +882,88 @@ def test_retry_hint_changes_selected_node_for_same_tid():
         mp.undo()
         clear_proxy_cache()
         clear_node_blacklist()
+
+
+def test_soft_block_cools_node_and_permission_does_not(monkeypatch):
+    from yamibo_mcp.yamibo import proxy_pool as mod
+    clear_proxy_cache(); clear_node_blacklist(); clear_node_penalties()
+    settings = _make_settings(enabled=True)
+    mp = pytest.MonkeyPatch()
+    _patch_discover(mp, ["node-a", "node-b"])
+    try:
+        first = select_thread_proxy(settings, tid=42, retry_hint=0)
+        assert first is not None
+        record_node_outcome(first.node, "soft_block")
+        second = select_thread_proxy(settings, tid=42, retry_hint=1)
+        assert second is not None and second.node != first.node
+        record_node_outcome(first.node, "permission_required")
+        assert first.node not in mod._node_penalties
+    finally:
+        mp.undo(); clear_proxy_cache(); clear_node_blacklist(); clear_node_penalties()
+
+
+def test_select_thread_proxy_prefers_forum_tier_a_then_network_tier_b(monkeypatch):
+    from yamibo_mcp.yamibo import proxy_pool as mod
+    clear_proxy_cache(); clear_node_blacklist(); clear_node_penalties()
+    settings = _make_settings(enabled=True)
+    monkeypatch.setattr(mod.MihomoControllerClient, "discover_nodes", lambda self: ["forum", "network", "dead"])
+    forum_probe_urls: list[str] = []
+    def fake_test_all(self, nodes):
+        if self._test_url == "https://www.gstatic.com/generate_204":
+            return [("network", 80)]
+        forum_probe_urls.append(self._test_url)
+        return [("forum", 100)]
+    monkeypatch.setattr(mod.MihomoControllerClient, "test_all_nodes_parallel", fake_test_all)
+    monkeypatch.setattr(mod.MihomoControllerClient, "select_node", lambda self, node: None)
+    try:
+        first = select_thread_proxy(settings, tid=1, retry_hint=0)
+        assert first is not None and first.node == "forum" and first.diagnostics["candidate_tier"] == "A"
+        assert forum_probe_urls == [mod.YAMIBO_HEALTH_CHECK_URL]
+        record_node_outcome("forum", "soft_block")
+        second = select_thread_proxy(settings, tid=1, retry_hint=1)
+        assert second is not None and second.node == "network" and second.diagnostics["candidate_tier"] == "B"
+        assert second.node != "dead"
+    finally:
+        clear_proxy_cache(); clear_node_blacklist(); clear_node_penalties()
+
+
+def test_select_thread_proxy_does_not_use_tier_b_while_tier_a_is_clean(monkeypatch):
+    from yamibo_mcp.yamibo import proxy_pool as mod
+    clear_proxy_cache(); clear_node_blacklist(); clear_node_penalties()
+    settings = _make_settings(enabled=True)
+    monkeypatch.setattr(mod.MihomoControllerClient, "discover_nodes", lambda self: ["forum-a", "forum-b", "network"])
+
+    def fake_test_all(self, nodes):
+        if self._test_url == mod.NETWORK_HEALTH_CHECK_URL:
+            return [("network", 80)]
+        return [("forum-a", 100), ("forum-b", 120)]
+
+    monkeypatch.setattr(mod.MihomoControllerClient, "test_all_nodes_parallel", fake_test_all)
+    monkeypatch.setattr(mod.MihomoControllerClient, "select_node", lambda self, node: None)
+    try:
+        selected = {
+            select_thread_proxy(settings, tid=7, retry_hint=hint).node
+            for hint in range(6)
+        }
+        assert selected <= {"forum-a", "forum-b"}
+        assert selected
+    finally:
+        clear_proxy_cache(); clear_node_blacklist(); clear_node_penalties()
+
+
+def test_penalty_fallback_uses_least_penalized_node(monkeypatch):
+    clear_proxy_cache(); clear_node_blacklist(); clear_node_penalties()
+    settings = _make_settings(enabled=True)
+    mp = pytest.MonkeyPatch(); _patch_discover(mp, ["node-a", "node-b"])
+    try:
+        record_node_outcome("node-a", "soft_block")
+        record_node_outcome("node-b", "timeout")
+        result = select_thread_proxy(settings, tid=9, retry_hint=0)
+        assert result is not None
+        assert result.diagnostics["all_candidates_penalized"] is True
+        assert result.node == "node-b"
+    finally:
+        mp.undo(); clear_proxy_cache(); clear_node_blacklist(); clear_node_penalties()
 
 
 def test_select_thread_proxy_returns_none_when_all_blacklisted():

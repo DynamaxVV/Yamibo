@@ -29,6 +29,35 @@ def test_jobs_json_loader_accepts_postgres_jsonb_dict():
     assert _loads({"tid": 42}) == {"tid": 42}
 
 
+def test_remote_attempt_nested_merge_survives_terminal_and_retry_artifacts(db):
+    repo = JobsRepository(db)
+    job = repo.create("sync_thread", tid=42)
+    repo.record_remote_attempt(job.job_id, {"source": "thread_detail", "account_id": "acct-a", "node": "node-a"})
+    repo.acquire(job.job_id, "worker", 300)
+    assert repo.retry_later(
+        job.job_id,
+        error_code="REMOTE_SOFT_BLOCK",
+        error_message="blocked",
+        artifacts={"remote_attempt": {"outcome": "soft_block"}},
+        delay_seconds=1,
+    )
+    retrying = repo.get(job.job_id)
+    assert retrying.artifacts["remote_attempt"] == {
+        "source": "thread_detail", "account_id": "acct-a", "node": "node-a", "outcome": "soft_block",
+    }
+
+    terminal = repo.create("sync_thread", tid=43)
+    repo.record_remote_attempt(terminal.job_id, {"source": "thread_detail", "account_id": "acct-b", "node": "node-b"})
+    repo.fail(terminal.job_id, "REMOTE_FETCH_FAILED", "failed", {"remote_attempt": {"outcome": "connection_error"}})
+    assert repo.get(terminal.job_id).artifacts["remote_attempt"]["account_id"] == "acct-b"
+
+    successful = repo.create("sync_thread", tid=44)
+    repo.record_remote_attempt(successful.job_id, {"source": "thread_detail", "account_id": "acct-c", "node": "node-c"})
+    repo.succeed(successful.job_id, {"remote_attempt": {"duration_ms": 12}})
+    attempt = repo.get(successful.job_id).artifacts["remote_attempt"]
+    assert attempt["account_id"] == "acct-c" and attempt["outcome"] == "success" and attempt["duration_ms"] == 12
+
+
 class TestCreateAndGet:
     def test_create_returns_job_with_queued_status(self, db):
         # Arrange

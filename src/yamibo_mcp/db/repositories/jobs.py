@@ -29,6 +29,20 @@ _LIVE_JOB_STATUSES = (
 )
 
 
+def _merge_artifacts(current: dict[str, Any], update: dict[str, Any] | None) -> dict[str, Any]:
+    """Merge artifacts while preserving the structured remote_attempt snapshot."""
+    merged = {**current}
+    if not update:
+        return merged
+    for key, value in update.items():
+        if key == "remote_attempt" and isinstance(value, dict):
+            previous = merged.get(key) if isinstance(merged.get(key), dict) else {}
+            merged[key] = {**previous, **value}
+        else:
+            merged[key] = value
+    return merged
+
+
 def _job_list_order_clause() -> str:
     # 任务列表按“进行中 -> 排队中 -> 其他完成态”分组，同组内按创建时间升序，保证启动较早的任务靠前。
     return """
@@ -513,9 +527,34 @@ class JobsRepository:
             },
         )
 
+    def record_remote_attempt(self, job_id: str, attempt: dict[str, Any]) -> None:
+        """Persist one sanitized remote-attempt snapshot in existing job JSON/event storage."""
+        def _record() -> dict[str, Any]:
+            current = self.get(job_id)
+            artifacts = current.artifacts if isinstance(current.artifacts, dict) else {}
+            previous_attempt = artifacts.get("remote_attempt") if isinstance(artifacts.get("remote_attempt"), dict) else {}
+            next_artifacts = _merge_artifacts(artifacts, {"remote_attempt": {**previous_attempt, **dict(attempt)}})
+            self.conn.execute(
+                "UPDATE jobs SET artifacts_json = ?, updated_at = ? WHERE job_id = ?",
+                (json.dumps(next_artifacts, ensure_ascii=False), utc_now_iso(), job_id),
+            )
+            self.conn.commit()
+            return next_artifacts["remote_attempt"]
+
+        remote_attempt = self._with_locked_retry(_record)
+        self._append_event(job_id, "job.remote_attempt", payload={"remote_attempt": remote_attempt})
+
     def succeed(self, job_id: str, artifacts: dict[str, Any] | None = None) -> None:
-        def _succeed() -> None:
+        def _succeed() -> dict[str, Any]:
             now = utc_now_iso()
+            current = self.get(job_id)
+            next_artifacts = current.artifacts if isinstance(current.artifacts, dict) else {}
+            if isinstance(next_artifacts.get("remote_attempt"), dict):
+                next_artifacts = {
+                    **next_artifacts,
+                    "remote_attempt": {**next_artifacts["remote_attempt"], "outcome": "success", "finished_at": now},
+                }
+            next_artifacts = _merge_artifacts(next_artifacts, artifacts)
             self.conn.execute(
                 """
                 UPDATE jobs
@@ -526,20 +565,21 @@ class JobsRepository:
                 """,
                 (
                     JobStatus.SUCCEEDED.value,
-                    json.dumps(artifacts or {}, ensure_ascii=False),
+                    json.dumps(next_artifacts, ensure_ascii=False),
                     now,
                     now,
                     job_id,
                 ),
             )
             self.conn.commit()
+            return next_artifacts
 
-        self._with_locked_retry(_succeed)
+        next_artifacts = self._with_locked_retry(_succeed)
         self._append_event(
             job_id,
             "job.succeeded",
             status=JobStatus.SUCCEEDED.value,
-            payload={"artifacts": artifacts or {}},
+            payload={"artifacts": next_artifacts},
         )
         emit(LOG, logging.INFO, "job.succeeded", f"Job {job_id} succeeded",
              result="success", status=JobStatus.SUCCEEDED.value, stage="finalize")
@@ -555,8 +595,7 @@ class JobsRepository:
             now = utc_now_iso()
             current = self.get(job_id)
             next_artifacts = current.artifacts if isinstance(current.artifacts, dict) else {}
-            if artifacts:
-                next_artifacts = {**next_artifacts, **artifacts}
+            next_artifacts = _merge_artifacts(next_artifacts, artifacts)
             self.conn.execute(
                 """
                 UPDATE jobs
@@ -611,8 +650,7 @@ class JobsRepository:
             # split it into next_retry_at only if scheduling semantics expand.
             next_retry_at = utc_after_iso(retry_delay)
             next_artifacts = current.artifacts if isinstance(current.artifacts, dict) else {}
-            if artifacts:
-                next_artifacts = {**next_artifacts, **artifacts}
+            next_artifacts = _merge_artifacts(next_artifacts, artifacts)
             cur = self.conn.execute(
                 """
                 UPDATE jobs
@@ -660,8 +698,16 @@ class JobsRepository:
         return True
 
     def partial(self, job_id: str, artifacts: dict[str, Any] | None = None) -> None:
-        def _partial() -> None:
+        def _partial() -> dict[str, Any]:
             now = utc_now_iso()
+            current = self.get(job_id)
+            next_artifacts = current.artifacts if isinstance(current.artifacts, dict) else {}
+            if isinstance(next_artifacts.get("remote_attempt"), dict):
+                next_artifacts = {
+                    **next_artifacts,
+                    "remote_attempt": {**next_artifacts["remote_attempt"], "outcome": "success", "finished_at": now},
+                }
+            next_artifacts = _merge_artifacts(next_artifacts, artifacts)
             self.conn.execute(
                 """
                 UPDATE jobs
@@ -672,20 +718,21 @@ class JobsRepository:
                 """,
                 (
                     JobStatus.PARTIAL.value,
-                    json.dumps(artifacts or {}, ensure_ascii=False),
+                    json.dumps(next_artifacts, ensure_ascii=False),
                     now,
                     now,
                     job_id,
                 ),
             )
             self.conn.commit()
+            return next_artifacts
 
-        self._with_locked_retry(_partial)
+        next_artifacts = self._with_locked_retry(_partial)
         self._append_event(
             job_id,
             "job.partial",
             status=JobStatus.PARTIAL.value,
-            payload={"artifacts": artifacts or {}},
+            payload={"artifacts": next_artifacts},
         )
 
     def request_cancel(self, job_id: str) -> bool:

@@ -62,15 +62,29 @@ YAMIBO_HEALTH_CHECK_URL = "https://bbs.yamibo.com/"
 NETWORK_HEALTH_CHECK_URL = "https://www.gstatic.com/generate_204"
 DIRECT_NODE_NAME = "DIRECT"
 
+
+def _forum_probe_url(cfg: MihomoProxyPoolConfig) -> str:
+    """Return the Yamibo-facing probe URL used to build Tier A candidates.
+
+    Older configs defaulted ``test_url`` to a neutral 204 endpoint.  Treat
+    that value as the network probe and use the forum root for the separate
+    Yamibo-access probe, otherwise Tier A/B would collapse into one tier.
+    """
+    if not cfg.test_url or cfg.test_url == NETWORK_HEALTH_CHECK_URL:
+        return YAMIBO_HEALTH_CHECK_URL
+    return cfg.test_url
+
 # --- cache ---
 
 _CACHE_TTL_SECONDS = 30.0
 _cache: dict[tuple[str, str], tuple[list[tuple[str, int]], float]] = {}
+_candidate_cache: dict[tuple[str, str], tuple[list[tuple[str, int, str]], float]] = {}
 _cache_lock = threading.Lock()
 _HEALTH_CACHE_TTL_SECONDS = 60.0
 _health_cache: dict[tuple[str, str, str], tuple[dict, float]] = {}
 _selector_locks: dict[tuple[str, str], threading.Lock] = {}
 _selector_locks_lock = threading.Lock()
+_node_penalties_lock = threading.Lock()
 
 
 def _cache_key(controller_url: str, selector_group: str) -> tuple[str, str]:
@@ -99,6 +113,7 @@ def clear_proxy_cache() -> int:
     with _cache_lock:
         count = len(_cache)
         _cache.clear()
+        _candidate_cache.clear()
         _health_cache.clear()
         return count
 
@@ -121,6 +136,8 @@ _NODE_BLACKLIST_TTL_SECONDS = 300.0  # 5 分钟
 _node_blacklist: dict[str, float] = {}  # node -> 过期 monotonic 时间戳
 _current_node_by_job: dict[str, str] = {}  # job_id -> 最近选定的 node
 _retry_hint_by_job: dict[str, int] = {}  # job_id -> 444 重试计数
+_node_penalties: dict[str, tuple[float, float]] = {}  # node -> (score, cooldown_until)
+_NODE_COOLDOWN_SECONDS = {"soft_block": 45.0, "timeout": 20.0, "connection_error": 20.0, "rate_limited": 10.0}
 
 
 def _prune_blacklist() -> None:
@@ -146,6 +163,45 @@ def clear_node_blacklist() -> int:
     return count
 
 
+def record_node_outcome(node: str | None, outcome: str) -> None:
+    """Feedback from a real remote request, kept in-process only."""
+    if not node:
+        return
+    if outcome in {"success", "permission_required", "login_required"}:
+        with _node_penalties_lock:
+            _node_penalties.pop(node, None)
+        return
+    duration = _NODE_COOLDOWN_SECONDS.get(outcome)
+    if duration is None:
+        return
+    with _node_penalties_lock:
+        score, _ = _node_penalties.get(node, (0.0, 0.0))
+        weight = {"soft_block": 3.0, "timeout": 1.0, "connection_error": 1.0, "rate_limited": 0.5}.get(outcome, 1.0)
+        _node_penalties[node] = (score + weight, time.monotonic() + duration)
+
+
+def clear_node_penalties() -> None:
+    with _node_penalties_lock:
+        _node_penalties.clear()
+
+
+def _candidate_cache_get(key: tuple[str, str]) -> list[tuple[str, int, str]] | None:
+    with _cache_lock:
+        entry = _candidate_cache.get(key)
+        if entry is None:
+            return None
+        candidates, ts = entry
+        if time.monotonic() - ts > _CACHE_TTL_SECONDS:
+            del _candidate_cache[key]
+            return None
+        return list(candidates)
+
+
+def _candidate_cache_set(key: tuple[str, str], candidates: list[tuple[str, int, str]]) -> None:
+    with _cache_lock:
+        _candidate_cache[key] = (list(candidates), time.monotonic())
+
+
 def get_blacklisted_nodes() -> list[str]:
     """返回当前黑名单中的节点名（已剪掉过期项）。"""
     _prune_blacklist()
@@ -168,7 +224,9 @@ def all_nodes_blacklisted(settings) -> bool:
         controller_url=cfg.controller_url,
         secret=cfg.secret,
         selector_group=cfg.selector_group,
-        test_url=cfg.test_url,
+        # 444 的全局熔断只判断节点是否仍能出网，不能把 Yamibo 根页
+        # 的反爬拦截误判成“所有节点失联”。
+        test_url=NETWORK_HEALTH_CHECK_URL,
         test_timeout_ms=cfg.test_timeout_ms,
     )
     nodes = client.discover_nodes()
@@ -434,16 +492,16 @@ def select_thread_proxy(
         retry_hint = get_retry_hint(job_id)
     cfg = settings.proxy_pool
     key = _cache_key(cfg.controller_url, cfg.selector_group)
-    cached = _cache_get(key)
-    if cached is not None:
-        usable = cached
+    cached_candidates = _candidate_cache_get(key)
+    if cached_candidates is not None:
+        candidates = cached_candidates
         from_cache = True
     else:
         client = MihomoControllerClient(
             controller_url=cfg.controller_url,
             secret=cfg.secret,
             selector_group=cfg.selector_group,
-            test_url=cfg.test_url,
+            test_url=_forum_probe_url(cfg),
             test_timeout_ms=cfg.test_timeout_ms,
         )
 
@@ -452,35 +510,70 @@ def select_thread_proxy(
             LOG.warning("mihomo: no nodes discovered for group %s", cfg.selector_group)
             return None
 
-        usable = client.test_all_nodes_parallel(nodes)
-        if not usable:
-            LOG.warning("mihomo: no usable nodes after delay tests")
-            return None
-
-        usable = _filter_nodes(
-            usable,
+        forum_pairs = client.test_all_nodes_parallel(nodes)
+        # If every discovered node passed the forum probe, there is no Tier B
+        # candidate to discover; this also keeps the existing single-probe
+        # cache behavior for simple/fake controllers.
+        forum_names_before_filter = {name for name, _ in forum_pairs}
+        if forum_names_before_filter == set(nodes):
+            network_pairs = []
+        else:
+            network_client = MihomoControllerClient(
+                controller_url=cfg.controller_url,
+                secret=cfg.secret,
+                selector_group=cfg.selector_group,
+                test_url=NETWORK_HEALTH_CHECK_URL,
+                test_timeout_ms=cfg.test_timeout_ms,
+            )
+            network_pairs = network_client.test_all_nodes_parallel(nodes)
+        forum_pairs = _filter_nodes(
+            forum_pairs,
             allowed_patterns=cfg.allowed_patterns,
             denied_patterns=cfg.denied_patterns,
             max_delay_ms=cfg.max_delay_ms,
         )
-        if not usable:
-            LOG.warning("mihomo: no usable nodes after filters")
+        network_pairs = _filter_nodes(
+            network_pairs,
+            allowed_patterns=cfg.allowed_patterns,
+            denied_patterns=cfg.denied_patterns,
+            max_delay_ms=cfg.max_delay_ms,
+        )
+        forum_names = {name for name, _ in forum_pairs}
+        candidates = [(name, delay, "A") for name, delay in forum_pairs]
+        candidates.extend((name, delay, "B") for name, delay in network_pairs if name not in forum_names)
+        if not candidates:
+            LOG.warning("mihomo: no usable nodes after forum/network delay tests")
             return None
-
-        _cache_set(key, usable)
+        _candidate_cache_set(key, candidates)
+        _cache_set(key, [(name, delay) for name, delay, _ in candidates])
         from_cache = False
 
     # 过滤 444 黑名单节点
     _prune_blacklist()
     if _node_blacklist:
-        usable = [(n, d) for n, d in usable if n not in _node_blacklist]
-        if not usable:
-            LOG.warning("mihomo: all usable nodes blacklisted after 444 filtering for job %s", job_id)
-            record_job_node(job_id, None)
-            return None
+        candidates = [(n, d, tier) for n, d, tier in candidates if n not in _node_blacklist]
+    now = time.monotonic()
+    with _node_penalties_lock:
+        active_penalties = {node: value for node, value in _node_penalties.items() if value[1] > now}
+    tier_a = [candidate for candidate in candidates if candidate[2] == "A"]
+    tier_b = [candidate for candidate in candidates if candidate[2] == "B"]
+    preferred_a = [candidate for candidate in tier_a if candidate[0] not in active_penalties]
+    preferred_b = [candidate for candidate in tier_b if candidate[0] not in active_penalties]
+    # Tier B is only a fallback: a clean forum-reachable candidate must always
+    # win over a clean neutral-only candidate.
+    preferred = preferred_a or preferred_b
+    all_candidates_penalized = bool(candidates) and not preferred
+    if preferred:
+        candidates = preferred
+    elif candidates:
+        candidates = sorted(candidates, key=lambda item: (active_penalties.get(item[0], (0.0, 0.0))[0], item[2], item[1]))
+    if not candidates:
+        LOG.warning("mihomo: no usable nodes after blacklist/cooldown filtering for job %s", job_id)
+        record_job_node(job_id, None)
+        return None
 
-    idx = hash((tid, retry_hint)) % len(usable)
-    selected_node, selected_delay = usable[idx]
+    idx = hash((tid, retry_hint)) % len(candidates)
+    selected_node, selected_delay, selected_tier = candidates[idx]
     record_job_node(job_id, selected_node)
 
     client = MihomoControllerClient(
@@ -504,9 +597,11 @@ def select_thread_proxy(
         best_effort=True,
         diagnostics={
             "delay_ms": selected_delay,
-            "candidates": len(usable),
+            "candidates": len(candidates),
             "from_cache": from_cache,
             "retry_hint": retry_hint,
+            "candidate_tier": selected_tier,
+            "all_candidates_penalized": all_candidates_penalized,
         },
     )
 
@@ -565,7 +660,7 @@ def check_proxy_pool_health(settings: Settings, *, test_url: str | None = None) 
         "controller": {"reachable": False, "error": None},
         "selector_group": {"exists": False, "current_node": None, "node_count": 0},
         "nodes": [],
-        "probe_url": test_url or cfg.test_url,
+        "probe_url": test_url if test_url is not None else _forum_probe_url(cfg),
         "cache": _cache_info(),
     }
 
@@ -574,7 +669,7 @@ def check_proxy_pool_health(settings: Settings, *, test_url: str | None = None) 
         report["error"] = "proxy_pool is disabled"
         return report
 
-    probe_url = test_url or cfg.test_url
+    probe_url = test_url if test_url is not None else _forum_probe_url(cfg)
     client = MihomoControllerClient(
         controller_url=cfg.controller_url,
         secret=cfg.secret,
@@ -703,7 +798,7 @@ def get_cached_proxy_pool_health(
         report.update({"cached": False, "cache_age_seconds": None})
         return report
 
-    probe_url = test_url or cfg.test_url
+    probe_url = test_url if test_url is not None else _forum_probe_url(cfg)
     key = (cfg.controller_url.rstrip("/"), cfg.selector_group, probe_url)
     now = time.monotonic()
     if not force_refresh:
@@ -757,7 +852,7 @@ def select_random_proxy(settings: Settings) -> ProxyBinding | None:
             controller_url=cfg.controller_url,
             secret=cfg.secret,
             selector_group=cfg.selector_group,
-            test_url=cfg.test_url,
+            test_url=_forum_probe_url(cfg),
             test_timeout_ms=cfg.test_timeout_ms,
         )
         nodes = client.discover_nodes()
@@ -781,6 +876,15 @@ def select_random_proxy(settings: Settings) -> ProxyBinding | None:
         if not usable:
             LOG.warning("mihomo: all usable nodes blacklisted (random select)")
             return None
+    now = time.monotonic()
+    with _node_penalties_lock:
+        active_penalties = {node: value for node, value in _node_penalties.items() if value[1] > now}
+    preferred = [(name, delay) for name, delay in usable if name not in active_penalties]
+    all_candidates_penalized = bool(usable) and not preferred
+    if preferred:
+        usable = preferred
+    elif usable:
+        usable = sorted(usable, key=lambda item: (active_penalties.get(item[0], (0.0, 0.0))[0], item[1]))
 
     selected_node = random.choice(usable)[0]
 
@@ -802,5 +906,5 @@ def select_random_proxy(settings: Settings) -> ProxyBinding | None:
         node=selected_node,
         proxy_url=cfg.proxy_url,
         best_effort=True,
-        diagnostics={"candidates": len(usable)},
+        diagnostics={"candidates": len(usable), "all_candidates_penalized": all_candidates_penalized},
     )

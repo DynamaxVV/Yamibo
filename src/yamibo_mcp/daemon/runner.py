@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import random
 import time
 from dataclasses import dataclass
 from threading import Event, Thread
@@ -40,7 +41,9 @@ from yamibo_mcp.yamibo.anti_bot import (
     record_maintenance_probe_failure,
     _restore_444_events,
 )
-from yamibo_mcp.yamibo.proxy_pool import clear_proxy_cache
+from yamibo_mcp.yamibo.proxy_pool import clear_proxy_cache, get_job_node, bump_retry_hint, record_node_outcome
+from yamibo_mcp.yamibo.account_pool import record_account_outcome
+from yamibo_mcp.daemon.remote_attempt import outcome_for_error, sanitize_remote_details, now_iso
 
 LOG = logging.getLogger(__name__)
 
@@ -53,6 +56,31 @@ def _is_soft_block_error(exc: RemoteFetchError) -> bool:
         return "soft block" in msg or "cf challenge" in msg or "captcha" in msg
     msg = str(exc).lower()
     return "soft block" in msg or "cf challenge" in msg or "captcha" in msg
+
+
+def _remote_attempt_account(repo: JobsRepository, job_id: str) -> str | None:
+    """Read the latest account id after a handler records its attempt context."""
+    try:
+        current = repo.get(job_id)
+    except Exception:  # noqa: BLE001 - diagnostics must not mask the job outcome
+        return None
+    artifacts = current.artifacts if isinstance(current.artifacts, dict) else {}
+    attempt = artifacts.get("remote_attempt")
+    account_id = attempt.get("account_id") if isinstance(attempt, dict) else None
+    return str(account_id) if account_id else None
+
+
+def _record_account_feedback(repo: JobsRepository, job_id: str, outcome: str) -> None:
+    record_account_outcome(_remote_attempt_account(repo, job_id), outcome)
+
+
+def _jittered_retry_delay(retry_count: int, *, base_seconds: int = 10, cap_seconds: int = 60) -> int:
+    """Return bounded exponential backoff with small jitter to desynchronise retries."""
+    target = min(cap_seconds, base_seconds * (2 ** max(retry_count, 0)))
+    jitter = max(1, target // 5)
+    lower = max(1, target - jitter)
+    upper = min(cap_seconds, target + jitter)
+    return random.randint(lower, upper)
 
 
 @dataclass(frozen=True)
@@ -167,6 +195,8 @@ class DaemonRunner:
                     return DaemonResult(processed=1)
                 try:
                     handler(repo, job, self.worker_id, settings.worker_lease_seconds, settings)
+                    record_node_outcome(get_job_node(job.job_id), "success")
+                    _record_account_feedback(repo, job.job_id, "success")
                     # 远程任务成功说明维护已结束。
                     if in_maintenance and job.job_type in REMOTE_JOB_TYPES:
                         result = record_maintenance_probe_success(conn)
@@ -183,7 +213,11 @@ class DaemonRunner:
                     repo.finalize_pause(job.job_id)
                 except ThreadPermissionRequiredError as exc:
                     LOG.warning("Job %s requires higher read permission: %s", job.job_id, exc)
-                    repo.fail(job.job_id, classify_error(exc), str(exc))
+                    _record_account_feedback(repo, job.job_id, "permission_required")
+                    attempt = {**(job.artifacts.get("remote_attempt", {}) if isinstance(job.artifacts, dict) else {}),
+                               "finished_at": now_iso(), "outcome": "permission_required",
+                               "node": get_job_node(job.job_id)}
+                    repo.fail(job.job_id, classify_error(exc), str(exc), artifacts={"remote_attempt": attempt})
                 except Exception as exc:  # noqa: BLE001 - top-level daemon boundary
                     LOG.exception("Job %s failed", job.job_id)
                     conn.rollback()
@@ -205,7 +239,6 @@ class DaemonRunner:
 
                     # HTTP 444：节点级黑名单优先，全部节点都 444 才全局暂停。
                     if isinstance(exc, RemoteFetchError) and is_http_444_error(exc):
-                        from yamibo_mcp.yamibo.proxy_pool import bump_retry_hint, get_job_node
                         node = get_job_node(job.job_id)
                         paused = handle_http_444(
                             conn,
@@ -219,17 +252,27 @@ class DaemonRunner:
                             repo.finalize_pause(job.job_id)
                         else:
                             bump_retry_hint(job.job_id)
+                            record_node_outcome(node, "http_444")
+                            attempt = {
+                                **(job.artifacts.get("remote_attempt", {}) if isinstance(job.artifacts, dict) else {}),
+                                **sanitize_remote_details(getattr(exc, "details", None)),
+                                "finished_at": now_iso(), "outcome": "http_444", "node": node,
+                            }
                             repo.retry_later(
                                 job.job_id,
                                 error_code="HTTP_444",
                                 error_message=f"HTTP 444 from {exc.details.get('url', 'unknown')} (node={node}); node blacklisted, will retry with different node",
-                                delay_seconds=5,
+                                artifacts={"remote_attempt": attempt}, delay_seconds=5,
                             )
                             LOG.warning("HTTP 444 on job %s (node=%s) — will retry with different node", job.job_id, node)
                         return DaemonResult(processed=1)
                     # soft block：清除代理缓存后重试，让下一次 acquire 能选到不同的 IP 节点。
                     # 444 的清缓存已下沉到 handle_http_444，这里只处理 soft block。
                     if isinstance(exc, RemoteFetchError) and _is_soft_block_error(exc):
+                        bump_retry_hint(job.job_id)
+                        node = get_job_node(job.job_id)
+                        record_node_outcome(node, "soft_block")
+                        _record_account_feedback(repo, job.job_id, "soft_block")
                         cleared = clear_proxy_cache()
                         if cleared:
                             LOG.info(
@@ -237,11 +280,18 @@ class DaemonRunner:
                                 cleared,
                                 job.job_id,
                             )
+                        retry_delay = _jittered_retry_delay(job.retry_count)
+                        attempt = {
+                            **(job.artifacts.get("remote_attempt", {}) if isinstance(job.artifacts, dict) else {}),
+                            **sanitize_remote_details(getattr(exc, "details", None)),
+                            "finished_at": now_iso(), "outcome": "soft_block", "node": node,
+                            "retry_delay_seconds": retry_delay,
+                        }
                         repo.retry_later(
                             job.job_id,
                             error_code="REMOTE_SOFT_BLOCK",
                             error_message=f"Soft block / CF challenge from {exc.details.get('url', 'unknown') if isinstance(getattr(exc, 'details', None), dict) else 'unknown'}; proxy cache cleared, will retry with different node",
-                            delay_seconds=15,
+                            artifacts={"remote_attempt": attempt}, delay_seconds=retry_delay,
                         )
                         LOG.warning("Soft block on job %s — will retry with different proxy", job.job_id)
                         return DaemonResult(processed=1)
@@ -255,12 +305,22 @@ class DaemonRunner:
                                     "Cleared %d proxy cache entries after unknown page on job %s",
                                     cleared, job.job_id,
                                 )
-                            html_snippet = exc_details.get("html_snippet", "")
                             page_title = exc_details.get("page_title", "")
                             LOG.warning(
-                                "Unknown page type on job %s — likely anti-bot. title=%s html_len=%s snippet=%s",
-                                job.job_id, page_title, exc_details.get("html_length"), html_snippet[:200],
+                                "Unknown page type on job %s — likely anti-bot. title=%s html_len=%s",
+                                job.job_id, page_title, exc_details.get("html_length"),
                             )
+                            bump_retry_hint(job.job_id)
+                            node = get_job_node(job.job_id)
+                            record_node_outcome(node, "soft_block")
+                            _record_account_feedback(repo, job.job_id, "soft_block")
+                            retry_delay = _jittered_retry_delay(job.retry_count)
+                            attempt = {
+                                **(job.artifacts.get("remote_attempt", {}) if isinstance(job.artifacts, dict) else {}),
+                                **sanitize_remote_details(exc_details),
+                                "finished_at": now_iso(), "outcome": "soft_block", "page_type": "unknown", "node": node,
+                                "retry_delay_seconds": retry_delay,
+                            }
                             repo.retry_later(
                                 job.job_id,
                                 error_code="REMOTE_SOFT_BLOCK",
@@ -270,21 +330,41 @@ class DaemonRunner:
                                     f"proxy cache cleared, will retry with different node. "
                                     f"title={page_title}"
                                 ),
-                                delay_seconds=15,
+                                artifacts={"remote_attempt": attempt}, delay_seconds=retry_delay,
                             )
                             return DaemonResult(processed=1)
                     if isinstance(exc, RemoteFetchError) and is_http_429_error(exc):
+                        node = get_job_node(job.job_id)
+                        record_node_outcome(node, "rate_limited")
+                        _record_account_feedback(repo, job.job_id, "rate_limited")
+                        attempt = {
+                            **(job.artifacts.get("remote_attempt", {}) if isinstance(job.artifacts, dict) else {}),
+                            **sanitize_remote_details(getattr(exc, "details", None)),
+                            "finished_at": now_iso(), "outcome": "rate_limited", "node": node,
+                        }
                         LOG.warning("HTTP 429 rate limit on job %s, retrying later", job.job_id)
-                        repo.retry_later(job.job_id, error_code="HTTP_429", error_message=str(exc), delay_seconds=10)
+                        repo.retry_later(job.job_id, error_code="HTTP_429", error_message=str(exc),
+                                         artifacts={"remote_attempt": attempt}, delay_seconds=10)
                         return DaemonResult(processed=1)
+                    node = get_job_node(job.job_id)
+                    details = sanitize_remote_details(getattr(exc, "details", None))
                     artifacts = {
                         "failure_context": {
                             "exception_type": exc.__class__.__name__,
                             "message": str(exc),
                         }
                     }
-                    if isinstance(exc, RemoteFetchError) and getattr(exc, "details", None):
-                        artifacts["failure_context"]["remote_fetch"] = exc.details
+                    if details:
+                        artifacts["failure_context"]["remote_fetch"] = details
+                    if isinstance(exc, RemoteFetchError):
+                        outcome = outcome_for_error(classify_error(exc), str(exc))
+                        record_node_outcome(node, outcome)
+                        _record_account_feedback(repo, job.job_id, outcome)
+                        artifacts["remote_attempt"] = {
+                            **(job.artifacts.get("remote_attempt", {}) if isinstance(job.artifacts, dict) else {}),
+                            **details,
+                            "finished_at": now_iso(), "outcome": outcome, "node": node,
+                        }
                     if (
                         isinstance(exc, RemoteFetchError)
                         and isinstance(getattr(exc, "details", None), dict)
