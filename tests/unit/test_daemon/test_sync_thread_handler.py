@@ -419,7 +419,7 @@ def test_sync_thread_retries_login_required_with_higher_permission(db, tmp_path,
     assert calls == [None, 1]
 
 
-def test_sync_thread_fails_empty_primary_floor_without_images(db, tmp_path, monkeypatch):
+def test_sync_thread_excludes_single_empty_primary_floor_without_images(db, tmp_path, monkeypatch):
     settings = _make_settings(tmp_path)
     html_path = tmp_path / "thread.html"
     html_path.write_text("<html></html>", encoding="utf-8")
@@ -479,15 +479,13 @@ def test_sync_thread_fails_empty_primary_floor_without_images(db, tmp_path, monk
         ),
     )
 
-    try:
-        handle_sync_thread(repo, job, "worker-1", 300, settings)
-        raise AssertionError("expected ValueError")
-    except ValueError as exc:
-        assert "content is required when no images are present" in str(exc)
+    handle_sync_thread(repo, job, "worker-1", 300, settings)
 
-    failure_path = settings.data_dir / "staging" / "jobs" / job.job_id / "failure.json"
-    assert failure_path.exists()
-    assert "content is required when no images are present" in failure_path.read_text(encoding="utf-8")
+    finished_job = repo.get(job.job_id)
+    assert finished_job.status == "succeeded"
+    assert finished_job.artifacts["excluded"] is True
+    assert finished_job.artifacts["archive_status"] == "excluded"
+    assert finished_job.artifacts["exclusion_reason"] == "empty_primary_single_floor"
     assert ThreadsRepository(db).get_thread(42) is None
 
 

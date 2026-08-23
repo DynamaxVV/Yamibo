@@ -33,6 +33,7 @@ def test_remote_attempt_nested_merge_survives_terminal_and_retry_artifacts(db):
     repo = JobsRepository(db)
     job = repo.create("sync_thread", tid=42)
     repo.record_remote_attempt(job.job_id, {"source": "thread_detail", "account_id": "acct-a", "node": "node-a"})
+    repo.record_remote_attempt(job.job_id, {"account_id": "acct-b", "node": "node-b"})
     repo.acquire(job.job_id, "worker", 300)
     assert repo.retry_later(
         job.job_id,
@@ -43,7 +44,8 @@ def test_remote_attempt_nested_merge_survives_terminal_and_retry_artifacts(db):
     )
     retrying = repo.get(job.job_id)
     assert retrying.artifacts["remote_attempt"] == {
-        "source": "thread_detail", "account_id": "acct-a", "node": "node-a", "outcome": "soft_block",
+        "source": "thread_detail", "account_id": "acct-b", "node": "node-b", "outcome": "soft_block",
+        "account_ids_tried": ["acct-a", "acct-b"], "nodes_tried": ["node-a", "node-b"],
     }
 
     terminal = repo.create("sync_thread", tid=43)
@@ -56,6 +58,24 @@ def test_remote_attempt_nested_merge_survives_terminal_and_retry_artifacts(db):
     repo.succeed(successful.job_id, {"remote_attempt": {"duration_ms": 12}})
     attempt = repo.get(successful.job_id).artifacts["remote_attempt"]
     assert attempt["account_id"] == "acct-c" and attempt["outcome"] == "success" and attempt["duration_ms"] == 12
+
+
+def test_exclude_finishes_job_without_archiving_and_marks_remote_attempt(db):
+    repo = JobsRepository(db)
+    job = repo.create("sync_thread", tid=45)
+    repo.record_remote_attempt(job.job_id, {"account_id": "acct-a", "node": "node-a"})
+    repo.acquire(job.job_id, "worker", 300)
+
+    repo.exclude(job.job_id, reason="empty_primary_single_floor", artifacts={"tid": 45, "floor_count": 1})
+
+    excluded = repo.get(job.job_id)
+    assert excluded.status == JobStatus.SUCCEEDED
+    assert excluded.artifacts["excluded"] is True
+    assert excluded.artifacts["archive_status"] == "excluded"
+    assert excluded.artifacts["exclusion_reason"] == "empty_primary_single_floor"
+    assert excluded.artifacts["remote_attempt"]["outcome"] == "excluded"
+    events = JobEventsRepository(db).list(job_id=job.job_id)
+    assert any(event.event_type == "job.excluded" for event in events)
 
 
 class TestCreateAndGet:

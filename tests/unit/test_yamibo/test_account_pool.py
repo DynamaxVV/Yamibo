@@ -312,6 +312,32 @@ def test_account_pool_avoids_recently_blocked_account_when_another_is_available(
     assert third.account_id == "a"
 
 
+def test_account_pool_excludes_accounts_already_tried_by_the_same_job(tmp_path):
+    settings = _settings(
+        tmp_path,
+        account_pool=(
+            AccountConfig(
+                account_id="a", username="user_a", password="pass_a", cookie_file=tmp_path / "a.cookie",
+                enabled=True, weight=1, permission_level=0, request_interval_seconds=0.0,
+                request_interval_jitter_seconds=0.0, max_concurrent_leases=1, login_mode="refresh_on_login_required",
+            ),
+            AccountConfig(
+                account_id="b", username="user_b", password="pass_b", cookie_file=tmp_path / "b.cookie",
+                enabled=True, weight=1, permission_level=0, request_interval_seconds=0.0,
+                request_interval_jitter_seconds=0.0, max_concurrent_leases=1, login_mode="refresh_on_login_required",
+            ),
+        ),
+    )
+    pool = get_account_pool(settings)
+
+    first = pool.acquire()
+    pool.release(first)
+    second = pool.acquire(exclude_account_ids={first.account_id})
+    pool.release(second)
+
+    assert second.account_id != first.account_id
+
+
 def test_borrow_yamibo_client_uses_explicit_cookie_override(tmp_path):
     settings = _settings(tmp_path)
     explicit_cookie = tmp_path / "manual.cookie"

@@ -13,6 +13,8 @@ from yamibo_mcp.yamibo.proxy_pool import (
     MihomoControllerClient,
     MihomoProxyPoolConfig,
     ProxyBinding,
+    YAMIBO_HEALTH_CHECK_URL,
+    _forum_probe_url,
     activate_proxy_binding,
     _filter_nodes,
     all_nodes_blacklisted,
@@ -323,6 +325,22 @@ def test_select_thread_proxy_disabled_returns_none():
     settings = _make_settings(enabled=False)
     result = select_thread_proxy(settings, tid=12345)
     assert result is None
+
+
+@pytest.mark.parametrize("legacy_url", ["https://bbs.yamibo.com", "https://bbs.yamibo.com/"])
+def test_forum_probe_replaces_legacy_root_url(legacy_url):
+    config = MihomoProxyPoolConfig(
+        enabled=True,
+        controller_url="http://127.0.0.1:9090",
+        secret="",
+        proxy_url="http://127.0.0.1:7890",
+        selector_group="yamibo",
+        test_url=legacy_url,
+        test_timeout_ms=3000,
+        failure_policy="fail_open",
+    )
+
+    assert _forum_probe_url(config) == YAMIBO_HEALTH_CHECK_URL
 
 
 def test_select_thread_proxy_stable_selection():
@@ -882,6 +900,29 @@ def test_retry_hint_changes_selected_node_for_same_tid():
         mp.undo()
         clear_proxy_cache()
         clear_node_blacklist()
+
+
+def test_select_thread_proxy_excludes_nodes_already_tried_by_job(monkeypatch):
+    clear_proxy_cache()
+    clear_node_blacklist()
+    clear_node_penalties()
+    settings = _make_settings(enabled=True)
+    from yamibo_mcp.yamibo import proxy_pool as mod
+    mp = pytest.MonkeyPatch()
+    _patch_discover(mp, ["node-a", "node-b", "node-c"])
+    try:
+        first = select_thread_proxy(settings, tid=42, retry_hint=0)
+        assert first is not None
+        second = select_thread_proxy(settings, tid=42, retry_hint=0, exclude_nodes={first.node})
+        assert second is not None
+        assert second.node != first.node
+        assert first.node in second.diagnostics["excluded_nodes"]
+        assert second.diagnostics["rotation_fallback"] is False
+    finally:
+        mp.undo()
+        clear_proxy_cache()
+        clear_node_blacklist()
+        clear_node_penalties()
 
 
 def test_soft_block_cools_node_and_permission_does_not(monkeypatch):

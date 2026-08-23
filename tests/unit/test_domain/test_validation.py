@@ -1,6 +1,10 @@
 import pytest
 
-from yamibo_mcp.domain.validation import validate_thread_snapshot
+from yamibo_mcp.domain.validation import (
+    empty_primary_floor_exclusion_reason,
+    has_later_external_reply,
+    validate_thread_snapshot,
+)
 from yamibo_mcp.domain.models import FloorSnapshot, ThreadSnapshot, TitleSnapshot
 
 _SENTINEL = object()
@@ -144,6 +148,43 @@ class TestFloorValidation:
         snapshot = _make_snapshot(floors=[floor])
         result = validate_thread_snapshot(snapshot)
         assert any("content is required" in e for e in result.errors)
+
+    def test_empty_primary_with_other_user_reply_is_retained(self):
+        primary = _make_floor(content="", publisher="user1", publisher_uid="1")
+        reply = _make_floor(
+            pid=1001,
+            floor_no=2,
+            publisher="other",
+            publisher_uid="2",
+            content="后来回复",
+        )
+        snapshot = _make_snapshot(floors=[primary, reply])
+
+        result = validate_thread_snapshot(snapshot)
+
+        assert has_later_external_reply(snapshot) is True
+        assert empty_primary_floor_exclusion_reason(snapshot) is None
+        assert result.valid is True
+        assert any("later external replies exist" in warning for warning in result.warnings)
+
+    def test_empty_primary_with_only_same_author_replies_is_excluded(self):
+        primary = _make_floor(content="", publisher="user1", publisher_uid="1")
+        reply = _make_floor(
+            pid=1001,
+            floor_no=2,
+            publisher="user1",
+            publisher_uid=None,
+            content="楼主补充",
+        )
+        snapshot = _make_snapshot(floors=[primary, reply])
+
+        assert has_later_external_reply(snapshot) is False
+        assert empty_primary_floor_exclusion_reason(snapshot) == "empty_primary_without_external_reply"
+
+    def test_single_empty_primary_floor_is_excluded(self):
+        snapshot = _make_snapshot(floors=[_make_floor(content="", has_images=False)])
+
+        assert empty_primary_floor_exclusion_reason(snapshot) == "empty_primary_single_floor"
 
     def test_reply_floor_empty_is_warning_not_error(self):
         f1 = _make_floor(pid=1000, floor_no=1, publisher="user1")

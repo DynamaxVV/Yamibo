@@ -88,7 +88,9 @@ def test_run_once_moves_retryable_remote_fetch_error_to_retrying(tmp_path, monke
     assert result.processed == 1
     assert calls["job_id"] == job.job_id
     assert calls["error_code"] == "REMOTE_CONNECTION_ERROR"
-    assert calls["delay_seconds"] == 5
+    assert 16 <= calls["delay_seconds"] <= 24
+    assert calls["artifacts"]["remote_attempt"]["rotation_required"] is True
+    assert calls["artifacts"]["remote_attempt"]["proxy_cache_cleared"] >= 0
     assert calls["artifacts"]["failure_context"]["exception_type"] == "RemoteFetchError"
 
 
@@ -308,7 +310,7 @@ def test_run_once_pauses_on_http_444(tmp_path, monkeypatch):
         "yamibo_mcp.daemon.runner.JobsRepository.retry_later",
         lambda self, job_id, *, error_code, error_message, artifacts=None, delay_seconds=None: retry_calls.append(
             {"job_id": job_id, "error_code": error_code, "delay_seconds": delay_seconds}
-        ),
+        ) or True,
     )
     monkeypatch.setattr("yamibo_mcp.daemon.runner.clear_proxy_cache", lambda: 0)
 
@@ -385,10 +387,10 @@ def test_run_once_detects_http_444_via_curl_error_92(tmp_path, monkeypatch):
         lambda self, worker_id, lease_seconds: job,
     )
     monkeypatch.setattr(
-        "yamibo_mcp.daemon.runner.JobsRepository.retry_later",
-        lambda self, job_id, *, error_code, error_message, artifacts=None, delay_seconds=None: retry_calls.append(
-            {"job_id": job_id, "delay_seconds": delay_seconds}
-        ),
+            "yamibo_mcp.daemon.runner.JobsRepository.retry_later",
+            lambda self, job_id, *, error_code, error_message, artifacts=None, delay_seconds=None: retry_calls.append(
+                {"job_id": job_id, "delay_seconds": delay_seconds}
+            ) or True,
     )
     monkeypatch.setattr(
         "yamibo_mcp.daemon.runner.JobsRepository.fail",

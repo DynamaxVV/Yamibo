@@ -326,6 +326,7 @@ def job_to_dict(
         active_error = {"code": job.error_code, "message": job.error_message}
     data = {
         "job_id": job.job_id, "job_type": job.job_type, "status": job.status,
+        "archive_status": artifacts.get("archive_status") if isinstance(artifacts.get("archive_status"), str) else None,
         "stage": job.stage, "tid": job.tid,
         "description": description, "description_en": description_en,
         "progress_current": job.progress_current, "progress_total": job.progress_total,

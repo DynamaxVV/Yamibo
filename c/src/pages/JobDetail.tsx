@@ -57,7 +57,7 @@ export function JobDetail() {
   const rows = [
     [t('description'), <span style={{ fontSize: 14, fontWeight: 500 }}>{desc(job)}</span>],
     ['ID', <span className="mono" style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{job.job_id}</span>],
-    [t('status'), <><Badge status={job.status} />{job.status === 'retrying' && <span className="badge badge-muted" style={{ marginLeft: 6 }}>{lang === 'en' ? `backoff ${job.retry_count}/${job.max_retries}` : `退避中 ${job.retry_count}/${job.max_retries}`}</span>}</>],
+    [t('status'), <><Badge status={job.archive_status || job.status} />{job.status === 'retrying' && <span className="badge badge-muted" style={{ marginLeft: 6 }}>{lang === 'en' ? `backoff ${job.retry_count}/${job.max_retries}` : `退避中 ${job.retry_count}/${job.max_retries}`}</span>}</>],
     [t('stage'), job.stage || '-'],
     [t('paused_at'), formatDateTime(job.paused_at)],
     [t('original_url'), job.url ? <a href={job.url} target="_blank" rel="noreferrer">{job.url}</a> : '-'],

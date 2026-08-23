@@ -610,7 +610,7 @@ export function Jobs() {
               {column('description')?.visible && <td className="truncate" title={desc(j)}><Link to={`/jobs/${j.job_id}`}>{desc(j)}</Link></td>}
               {column('status')?.visible && <td>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'center', justifyContent: 'center' }}>
-                  <Badge status={j.status} />
+                  <Badge status={j.archive_status || j.status} />
                   {(() => {
                     const kind = j.status === 'retrying' || j.status === 'failed' || j.status === 'partial' || j.status === 'interrupted'
                       ? (j.failure_kind || getJobFailureKind(j)) : null

@@ -37,6 +37,13 @@ class ThreadDetailSummary:
 class _ThreadSubjectParser(TextCaptureParser):
     _BLOCK_BREAK_START_TAGS = {"br"}
     _BLOCK_BREAK_END_TAGS = {"div", "p", "li", "tr", "blockquote"}
+    _EXTERNAL_MEDIA_TAGS = {"iframe", "embed", "object", "video", "source"}
+    _VIDEO_URL_HINT_RE = re.compile(
+        r"(?:youtube(?:-nocookie)?\.com|youtu\.be|bilibili\.com|b23\.tv|youku\.com|"
+        r"tudou\.com|vimeo\.com|dailymotion\.com|player|video|watch\?|\.mp4(?:$|[?#])|"
+        r"\.webm(?:$|[?#])|\.flv(?:$|[?#]))",
+        re.IGNORECASE,
+    )
 
     def __init__(self, *, base_url: str | None = None):
         super().__init__()
@@ -55,6 +62,8 @@ class _ThreadSubjectParser(TextCaptureParser):
         self._floors: list[FloorSnapshot] = []
         self._floor_has_images = False
         self._floor_image_urls: list[str] = []
+        self._floor_external_media_urls: list[str] = []
+        self._floor_video_anchor_stack: list[tuple[str, int, int]] = []
         self._floor_heading_capture = False
         self._floor_heading_parts: list[str] = []
         self._in_quote = False
@@ -83,6 +92,8 @@ class _ThreadSubjectParser(TextCaptureParser):
             self._rich_tag_stack = []
             self._floor_has_images = False
             self._floor_image_urls = []
+            self._floor_external_media_urls = []
+            self._floor_video_anchor_stack = []
             self._floor_heading_capture = False
             self._in_quote = False
             self._quote_parts = []
@@ -101,6 +112,14 @@ class _ThreadSubjectParser(TextCaptureParser):
             self._in_quote = True
             self._quote_parts = []
         if self._capture_floor:
+            external_media_url = self._resolve_external_media_url(tag, data)
+            if external_media_url:
+                if tag == "a":
+                    self._floor_video_anchor_stack.append(
+                        (external_media_url, len(self._floor_parts), len(self._rich_parts))
+                    )
+                else:
+                    self._record_external_media(external_media_url)
             if self._skip_depth > 0:
                 self._skip_depth += 1
                 super().handle_starttag(tag, attrs)
@@ -134,6 +153,17 @@ class _ThreadSubjectParser(TextCaptureParser):
             self._skip_depth -= 1
             super().handle_endtag(tag)
             return
+        if self._capture_floor and tag == "a" and self._floor_video_anchor_stack:
+            external_media_url, content_start, rich_start = self._floor_video_anchor_stack.pop()
+            anchor_content = clean_content("".join(self._floor_parts[content_start:]))
+            if not anchor_content:
+                if rich_start < len(self._rich_parts) and self._rich_parts[rich_start].startswith("<a "):
+                    del self._rich_parts[rich_start]
+                for index in range(len(self._rich_tag_stack) - 1, -1, -1):
+                    if self._rich_tag_stack[index][0] == "a":
+                        del self._rich_tag_stack[index]
+                        break
+                self._record_external_media(external_media_url)
         if self._capture_floor and tag in self._BLOCK_BREAK_END_TAGS:
             self._append_floor_break()
         if self._capture_floor:
@@ -147,6 +177,16 @@ class _ThreadSubjectParser(TextCaptureParser):
         if tag == "td" and self._capture_floor:
             self._floor_td_depth -= 1
             if self._floor_td_depth <= 0:
+                while self._floor_video_anchor_stack:
+                    external_media_url, content_start, rich_start = self._floor_video_anchor_stack.pop()
+                    if not clean_content("".join(self._floor_parts[content_start:])):
+                        if rich_start < len(self._rich_parts) and self._rich_parts[rich_start].startswith("<a "):
+                            del self._rich_parts[rich_start]
+                        for index in range(len(self._rich_tag_stack) - 1, -1, -1):
+                            if self._rich_tag_stack[index][0] == "a":
+                                del self._rich_tag_stack[index]
+                                break
+                        self._record_external_media(external_media_url)
                 if self._floor_pid is not None:
                     self._floor_no += 1
                     content = clean_content("".join(self._floor_parts))
@@ -299,6 +339,47 @@ class _ThreadSubjectParser(TextCaptureParser):
         if tag == "ul":
             return "<ul>", "</ul>"
         return None, None
+
+    def _resolve_external_media_url(self, tag: str, attrs: dict[str, str]) -> str | None:
+        """Extract playable external media URLs from empty embed-style markup.
+
+        Discuz posts commonly store a video in ``iframe``, ``embed``/``object``
+        or a ``param name=movie`` element.  These tags have no text for the
+        normal text parser to capture, so retain a safe URL as ordinary post
+        content instead of treating the floor as empty.
+        """
+        raw_url = ""
+        if tag in self._EXTERNAL_MEDIA_TAGS:
+            for key in ("src", "data", "value"):
+                if attrs.get(key, "").strip():
+                    raw_url = attrs[key]
+                    break
+        elif tag == "param":
+            name = attrs.get("name", "").strip().lower()
+            if name in {"movie", "src", "url", "file", "video"}:
+                raw_url = attrs.get("value", "")
+            elif name in {"flashvars", "flashvar"}:
+                flashvars = attrs.get("value", "")
+                match = re.search(r"(?:^|[;&])(?:file|url|src|movie)=([^;&]+)", flashvars, re.IGNORECASE)
+                raw_url = match.group(1) if match else ""
+        elif tag == "a":
+            raw_url = attrs.get("href", "")
+            if not self._VIDEO_URL_HINT_RE.search(raw_url):
+                return None
+        else:
+            return None
+        return sanitize_href(raw_url, base_url=self._base_url)
+
+    def _record_external_media(self, url: str) -> None:
+        if url in self._floor_external_media_urls:
+            return
+        self._floor_external_media_urls.append(url)
+        self._append_floor_break()
+        self._floor_parts.append(f"[外链视频] {url}")
+        self._rich_parts.append(
+            f'<p><a href="{html_escape(url, quote=True)}" target="_blank" rel="noreferrer">'
+            f"外链视频</a></p>"
+        )
 
     def _resolve_image_url(self, attrs: dict[str, str]) -> str | None:
         return _resolve_image_url_from_attrs(attrs, base_url=self._base_url)

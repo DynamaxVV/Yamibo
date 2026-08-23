@@ -5,6 +5,7 @@ const KIND_MAP: Record<string, string> = {
   succeeded: 'ok', complete: 'ok', valid: 'ok', downloaded: 'ok',
   running: 'accent', queued: 'warn', retrying: 'accent', pending: 'accent', paused: 'warn', indexing: 'accent',
   partial: 'warn',
+  excluded: 'warn',
   failed: 'error', error: 'error', interrupted: 'error', missing: 'error',
 }
 

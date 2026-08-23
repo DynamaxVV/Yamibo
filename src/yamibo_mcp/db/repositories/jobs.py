@@ -533,7 +533,16 @@ class JobsRepository:
             current = self.get(job_id)
             artifacts = current.artifacts if isinstance(current.artifacts, dict) else {}
             previous_attempt = artifacts.get("remote_attempt") if isinstance(artifacts.get("remote_attempt"), dict) else {}
-            next_artifacts = _merge_artifacts(artifacts, {"remote_attempt": {**previous_attempt, **dict(attempt)}})
+            next_attempt = {**previous_attempt, **dict(attempt)}
+            for history_key, current_key in (("nodes_tried", "node"), ("account_ids_tried", "account_id")):
+                previous_values = previous_attempt.get(history_key, [])
+                values = list(previous_values) if isinstance(previous_values, list) else []
+                current_value = attempt.get(current_key)
+                if current_value and current_value not in values:
+                    values.append(current_value)
+                if values:
+                    next_attempt[history_key] = values
+            next_artifacts = _merge_artifacts(artifacts, {"remote_attempt": next_attempt})
             self.conn.execute(
                 "UPDATE jobs SET artifacts_json = ?, updated_at = ? WHERE job_id = ?",
                 (json.dumps(next_artifacts, ensure_ascii=False), utc_now_iso(), job_id),
@@ -583,6 +592,74 @@ class JobsRepository:
         )
         emit(LOG, logging.INFO, "job.succeeded", f"Job {job_id} succeeded",
              result="success", status=JobStatus.SUCCEEDED.value, stage="finalize")
+
+    def exclude(
+        self,
+        job_id: str,
+        *,
+        reason: str,
+        artifacts: dict[str, Any] | None = None,
+    ) -> None:
+        """Finish a job without archiving it, while keeping an explicit audit trail."""
+        def _exclude() -> dict[str, Any]:
+            now = utc_now_iso()
+            current = self.get(job_id)
+            next_artifacts = current.artifacts if isinstance(current.artifacts, dict) else {}
+            if isinstance(next_artifacts.get("remote_attempt"), dict):
+                next_artifacts = {
+                    **next_artifacts,
+                    "remote_attempt": {
+                        **next_artifacts["remote_attempt"],
+                        "outcome": "excluded",
+                        "finished_at": now,
+                    },
+                }
+            next_artifacts = _merge_artifacts(
+                next_artifacts,
+                {
+                    "excluded": True,
+                    "archive_status": "excluded",
+                    "exclusion_reason": reason,
+                    **(artifacts or {}),
+                },
+            )
+            self.conn.execute(
+                """
+                UPDATE jobs
+                SET status = ?, stage = 'finalize', progress_current = COALESCE(progress_total, progress_current),
+                    artifacts_json = ?, updated_at = ?, finished_at = ?,
+                    error_code = NULL, error_message = NULL, worker_id = NULL,
+                    heartbeat_at = NULL, lease_until = NULL
+                WHERE job_id = ?
+                """,
+                (
+                    JobStatus.SUCCEEDED.value,
+                    json.dumps(next_artifacts, ensure_ascii=False),
+                    now,
+                    now,
+                    job_id,
+                ),
+            )
+            self.conn.commit()
+            return next_artifacts
+
+        next_artifacts = self._with_locked_retry(_exclude)
+        self._append_event(
+            job_id,
+            "job.excluded",
+            status=JobStatus.SUCCEEDED.value,
+            payload={"reason": reason, "artifacts": next_artifacts},
+        )
+        emit(
+            LOG,
+            logging.INFO,
+            "job.excluded",
+            f"Job {job_id} excluded from archive: {reason}",
+            result="success",
+            status=JobStatus.SUCCEEDED.value,
+            stage="finalize",
+            exclusion_reason=reason,
+        )
 
     def fail(
         self,

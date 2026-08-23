@@ -39,6 +39,7 @@ export interface JobSummary {
   job_id: string
   job_type: string
   status: string
+  archive_status: string | null
   stage: string | null
   tid: number | null
   url: string | null

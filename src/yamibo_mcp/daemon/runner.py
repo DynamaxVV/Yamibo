@@ -74,6 +74,28 @@ def _record_account_feedback(repo: JobsRepository, job_id: str, outcome: str) ->
     record_account_outcome(_remote_attempt_account(repo, job_id), outcome)
 
 
+def _retry_or_fail(
+    repo: JobsRepository,
+    job_id: str,
+    *,
+    error_code: str,
+    error_message: str,
+    artifacts: dict,
+    delay_seconds: int,
+) -> bool:
+    """Schedule a retry, or close the running job when its retry budget is spent."""
+    scheduled = repo.retry_later(
+        job_id,
+        error_code=error_code,
+        error_message=error_message,
+        artifacts=artifacts,
+        delay_seconds=delay_seconds,
+    )
+    if not scheduled:
+        repo.fail(job_id, error_code, error_message, artifacts=artifacts)
+    return scheduled
+
+
 def _jittered_retry_delay(retry_count: int, *, base_seconds: int = 10, cap_seconds: int = 60) -> int:
     """Return bounded exponential backoff with small jitter to desynchronise retries."""
     target = min(cap_seconds, base_seconds * (2 ** max(retry_count, 0)))
@@ -258,13 +280,21 @@ class DaemonRunner:
                                 **sanitize_remote_details(getattr(exc, "details", None)),
                                 "finished_at": now_iso(), "outcome": "http_444", "node": node,
                             }
-                            repo.retry_later(
+                            error_message = f"HTTP 444 from {exc.details.get('url', 'unknown')} (node={node}); node blacklisted, will retry with different node"
+                            scheduled = _retry_or_fail(
+                                repo,
                                 job.job_id,
                                 error_code="HTTP_444",
-                                error_message=f"HTTP 444 from {exc.details.get('url', 'unknown')} (node={node}); node blacklisted, will retry with different node",
-                                artifacts={"remote_attempt": attempt}, delay_seconds=5,
+                                error_message=error_message,
+                                artifacts={"remote_attempt": attempt},
+                                delay_seconds=5,
                             )
-                            LOG.warning("HTTP 444 on job %s (node=%s) — will retry with different node", job.job_id, node)
+                            LOG.warning(
+                                "HTTP 444 on job %s (node=%s) — %s",
+                                job.job_id,
+                                node,
+                                "will retry with different node" if scheduled else "retry budget exhausted; marked failed",
+                            )
                         return DaemonResult(processed=1)
                     # soft block：清除代理缓存后重试，让下一次 acquire 能选到不同的 IP 节点。
                     # 444 的清缓存已下沉到 handle_http_444，这里只处理 soft block。
@@ -287,13 +317,20 @@ class DaemonRunner:
                             "finished_at": now_iso(), "outcome": "soft_block", "node": node,
                             "retry_delay_seconds": retry_delay,
                         }
-                        repo.retry_later(
+                        error_message = f"Soft block / CF challenge from {exc.details.get('url', 'unknown') if isinstance(getattr(exc, 'details', None), dict) else 'unknown'}; proxy cache cleared, will retry with different node"
+                        scheduled = _retry_or_fail(
+                            repo,
                             job.job_id,
                             error_code="REMOTE_SOFT_BLOCK",
-                            error_message=f"Soft block / CF challenge from {exc.details.get('url', 'unknown') if isinstance(getattr(exc, 'details', None), dict) else 'unknown'}; proxy cache cleared, will retry with different node",
-                            artifacts={"remote_attempt": attempt}, delay_seconds=retry_delay,
+                            error_message=error_message,
+                            artifacts={"remote_attempt": attempt},
+                            delay_seconds=retry_delay,
                         )
-                        LOG.warning("Soft block on job %s — will retry with different proxy", job.job_id)
+                        LOG.warning(
+                            "Soft block on job %s — %s",
+                            job.job_id,
+                            "will retry with different proxy" if scheduled else "retry budget exhausted; marked failed",
+                        )
                         return DaemonResult(processed=1)
                     # 未知页面类型（很可能是反爬页面 / CF 挑战变体）：清除代理缓存后重试
                     if isinstance(exc, UnexpectedPageError):
@@ -321,30 +358,48 @@ class DaemonRunner:
                                 "finished_at": now_iso(), "outcome": "soft_block", "page_type": "unknown", "node": node,
                                 "retry_delay_seconds": retry_delay,
                             }
-                            repo.retry_later(
+                            error_message = (
+                                f"Unknown page type (likely anti-bot) from "
+                                f"{exc_details.get('url', 'unknown')}; "
+                                f"proxy cache cleared, will retry with different node. "
+                                f"title={page_title}"
+                            )
+                            scheduled = _retry_or_fail(
+                                repo,
                                 job.job_id,
                                 error_code="REMOTE_SOFT_BLOCK",
-                                error_message=(
-                                    f"Unknown page type (likely anti-bot) from "
-                                    f"{exc_details.get('url', 'unknown')}; "
-                                    f"proxy cache cleared, will retry with different node. "
-                                    f"title={page_title}"
-                                ),
-                                artifacts={"remote_attempt": attempt}, delay_seconds=retry_delay,
+                                error_message=error_message,
+                                artifacts={"remote_attempt": attempt},
+                                delay_seconds=retry_delay,
                             )
+                            if not scheduled:
+                                LOG.warning("Unknown page on job %s exhausted retry budget; marked failed", job.job_id)
                             return DaemonResult(processed=1)
                     if isinstance(exc, RemoteFetchError) and is_http_429_error(exc):
+                        bump_retry_hint(job.job_id)
                         node = get_job_node(job.job_id)
                         record_node_outcome(node, "rate_limited")
                         _record_account_feedback(repo, job.job_id, "rate_limited")
+                        cleared = clear_proxy_cache()
                         attempt = {
                             **(job.artifacts.get("remote_attempt", {}) if isinstance(job.artifacts, dict) else {}),
                             **sanitize_remote_details(getattr(exc, "details", None)),
                             "finished_at": now_iso(), "outcome": "rate_limited", "node": node,
                         }
-                        LOG.warning("HTTP 429 rate limit on job %s, retrying later", job.job_id)
-                        repo.retry_later(job.job_id, error_code="HTTP_429", error_message=str(exc),
-                                         artifacts={"remote_attempt": attempt}, delay_seconds=10)
+                        attempt["proxy_cache_cleared"] = cleared
+                        scheduled = _retry_or_fail(
+                            repo,
+                            job.job_id,
+                            error_code="HTTP_429",
+                            error_message=str(exc),
+                            artifacts={"remote_attempt": attempt},
+                            delay_seconds=10,
+                        )
+                        LOG.warning(
+                            "HTTP 429 rate limit on job %s, %s",
+                            job.job_id,
+                            "retrying later" if scheduled else "retry budget exhausted; marked failed",
+                        )
                         return DaemonResult(processed=1)
                     node = get_job_node(job.job_id)
                     details = sanitize_remote_details(getattr(exc, "details", None))
@@ -360,23 +415,42 @@ class DaemonRunner:
                         outcome = outcome_for_error(classify_error(exc), str(exc))
                         record_node_outcome(node, outcome)
                         _record_account_feedback(repo, job.job_id, outcome)
+                        retry_delay = 5
+                        rotation_required = False
+                        if outcome in {"timeout", "connection_error"}:
+                            # A timeout is target-specific evidence, not a
+                            # reason to keep the same cached candidate.  The
+                            # next attempt explicitly excludes this job's
+                            # previous node/account histories as well.
+                            bump_retry_hint(job.job_id)
+                            cleared = clear_proxy_cache()
+                            retry_delay = _jittered_retry_delay(job.retry_count, base_seconds=20)
+                            rotation_required = True
+                        else:
+                            cleared = 0
                         artifacts["remote_attempt"] = {
                             **(job.artifacts.get("remote_attempt", {}) if isinstance(job.artifacts, dict) else {}),
                             **details,
                             "finished_at": now_iso(), "outcome": outcome, "node": node,
+                            "retry_delay_seconds": retry_delay,
+                            "proxy_cache_cleared": cleared,
+                            "rotation_required": rotation_required,
                         }
-                    if (
+                    retry_delay = artifacts.get("remote_attempt", {}).get("retry_delay_seconds", 5) \
+                        if isinstance(artifacts.get("remote_attempt"), dict) else 5
+                    should_retry = (
                         isinstance(exc, RemoteFetchError)
                         and isinstance(getattr(exc, "details", None), dict)
                         and exc.details.get("retryable")
-                        and repo.retry_later(
-                            job.job_id,
-                            error_code=classify_error(exc),
-                            error_message=str(exc),
-                            artifacts=artifacts,
-                            delay_seconds=5,
-                        )
-                    ):
+                    )
+                    retried = should_retry and repo.retry_later(
+                        job.job_id,
+                        error_code=classify_error(exc),
+                        error_message=str(exc),
+                        artifacts=artifacts,
+                        delay_seconds=int(retry_delay),
+                    )
+                    if retried:
                         LOG.warning("Job %s moved to retrying after transient remote fetch failure", job.job_id)
                     else:
                         repo.fail(job.job_id, classify_error(exc), str(exc), artifacts=artifacts)

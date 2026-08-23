@@ -18,7 +18,7 @@ from yamibo_mcp.db.repositories.threads import ThreadsRepository
 from yamibo_mcp.domain.content import build_content_snapshot
 from yamibo_mcp.domain.models import Job, ThreadSnapshot
 from yamibo_mcp.domain.thread_fingerprint import floor_content_hash
-from yamibo_mcp.domain.validation import validate_thread_snapshot
+from yamibo_mcp.domain.validation import empty_primary_floor_exclusion_reason, validate_thread_snapshot
 from yamibo_mcp.storage.paths import StoragePaths
 from yamibo_mcp.storage.images import download_images_to_staging
 from yamibo_mcp.storage.staging import write_staging_failure, write_staging_snapshot, write_staging_title_parse_log
@@ -56,8 +56,27 @@ def _check_paused(repo: JobsRepository, job_id: str) -> None:
         raise JobPaused(f"Job {job_id} was paused")
 
 
-def _proxy_pool_artifacts(settings: Settings, tid: int | None, job_id: str) -> tuple[object | None, dict[str, object]]:
-    binding = select_thread_proxy(settings, tid=tid, job_id=job_id)
+def _proxy_pool_artifacts(
+    settings: Settings,
+    tid: int | None,
+    job_id: str,
+    *,
+    repo: JobsRepository | None = None,
+) -> tuple[object | None, dict[str, object]]:
+    excluded_nodes: set[str] = set()
+    if repo is not None:
+        try:
+            current = repo.get(job_id)
+            attempt = current.artifacts.get("remote_attempt") if isinstance(current.artifacts, dict) else None
+            history = attempt.get("nodes_tried") if isinstance(attempt, dict) else None
+            if isinstance(history, list):
+                excluded_nodes = {str(node) for node in history if node}
+        except Exception:  # noqa: BLE001 - diagnostics must not mask proxy selection
+            LOG.debug("Unable to read proxy rotation history for job %s", job_id, exc_info=True)
+    if excluded_nodes:
+        binding = select_thread_proxy(settings, tid=tid, job_id=job_id, exclude_nodes=excluded_nodes)
+    else:
+        binding = select_thread_proxy(settings, tid=tid, job_id=job_id)
     if binding:
         return binding, {
             "proxy_pool.enabled": True,
@@ -95,7 +114,7 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
     proxy_stack = ExitStack()
 
     # Select proxy binding (no-op when disabled or not configured).
-    proxy_binding, proxy_pool_artifacts = _proxy_pool_artifacts(settings, tid, job.job_id)
+    proxy_binding, proxy_pool_artifacts = _proxy_pool_artifacts(settings, tid, job.job_id, repo=repo)
     record_attempt = getattr(repo, "record_remote_attempt", None)
     if callable(record_attempt) and not html_path_value:
         record_attempt(job.job_id, build_attempt(
@@ -137,6 +156,11 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
                 if has_configured_account_pool(settings):
                     min_permission: int | None = None
                     identity = None
+                    used_account_ids: set[str] = set()
+                    previous_attempt = job.artifacts.get("remote_attempt") if isinstance(job.artifacts, dict) else None
+                    previous_account_ids = previous_attempt.get("account_ids_tried") if isinstance(previous_attempt, dict) else None
+                    if isinstance(previous_account_ids, list):
+                        used_account_ids = {str(account_id) for account_id in previous_account_ids if account_id}
                     LOG.info(
                         "sync_thread job=%s tid=%s entering account pool loop (accounts: %s)",
                         job.job_id, tid,
@@ -148,11 +172,15 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
                     )
                     while True:
                         try:
-                            identity, client = stack.enter_context(
-                                borrow_yamibo_client(settings, min_permission=min_permission, proxy_url=proxy_url)
-                            )
+                            borrow_kwargs = {"min_permission": min_permission, "proxy_url": proxy_url}
+                            if used_account_ids:
+                                borrow_kwargs["exclude_account_ids"] = used_account_ids
+                            identity, client = stack.enter_context(borrow_yamibo_client(settings, **borrow_kwargs))
+                            selected_account_id = getattr(identity, "account_id", None)
+                            if selected_account_id:
+                                used_account_ids.add(str(selected_account_id))
                             if callable(record_attempt):
-                                record_attempt(job.job_id, {"account_id": getattr(identity, "account_id", None)})
+                                record_attempt(job.job_id, {"account_id": selected_account_id})
                             LOG.info(
                                 "sync_thread job=%s fetching with account_id=%s permission_level=%s cookie_file=%s min_permission=%s",
                                 job.job_id,
@@ -187,6 +215,8 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
                         except ThreadPermissionRequiredError as exc:
                             next_min_permission = next_permission_threshold(exc.required_permission, current_min=min_permission)
                             account_id = getattr(identity, "account_id", "unknown")
+                            if account_id and account_id != "unknown":
+                                used_account_ids.add(str(account_id))
                             LOG.info(
                                 "sync_thread job=%s switching account after permission gate account_id=%s required_permission=%s next_min_permission=%s",
                                 job.job_id,
@@ -201,6 +231,8 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
                             # 循环回到顶部以更高的 min_permission 重试借号
                         except LoginRequiredError:
                             account_id = getattr(identity, "account_id", "unknown")
+                            if account_id and account_id != "unknown":
+                                used_account_ids.add(str(account_id))
                             current_level = getattr(identity, "permission_level", "unknown")
                             next_min = (min_permission or 0) + 1
                             LOG.warning(
@@ -221,6 +253,8 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
                             code = _extract_permission_code(str(exc))
                             if code is not None and code != 255:
                                 account_id = getattr(identity, "account_id", "unknown")
+                                if account_id and account_id != "unknown":
+                                    used_account_ids.add(str(account_id))
                                 current_level = getattr(identity, "permission_level", "unknown")
                                 next_min = (min_permission or 0) + 1
                                 LOG.warning(
@@ -473,6 +507,23 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
 
             repo.update_stage(job.job_id, "validate", progress_current=3, progress_total=6)
             _check_paused(repo, job.job_id)
+            exclusion_reason = empty_primary_floor_exclusion_reason(snapshot)
+            if exclusion_reason:
+                exclusion_artifacts = {
+                    "tid": snapshot.tid,
+                    "floor_count": len(snapshot.floors),
+                    "primary_floor_pid": snapshot.floors[0].pid if snapshot.floors else None,
+                    "archive_status": "excluded",
+                }
+                repo.exclude(job.job_id, reason=exclusion_reason, artifacts=exclusion_artifacts)
+                LOG.info(
+                    "Thread %s excluded from archive: reason=%s floor_count=%s",
+                    snapshot.tid,
+                    exclusion_reason,
+                    len(snapshot.floors),
+                )
+                shutil.rmtree(paths.staging_job_dir(job.job_id), ignore_errors=True)
+                return
             validation = validate_thread_snapshot(snapshot)
             if validation.errors:
                 raise ValueError("; ".join(validation.errors))

@@ -11,7 +11,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator
 
 from yamibo_mcp.config import Settings
 
@@ -58,7 +58,14 @@ class MihomoProxyPoolConfig:
         )
 
 LOG = logging.getLogger(__name__)
-YAMIBO_HEALTH_CHECK_URL = "https://bbs.yamibo.com/"
+# Use a stable, known-readable thread for the Yamibo-facing probe.  The forum
+# root is a poor discriminator because its anti-bot response can differ from
+# the thread-detail route used by archive jobs.
+YAMIBO_HEALTH_CHECK_URL = "https://bbs.yamibo.com/thread-535389-1-1.html"
+LEGACY_YAMIBO_HEALTH_CHECK_URLS = {
+    "https://bbs.yamibo.com",
+    "https://bbs.yamibo.com/",
+}
 NETWORK_HEALTH_CHECK_URL = "https://www.gstatic.com/generate_204"
 DIRECT_NODE_NAME = "DIRECT"
 
@@ -66,11 +73,16 @@ DIRECT_NODE_NAME = "DIRECT"
 def _forum_probe_url(cfg: MihomoProxyPoolConfig) -> str:
     """Return the Yamibo-facing probe URL used to build Tier A candidates.
 
-    Older configs defaulted ``test_url`` to a neutral 204 endpoint.  Treat
-    that value as the network probe and use the forum root for the separate
+    Older configs defaulted ``test_url`` to a neutral 204 endpoint and some
+    deployments stored the forum root explicitly.  Treat both legacy values
+    as the network probe and use the known-readable thread for the separate
     Yamibo-access probe, otherwise Tier A/B would collapse into one tier.
     """
-    if not cfg.test_url or cfg.test_url == NETWORK_HEALTH_CHECK_URL:
+    if (
+        not cfg.test_url
+        or cfg.test_url == NETWORK_HEALTH_CHECK_URL
+        or cfg.test_url in LEGACY_YAMIBO_HEALTH_CHECK_URLS
+    ):
         return YAMIBO_HEALTH_CHECK_URL
     return cfg.test_url
 
@@ -479,17 +491,19 @@ def select_thread_proxy(
     tid: int,
     job_id: str | None = None,
     retry_hint: int | None = None,
+    exclude_nodes: Collection[str] | None = None,
 ) -> ProxyBinding | None:
     """选择线程代理节点。
 
-    retry_hint 为 None 时，自动从 _retry_hint_by_job 取（444 重试时 runner 会
-    bump 该计数），让同一 tid 在重试时换到不同节点。
+    retry_hint 为 None 时，自动从 _retry_hint_by_job 取（远端封锁、超时、
+    连接错误或限流重试时 runner 会 bump 该计数），让同一 tid 在重试时换到不同节点。
     """
     if not _check_enabled(settings):
         return None
 
     if retry_hint is None:
         retry_hint = get_retry_hint(job_id)
+    excluded_nodes = {str(node) for node in (exclude_nodes or ()) if node}
     cfg = settings.proxy_pool
     key = _cache_key(cfg.controller_url, cfg.selector_group)
     cached_candidates = _candidate_cache_get(key)
@@ -555,18 +569,21 @@ def select_thread_proxy(
     now = time.monotonic()
     with _node_penalties_lock:
         active_penalties = {node: value for node, value in _node_penalties.items() if value[1] > now}
-    tier_a = [candidate for candidate in candidates if candidate[2] == "A"]
-    tier_b = [candidate for candidate in candidates if candidate[2] == "B"]
+    untried_candidates = [candidate for candidate in candidates if candidate[0] not in excluded_nodes]
+    selection_pool = untried_candidates or candidates
+    rotation_fallback = bool(excluded_nodes) and not untried_candidates
+    tier_a = [candidate for candidate in selection_pool if candidate[2] == "A"]
+    tier_b = [candidate for candidate in selection_pool if candidate[2] == "B"]
     preferred_a = [candidate for candidate in tier_a if candidate[0] not in active_penalties]
     preferred_b = [candidate for candidate in tier_b if candidate[0] not in active_penalties]
     # Tier B is only a fallback: a clean forum-reachable candidate must always
     # win over a clean neutral-only candidate.
     preferred = preferred_a or preferred_b
-    all_candidates_penalized = bool(candidates) and not preferred
+    all_candidates_penalized = bool(selection_pool) and not preferred
     if preferred:
         candidates = preferred
-    elif candidates:
-        candidates = sorted(candidates, key=lambda item: (active_penalties.get(item[0], (0.0, 0.0))[0], item[2], item[1]))
+    elif selection_pool:
+        candidates = sorted(selection_pool, key=lambda item: (active_penalties.get(item[0], (0.0, 0.0))[0], item[2], item[1]))
     if not candidates:
         LOG.warning("mihomo: no usable nodes after blacklist/cooldown filtering for job %s", job_id)
         record_job_node(job_id, None)
@@ -602,6 +619,8 @@ def select_thread_proxy(
             "retry_hint": retry_hint,
             "candidate_tier": selected_tier,
             "all_candidates_penalized": all_candidates_penalized,
+            "excluded_nodes": sorted(excluded_nodes),
+            "rotation_fallback": rotation_fallback,
         },
     )
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -128,6 +128,7 @@ class AccountPool:
         account_id: str | None = None,
         min_permission: int | None = None,
         prefer_high_permission: bool = False,
+        exclude_account_ids: Collection[str] | None = None,
     ) -> AccountIdentity:
         with self._lock:
             available = [
@@ -148,6 +149,18 @@ class AccountPool:
                 if min_permission is None:
                     raise ValueError("no enabled account identities configured")
                 raise ValueError(f"no enabled account identities configured for permission >= {min_permission}")
+
+            excluded = {str(value) for value in (exclude_account_ids or ()) if value}
+            if account_id is None and excluded:
+                untried = [identity for identity in available if identity.account_id not in excluded]
+                if untried:
+                    available = untried
+                else:
+                    LOG.warning(
+                        "All Yamibo accounts matching min_permission=%s were already tried: %s; reusing the least-bad account",
+                        min_permission,
+                        ",".join(sorted(excluded)),
+                    )
 
             # A recent remote block should move the next normal borrow to a
             # different account when possible. Explicit account selection is
@@ -274,6 +287,7 @@ def borrow_yamibo_client(
     cookie_file: str | None = None,
     min_permission: int | None = None,
     prefer_high_permission: bool = False,
+    exclude_account_ids: Collection[str] | None = None,
     proxy_url: str | None = None,
 ) -> Iterator[tuple[AccountIdentity, YamiboClient]]:
     if cookie_file is not None:
@@ -309,6 +323,7 @@ def borrow_yamibo_client(
         account_id=account_id,
         min_permission=min_permission,
         prefer_high_permission=prefer_high_permission,
+        exclude_account_ids=exclude_account_ids,
     )
     _refresh_cookie_if_stale(identity, settings)
     if min_permission is not None or prefer_high_permission:

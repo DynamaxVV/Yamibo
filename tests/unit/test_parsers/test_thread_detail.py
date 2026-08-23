@@ -432,6 +432,33 @@ class TestThreadDetailParser:
         assert "color:#000000" not in first_floor.rich_body_html
         assert "『起始』" in first_floor.rich_body_html
 
+    def test_empty_external_video_embed_is_preserved_as_floor_content(self):
+        html = """
+        <html><body>
+          <span id="thread_subject">外链视频帖</span>
+          <div id="post_1"><td id="postmessage_1">
+            <iframe src="https://player.example.com/video/158586" width="640" height="360"></iframe>
+          </td></div>
+        </body></html>
+        """
+
+        floor = parse_thread_detail(html, base_url="https://bbs.yamibo.com/thread-158586-1-1.html").floors[0]
+
+        assert floor.content == "[外链视频] https://player.example.com/video/158586"
+        assert floor.rich_body_html is not None
+        assert 'href="https://player.example.com/video/158586"' in floor.rich_body_html
+
+    def test_empty_video_anchor_is_preserved_as_floor_content(self):
+        html = """
+        <div id="post_1"><td id="postmessage_1">
+          <a href="https://www.youtube.com/watch?v=abc123"></a>
+        </td></div>
+        """
+
+        floor = parse_thread_detail(html).floors[0]
+
+        assert "[外链视频] https://www.youtube.com/watch?v=abc123" in floor.content
+
     def test_font_color_is_preserved_in_rich_body_html(self):
         """font color 应映射为可展示的富文本样式"""
         html = """
