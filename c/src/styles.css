@@ -155,6 +155,23 @@ a:hover { text-decoration: underline; }
   background: var(--bg-surface); border: var(--border-width, 1px) solid var(--border);
   border-radius: var(--radius-md); overflow: hidden;
   box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  touch-action: none; user-select: none; cursor: grab;
+}
+.floor-wheel-dragging { cursor: grabbing; opacity: 0.92; }
+.floor-wheel-collapse-toggle {
+  display: flex; align-items: center; justify-content: center;
+  width: 100%; height: var(--float-tool-size); padding: 0;
+  border: none; border-top: var(--border-width, 1px) solid var(--border-light);
+  background: transparent; color: var(--text-tertiary); font-size: 16px; line-height: 1; cursor: pointer;
+}
+.floor-wheel-collapse-toggle:hover { background: var(--bg-muted); color: var(--text-primary); }
+.floor-wheel-expand { border-top: none; height: 100%; font-size: 18px; }
+.floor-wheel-collapsed {
+  width: 14px; height: 112px; right: 0; border-radius: 8px 0 0 8px;
+}
+.floor-wheel-collapsed-left { border-radius: 0 8px 8px 0; }
+.floor-wheel-collapsed .floor-wheel-expand {
+  writing-mode: vertical-rl; letter-spacing: 2px; font-size: 11px;
 }
 .floor-wheel-btn {
   position: relative;
@@ -811,6 +828,7 @@ input[type="checkbox"] { width: 14px; height: 14px; cursor: pointer; accent-colo
   .float-actions { right: 8px; bottom: 44px; }
   .float-actions-collapsed { right: 0; bottom: auto; }
   .floor-wheel { right: 8px; bottom: calc(44px + var(--float-tool-size) * 4); }
+  .floor-wheel-collapsed { right: 0; bottom: auto; }
   .reading-toolbar button { padding: 3px 8px; font-size: 11px; }
   .floor-content { padding: 8px; }
   .log-view { max-height: calc(100vh - 200px); }

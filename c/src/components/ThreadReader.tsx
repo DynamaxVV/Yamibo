@@ -290,6 +290,24 @@ export function ThreadReader({ tid, source, contentKind, floors: floorSource, im
   const [fontAssets, setFontAssets] = useState<FontAsset[]>([])
   const readingConfigRef = useRef(readingConfig)
   const floorRefs = useRef(new Map<number, HTMLDivElement | null>())
+  const floorWheelRef = useRef<HTMLDivElement>(null)
+  const floorWheelPressTimerRef = useRef<number | null>(null)
+  const floorWheelPressRef = useRef<{ pointerId: number; startX: number; startY: number } | null>(null)
+  const floorWheelDragRef = useRef<{ offsetX: number; offsetY: number; position: { left: number; top: number } } | null>(null)
+  const floorWheelSuppressClickRef = useRef(false)
+  const [floorWheelDragging, setFloorWheelDragging] = useState(false)
+  const [floorWheelCollapsed, setFloorWheelCollapsed] = useState(() => {
+    try { return window.localStorage.getItem('yamibo.floor-wheel-collapsed') === 'true' } catch { return false }
+  })
+  const [floorWheelPosition, setFloorWheelPosition] = useState<{ left: number; top: number } | null>(() => {
+    try {
+      const stored = JSON.parse(window.localStorage.getItem('yamibo.floor-wheel-position') || 'null')
+      if (stored && Number.isFinite(stored.left) && Number.isFinite(stored.top)) return { left: stored.left, top: stored.top }
+    } catch {
+      // Preferences are optional when storage is unavailable or malformed.
+    }
+    return null
+  })
   const scrollSuppressed = useRef(false)
   const previewScrollSuppressed = useRef(false)
   const [pendingFloorNo, setPendingFloorNo] = useState<number | null>(null)
@@ -552,6 +570,106 @@ export function ThreadReader({ tid, source, contentKind, floors: floorSource, im
   const wheelPrevFloor = currentFloorNo != null ? (currentFloorNo > 1 ? currentFloorNo - 1 : null) : null
   const wheelNextFloor = currentFloorNo != null ? (currentFloorNo < totalFloorCount ? currentFloorNo + 1 : null) : null
 
+  const toggleFloorWheel = () => {
+    setFloorWheelCollapsed(collapsed => {
+      const next = !collapsed
+      try { window.localStorage.setItem('yamibo.floor-wheel-collapsed', String(next)) } catch { /* optional preference */ }
+      return next
+    })
+  }
+
+  const clearFloorWheelPressTimer = () => {
+    if (floorWheelPressTimerRef.current !== null) {
+      window.clearTimeout(floorWheelPressTimerRef.current)
+      floorWheelPressTimerRef.current = null
+    }
+  }
+
+  const clampFloorWheelPosition = (left: number, top: number) => {
+    const rect = floorWheelRef.current?.getBoundingClientRect()
+    const width = rect?.width ?? 38
+    const height = rect?.height ?? 38
+    return {
+      left: Math.min(Math.max(0, left), Math.max(0, window.innerWidth - width)),
+      top: Math.min(Math.max(0, top), Math.max(0, window.innerHeight - height)),
+    }
+  }
+
+  const startFloorWheelDrag = (pointerId: number, clientX: number, clientY: number) => {
+    const element = floorWheelRef.current
+    if (!element) return
+    const rect = element.getBoundingClientRect()
+    const position = clampFloorWheelPosition(floorWheelPosition?.left ?? rect.left, floorWheelPosition?.top ?? rect.top)
+    floorWheelDragRef.current = { offsetX: clientX - rect.left, offsetY: clientY - rect.top, position }
+    element.setPointerCapture(pointerId)
+    setFloorWheelPosition(position)
+    setFloorWheelDragging(true)
+    floorWheelSuppressClickRef.current = true
+  }
+
+  const handleFloorWheelPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || floorWheelDragRef.current) return
+    clearFloorWheelPressTimer()
+    floorWheelPressRef.current = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY }
+    floorWheelPressTimerRef.current = window.setTimeout(() => {
+      floorWheelPressTimerRef.current = null
+      const press = floorWheelPressRef.current
+      if (press) startFloorWheelDrag(press.pointerId, press.startX, press.startY)
+    }, 350)
+  }
+
+  const handleFloorWheelPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = floorWheelDragRef.current
+    if (!drag) {
+      const press = floorWheelPressRef.current
+      if (press && Math.hypot(event.clientX - press.startX, event.clientY - press.startY) > 8) {
+        clearFloorWheelPressTimer()
+        floorWheelPressRef.current = null
+      }
+      return
+    }
+    const next = clampFloorWheelPosition(event.clientX - drag.offsetX, event.clientY - drag.offsetY)
+    drag.position = next
+    setFloorWheelPosition(next)
+  }
+
+  const finishFloorWheelPointer = (event: React.PointerEvent<HTMLDivElement>) => {
+    clearFloorWheelPressTimer()
+    floorWheelPressRef.current = null
+    const drag = floorWheelDragRef.current
+    if (!drag) return
+    const element = floorWheelRef.current
+    if (element?.hasPointerCapture(event.pointerId)) element.releasePointerCapture(event.pointerId)
+    floorWheelDragRef.current = null
+    const savedPosition = floorWheelCollapsed
+      ? { ...drag.position, left: drag.position.left <= window.innerWidth / 2 ? 0 : Math.max(0, window.innerWidth - 14) }
+      : drag.position
+    setFloorWheelPosition(savedPosition)
+    try { window.localStorage.setItem('yamibo.floor-wheel-position', JSON.stringify(savedPosition)) } catch { /* optional preference */ }
+    setFloorWheelDragging(false)
+  }
+
+  const floorWheelStyle: CSSProperties | undefined = floorWheelPosition
+    ? floorWheelCollapsed
+      ? floorWheelDragging
+        ? {
+            top: `${Math.min(floorWheelPosition.top, Math.max(0, window.innerHeight - 112))}px`,
+            left: `${Math.min(floorWheelPosition.left, Math.max(0, window.innerWidth - 14))}px`,
+            right: 'auto', bottom: 'auto',
+          }
+        : {
+            top: `${Math.min(floorWheelPosition.top, Math.max(0, window.innerHeight - 112))}px`,
+            ...(floorWheelPosition.left <= window.innerWidth / 2 ? { left: 0, right: 'auto' } : { right: 0, left: 'auto' }),
+            bottom: 'auto',
+          }
+      : {
+          top: `${Math.min(floorWheelPosition.top, Math.max(0, window.innerHeight - 146))}px`,
+          left: `${Math.min(floorWheelPosition.left, Math.max(0, window.innerWidth - 40))}px`,
+          right: 'auto', bottom: 'auto',
+        }
+    : undefined
+  const floorWheelOnLeft = floorWheelPosition !== null && floorWheelPosition.left <= window.innerWidth / 2
+
   const readingViewStyle = {
     '--reading-bg': readingConfig.bg,
     '--reading-text': readingConfig.text,
@@ -613,23 +731,48 @@ export function ThreadReader({ tid, source, contentKind, floors: floorSource, im
   return (
     <>
       {visibleFloorGroups.length > 0 && currentFloorNo != null && (
-        <div className="floor-wheel" onWheel={e => {
+        <div ref={floorWheelRef} style={floorWheelStyle}
+          className={`floor-wheel${floorWheelCollapsed ? ' floor-wheel-collapsed' : ''}${floorWheelCollapsed && floorWheelOnLeft ? ' floor-wheel-collapsed-left' : ''}${floorWheelDragging ? ' floor-wheel-dragging' : ''}`}
+          onPointerDown={handleFloorWheelPointerDown} onPointerMove={handleFloorWheelPointerMove}
+          onPointerUp={finishFloorWheelPointer} onPointerCancel={finishFloorWheelPointer}
+          onPointerLeave={() => { if (!floorWheelDragRef.current) clearFloorWheelPressTimer() }}
+          onClickCapture={event => {
+            if (floorWheelSuppressClickRef.current) {
+              event.preventDefault()
+              event.stopPropagation()
+              floorWheelSuppressClickRef.current = false
+            }
+          }}
+          onWheel={e => {
           e.preventDefault()
           if (e.deltaY > 0 && wheelNextFloor != null && wheelNextFloor !== currentFloorNo) jumpToFloor(wheelNextFloor)
           else if (e.deltaY < 0 && wheelPrevFloor != null && wheelPrevFloor !== currentFloorNo) jumpToFloor(wheelPrevFloor)
         }}>
-          <button className="floor-wheel-btn floor-wheel-btn-prev" disabled={wheelPrevFloor == null || wheelPrevFloor === currentFloorNo}
-            onClick={() => wheelPrevFloor != null && jumpToFloor(wheelPrevFloor)}>
-            {wheelPrevFloor ?? currentFloorNo}F
-          </button>
-          <div className="floor-wheel-current">
-            <span className="floor-wheel-label">{t('floor_jump')}</span>
-            <strong>{currentFloorNo}F</strong>
-          </div>
-          <button className="floor-wheel-btn floor-wheel-btn-next" disabled={wheelNextFloor == null || wheelNextFloor === currentFloorNo}
-            onClick={() => wheelNextFloor != null && jumpToFloor(wheelNextFloor)}>
-            {wheelNextFloor ?? currentFloorNo}F
-          </button>
+          {floorWheelCollapsed ? (
+            <button className="floor-wheel-collapse-toggle floor-wheel-expand" type="button"
+              onClick={toggleFloorWheel} title={t('expand_floor_wheel')} aria-label={t('expand_floor_wheel')}>
+              ≡
+            </button>
+          ) : (
+            <>
+              <button className="floor-wheel-btn floor-wheel-btn-prev" disabled={wheelPrevFloor == null || wheelPrevFloor === currentFloorNo}
+                onClick={() => wheelPrevFloor != null && jumpToFloor(wheelPrevFloor)}>
+                {wheelPrevFloor ?? currentFloorNo}F
+              </button>
+              <div className="floor-wheel-current">
+                <span className="floor-wheel-label">{t('floor_jump')}</span>
+                <strong>{currentFloorNo}F</strong>
+              </div>
+              <button className="floor-wheel-btn floor-wheel-btn-next" disabled={wheelNextFloor == null || wheelNextFloor === currentFloorNo}
+                onClick={() => wheelNextFloor != null && jumpToFloor(wheelNextFloor)}>
+                {wheelNextFloor ?? currentFloorNo}F
+              </button>
+              <button className="floor-wheel-collapse-toggle" type="button"
+                onClick={toggleFloorWheel} title={t('collapse_floor_wheel')} aria-label={t('collapse_floor_wheel')}>
+                −
+              </button>
+            </>
+          )}
         </div>
       )}
 
