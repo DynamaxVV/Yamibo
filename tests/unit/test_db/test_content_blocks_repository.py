@@ -85,6 +85,34 @@ class TestUpsertBlocks:
         assert rows[1]["text"] == "second"
         assert rows[2]["text"] == "third"
 
+    def test_list_orders_blocks_by_floor_then_position(self, db):
+        db.execute(
+            """
+            INSERT INTO threads (tid, raw_title, display_title, sync_time, image_count, archive_status)
+            VALUES (556, 'raw', 'display', '2026-08-24T00:00:00+00:00', 0, 'complete')
+            """
+        )
+        db.executemany(
+            "INSERT INTO floors (pid, tid, floor_no, content, has_images) VALUES (?, 556, ?, '', 0)",
+            [(5561, 1), (5562, 2)],
+        )
+        repo = ContentBlocksRepository(db)
+        repo.upsert_blocks(tid=556, blocks=[
+            ContentBlock(block_id="f2-text", pid=5562, order_index=0, block_type="text", text="floor 2"),
+            ContentBlock(block_id="f1-image", pid=5561, order_index=1, block_type="image"),
+            ContentBlock(block_id="f1-text", pid=5561, order_index=0, block_type="text", text="floor 1"),
+            ContentBlock(block_id="f2-image", pid=5562, order_index=1, block_type="image"),
+        ])
+
+        rows = repo.list_blocks(556)
+
+        assert [(row["pid"], row["order_index"]) for row in rows] == [
+            (5561, 0),
+            (5561, 1),
+            (5562, 0),
+            (5562, 1),
+        ]
+
     def test_unknown_block_type_preserved(self, db):
         # Arrange
         repo = ContentBlocksRepository(db)

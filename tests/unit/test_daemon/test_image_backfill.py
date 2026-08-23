@@ -4,6 +4,7 @@ import threading
 import time
 from types import SimpleNamespace
 from contextlib import contextmanager
+from dataclasses import replace
 
 import pytest
 
@@ -12,6 +13,8 @@ from yamibo_mcp.daemon.handlers.image_backfill import (
     _local_assets_by_url,
     _image_slot_overrides_from_assets,
     _merge_assets,
+    _merge_page_snapshots,
+    _merge_remote_into_local,
     _missing_urls_from_assets,
     _refresh_metadata_from_asset_rows,
     _resolve_selected_remote_urls,
@@ -85,6 +88,53 @@ def _snapshot(tid: int, image_urls: list[str]) -> ThreadSnapshot:
         ],
         image_count=len(image_urls),
     )
+
+
+def test_merge_page_snapshots_reindexes_page_local_floor_numbers():
+    base = _snapshot(127, [])
+    page_one = replace(
+        base,
+        floors=[
+            replace(base.floors[0], pid=1271, floor_no=1),
+            replace(base.floors[1], pid=1272, floor_no=2),
+        ],
+    )
+    page_two = replace(
+        base,
+        floors=[
+            replace(base.floors[0], pid=1273, floor_no=1),
+            replace(base.floors[1], pid=1274, floor_no=2),
+        ],
+    )
+
+    merged = _merge_page_snapshots([page_one, page_two])
+
+    assert [floor.pid for floor in merged.floors] == [1271, 1272, 1273, 1274]
+    assert [floor.floor_no for floor in merged.floors] == [1, 2, 3, 4]
+
+
+def test_merge_remote_into_local_preserves_existing_floor_numbers_and_appends_new_pids():
+    local = _snapshot(128, [])
+    remote = replace(
+        local,
+        floors=[
+            replace(
+                local.floors[1],
+                floor_no=1,
+                image_urls=["https://example.invalid/refreshed.jpg"],
+            ),
+            replace(local.floors[0], pid=1283, floor_no=2, content="new reply"),
+        ],
+    )
+
+    merged = _merge_remote_into_local(local, remote)
+
+    assert [(floor.pid, floor.floor_no) for floor in merged.floors] == [
+        (1281, 1),
+        (1282, 2),
+        (1283, 3),
+    ]
+    assert merged.floors[1].image_urls == ["https://example.invalid/refreshed.jpg"]
 
 
 def test_image_backfill_diff_skips_existing_static_shared_asset(tmp_path):

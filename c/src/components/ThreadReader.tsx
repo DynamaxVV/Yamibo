@@ -341,6 +341,10 @@ export function ThreadReader({ tid, source, contentKind, floors: floorSource, im
   const visibleFloorGroups = isNovel && totalPagesProp != null
     ? floorGroups.slice((effectivePreviewPage - 1) * pageSize, effectivePreviewPage * pageSize)
     : floorGroups
+  const floorTargetPidByNo = new Map<number, number>()
+  for (const floor of visibleFloorGroups) {
+    if (!floorTargetPidByNo.has(floor.floor_no)) floorTargetPidByNo.set(floor.floor_no, floor.pid)
+  }
 
   // 只要帖子有图片就在阅读预览下显示图片宽度调节
   const showImageWidthToolbar = floorGroups.some(fg => fg.imageSlots.length > 0 || fg.contentImages.length > 0)
@@ -700,24 +704,26 @@ export function ThreadReader({ tid, source, contentKind, floors: floorSource, im
       )}
 
       <div className="reading-view" style={{ '--img-pct': `${imgWidth}%`, fontSize: `${readingConfig.textSize}%`, ...readingViewStyle } as CSSProperties}>
-        {visibleFloorGroups.map(fg => (
-          <div key={fg.pid} className="floor-row" id={`floor-${fg.floor_no}`}
-            ref={node => { floorRefs.current.set(fg.floor_no, node) }}>
-            <div className="floor-sidebar">
-              <div className="floor-no">{fg.floor_no}F</div>
-              {fg.publisher_uid && (
-                <img
-                  className="floor-avatar"
-                  src={`https://bbs.yamibo.com/uc_server/avatar.php?uid=${fg.publisher_uid}&size=middle`}
-                  loading="lazy"
-                  alt=""
-                />
-              )}
-              <div className="floor-publisher">{fg.publisher || '-'}</div>
-              {fg.pub_time && <div className="floor-time">{formatDateTime(fg.pub_time)}</div>}
-              <div className="floor-pid" id={`pid-${fg.pid}`}>#{fg.pid}</div>
-            </div>
-            <div className={`floor-content${isNovel ? ' floor-content-novel' : ''}`}>
+        {visibleFloorGroups.map(fg => {
+          const isFloorTarget = floorTargetPidByNo.get(fg.floor_no) === fg.pid
+          return (
+            <div key={fg.pid} className="floor-row" id={isFloorTarget ? `floor-${fg.floor_no}` : `floor-${fg.floor_no}-${fg.pid}`}
+              ref={node => { if (isFloorTarget) floorRefs.current.set(fg.floor_no, node) }}>
+              <div className="floor-sidebar">
+                <div className="floor-no">{fg.floor_no}F</div>
+                {fg.publisher_uid && (
+                  <img
+                    className="floor-avatar"
+                    src={`https://bbs.yamibo.com/uc_server/avatar.php?uid=${fg.publisher_uid}&size=middle`}
+                    loading="lazy"
+                    alt=""
+                  />
+                )}
+                <div className="floor-publisher">{fg.publisher || '-'}</div>
+                {fg.pub_time && <div className="floor-time">{formatDateTime(fg.pub_time)}</div>}
+                <div className="floor-pid" id={`pid-${fg.pid}`}>#{fg.pid}</div>
+              </div>
+              <div className={`floor-content${isNovel ? ' floor-content-novel' : ''}`}>
               {fg.richBodyHtml ? (
                 <div className={`floor-text floor-rich-body${isNovel ? ' floor-rich-body-novel' : ''}`}
                   dangerouslySetInnerHTML={{ __html: fg.richBodyHtml }} />
@@ -759,9 +765,10 @@ export function ThreadReader({ tid, source, contentKind, floors: floorSource, im
                   })}
                 </div>
               )}
+              </div>
             </div>
-          </div>
-        ))}
+          )
+        })}
       </div>
 
       {isNovel && (

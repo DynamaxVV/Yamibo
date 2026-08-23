@@ -35,7 +35,14 @@ class ContentBlocksRepository:
 
     def list_blocks(self, tid: int) -> list[sqlite3.Row]:
         return self.conn.execute(
-            "SELECT * FROM content_blocks WHERE tid = ? ORDER BY order_index ASC",
+            """
+            SELECT blocks.*
+            FROM content_blocks AS blocks
+            LEFT JOIN floors AS floors
+              ON floors.tid = blocks.tid AND floors.pid = blocks.pid
+            WHERE blocks.tid = ?
+            ORDER BY floors.floor_no ASC, blocks.order_index ASC, blocks.id ASC
+            """,
             (tid,),
         ).fetchall()
 
@@ -44,7 +51,14 @@ class ContentBlocksRepository:
             return []
         placeholders = ",".join("?" for _ in pids)
         return self.conn.execute(
-            f"SELECT * FROM content_blocks WHERE tid = ? AND pid IN ({placeholders}) ORDER BY order_index ASC",
+            f"""
+            SELECT blocks.*
+            FROM content_blocks AS blocks
+            LEFT JOIN floors AS floors
+              ON floors.tid = blocks.tid AND floors.pid = blocks.pid
+            WHERE blocks.tid = ? AND blocks.pid IN ({placeholders})
+            ORDER BY floors.floor_no ASC, blocks.order_index ASC, blocks.id ASC
+            """,
             (tid, *pids),
         ).fetchall()
 

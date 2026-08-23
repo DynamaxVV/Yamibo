@@ -143,6 +143,30 @@ class TestFloorValidation:
         result = validate_thread_snapshot(snapshot)
         assert any("floor_no must be positive" in e for e in result.errors)
 
+    def test_duplicate_floor_no_is_error(self):
+        floors = [
+            _make_floor(pid=1000, floor_no=1),
+            _make_floor(pid=1001, floor_no=1),
+        ]
+        result = validate_thread_snapshot(_make_snapshot(floors=floors))
+        assert any("floor_no values must be unique" in error for error in result.errors)
+
+    def test_floor_no_gap_is_error(self):
+        floors = [
+            _make_floor(pid=1000, floor_no=1),
+            _make_floor(pid=1001, floor_no=3),
+        ]
+        result = validate_thread_snapshot(_make_snapshot(floors=floors))
+        assert any("floor_no sequence must be contiguous" in error for error in result.errors)
+
+    def test_floor_no_out_of_order_is_error(self):
+        floors = [
+            _make_floor(pid=1000, floor_no=2),
+            _make_floor(pid=1001, floor_no=1),
+        ]
+        result = validate_thread_snapshot(_make_snapshot(floors=floors))
+        assert any("floor_no sequence must be contiguous" in error for error in result.errors)
+
     def test_primary_floor_empty_no_images_is_error(self):
         floor = _make_floor(content="", has_images=False)
         snapshot = _make_snapshot(floors=[floor])

@@ -23,13 +23,14 @@ from yamibo_mcp.db.repositories.job_events import JobEventsRepository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
 from yamibo_mcp.domain.content import build_content_snapshot
 from yamibo_mcp.domain.models import FloorSnapshot, Job, ThreadSnapshot, TitleSnapshot
+from yamibo_mcp.domain.validation import validate_floor_sequence
 from yamibo_mcp.storage.images import download_images_to_staging
 from yamibo_mcp.storage.images import _is_valid_image_file
 from yamibo_mcp.storage.atomic import atomic_write_text
 from yamibo_mcp.storage.paths import StoragePaths
 from yamibo_mcp.storage.thread_archive import materialize_thread
 from yamibo_mcp.daemon.handlers.update_thread import _load_local_thread_snapshot
-from yamibo_mcp.daemon.handlers.sync_thread import _check_cancelled, _check_paused
+from yamibo_mcp.daemon.handlers.sync_thread import _check_cancelled, _check_paused, _merge_thread_snapshots
 from yamibo_mcp.errors import (
     ThreadPermissionRequiredError,
     UnexpectedPageError,
@@ -125,6 +126,13 @@ def handle_image_backfill(
                 },
             )
             return
+    if not dry_run:
+        floor_sequence_errors = validate_floor_sequence(local_snapshot.floors)
+        if floor_sequence_errors:
+            raise ValueError(
+                "local floor sequence is invalid; full resync required: "
+                + "; ".join(floor_sequence_errors)
+            )
     archive_generation = _archive_generation(thread, fixed_after=fixed_after)
     direct_first = _prefers_direct_transport(job)
     direct = direct_first
@@ -835,19 +843,7 @@ def _local_assets_by_url(rows) -> dict[str, _LocalAsset]:
 
 
 def _merge_page_snapshots(snapshots) -> Any:
-    if not snapshots:
-        raise ValueError("cannot merge empty image_backfill snapshot list")
-    primary = snapshots[0]
-    floors = []
-    seen_pids: set[int] = set()
-    for snapshot in snapshots:
-        for floor in snapshot.floors:
-            if floor.pid in seen_pids:
-                continue
-            seen_pids.add(floor.pid)
-            floors.append(floor)
-    floors.sort(key=lambda floor: (floor.floor_no, floor.pid))
-    return replace(primary, floors=floors, image_count=sum(len(floor.image_urls) for floor in floors))
+    return _merge_thread_snapshots(snapshots)
 
 
 def _load_local_snapshot_for_backfill(paths: StoragePaths, conn, thread_row) -> ThreadSnapshot:
@@ -914,15 +910,27 @@ def _merge_remote_into_local(local_snapshot, remote_snapshot):
     merged_floors = []
     seen_pids: set[int] = set()
     for floor in local_snapshot.floors:
-        merged = remote_by_pid.get(floor.pid, floor)
+        remote_floor = remote_by_pid.get(floor.pid)
+        if remote_floor is None:
+            merged = floor
+        else:
+            image_urls = list(remote_floor.image_urls or floor.image_urls)
+            merged = replace(
+                floor,
+                has_images=bool(image_urls) or floor.has_images or remote_floor.has_images,
+                image_urls=image_urls,
+                rich_body_html=remote_floor.rich_body_html or floor.rich_body_html,
+            )
         merged_floors.append(merged)
         seen_pids.add(floor.pid)
+    next_floor_no = len(merged_floors) + 1
     for floor in remote_snapshot.floors:
         if floor.pid not in seen_pids:
-            merged_floors.append(floor)
-    merged_floors.sort(key=lambda floor: (floor.floor_no, floor.pid))
+            merged_floors.append(replace(floor, floor_no=next_floor_no))
+            seen_pids.add(floor.pid)
+            next_floor_no += 1
     return replace(
-        remote_snapshot,
+        local_snapshot,
         floors=merged_floors,
         image_count=sum(len(floor.image_urls) if floor.image_urls else int(floor.has_images) for floor in merged_floors),
     )

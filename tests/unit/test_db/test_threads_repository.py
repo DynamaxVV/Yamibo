@@ -228,6 +228,36 @@ class TestTitleParseAndFloors:
         assert floors[1]["floor_no"] == 2
         assert floors[1]["content"] == "第二层"
 
+    def test_list_floors_uses_pid_as_stable_tiebreaker(self, db):
+        repo = ThreadsRepository(db)
+        snapshot = _make_snapshot(
+            tid=3004,
+            floors=[
+                _make_floor(pid=3202, tid=3004, floor_no=1),
+                _make_floor(pid=3201, tid=3004, floor_no=2),
+            ],
+        )
+        repo.upsert_snapshot(snapshot)
+        # Simulate legacy corrupt data without weakening the write contract.
+        db.execute("UPDATE floors SET floor_no = 1 WHERE tid = ? AND pid = ?", (3004, 3201))
+
+        floors = repo.list_floors(3004)
+
+        assert [floor["pid"] for floor in floors] == [3201, 3202]
+
+    def test_upsert_rejects_noncanonical_floor_sequence(self, db):
+        repo = ThreadsRepository(db)
+        snapshot = _make_snapshot(
+            tid=3005,
+            floors=[
+                _make_floor(pid=3301, tid=3005, floor_no=1),
+                _make_floor(pid=3302, tid=3005, floor_no=1),
+            ],
+        )
+
+        with pytest.raises(ValueError, match="invalid floor sequence"):
+            repo.upsert_snapshot(snapshot)
+
     def test_upsert_removes_stale_floors_for_same_thread(self, db):
         repo = ThreadsRepository(db)
         repo.upsert_snapshot(

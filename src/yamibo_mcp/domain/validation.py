@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from yamibo_mcp.domain.models import ThreadSnapshot
+from yamibo_mcp.domain.models import FloorSnapshot, ThreadSnapshot
 
 
 @dataclass(frozen=True)
@@ -68,6 +68,20 @@ def empty_primary_floor_exclusion_reason(snapshot: ThreadSnapshot) -> str | None
     return "empty_primary_without_external_reply"
 
 
+def validate_floor_sequence(floors: list[FloorSnapshot]) -> list[str]:
+    """Validate the canonical per-thread floor numbering contract."""
+    floor_numbers = [floor.floor_no for floor in floors]
+    errors: list[str] = []
+    if len(set(floor_numbers)) != len(floor_numbers):
+        errors.append("floor_no values must be unique within a thread")
+    expected = list(range(1, len(floor_numbers) + 1))
+    if floor_numbers != expected:
+        errors.append(
+            f"floor_no sequence must be contiguous from 1 to {len(floor_numbers)}; got {floor_numbers}"
+        )
+    return errors
+
+
 def validate_thread_snapshot(snapshot: ThreadSnapshot) -> ValidationResult:
     errors: list[str] = []
     warnings: list[str] = []
@@ -82,6 +96,8 @@ def validate_thread_snapshot(snapshot: ThreadSnapshot) -> ValidationResult:
         errors.append("display_title is required")
     if not snapshot.floors:
         errors.append("at least one floor is required")
+    else:
+        errors.extend(validate_floor_sequence(snapshot.floors))
     if not snapshot.title.display_title:
         errors.append("title.display_title is required")
     if not snapshot.title.core_title_guess:

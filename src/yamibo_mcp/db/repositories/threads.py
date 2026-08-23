@@ -5,6 +5,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 from yamibo_mcp.domain.models import ThreadSnapshot
+from yamibo_mcp.domain.validation import validate_floor_sequence
 from yamibo_mcp.domain.content import build_content_snapshot
 from yamibo_mcp.db.repositories.series import SeriesRepository
 from yamibo_mcp.db.repositories.postgres_search import search_threads_postgres
@@ -134,6 +135,11 @@ class ThreadsRepository:
         missing_image_urls: list[str] | None = None,
         title_warnings: dict[str, object] | None = None,
     ) -> None:
+        floor_sequence_errors = validate_floor_sequence(snapshot.floors)
+        if floor_sequence_errors:
+            raise ValueError(
+                "invalid floor sequence: " + "; ".join(floor_sequence_errors)
+            )
         now = utc_now_iso()
         max_pid = max((floor.pid for floor in snapshot.floors), default=None)
         content = build_content_snapshot(snapshot, forum_id=forum_id)
@@ -1227,7 +1233,7 @@ class ThreadsRepository:
 
     def list_floors(self, tid: int) -> list[sqlite3.Row]:
         return self.conn.execute(
-            "SELECT * FROM floors WHERE tid = ? ORDER BY floor_no ASC",
+            "SELECT * FROM floors WHERE tid = ? ORDER BY floor_no ASC, pid ASC",
             (tid,),
         ).fetchall()
 
@@ -1252,7 +1258,7 @@ class ThreadsRepository:
 
     def list_floors_page(self, tid: int, *, limit: int, offset: int) -> list[sqlite3.Row]:
         return self.conn.execute(
-            "SELECT * FROM floors WHERE tid = ? ORDER BY floor_no ASC LIMIT ? OFFSET ?",
+            "SELECT * FROM floors WHERE tid = ? ORDER BY floor_no ASC, pid ASC LIMIT ? OFFSET ?",
             (tid, limit, offset),
         ).fetchall()
 
@@ -1275,6 +1281,6 @@ class ThreadsRepository:
             params.append(floor_end)
         params.extend([limit, offset])
         return self.conn.execute(
-            f"SELECT * FROM floors WHERE {' AND '.join(where)} ORDER BY floor_no ASC LIMIT ? OFFSET ?",
+            f"SELECT * FROM floors WHERE {' AND '.join(where)} ORDER BY floor_no ASC, pid ASC LIMIT ? OFFSET ?",
             params,
         ).fetchall()
