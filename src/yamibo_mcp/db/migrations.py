@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   job_id TEXT PRIMARY KEY,
   parent_job_id TEXT,
   job_type TEXT NOT NULL,
+  priority INTEGER NOT NULL DEFAULT 0,
   tid INTEGER,
   payload_json TEXT NOT NULL DEFAULT '{}',
   status TEXT NOT NULL,
@@ -323,6 +324,7 @@ def migrate(conn: Any, *, schema: str | None = None) -> None:
     _ensure_column(conn, "threads", "remote_observed_at", "TEXT")
     _ensure_column(conn, "threads", "remote_observed_from", "TEXT")
     _ensure_column(conn, "jobs", "paused_at", "TEXT")
+    _ensure_column(conn, "jobs", "priority", "INTEGER NOT NULL DEFAULT 0")
     _backfill_thread_forum_fields(conn)
     _ensure_column(conn, "forums", "name_en", "TEXT")
     _ensure_column(conn, "floors", "quote_text", "TEXT")

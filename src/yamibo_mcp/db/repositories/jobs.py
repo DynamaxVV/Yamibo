@@ -112,6 +112,7 @@ def _job_from_row(row: sqlite3.Row) -> Job:
         created_at=row["created_at"],
         updated_at=row["updated_at"],
         finished_at=row["finished_at"],
+        priority=int(row["priority"] or 0) if "priority" in row.keys() else 0,
     )
 
 
@@ -394,6 +395,7 @@ class JobsRepository:
             WHERE status IN (?, ?, ?)
               AND (lease_until IS NULL OR lease_until < ?)
             ORDER BY
+              priority ASC,
               CASE WHEN job_type = 'daily_sign_in' THEN -1 ELSE 0 END ASC,
               CASE
                 WHEN status = ? THEN 0

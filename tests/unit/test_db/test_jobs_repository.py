@@ -10,6 +10,17 @@ from yamibo_mcp.domain.models import Job
 from yamibo_mcp.errors import JobNotFound, LeaseNotAcquired
 
 
+def test_acquire_next_prefers_foreground_over_idle_priority(db):
+    repo = JobsRepository(db)
+    idle = repo.create("image_backfill", tid=1, payload={"internal_auto": True})
+    db.execute("UPDATE jobs SET priority = 100 WHERE job_id = ?", (idle.job_id,))
+    db.commit()
+    foreground = repo.create("sync_thread", tid=2)
+    acquired = repo.acquire_next("worker", 60)
+    assert acquired is not None
+    assert acquired.job_id == foreground.job_id
+
+
 def test_locked_write_retry_retries_database_locked(monkeypatch, db):
     repo = JobsRepository(db)
     calls = {"count": 0}

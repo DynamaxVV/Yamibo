@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+import json
 from types import SimpleNamespace
 from contextlib import contextmanager
 from dataclasses import replace
@@ -17,6 +18,10 @@ from yamibo_mcp.daemon.handlers.image_backfill import (
     _merge_remote_into_local,
     _missing_urls_from_assets,
     _refresh_metadata_from_asset_rows,
+    _reconcile_missing_targets,
+    _foreground_work_available,
+    _expected_target_paths,
+    _metadata_target_positions,
     _resolve_selected_remote_urls,
     _selected_download_retries,
     _snapshot_for_missing_images,
@@ -26,6 +31,7 @@ from yamibo_mcp.daemon.handlers.image_backfill import (
     handle_image_backfill,
 )
 from yamibo_mcp.daemon.image_backfill_scheduler import maybe_enqueue_image_backfill_dry_run
+from yamibo_mcp.daemon import image_backfill_scheduler as scheduler
 from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.db.repositories.job_events import JobEventsRepository
 from yamibo_mcp.db.repositories.system_state import SystemStateRepository
@@ -709,6 +715,97 @@ def test_auto_scheduler_two_threads_enter_candidate_scan_once(monkeypatch):
     assert not second.is_alive()
     assert len(scan_calls) == 1
     assert sorted(results) == [("first", False), ("second", False)]
+
+
+def test_v2_575256_slot_24_attachment_reconciles_without_remote(tmp_path, db, monkeypatch):
+    tid = 575256
+    old = "https://bbs.yamibo.com/forum.php?mod=attachment&aid=MTY0MDQzMnwxNzM%3D&nothumb=yes"
+    current = "https://bbs.yamibo.com/forum.php?mod=attachment&aid=MTY0MDQzMnwyNzQ%3D&nothumb=yes"
+    paths = StoragePaths(tmp_path)
+    image = paths.thread_images_dir(tid) / "floor_001_24.jpg"
+    image.parent.mkdir(parents=True, exist_ok=True)
+    png = bytearray(b"\x89PNG\r\n\x1a\n" + b"\x00" * 108 + b"\x00\x00\x00\x00IEND\xaeB`\x82")
+    png[16:20] = (640).to_bytes(4, "big")
+    png[20:24] = (480).to_bytes(4, "big")
+    image.write_bytes(png)
+    paths.thread_metadata(tid).parent.mkdir(parents=True, exist_ok=True)
+    paths.thread_metadata(tid).write_text(json.dumps({"floors": [{
+        "pid": 41608582, "floor_no": 1, "remote_image_urls": [current],
+        "image_slots": [{"remote_url": current, "local_path": None, "status": "missing"}],
+    }], "archive_status": "partial", "missing_image_urls": [current]}), encoding="utf-8")
+    db.execute("INSERT INTO threads (tid, raw_title, display_title, image_count, archive_status, missing_images_json) VALUES (?, 'x', 'x', 1, 'partial', ?)", (tid, json.dumps([current])))
+    db.execute("INSERT INTO assets (asset_id, tid, pid, asset_type, remote_url, local_path, exportable, status) VALUES ('1640432', ?, 41608582, 'attachment', ?, 'images/floor_001_24.jpg', 1, 'missing')", (tid, old))
+    db.commit()
+
+    monkeypatch.setattr("yamibo_mcp.daemon.handlers.image_backfill.download_images_to_staging", lambda *args, **kwargs: pytest.fail("local reconcile must not download"))
+    monkeypatch.setattr("yamibo_mcp.daemon.handlers.image_backfill.borrow_yamibo_client", lambda *args, **kwargs: pytest.fail("local reconcile must not fetch"))
+    reconciled = _reconcile_missing_targets(db, paths=paths, tid=tid, target_urls=[current])
+
+    assert reconciled == {current}
+    row = db.execute("SELECT remote_url, local_path, status FROM assets WHERE asset_id = '1640432'").fetchone()
+    assert (row["remote_url"], row["local_path"], row["status"]) == (current, "images/floor_001_24.jpg", "downloaded")
+    metadata = json.loads(paths.thread_metadata(tid).read_text(encoding="utf-8"))
+    assert metadata["floors"][0]["image_slots"] == [{"remote_url": current, "local_path": "images/floor_001_24.jpg", "status": "content"}]
+    assert metadata["missing_image_urls"] == []
+    assert metadata["archive_status"] == "complete"
+
+
+def test_v2_missing_slot_24_fallback_preserves_original_target_position(tmp_path):
+    from dataclasses import replace
+
+    tid = 575256
+    old = "https://bbs.yamibo.com/forum.php?mod=attachment&aid=MTY0MDQzMnwxNzM%3D&nothumb=yes"
+    current = "https://bbs.yamibo.com/forum.php?mod=attachment&aid=MTY0MDQzMnwyNzQ%3D&nothumb=yes"
+    source = tmp_path / "slot24.png"
+    png = bytearray(b"\x89PNG\r\n\x1a\n" + b"\x00" * 108 + b"\x00\x00\x00\x00IEND\xaeB`\x82")
+    png[16:20] = (640).to_bytes(4, "big")
+    png[20:24] = (480).to_bytes(4, "big")
+    source.write_bytes(png)
+    target_url = source.as_uri()
+    base = _snapshot(tid, [])
+    urls = [f"https://example.invalid/slot-{index}.jpg" for index in range(1, 24)] + [target_url]
+    first = replace(base.floors[0], pid=41608582, floor_no=1, has_images=True, image_urls=urls)
+    snapshot = replace(base, floors=[first], image_count=24)
+    target_positions = {old: {"pid": 41608582, "floor_no": 1, "image_index": 24}}
+    assert _resolve_selected_remote_urls(snapshot, [old], target_positions) == {}
+    target_positions[current] = {"pid": 41608582, "floor_no": 1, "image_index": 24}
+    rotated_snapshot = replace(first, image_urls=urls[:-1] + [current])
+    assert _resolve_selected_remote_urls(replace(snapshot, floors=[rotated_snapshot]), [old], target_positions) == {old: current}
+    missing = _snapshot_for_missing_images(snapshot, [{"pid": 41608582, "floor_no": 1, "image_index": 24, "url": target_url}])
+    result = download_images_to_staging(StoragePaths(tmp_path), "image_backfill_slot24", missing, target_urls={target_url}, timeout=1)
+    assert result.missing_urls == []
+    assert result.relative_path_by_url[target_url] == "images/floor_001_24.png"
+    assert (tmp_path / "staging/jobs/image_backfill_slot24/images/floor_001_24.png").exists()
+
+
+def test_v2_scheduler_accepts_first_floor_metadata_missing_candidate(db):
+    tid = 575257
+    db.execute("INSERT INTO threads (tid, raw_title, display_title, image_count, archive_status, forum_id, missing_images_json) VALUES (?, 'x', 'x', 1, 'complete', 5, ?)", (tid, json.dumps(["https://bbs.yamibo.com/forum.php?mod=attachment&aid=MTY0MDQzM3wx&nothumb=yes"])))
+    db.execute("INSERT INTO floors (pid, tid, floor_no, content, has_images) VALUES (?, ?, 1, 'first', 1)", (tid + 1, tid))
+    db.commit()
+    result = scheduler._select_candidate_batch(JobsRepository(db), _scheduler_settings(), dry_run=True, cursor_tid=0, campaign="metadata_reconcile_v1")
+    assert result["candidate"]["tid"] == tid
+
+
+def test_v2_foreground_checks_scan_all_rows_and_auto_is_not_foreground(db):
+    repo = JobsRepository(db)
+    auto = repo.create("image_backfill", tid=1, payload={"internal_auto": True, "campaign": "old"})
+    assert scheduler._has_foreground_work(repo) is False
+    assert _foreground_work_available(repo, auto.job_id) is False
+    foreground = repo.create("image_backfill", tid=2, payload={"scope": "selected"})
+    assert scheduler._has_foreground_work(repo) is True
+    assert _foreground_work_available(repo, auto.job_id) is True
+    assert _foreground_work_available(repo, foreground.job_id) is False
+    repo.create("sync_thread", tid=3)
+    assert _foreground_work_available(repo, foreground.job_id) is True
+
+
+def test_v2_any_live_auto_campaign_blocks_but_terminal_old_campaign_does_not(db):
+    repo = JobsRepository(db)
+    old = repo.create("image_backfill", tid=10, payload={"internal_auto": True, "campaign": "old"})
+    assert scheduler._has_live_automatic_job(repo, campaign="metadata_reconcile_v1", fingerprint="new") is True
+    repo.succeed(old.job_id)
+    assert scheduler._has_live_automatic_job(repo, campaign="metadata_reconcile_v1", fingerprint="new") is False
 
 
 def test_image_backfill_apply_downloads_and_persists_missing_images(db, tmp_path, monkeypatch):

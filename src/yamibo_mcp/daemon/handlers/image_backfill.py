@@ -49,6 +49,45 @@ from yamibo_mcp.yamibo.urls import remote_image_identity, stable_attachment_id
 LOG = logging.getLogger(__name__)
 
 
+def _foreground_work_available(repo: JobsRepository, job_id: str) -> bool:
+    # A foreground export can hand off its own image repair as a child job.
+    # The parent remains retrying while this child runs, but that dependency
+    # must not make the child yield to the foreground job that is waiting for
+    # it.  Other unrelated foreground jobs still retain priority.
+    ignored_job_ids = {job_id}
+    cursor = job_id
+    for _ in range(8):
+        parent_row = repo.conn.execute(
+            "SELECT parent_job_id FROM jobs WHERE job_id = ?",
+            (cursor,),
+        ).fetchone()
+        parent_job_id = parent_row["parent_job_id"] if parent_row is not None else None
+        if not parent_job_id or str(parent_job_id) in ignored_job_ids:
+            break
+        parent_job_id = str(parent_job_id)
+        ignored_job_ids.add(parent_job_id)
+        cursor = parent_job_id
+
+    rows = repo.conn.execute(
+        """
+        SELECT job_id, job_type, payload_json FROM jobs
+        WHERE status IN ('queued', 'running', 'retrying', 'interrupted', 'cancel_requested', 'paused')
+        """,
+    ).fetchall()
+    for row in rows:
+        if str(row["job_id"]) in ignored_job_ids:
+            continue
+        payload = row["payload_json"]
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except (TypeError, ValueError):
+                payload = {}
+        if row["job_type"] != "image_backfill" or not bool((payload or {}).get("internal_auto")):
+            return True
+    return False
+
+
 def _safe_image_diagnostic(item: dict[str, Any]) -> dict[str, Any]:
     """Keep job events useful without persisting cookies or query-bearing URLs."""
     result = {key: value for key, value in item.items() if key not in {"url", "final_url"}}
@@ -85,7 +124,8 @@ def handle_image_backfill(
 
     dry_run = bool(job.payload.get("dry_run", True))
     scope = str(job.payload.get("scope") or "non_first_floor").strip().lower()
-    selected_scope = scope == "selected"
+    reconcile_mode = str(job.payload.get("mode") or "").strip().lower() == "reconcile_missing"
+    selected_scope = scope == "selected" or reconcile_mode
     include_first_floor = bool(job.payload.get("include_first_floor", selected_scope))
     target_urls = _unique([str(url) for url in (job.payload.get("target_urls") or []) if str(url).strip()])
 
@@ -101,7 +141,27 @@ def handle_image_backfill(
     local_assets = _local_assets_by_url(AssetsRepository(repo.conn).list_assets(tid))
     local_snapshot = _load_local_snapshot_for_backfill(paths, repo.conn, thread)
     target_positions = _target_positions(paths, tid, job.payload, target_urls)
+    if reconcile_mode and not dry_run and not target_urls:
+        target_urls = _metadata_missing_targets(paths, tid)
+        metadata_positions = _metadata_target_positions(paths, tid)
+        target_positions = {url: metadata_positions[url] for url in target_urls if url in metadata_positions}
     expected_paths = _expected_target_paths(paths, tid, target_positions, target_urls)
+    if reconcile_mode and not dry_run and target_urls:
+        reconciled = _reconcile_missing_targets(
+            repo.conn, paths=paths, tid=tid, target_urls=target_urls,
+        )
+        target_urls = [url for url in target_urls if url not in reconciled]
+        if not target_urls:
+            repo.update_stage(job.job_id, "reconcile", progress_current=4, progress_total=4)
+            repo.succeed(job.job_id, {
+                "tid": tid,
+                "mode": "reconcile_missing",
+                "campaign": job.payload.get("campaign"),
+                "reconciled_image_count": len(reconciled),
+                "downloaded_image_count": 0,
+                "remote_fetch": False,
+            })
+            return
     if selected_scope and target_urls:
         reconciled = _reconcile_selected_targets(
             repo.conn,
@@ -193,6 +253,14 @@ def handle_image_backfill(
         )
         return True
 
+    if reconcile_mode and _foreground_work_available(repo, job.job_id):
+        repo.retry_later(
+            job.job_id,
+            error_code="FOREGROUND_PRIORITY",
+            error_message="foreground work is queued; yielding maintenance job",
+            delay_seconds=1,
+        )
+        return
     repo.update_stage(job.job_id, "fetch_remote", progress_current=2, progress_total=4)
     fetch_lease_seconds = max(
         lease_seconds,
@@ -206,6 +274,14 @@ def handle_image_backfill(
         try:
             _check_cancelled(repo, job.job_id)
             _check_paused(repo, job.job_id)
+            if reconcile_mode and _foreground_work_available(repo, job.job_id):
+                repo.retry_later(
+                    job.job_id,
+                    error_code="FOREGROUND_PRIORITY",
+                    error_message="foreground work appeared; yielding maintenance job",
+                    delay_seconds=1,
+                )
+                return
             ensure_no_maintenance_pause(repo.conn)
 
             with ExitStack() as stack:
@@ -594,6 +670,96 @@ def _target_positions(paths: StoragePaths, tid: int, payload: dict[str, Any], ta
                 "image_index": index,
             }
     return positions
+
+
+def _metadata_target_positions(paths: StoragePaths, tid: int) -> dict[str, dict[str, Any]]:
+    metadata = _load_archive_metadata(paths, tid)
+    positions: dict[str, dict[str, Any]] = {}
+    for floor in metadata.get("floors") or []:
+        if not isinstance(floor, dict):
+            continue
+        for index, raw_url in enumerate(floor.get("remote_image_urls") or floor.get("image_urls") or [], start=1):
+            url = str(raw_url)
+            if url:
+                positions[url] = {
+                    "pid": floor.get("pid"), "floor_no": floor.get("floor_no"), "image_index": index,
+                }
+    return positions
+
+
+def _metadata_missing_targets(paths: StoragePaths, tid: int) -> list[str]:
+    metadata = _load_archive_metadata(paths, tid)
+    targets: list[str] = []
+    for floor in metadata.get("floors") or []:
+        if not isinstance(floor, dict):
+            continue
+        urls = [str(url) for url in floor.get("remote_image_urls") or floor.get("image_urls") or []]
+        slots = floor.get("image_slots") or []
+        for index, url in enumerate(urls):
+            slot = slots[index] if index < len(slots) and isinstance(slots[index], dict) else {}
+            status = str(slot.get("status") or "").strip().lower()
+            local_path = str(slot.get("local_path") or "")
+            path_missing = bool(local_path) and not _is_valid_image_file(
+                _asset_path(tid=tid, local_path=local_path, paths=paths)
+            )
+            if (
+                status != "skipped"
+                and (
+                    status in {"missing", "missing_shared", "pending"}
+                    or not local_path
+                    or path_missing
+                )
+            ):
+                targets.append(url)
+    return _unique(targets)
+
+
+def _reconcile_missing_targets(conn, *, paths: StoragePaths, tid: int, target_urls: list[str]) -> set[str]:
+    """Reconcile rotated attachment signatures from valid local assets, without HTTP."""
+    if not target_urls:
+        return set()
+    rows = AssetsRepository(conn).list_assets(tid)
+    positions = _metadata_target_positions(paths, tid)
+    used: set[str] = set()
+    reconciled: set[str] = set()
+    for url in target_urls:
+        identity = remote_image_identity(url)
+        position = positions.get(url) or {}
+        pid = position.get("pid")
+        candidates = [
+            row for row in rows
+            if str(row["asset_type"]) in {"image", "attachment"}
+            and identity is not None
+            and remote_image_identity(str(row["remote_url"])) == identity
+            and str(row["asset_id"]) not in used
+            and (pid is None or int(row["pid"]) == int(pid))
+        ]
+        row = next((candidate for candidate in candidates if candidate["local_path"]), None)
+        if row is None:
+            continue
+        path = _asset_path(tid=tid, local_path=str(row["local_path"]), paths=paths)
+        if not _is_valid_image_file(path):
+            continue
+        conn.execute(
+            "UPDATE assets SET remote_url = ?, status = 'downloaded' WHERE tid = ? AND asset_id = ?",
+            (url, tid, row["asset_id"]),
+        )
+        used.add(str(row["asset_id"]))
+        reconciled.add(url)
+    if not reconciled:
+        return reconciled
+    metadata = _load_archive_metadata(paths, tid)
+    asset_rows = AssetsRepository(conn).list_assets(tid)
+    missing, missing_shared = _refresh_metadata_from_asset_rows(
+        paths=paths, tid=tid, metadata=metadata, asset_rows=asset_rows,
+    )
+    atomic_write_text(paths.thread_metadata(tid), json.dumps(metadata, ensure_ascii=False, indent=2))
+    conn.execute(
+        "UPDATE threads SET missing_images_json = ?, archive_status = ? WHERE tid = ?",
+        (json.dumps([*missing, *missing_shared], ensure_ascii=False), metadata["archive_status"], tid),
+    )
+    conn.commit()
+    return reconciled
 
 
 def _suffix_for_target(url: str, metadata: dict[str, Any] | None = None) -> str:

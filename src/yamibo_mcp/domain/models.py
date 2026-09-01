@@ -27,6 +27,7 @@ class Job:
     created_at: str
     updated_at: str
     finished_at: str | None
+    priority: int = 0
 
 
 @dataclass(frozen=True)
