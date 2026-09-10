@@ -140,6 +140,12 @@ export function Dashboard() {
   if (error) return <div className="panel" style={{ color: 'var(--status-error)' }}>{error}</div>
   if (!data) return <div className="panel" style={{ color: 'var(--text-tertiary)' }}>{t('loading')}</div>
 
+  const forumCountEntries = new Map<string, number>()
+  Object.entries(data.forum_counts).forEach(([fid, count]) => {
+    const name = forumNames[Number(fid)] || t('unknown_forum')
+    forumCountEntries.set(name, (forumCountEntries.get(name) ?? 0) + count)
+  })
+
   return (
     <>
       {data.remote_access_pause?.active && (
@@ -179,9 +185,9 @@ export function Dashboard() {
           <div className="stat-body">
             <div className="value">{data.thread_count}</div>
             <div className="stat-forum-counts">
-              {Object.entries(data.forum_counts).map(([fid, cnt]) => (
-                <span key={fid}>
-                  {forumNames[Number(fid)] || fid} <b>{cnt}</b>
+              {Array.from(forumCountEntries, ([name, count]) => (
+                <span key={name}>
+                  {name} <b>{count}</b>
                 </span>
               ))}
             </div>
