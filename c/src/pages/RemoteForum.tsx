@@ -181,7 +181,7 @@ export function RemoteForum() {
                 <tr><td colSpan={9} style={{ textAlign: 'center', color: 'var(--text-tertiary)' }}>{t('no_data')}</td></tr>
               ) : data.items.map(item => (
                 (() => {
-                  const titleText = formatThreadListTitle(item)
+                  const titleText = formatThreadListTitle({ ...item, chapter_name: null })
                   return (
                     <tr key={item.tid}>
                       <td className="mono col-tid">
