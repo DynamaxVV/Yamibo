@@ -498,3 +498,35 @@ def test_no_schema_bootstrap_in_hosted_context(settings, monkeypatch):
     monkeypatch.setattr(connection, "_bootstrap_sqlite_database", forbidden)
     with connection.existing_schema_only():
         connection.connect(settings).close()
+
+
+def test_failed_run_logs_safe_exception_chain(service, monkeypatch, caplog):
+    import logging
+
+    async def broken(run_id):
+        try:
+            raise TimeoutError('Bearer secret-token https://user:password@example.com')
+        except TimeoutError as cause:
+            raise RuntimeError('private forum content and API key') from cause
+
+    monkeypatch.setattr(service, 'model_run', broken)
+    r = run(service)
+    with caplog.at_level(logging.ERROR):
+        asyncio.run(service.execute(r['run_id']))
+    assert service.get_run(r['run_id'])['status'] == 'failed'
+    assert r['run_id'] in caplog.text
+    assert 'TimeoutError' in caplog.text and 'RuntimeError' in caplog.text
+    assert 'broken' in caplog.text
+    for secret in ('secret-token', 'password', 'private forum content', 'API key'):
+        assert secret not in caplog.text
+
+
+def test_exception_diagnostics_keeps_group_http_status_without_response_body():
+    from yamibo_mcp.services.embedded_chat.runtime import exception_diagnostics
+
+    class ProviderError(Exception):
+        status_code = 401
+
+    result = exception_diagnostics(ExceptionGroup('secret group', [ProviderError('secret body')]))
+    assert result['children'][0]['http_status'] == 401
+    assert 'secret' not in json.dumps(result)

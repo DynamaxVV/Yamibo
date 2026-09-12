@@ -99,3 +99,15 @@ cd c && npm run build
 设置页收到 `CHAT_AUTH_REQUIRED` 时直接显示令牌输入表单，验证成功后加载设置；错误令牌可重试，同标签页刷新保留授权。无需先绕行对话页。
 
 反向代理终止 HTTPS、内部转发 HTTP 时，启用访问令牌的服务允许同一 Host 的 HTTPS Origin；不同 Host 仍拒绝，缺失或错误 Bearer 令牌仍拒绝。此修复需要部署新镜像后生效。
+
+## 运行故障诊断
+
+内置运行器失败时，应用日志输出 `embedded_chat_failed run_id=... diagnostics=...`。包含异常类型、异常链/异常组、HTTP 状态码（如有）和调用位置；不记录异常原文、响应正文、源码行或完整路径，避免凭证和论坛内容泄露。前端继续返回通用错误，详细原因由管理员从日志的结构信息判断。
+
+```bash
+sudo docker compose logs --since=10m yamibo | grep embedded_chat_failed
+```
+
+`TimeoutError` / `ConnectError` 等异常类型可帮助区分超时和连接问题，HTTP 状态可帮助定位认证或请求拒绝；并非所有提供商错误都包含状态码。日志只覆盖部署该修复之后的新请求，无法补回之前被丢弃的异常。
+
+任务事件接口同时修复 PostgreSQL `datetime` 的 JSON 编码：时间字段及嵌套事件数据统一使用 FastAPI 标准编码器，不改变事件分页游标。本次无需数据库迁移。

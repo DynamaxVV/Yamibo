@@ -728,3 +728,20 @@ def test_remote_image_proxy_rejects_localhost(client):
     resp = client.get("/api/remote/image", params={"url": "http://127.0.0.1:8000/a.png"})
     assert resp.status_code == 400
     assert resp.json()["detail"] == "only public http(s) image URLs are supported"
+
+
+def test_job_events_encode_postgres_datetimes(client, monkeypatch):
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    from yamibo_mcp.web_fastapi.routers.jobs import JobEventsRepository
+
+    stamp = datetime(2026, 9, 12, 6, 30, tzinfo=timezone.utc)
+    event = SimpleNamespace(event_id=7, job_id='sample', event_type='stage',
+                            status='running', stage='fetching',
+                            payload={'observed_at': stamp}, created_at=stamp)
+    monkeypatch.setattr(JobEventsRepository, 'list', lambda *a, **kw: [event])
+    response = client.get('/api/jobs/sample/events')
+    assert response.status_code == 200
+    assert response.json()[0]['created_at'] == stamp.isoformat()
+    assert response.json()[0]['payload']['observed_at'] == stamp.isoformat()
+    assert response.headers['X-Next-Event-ID'] == '7'

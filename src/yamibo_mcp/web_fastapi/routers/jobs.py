@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
+from fastapi.encoders import jsonable_encoder
 
 from yamibo_mcp.config import load_settings
 from yamibo_mcp.db.connection import DatabaseConnection
@@ -208,7 +209,7 @@ def job_events(
     events = events[:limit]
     next_since_event_id = events[-1].event_id if events else since_event_id
     return JSONResponse(
-        content=[event_to_dict(event) for event in events],
+        content=jsonable_encoder([event_to_dict(event) for event in events]),
         headers={
             "X-Has-More": "true" if has_more else "false",
             "X-Next-Event-ID": "" if next_since_event_id is None else str(next_since_event_id),
