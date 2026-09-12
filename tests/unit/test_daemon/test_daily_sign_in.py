@@ -9,7 +9,7 @@ from yamibo_mcp.daemon.daily_sign_in_scheduler import _has_daily_job, maybe_enqu
 from yamibo_mcp.daemon.handlers.daily_sign_in import handle_daily_sign_in
 from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.domain.enums import JobStatus, JobType
-from yamibo_mcp.maintenance.sign_in_cache import update_sign_in_cache_account
+from yamibo_mcp.maintenance.sign_in_cache import read_sign_in_cache, update_sign_in_cache_account
 
 
 def _settings(tmp_path: Path, *, account_pool=()):
@@ -80,7 +80,7 @@ def test_daily_scheduler_waits_for_each_account_randomized_minute(db, tmp_path):
     assert maybe_enqueue_daily_sign_ins(repo, settings, now=scheduled_at) == 1
 
 
-def test_daily_scheduler_enqueues_one_startup_status_check_per_account(db, tmp_path):
+def test_daily_scheduler_does_not_enqueue_a_startup_probe(db, tmp_path):
     settings = _settings(
         tmp_path,
         account_pool=(_account("one", tmp_path / "one.cookie"),),
@@ -91,25 +91,17 @@ def test_daily_scheduler_enqueues_one_startup_status_check_per_account(db, tmp_p
         repo,
         settings,
         now=datetime.fromisoformat("2026-08-16T00:30:00+08:00"),
-        startup_check=True,
-    ) == 1
-    assert maybe_enqueue_daily_sign_ins(
-        repo,
-        settings,
-        now=datetime.fromisoformat("2026-08-16T00:30:00+08:00"),
-        startup_check=True,
     ) == 0
-    job = repo.list(limit=None, status=JobStatus.QUEUED.value)[0]
-    assert job.payload["check_only"] is True
+    assert repo.list(limit=None, status=JobStatus.QUEUED.value) == []
 
 
-def test_daily_scheduler_skips_account_checked_by_startup_probe(db, tmp_path):
+def test_daily_scheduler_skips_account_when_cached_last_sign_in_is_today(db, tmp_path):
     settings = _settings(tmp_path, account_pool=(_account("one", tmp_path / "one.cookie"),))
     update_sign_in_cache_account(
         settings,
         "one",
-        {"today_status": "checked"},
-        fetched_at="2026-08-16T00:00:00+08:00",
+        {"today_status": "checked", "recent_checkin": "2026-08-16 04:49:20"},
+        fetched_at="2026-08-15T00:00:00+08:00",
     )
     repo = JobsRepository(db)
 
@@ -118,6 +110,23 @@ def test_daily_scheduler_skips_account_checked_by_startup_probe(db, tmp_path):
         settings,
         now=datetime.fromisoformat("2026-08-16T02:00:00+08:00"),
     ) == 0
+
+
+def test_daily_scheduler_enqueues_when_cached_last_sign_in_is_not_today(db, tmp_path):
+    settings = _settings(tmp_path, account_pool=(_account("one", tmp_path / "one.cookie"),))
+    update_sign_in_cache_account(
+        settings,
+        "one",
+        {"today_status": "checked", "recent_checkin": "2026-08-15 04:49:20"},
+        fetched_at="2026-08-16T00:00:00+08:00",
+    )
+    repo = JobsRepository(db)
+
+    assert maybe_enqueue_daily_sign_ins(
+        repo,
+        settings,
+        now=datetime.fromisoformat("2026-08-16T02:00:00+08:00"),
+    ) == 1
 
 
 def test_daily_sign_in_handler_checks_status_without_clicking(monkeypatch, db, tmp_path):
@@ -212,3 +221,5 @@ def test_daily_sign_in_handler_borrows_the_job_account(monkeypatch, db, tmp_path
 
     assert calls == [{"account_id": "two", "proxy_url": None, "force_direct": True}, "borrow", "sign", "release"]
     assert repo.get(job.job_id).status == JobStatus.SUCCEEDED.value
+    assert repo.get(job.job_id).artifacts["local_day"] == "2026-08-16"
+    assert read_sign_in_cache(_settings(tmp_path))["two"]["data"]["recent_checkin"] == "2026-08-16"

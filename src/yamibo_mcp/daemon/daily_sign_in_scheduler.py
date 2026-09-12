@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from yamibo_mcp.config import Settings
 from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.domain.enums import JobStatus, JobType
-from yamibo_mcp.maintenance.sign_in_cache import is_fresh, read_sign_in_cache
+from yamibo_mcp.maintenance.sign_in_cache import last_sign_in_day, read_sign_in_cache
 from yamibo_mcp.yamibo.account_pool import get_account_identities
 
 LOG = logging.getLogger(__name__)
@@ -24,36 +24,22 @@ def maybe_enqueue_daily_sign_ins(
     settings: Settings,
     *,
     now: datetime | None = None,
-    startup_check: bool = False,
 ) -> int:
-    """Optionally check today's status on startup, then enqueue randomized sign-ins."""
+    """After 01:00, enqueue a sign-in only when the cache is not from today."""
     current = (now or datetime.now(LOCAL_TIMEZONE)).astimezone(LOCAL_TIMEZONE)
+    if current.hour < SIGN_IN_HOUR:
+        return 0
     local_day = current.date().isoformat()
     day_key = int(current.strftime("%Y%m%d"))
     created = 0
     identities = get_account_identities(settings)
-    if startup_check:
-        for identity in identities:
-            if _has_daily_job(repo, day_key=day_key, account_id=identity.account_id, local_day=local_day, check_only=True):
-                continue
-            repo.create(
-                JobType.DAILY_SIGN_IN.value,
-                tid=day_key,
-                payload={"account_id": identity.account_id, "local_day": local_day, "check_only": True},
-                max_retries=1,
-            )
-            created += 1
-
-    if current.hour < SIGN_IN_HOUR:
-        return created
-
     sign_in_cache = read_sign_in_cache(settings)
     for identity in identities:
         if _has_daily_job(repo, day_key=day_key, account_id=identity.account_id, local_day=local_day, check_only=False):
             continue
         cache_entry = sign_in_cache.get(identity.account_id) or {}
-        cache_data = cache_entry.get("data") if isinstance(cache_entry, dict) else None
-        if is_fresh(cache_entry, now=current) and isinstance(cache_data, dict) and cache_data.get("today_status") == "checked":
+        cached_day = last_sign_in_day(cache_entry)
+        if cached_day == local_day:
             LOG.info("Skipping daily sign-in for already checked account_id=%s local_day=%s", identity.account_id, local_day)
             continue
         scheduled_at = scheduled_sign_in_time(local_day=local_day, account_id=identity.account_id)

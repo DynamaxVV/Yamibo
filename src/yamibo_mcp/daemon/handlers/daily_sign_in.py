@@ -54,7 +54,7 @@ def handle_daily_sign_in(
     update_sign_in_cache_account(
         settings,
         identity.account_id,
-        profile or {"today_status": "checked"},
+        profile or {"today_status": "checked", "recent_checkin": day},
         refresh_timestamp=profile is not None,
     )
     repo.succeed(

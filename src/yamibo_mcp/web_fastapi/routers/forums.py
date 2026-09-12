@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -22,6 +23,7 @@ from yamibo_mcp.yamibo.client import parse_daily_checkin_profile
 from yamibo_mcp.yamibo.proxy_pool import select_random_proxy
 
 router = APIRouter(prefix="/api", tags=["forums"])
+_LOCAL_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
 
 def _empty_sign_in_account(account_id: str) -> dict[str, object]:
@@ -141,7 +143,10 @@ def manual_sign_in(request: SignInRequest, settings=Depends(get_settings)):
     update_sign_in_cache_account(
         settings,
         identity.account_id,
-        profile or {"today_status": "checked"},
+        profile or {
+            "today_status": "checked",
+            "recent_checkin": datetime.now(_LOCAL_TIMEZONE).isoformat(sep=" ", timespec="seconds"),
+        },
         refresh_timestamp=profile is not None,
     )
     return {

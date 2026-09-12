@@ -51,6 +51,21 @@ def is_fresh(entry: dict[str, Any], *, now: datetime | None = None) -> bool:
     return 0 <= (current - fetched).total_seconds() < SIGN_IN_CACHE_REFRESH_SECONDS
 
 
+def last_sign_in_day(entry: dict[str, Any]) -> str | None:
+    """Return the local calendar day represented by a cached sign-in profile."""
+    data = entry.get("data") if isinstance(entry, dict) else None
+    recent_checkin = data.get("recent_checkin") if isinstance(data, dict) else None
+    if not isinstance(recent_checkin, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(recent_checkin.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(_LOCAL_TIMEZONE)
+    return parsed.date().isoformat()
+
+
 def write_sign_in_cache(settings, accounts: dict[str, dict[str, Any]]) -> None:
     payload = {
         "version": 1,

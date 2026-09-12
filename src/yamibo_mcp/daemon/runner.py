@@ -145,7 +145,6 @@ class DaemonRunner:
     def __init__(self, settings: Settings, worker_id: str | None = None):
         self.settings = settings
         self.worker_id = worker_id or settings.worker_id or f"daemon_{uuid4().hex[:12]}"
-        self._daily_sign_in_startup_checked = False
         self._last_worker_heartbeat = 0.0
 
     def _current_settings(self) -> Settings:
@@ -168,12 +167,7 @@ class DaemonRunner:
             recover_expired_jobs(repo)
             _restore_444_events(conn)
             try:
-                maybe_enqueue_daily_sign_ins(
-                    repo,
-                    settings,
-                    startup_check=not self._daily_sign_in_startup_checked,
-                )
-                self._daily_sign_in_startup_checked = True
+                maybe_enqueue_daily_sign_ins(repo, settings)
             except Exception:
                 LOG.exception("Daily sign-in scheduler failed")
 
