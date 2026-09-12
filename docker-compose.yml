@@ -113,7 +113,8 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8000/sse"]
+      # SSE stays open by design; only verify that the server sends headers.
+      test: ["CMD", "python", "-c", "import urllib.request; response = urllib.request.urlopen('http://127.0.0.1:8000/sse', timeout=2); response.close()"]
       interval: 30s
       timeout: 5s
       retries: 5
