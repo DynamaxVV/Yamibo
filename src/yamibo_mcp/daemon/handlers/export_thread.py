@@ -8,7 +8,7 @@ from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
 from yamibo_mcp.domain.forums import resolve_forum
 from yamibo_mcp.domain.models import Job
-from yamibo_mcp.domain.enums import JobType
+from yamibo_mcp.domain.enums import JobStatus, JobType
 from yamibo_mcp.storage.exports import (
     ExportPrecheckError,
     export_thread_txt,
@@ -20,6 +20,15 @@ from yamibo_mcp.storage.paths import StoragePaths
 from yamibo_mcp.daemon.handlers.sync_thread import handle_sync_thread
 from yamibo_mcp.daemon.handlers.sync_thread import JobCancelled, _check_cancelled
 from yamibo_mcp.yamibo.urls import thread_url_from_tid
+
+
+_EXPORT_IMAGE_BACKFILL_DELAY_SECONDS = 5
+_LIVE_IMAGE_BACKFILL_STATUSES = {
+    JobStatus.QUEUED.value,
+    JobStatus.RUNNING.value,
+    JobStatus.RETRYING.value,
+    JobStatus.INTERRUPTED.value,
+}
 
 
 def handle_export_thread(repo: JobsRepository, job: Job, worker_id: str, lease_seconds: int, settings: Settings) -> None:
@@ -88,20 +97,48 @@ def handle_export_thread(repo: JobsRepository, job: Job, worker_id: str, lease_s
 
     if thread is None:
         raise ValueError(f"thread not found after export precheck: {tid}")
-    if thread["archive_status"] != "complete":
-        missing_urls = json.loads(thread["missing_images_json"] or "[]")
-        if thread["archive_status"] == "partial":
+    readiness_error: ExportPrecheckError | None = None
+    try:
+        readiness = inspect_export_readiness(paths, tid)
+    except ExportPrecheckError as exc:
+        readiness = None
+        readiness_error = exc
+
+    archive_status = str(thread["archive_status"] or "")
+    images_incomplete = (
+        archive_status == "partial"
+        or readiness is None
+        or not readiness.images_complete
+        or not readiness.first_floor_complete
+    )
+    if images_incomplete and strategy != "cache_only" and archive_status in {"", "partial", "complete", "stale"}:
+        _wait_for_export_image_backfill(
+            repo,
+            job,
+            tid=tid,
+            readiness=readiness,
+            readiness_error=readiness_error,
+        )
+        return
+
+    if archive_status != "complete":
+        missing_urls = _thread_missing_image_urls(thread)
+        if archive_status == "partial":
             preview = ", ".join(missing_urls[:2])
             detail = f"; missing_image_count={len(missing_urls)}"
             if preview:
                 detail += f"; missing_image_urls={preview}"
             raise ValueError(f"thread archive is partial: {tid}{detail}")
-        raise ValueError(f"thread archive is not complete: {tid}; archive_status={thread['archive_status']}")
-    readiness = inspect_export_readiness(paths, tid)
+        raise ValueError(f"thread archive is not complete: {tid}; archive_status={archive_status}")
+    if readiness_error is not None:
+        raise readiness_error
     is_novel = thread["content_kind"] == "novel" or thread["forum_id"] == 55
-    if not is_novel and not readiness.images_complete:
+    if not is_novel and (not readiness.images_complete or not readiness.first_floor_complete):
         raise ExportPrecheckError(
-            f"thread archive images are incomplete: missing_urls={readiness.missing_image_count}, missing_files={len(readiness.missing_files)}"
+            "thread archive images are incomplete: "
+            f"missing_urls={readiness.missing_image_count}, "
+            f"missing_files={len(readiness.missing_files)}, "
+            f"first_floor_missing={readiness.first_floor_missing_image_count}"
         )
 
     repo.update_stage(job.job_id, "export_write", progress_current=2, progress_total=4)
@@ -152,3 +189,115 @@ def handle_export_thread(repo: JobsRepository, job: Job, worker_id: str, lease_s
         artifacts["filtered_floors"] = txt_result.filtered_floors
         artifacts["needs_full_regenerate"] = txt_result.needs_full_regenerate
     repo.succeed(job.job_id, artifacts)
+
+
+def _wait_for_export_image_backfill(
+    repo: JobsRepository,
+    job: Job,
+    *,
+    tid: int,
+    readiness,
+    readiness_error: ExportPrecheckError | None,
+) -> None:
+    """Queue missing-image repair and keep the export job pending until it is ready."""
+    artifacts: dict[str, object] = {
+        "export_wait": {
+            "reason": "missing_images",
+            "include_first_floor": True,
+            "first_floor_missing_image_count": (
+                readiness.first_floor_missing_image_count if readiness is not None else None
+            ),
+            "missing_image_count": readiness.missing_image_count if readiness is not None else None,
+            "missing_file_count": len(readiness.missing_files) if readiness is not None else None,
+            "readiness_error": str(readiness_error) if readiness_error is not None else None,
+        }
+    }
+
+    latest_child = _latest_image_backfill_child(repo, job.job_id)
+    backfill_job = None
+    if (
+        latest_child is not None
+        and latest_child.job_type == JobType.IMAGE_BACKFILL.value
+        and latest_child.status in _LIVE_IMAGE_BACKFILL_STATUSES
+    ):
+        backfill_job = latest_child
+
+    if backfill_job is None and job.retry_count < job.max_retries:
+        backfill_payload = {
+            "tid": tid,
+            "mode": "reconcile_missing",
+            "scope": "selected",
+            "include_first_floor": True,
+            "dry_run": False,
+            "campaign": "export_missing_images",
+            "export_job_id": job.job_id,
+            "transport_preference": "direct",
+        }
+        if job.payload.get("base_url") is not None:
+            backfill_payload["base_url"] = job.payload["base_url"]
+        backfill_job = repo.create(
+            JobType.IMAGE_BACKFILL.value,
+            tid=tid,
+            payload=backfill_payload,
+            parent_job_id=job.job_id,
+        )
+
+    if backfill_job is not None:
+        artifacts["image_backfill_job"] = {
+            "job_id": backfill_job.job_id,
+            "status": backfill_job.status,
+            "mode": backfill_job.payload.get("mode"),
+            "include_first_floor": bool(backfill_job.payload.get("include_first_floor")),
+        }
+
+    message = (
+        f"export waits for image backfill: tid={tid}; "
+        f"first_floor_missing={artifacts['export_wait']['first_floor_missing_image_count']}"
+    )
+    if repo.retry_later(
+        job.job_id,
+        error_code="EXPORT_PRECHECK_FAILED",
+        error_message=message,
+        artifacts=artifacts,
+        delay_seconds=_EXPORT_IMAGE_BACKFILL_DELAY_SECONDS,
+    ):
+        return
+
+    repo.fail(
+        job.job_id,
+        "EXPORT_PRECHECK_FAILED",
+        f"image backfill did not make the archive exportable: tid={tid}",
+        artifacts=artifacts,
+    )
+
+
+def _latest_image_backfill_child(repo: JobsRepository, parent_job_id: str) -> Job | None:
+    """Find the latest image child without being confused by same-second job timestamps."""
+    row = repo.conn.execute(
+        """
+        SELECT job_id
+        FROM jobs
+        WHERE parent_job_id = ? AND job_type = ?
+        ORDER BY created_at DESC, job_id DESC
+        LIMIT 1
+        """,
+        (parent_job_id, JobType.IMAGE_BACKFILL.value),
+    ).fetchone()
+    return None if row is None else repo.get(str(row["job_id"]))
+
+
+def _thread_missing_image_urls(thread) -> list[str]:
+    """Read JSONB values from either PostgreSQL's decoded list or SQLite JSON text."""
+    value = thread["missing_images_json"] if "missing_images_json" in thread.keys() else None
+    if isinstance(value, (list, tuple)):
+        parsed = value
+    elif isinstance(value, str):
+        try:
+            parsed = json.loads(value or "[]")
+        except (TypeError, ValueError):
+            parsed = []
+    else:
+        parsed = []
+    if not isinstance(parsed, (list, tuple)):
+        return []
+    return [str(item) for item in parsed if str(item).strip()]

@@ -4,7 +4,6 @@ from fastapi import Depends, Request
 
 from yamibo_mcp.config import Settings
 from yamibo_mcp.db.connection import connect
-from yamibo_mcp.db.migrations import migrate
 from yamibo_mcp.services.web_chat import ChatService
 
 
@@ -17,9 +16,8 @@ def get_chat_service(request: Request) -> ChatService:
 
 
 def get_conn(settings: Settings = Depends(get_settings)):
-    conn = connect(settings.db_path)
+    conn = connect(settings.db_path, bootstrap=False)
     try:
-        migrate(conn)
         yield conn
     finally:
         conn.close()

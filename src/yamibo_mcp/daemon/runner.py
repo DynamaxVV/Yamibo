@@ -11,6 +11,7 @@ from yamibo_mcp.config import Settings, load_settings
 from yamibo_mcp.context import LogContext, new_trace_id
 from yamibo_mcp.db.connection import connect
 from yamibo_mcp.db.repositories.jobs import JobsRepository
+from yamibo_mcp.db.repositories.system_state import SystemStateRepository
 from yamibo_mcp.domain.enums import JobStatus
 from yamibo_mcp.errors import LeaseNotAcquired, RemoteFetchError, RemoteMaintenanceError, ThreadPermissionRequiredError, UnexpectedPageError, classify_error
 from yamibo_mcp.daemon.handlers import get_handler
@@ -44,6 +45,7 @@ from yamibo_mcp.yamibo.anti_bot import (
 from yamibo_mcp.yamibo.proxy_pool import clear_proxy_cache, get_job_node, bump_retry_hint, record_node_outcome
 from yamibo_mcp.yamibo.account_pool import record_account_outcome
 from yamibo_mcp.daemon.remote_attempt import outcome_for_error, sanitize_remote_details, now_iso
+from yamibo_mcp.time_utils import utc_now_iso
 
 LOG = logging.getLogger(__name__)
 
@@ -144,6 +146,7 @@ class DaemonRunner:
         self.settings = settings
         self.worker_id = worker_id or settings.worker_id or f"daemon_{uuid4().hex[:12]}"
         self._daily_sign_in_startup_checked = False
+        self._last_worker_heartbeat = 0.0
 
     def _current_settings(self) -> Settings:
         if hasattr(self.settings, "config_path"):
@@ -155,11 +158,12 @@ class DaemonRunner:
 
     def run_once(self) -> DaemonResult:
         settings = self._current_settings()
-        if not getattr(settings, "jobs_enabled", True):
-            return DaemonResult(processed=0)
         conn = connect(settings.db_path, pool_role="daemon")
         job = None
         try:
+            self._publish_worker_heartbeat(conn, settings)
+            if not getattr(settings, "jobs_enabled", True):
+                return DaemonResult(processed=0)
             repo = JobsRepository(conn)
             recover_expired_jobs(repo)
             _restore_444_events(conn)
@@ -494,6 +498,21 @@ class DaemonRunner:
             if job is not None:
                 clear_job_state(job.job_id)
             conn.close()
+
+    def _publish_worker_heartbeat(self, conn, settings: Settings) -> None:
+        interval = max(float(getattr(settings, "worker_heartbeat_seconds", 15)), 1.0)
+        now = time.monotonic()
+        if now - self._last_worker_heartbeat < interval:
+            return
+        SystemStateRepository(conn).set_json(
+            f"worker_heartbeat:{self.worker_id}",
+            {
+                "worker_id": self.worker_id,
+                "status": "running" if getattr(settings, "jobs_enabled", True) else "paused",
+                "heartbeat_at": utc_now_iso(),
+            },
+        )
+        self._last_worker_heartbeat = now
 
     def run_forever(self) -> None:
         worker_parallelism = max(getattr(self.settings, "worker_parallelism", 1), 1)

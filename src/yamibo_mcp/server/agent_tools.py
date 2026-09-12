@@ -31,6 +31,7 @@ from yamibo_mcp.application.discussion_trend_queries import (
 from yamibo_mcp.application.job_queries import read_job as _read_job
 from yamibo_mcp.application.job_queries import read_job_events as _read_job_events
 from yamibo_mcp.application.job_queries import wait_for_job as _wait_for_job
+from yamibo_mcp.application.system_queries import read_system_status as _read_system_status
 from yamibo_mcp.application.rag_commands import (
     create_rag_index_batch_jobs as _create_rag_index_batch_jobs,
     create_rag_index_job as _create_rag_index_job,
@@ -297,8 +298,12 @@ def read_job(*, job_id: str) -> AgentResult:
 
 
 @agent_tool
-def read_job_events(*, job_id: str) -> AgentResult:
-    return _read_job_events(job_id=job_id)
+def read_job_events(
+    *,
+    job_id: str,
+    since_event_id: int | None = None,
+) -> AgentResult:
+    return _read_job_events(job_id=job_id, since_event_id=since_event_id)
 
 
 @agent_tool
@@ -315,6 +320,11 @@ def wait_for_job(
         poll_interval_seconds=poll_interval_seconds,
         include_events=include_events,
     )
+
+
+@agent_tool
+def read_system_status() -> AgentResult:
+    return _read_system_status()
 
 
 @agent_tool
@@ -861,9 +871,15 @@ PUBLIC_AGENT_TOOLS = [
     ),
     capability_registration(
         "read_job_events",
-        "Read persisted job event history for a queued or completed job.",
+        "Read persisted job events for a queued or completed job. Use since_event_id for incremental polling.",
         read_job_events,
         _read_metadata(),
+    ),
+    capability_registration(
+        "read_system_status",
+        "Read-only local runtime status for the database, daemon workers, job queue, and remote pause state.",
+        read_system_status,
+        _read_metadata(produces=["system_status"]),
     ),
     capability_registration(
         "wait_for_job",

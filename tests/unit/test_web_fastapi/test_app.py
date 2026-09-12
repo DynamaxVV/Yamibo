@@ -36,6 +36,68 @@ def test_health_returns_runtime_info(client):
     assert "data_dir" in data
 
 
+def test_media_route_exposes_only_image_roots(client, test_settings):
+    image = test_settings.data_dir / "threads" / "42" / "images" / "cover.jpg"
+    image.parent.mkdir(parents=True)
+    image.write_bytes(b"jpeg")
+    cookie = test_settings.data_dir / "cookies" / "primary.cookie"
+    cookie.parent.mkdir(parents=True)
+    cookie.write_text("session=secret")
+
+    assert client.get("/media/threads/42/images/cover.jpg").status_code == 200
+    assert client.get("/media/cookies/primary.cookie").status_code == 404
+
+
+def test_daemon_status_requires_a_fresh_worker_heartbeat(client, test_settings):
+    from datetime import datetime, timedelta, timezone
+
+    from yamibo_mcp.db.connection import connect
+    from yamibo_mcp.db.repositories.system_state import SystemStateRepository
+
+    conn = connect(test_settings.db_path)
+    try:
+        SystemStateRepository(conn).set_json(
+            "worker_heartbeat:worker-1",
+            {
+                "worker_id": "worker-1",
+                "status": "running",
+                "heartbeat_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            },
+        )
+    finally:
+        conn.close()
+
+    data = client.get("/api/daemon/status").json()
+    assert data["daemon_alive"] is True
+    assert data["worker_count"] == 1
+    assert data["workers"][0]["worker_id"] == "worker-1"
+
+    conn = connect(test_settings.db_path)
+    try:
+        SystemStateRepository(conn).set_json(
+            "worker_heartbeat:worker-1",
+            {
+                "worker_id": "worker-1",
+                "status": "running",
+                "heartbeat_at": (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat(timespec="seconds"),
+            },
+        )
+    finally:
+        conn.close()
+    stale = client.get("/api/daemon/status").json()
+    assert stale["daemon_alive"] is False
+    assert stale["worker_count"] == 0
+
+
+def test_system_status_is_read_only_and_reports_unchecked_boundaries(client):
+    resp = client.get("/api/system/status")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["database"]["ok"] is True
+    assert "daemon" in data
+    assert "reverse_proxy_auth" in data["not_checked"]
+
+
 def test_jobs_list_returns_paginated(client):
     resp = client.get("/api/jobs")
     assert resp.status_code == 200
@@ -131,6 +193,27 @@ def test_jobs_list_filters_other_failure_kind(client, test_settings):
     data = resp.json()
     assert data["total_count"] == 1
     assert data["items"][0]["job_id"] == job.job_id
+
+
+def test_job_events_support_incremental_cursor_headers(client, test_settings):
+    from yamibo_mcp.db.connection import connect
+    from yamibo_mcp.db.repositories.jobs import JobsRepository
+
+    conn = connect(test_settings.db_path)
+    try:
+        repo = JobsRepository(conn)
+        job = repo.create("sync_thread", tid=42)
+        repo.update_stage(job.job_id, "fetching")
+    finally:
+        conn.close()
+
+    first = client.get(f"/api/jobs/{job.job_id}/events", params={"limit": 1})
+    assert first.status_code == 200
+    assert first.headers["X-Has-More"] == "true"
+    cursor = first.headers["X-Next-Event-ID"]
+    later = client.get(f"/api/jobs/{job.job_id}/events", params={"since_event_id": cursor})
+    assert later.status_code == 200
+    assert all(event["event_id"] > int(cursor) for event in later.json())
 
 
 def test_job_not_found_returns_404(client):

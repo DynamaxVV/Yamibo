@@ -43,7 +43,16 @@ def read_job(*, job_id: str) -> AgentResult:
     )
 
 
-def read_job_events(*, job_id: str) -> AgentResult:
+def read_job_events(
+    *,
+    job_id: str,
+    since_event_id: int | None = None,
+    limit: int = 100,
+) -> AgentResult:
+    if since_event_id is not None and since_event_id < 0:
+        raise ValueError("since_event_id must be non-negative")
+    if limit < 1 or limit > 500:
+        raise ValueError("limit must be between 1 and 500")
     settings = load_settings()
     conn = connect(settings.db_path)
     try:
@@ -58,14 +67,26 @@ def read_job_events(*, job_id: str) -> AgentResult:
                     agent_hint="Check the job id or create a new job first.",
                 ),
             )
-        rows = JobEventsRepository(conn).list(job_id=job_id)
+        rows = JobEventsRepository(conn).list(
+            job_id=job_id,
+            since_event_id=since_event_id,
+            limit=limit + 1,
+        )
     finally:
         conn.close()
+
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    next_since_event_id = rows[-1].event_id if rows else since_event_id
 
     return AgentResult(
         ok=True,
         data={
             "job_id": job_id,
+            "since_event_id": since_event_id,
+            "limit": limit,
+            "has_more": has_more,
+            "next_since_event_id": next_since_event_id,
             "events": [
                 {
                     "event_id": row.event_id,

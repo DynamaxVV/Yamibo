@@ -19,9 +19,9 @@
 - **批量任务** — 支持批量归档和批量 RAG 索引，便于一次性处理多个 tid
 - **批量归档探测** — `probe_archived_threads` 可先读取本地归档尾部状态，再配合远端 `last_reply_at` 决定是否补跑
 - **Job Event Outbox** — 任务状态变更追加耐久化事件，支持诊断和未来通知
-- **本地 RAG 检索** — 基于 FTS5 / PostgreSQL `tsvector` + `pgvector` 的归档内容混合检索，返回可追溯证据片段
-- **动漫区清洗语料物化** — 新增 `yamibo-rag-anime-materialize`，可为动漫区生成清洗后的 RAG 中间产物与统计报告
-- **Discussion Trend V1** — PostgreSQL-only 的分区趋势查询、topic/user 排名、topic/forum evidence 检索，以及 trend / research report artifact
+- **本地 RAG 检索（低频可选）** — 基于 FTS5 / PostgreSQL `tsvector` + `pgvector` 的归档内容混合检索；不影响归档主流程
+- **动漫区清洗语料物化（低频可选）** — 为特定研究场景生成 RAG 中间产物；不属于日常归档流程
+- **Discussion Trend V1（低频可选）** — PostgreSQL-only 的分区趋势和证据查询；不属于日常维护主线
 - **抗反爬增强** — HTTP 客户端切到 `curl_cffi` + 浏览器指纹，请求内置 `acw_sc__v2` 挑战解算、维护页探测与软封锁重试
 - **Agent-Friendly Interface** — 区分远端预览/任务创建与本地归档读取，统一结构化错误和紧凑输出
 - **Web 控制台** — React+Vite SPA + FastAPI 嵌入式服务，中英文双语，多套可切换主题 + 暗黑模式，支持远程论坛实时浏览（`/forum`）
@@ -31,7 +31,7 @@
 
 更细的文档入口见 [docs/文档索引.md](docs/文档索引.md)。
 
-1.0 之后的 capability manifest、Recovery 契约和未来运行时重新评估条件见 [LLM 原生运行时路线图](docs/LLM原生运行时路线图.md)。当前仍由 Hermes 负责 Agent 规划，Yamibo 不内建自主 Agent。
+Capability Manifest、Job Recovery 和外部 Agent 接口边界见 [LLM 原生运行时路线图](docs/LLM原生运行时路线图.md)。Yamibo 不内建自主 Agent；Codex、Hermes 等外部终端可复用同一 MCP/CLI 接口。
 
 ### 安装
 
@@ -131,6 +131,13 @@ docker compose up -d postgres
 docker compose run --rm yamibo yamibo-init-db
 docker compose up -d yamibo yamibo-mcp
 ```
+
+注意：以上 `yamibo-init-db` 是显式数据库迁移命令；当前工作区还会在 `yamibo` 启动时
+自动检查并应用待处理 schema migration，其中包含 `016_add_jobs_started_at`。仅执行
+`git push` 或 `docker compose build` 不会改库，但远端若据此启动新镜像，可能会增加
+`jobs.started_at` 列并更新 `alembic_version`。允许改库时，请先完成备份和维护窗口
+准备，再按[已批准数据库变更后的发布流程](docs/部署运维指南.md#已批准数据库变更后的发布流程)
+执行迁移；不允许改库的发布则继续运行现有镜像，不要启动包含该 revision 的新镜像。
 
 默认 Web 控制台地址：`http://localhost:8765`。
 MCP SSE 入口默认地址：`http://localhost:8000/sse`。
@@ -306,6 +313,7 @@ uv run yamibo-archiver create-forum-research-report-job --forum-id 33 --start-da
 uv run yamibo-archiver job-status <job_id>
 uv run yamibo-archiver wait-for-job <job_id>
 uv run yamibo-archiver read-job-events <job_id>
+uv run yamibo-archiver read-system-status
 
 # 读取帖子摘要（紧凑 JSON，适合 Agent）
 uv run yamibo-archiver read-resource "yamibo://threads/572313/summary"
@@ -319,6 +327,8 @@ uv run yamibo-archiver read-resource "yamibo://threads/544422/update-check"
 # 数据库备份
 uv run yamibo-backup-db
 ```
+
+PostgreSQL 隔离恢复、`data/` 文件快照和大规模归档抽样验证见 [部署运维指南](docs/部署运维指南.md#postgresql-隔离恢复演练推荐)。首次演练不要覆盖生产数据库。
 
 历史 file-only 归档说明：
 

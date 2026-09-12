@@ -1,8 +1,8 @@
-# Agent 友好型接口路线图：1.1 核心 + Phase A+
+# 外部 Agent 接口边界与后续评估
 
-> 当前状态：Phase A+ 已实现，NAS 发布待执行
-> 更新日期：2026-08-16
-> 决策：Hermes 是唯一 LLM Agent；Yamibo 不再保留未发布的 Phase B/C 内部 Agent Runtime。
+> 当前状态：Capability Manifest + Job Recovery 已实现；内部 Agent Runtime 暂缓
+> 更新日期：2026-09-08
+> 适用范围：个人 NAS、单用户、外部 Codex/Hermes 等终端
 
 ## 当前边界
 
@@ -63,8 +63,14 @@ Hermes 应优先执行 `recovery.next_actions`。当 `requires_user_action=true`
 
 Job Repository 复用现有 `lease_until` 作为 retry not-before 时间，不新增业务表或调度依赖。为兼容已经运行过 B/C 的数据库，迁移链保留 009-012 的空兼容节点，并由 013 清理旧 Runtime 表；这不恢复 B/C 运行时。Daemon 仍是唯一决定是否重试的组件；Hermes 只读取 `next_retry_at` 和 `recovery`。
 
-## B/C 决策
+## 内部 Runtime 暂缓
 
-Phase B/C 的单步 Run、多步 Runtime、审批、artifact/citation 和 Web 控制面已作为未发布过度设计移除。重新评估内建 Runtime 的触发条件是：至少 20 次真实 Hermes 请求后，仍有超过 20% 的请求因多步规划错误失败，或出现必须在 Hermes 断开后继续规划的长时间研究任务。
+Phase B/C 的单步 Run、多步 Runtime、审批、artifact/citation 和 Web 控制面不属于当前产品范围。重新评估内建 Runtime 的触发条件是：实际使用中出现持续的多步任务失败，或确实需要外部终端断开后继续运行的长任务；在此之前不维护第二套规划状态机。
 
 即使重新评估，也应重新设计一套单一 Runtime，不恢复已删除的双状态机实现。
+
+## 个人 NAS 的接口方向
+
+外部终端应优先使用现有 MCP tool/resource 或 JSON CLI。当前已提供只读的 `read_system_status`、`read-system-status` 和 `GET /api/system/status`，返回应用版本、数据库探测、带新鲜度的 Worker 心跳、Job 状态摘要、采集时间和明确的 `not_checked`；接口请求不隐含模型总结、全盘扫描、数据库迁移或远程抓取。应用启动是否自动应用待处理 schema migration，属于部署门禁，见部署运维指南。
+
+知识库、RAG 和讨论趋势不参与基础状态检查。它们只在用户明确提出研究问题时使用，索引和分析失败不应阻塞归档、阅读、导出或 Job 恢复。

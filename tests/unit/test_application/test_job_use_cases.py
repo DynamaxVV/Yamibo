@@ -84,7 +84,8 @@ class TestGetJobStatusPayload:
                 stage = 'download_images',
                 progress_current = 4,
                 progress_total = 6,
-                created_at = '2026-06-22T14:00:00+00:00',
+                created_at = '2026-06-22T13:50:00+00:00',
+                started_at = '2026-06-22T14:00:00+00:00',
                 updated_at = '2026-06-22T14:03:10+00:00'
             WHERE job_id = ?
             """,
@@ -166,6 +167,7 @@ class TestGetJobStatusPayload:
         job.error_code = None
         job.error_message = None
         job.artifacts = {}
+        job.started_at = now
         job.created_at = now
         job.updated_at = now
         job.finished_at = None

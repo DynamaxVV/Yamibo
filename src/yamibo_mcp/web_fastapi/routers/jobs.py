@@ -4,6 +4,7 @@ import time
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import JSONResponse
 
 from yamibo_mcp.config import load_settings
 from yamibo_mcp.db.connection import DatabaseConnection
@@ -21,10 +22,45 @@ from yamibo_mcp.yamibo.anti_bot import clear_remote_access_pause
 router = APIRouter(prefix="/api", tags=["jobs"])
 
 _jobs_cache = TTLCache(ttl_seconds=3.0)
+_FAILURE_SCAN_BATCH_SIZE = 500
 
 
 def _clear_jobs_cache() -> None:
     _jobs_cache.clear()
+
+
+def _iter_jobs(repo: JobsRepository, *, status: str | None):
+    offset = 0
+    while True:
+        batch = repo.list(limit=_FAILURE_SCAN_BATCH_SIZE, offset=offset, status=status)
+        if not batch:
+            return
+        yield from batch
+        if len(batch) < _FAILURE_SCAN_BATCH_SIZE:
+            return
+        offset += len(batch)
+
+
+def _failure_kind_page(
+    repo: JobsRepository,
+    *,
+    status: str | None,
+    failure_kind: str,
+    page: int,
+    page_size: int,
+) -> tuple[int, list]:
+    start = (page - 1) * page_size
+    end = start + page_size
+    total_count = 0
+    selected = []
+    for job in _iter_jobs(repo, status=status):
+        kind = job_failure_kind(job, artifacts=job.artifacts if isinstance(job.artifacts, dict) else {}) or "other"
+        if kind != failure_kind:
+            continue
+        if start <= total_count < end:
+            selected.append(job)
+        total_count += 1
+    return total_count, selected
 
 
 @router.get("/jobs")
@@ -42,17 +78,23 @@ def list_jobs(
 
     repo = JobsRepository(conn)
     if failure_kind:
-        all_jobs = repo.list(limit=None, status=status)
-        filtered_jobs = [
-            job for job in all_jobs
-            if (job_failure_kind(job, artifacts=job.artifacts if isinstance(job.artifacts, dict) else {}) or "other") == failure_kind
-        ]
-        total_count = len(filtered_jobs)
+        total_count, jobs = _failure_kind_page(
+            repo,
+            status=status,
+            failure_kind=failure_kind,
+            page=page,
+            page_size=page_size,
+        )
         total_pages = max(1, (total_count + page_size - 1) // page_size)
         if page > total_pages:
             page = total_pages
-        offset = (page - 1) * page_size
-        jobs = filtered_jobs[offset:offset + page_size]
+            _, jobs = _failure_kind_page(
+                repo,
+                status=status,
+                failure_kind=failure_kind,
+                page=page,
+                page_size=page_size,
+            )
     else:
         total_count = repo.count_filtered(status=status)
         offset = (page - 1) * page_size
@@ -62,9 +104,8 @@ def list_jobs(
     if page > total_pages:
         page = total_pages
         offset = (page - 1) * page_size
-        jobs = filtered_jobs[offset:offset + page_size] if failure_kind else repo.list(limit=page_size, offset=offset, status=status)
-    elif failure_kind:
-        pass  # total_pages 和 page 已在上面处理
+        if not failure_kind:
+            jobs = repo.list(limit=page_size, offset=offset, status=status)
 
     result = {
         "page": page,
@@ -99,7 +140,7 @@ def job_failure_counts(
     if cached is not None:
         return cached
     counts: dict[str, int] = {}
-    for job in JobsRepository(conn).list(limit=None, status=status):
+    for job in _iter_jobs(JobsRepository(conn), status=status):
         kind = job_failure_kind(job, artifacts=job.artifacts if isinstance(job.artifacts, dict) else {}) or "other"
         counts[kind] = counts.get(kind, 0) + 1
     _jobs_cache.set(cache_key, counts)
@@ -152,9 +193,27 @@ def job_detail(job_id: str, conn: DatabaseConnection = Depends(get_conn)):
 
 
 @router.get("/jobs/{job_id}/events")
-def job_events(job_id: str, conn: DatabaseConnection = Depends(get_conn)):
-    events = JobEventsRepository(conn).list(job_id=job_id, limit=200)
-    return [event_to_dict(e) for e in events]
+def job_events(
+    job_id: str,
+    since_event_id: int | None = Query(default=None, ge=0),
+    limit: int = Query(default=200, ge=1, le=500),
+    conn: DatabaseConnection = Depends(get_conn),
+):
+    events = JobEventsRepository(conn).list(
+        job_id=job_id,
+        since_event_id=since_event_id,
+        limit=limit + 1,
+    )
+    has_more = len(events) > limit
+    events = events[:limit]
+    next_since_event_id = events[-1].event_id if events else since_event_id
+    return JSONResponse(
+        content=[event_to_dict(event) for event in events],
+        headers={
+            "X-Has-More": "true" if has_more else "false",
+            "X-Next-Event-ID": "" if next_since_event_id is None else str(next_since_event_id),
+        },
+    )
 
 
 @router.post("/jobs/delete")
@@ -264,7 +323,7 @@ def batch_delete_jobs(body: dict, conn: DatabaseConnection = Depends(get_conn)):
     if failure_kind_filter:
         if status_filter != JobStatus.FAILED.value:
             raise HTTPException(status_code=400, detail="failure_kind requires failed status")
-        all_failed_jobs = repo.list(limit=None, status=JobStatus.FAILED.value)
+        all_failed_jobs = _iter_jobs(repo, status=JobStatus.FAILED.value)
         job_ids = [
             job.job_id
             for job in all_failed_jobs

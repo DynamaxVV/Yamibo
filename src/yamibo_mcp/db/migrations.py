@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   resumable INTEGER NOT NULL DEFAULT 1,
   cancel_requested_at TEXT,
   paused_at TEXT,
+  started_at TEXT,
   error_code TEXT,
   error_message TEXT,
   artifacts_json TEXT NOT NULL DEFAULT '{}',
@@ -324,6 +325,7 @@ def migrate(conn: Any, *, schema: str | None = None) -> None:
     _ensure_column(conn, "threads", "remote_observed_at", "TEXT")
     _ensure_column(conn, "threads", "remote_observed_from", "TEXT")
     _ensure_column(conn, "jobs", "paused_at", "TEXT")
+    _ensure_column(conn, "jobs", "started_at", "TEXT")
     _ensure_column(conn, "jobs", "priority", "INTEGER NOT NULL DEFAULT 0")
     _backfill_thread_forum_fields(conn)
     _ensure_column(conn, "forums", "name_en", "TEXT")

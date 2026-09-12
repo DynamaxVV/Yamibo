@@ -10,6 +10,7 @@ from typing import Any, TypeVar
 from yamibo_mcp.domain.enums import JobStatus
 from yamibo_mcp.domain.job_state import new_job_id
 from yamibo_mcp.domain.models import Job
+from yamibo_mcp.db.repositories.system_state import SystemStateRepository
 from yamibo_mcp.errors import JobNotFound, LeaseNotAcquired
 from yamibo_mcp.structured_logging import emit
 from yamibo_mcp.time_utils import utc_after_iso, utc_now_iso
@@ -113,6 +114,7 @@ def _job_from_row(row: sqlite3.Row) -> Job:
         updated_at=row["updated_at"],
         finished_at=row["finished_at"],
         priority=int(row["priority"] or 0) if "priority" in row.keys() else 0,
+        started_at=row["started_at"] if "started_at" in row.keys() else None,
     )
 
 
@@ -451,7 +453,7 @@ class JobsRepository:
                 """
                 UPDATE jobs
                 SET status = ?, worker_id = ?, heartbeat_at = ?, lease_until = ?,
-                    stage = COALESCE(stage, 'acquired'), updated_at = ?
+                    stage = COALESCE(stage, 'acquired'), started_at = ?, updated_at = ?
                 WHERE job_id = ?
                   AND status IN (?, ?, ?)
                   AND (lease_until IS NULL OR lease_until < ?)
@@ -462,6 +464,7 @@ class JobsRepository:
                     now,
                     lease_until,
                     now,
+                    now,
                     job_id,
                     JobStatus.QUEUED.value,
                     JobStatus.RETRYING.value,
@@ -470,6 +473,15 @@ class JobsRepository:
                 ),
             )
             self.conn.commit()
+            if cur.rowcount:
+                SystemStateRepository(self.conn).set_json(
+                    f"worker_heartbeat:{worker_id}",
+                    {
+                        "worker_id": worker_id,
+                        "status": "running",
+                        "heartbeat_at": now,
+                    },
+                )
             return cur
 
         cur = self._with_locked_retry(_acquire)
@@ -490,7 +502,7 @@ class JobsRepository:
         def _heartbeat() -> None:
             now = utc_now_iso()
             lease_until = utc_after_iso(lease_seconds)
-            self.conn.execute(
+            cur = self.conn.execute(
                 """
                 UPDATE jobs
                 SET heartbeat_at = ?, lease_until = ?, updated_at = ?
@@ -499,6 +511,15 @@ class JobsRepository:
                 (now, lease_until, now, job_id, worker_id, JobStatus.RUNNING.value, JobStatus.PAUSED.value),
             )
             self.conn.commit()
+            if cur.rowcount:
+                SystemStateRepository(self.conn).set_json(
+                    f"worker_heartbeat:{worker_id}",
+                    {
+                        "worker_id": worker_id,
+                        "status": "running",
+                        "heartbeat_at": now,
+                    },
+                )
 
         self._with_locked_retry(_heartbeat)
 

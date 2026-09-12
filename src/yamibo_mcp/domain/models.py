@@ -28,6 +28,7 @@ class Job:
     updated_at: str
     finished_at: str | None
     priority: int = 0
+    started_at: str | None = None
 
 
 @dataclass(frozen=True)

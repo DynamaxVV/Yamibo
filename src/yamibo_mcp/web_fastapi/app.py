@@ -22,6 +22,11 @@ log = logging.getLogger(__name__)
 
 
 def create_app(settings) -> FastAPI:
+    from yamibo_mcp.db.connection import connect
+
+    # Database schema setup belongs to application startup, not request handling.
+    startup_conn = connect(settings.db_path)
+    startup_conn.close()
     app = FastAPI(title="Yamibo Archiver", version=__version__)
 
     @app.middleware("http")
@@ -75,11 +80,28 @@ def create_app(settings) -> FastAPI:
 
     @app.get("/api/health")
     def health():
-        return {
-            "ok": True,
-            "database": settings.db_backend,
-            "data_dir": str(settings.data_dir),
-        }
+        conn = None
+        try:
+            conn = connect(settings.db_path, bootstrap=False)
+            conn.execute("SELECT 1").fetchone()
+            return {
+                "ok": True,
+                "database": settings.db_backend,
+                "data_dir": str(settings.data_dir),
+            }
+        except Exception:
+            log.exception("health database probe failed")
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "ok": False,
+                    "database": settings.db_backend,
+                    "data_dir": str(settings.data_dir),
+                },
+            )
+        finally:
+            if conn is not None:
+                conn.close()
 
     app.include_router(dashboard.router)
     app.include_router(jobs.router)
@@ -118,6 +140,7 @@ def _mount_media_routes(app: FastAPI, settings) -> None:
     from starlette.responses import FileResponse, PlainTextResponse
 
     data_dir = settings.data_dir
+    image_suffixes = {".avif", ".bmp", ".gif", ".jpeg", ".jpg", ".png", ".webp"}
 
     def _safe_resolve(root: Path, raw_rel: str) -> Path | None:
         target = (root / Path(unquote(raw_rel))).resolve()
@@ -145,10 +168,13 @@ def _mount_media_routes(app: FastAPI, settings) -> None:
         raw_rel = file_path.strip("/")
         if not raw_rel:
             return PlainTextResponse("Not found", status_code=404)
-        target = _safe_resolve(data_dir, raw_rel)
+        parts = Path(unquote(raw_rel)).parts
+        if len(parts) < 2 or parts[0] not in {"threads", "shared"}:
+            return PlainTextResponse("Not found", status_code=404)
+        target = _safe_resolve(data_dir / parts[0], str(Path(*parts[1:])))
         if target is None:
             return PlainTextResponse("Forbidden", status_code=403)
-        if not target.is_file():
+        if not target.is_file() or target.suffix.lower() not in image_suffixes:
             return PlainTextResponse("Not found", status_code=404)
         return FileResponse(target, media_type=_guess_content_type(target))
 

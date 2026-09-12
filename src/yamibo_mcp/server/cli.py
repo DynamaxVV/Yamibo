@@ -41,6 +41,7 @@ from yamibo_mcp.server.agent_tools import (
     inspect_remote_thread,
     probe_archived_threads,
     read_job_events,
+    read_system_status,
     search_archived_content,
     wait_for_job,
 )
@@ -372,6 +373,7 @@ def build_parser() -> argparse.ArgumentParser:
     status_parser.add_argument("job_id")
     job_events_parser = sub.add_parser("read-job-events")
     job_events_parser.add_argument("job_id")
+    sub.add_parser("read-system-status")
     wait_job_parser = sub.add_parser("wait-for-job")
     wait_job_parser.add_argument("job_id")
     wait_job_parser.add_argument("--timeout-seconds", type=float, default=120)
@@ -599,6 +601,8 @@ def main() -> None:
         print(dump_json(get_job_status_payload(args.job_id)))
     elif command == "read-job-events":
         print(dump_json(read_job_events(job_id=args.job_id)))
+    elif command == "read-system-status":
+        print(dump_json(read_system_status()))
     elif command == "wait-for-job":
         print(
             dump_json(

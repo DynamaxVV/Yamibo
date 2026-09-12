@@ -560,6 +560,8 @@ create_thread_archive_job
 
 `read_job_events` 与 `yamibo://jobs/{job_id}/events` 都读取同一类 append-only 事件流，适合以下场景：
 
+`read_job_events(job_id, since_event_id=...)` 可按事件 ID 增量读取；Web 接口 `/api/jobs/{job_id}/events?since_event_id=<id>` 以 `X-Next-Event-ID` 和 `X-Has-More` 响应头返回下一游标。
+
 - 查看阶段切换，例如 `fetch_remote`、`parse_html`、`download_images`、`finalize`
 - 定位失败点，而不只看最终 `error_message`
 - 分辨 `partial` 是“正文已落地但缺图”，还是“导出完成但收尾失败”
@@ -633,6 +635,8 @@ yamibo-archiver read-resource "yamibo://jobs/<job_id>/events"
 ## 5. Web API
 
 Web 控制台基于 HTTP，提供 JSON API 和页面路由。
+
+外部终端的只读运行状态入口是 `GET /api/system/status`；它返回应用版本、数据库探测、带新鲜度的 Worker 心跳、Job 摘要、远端暂停状态和 `not_checked`。健康检查 `GET /api/health` 只验证应用与数据库连接，不能替代系统状态检查。两个接口处理请求时都不执行迁移，但启动包含待处理 revision 的新应用仍可能先应用 schema migration。
 
 ### 5.1 页面路由
 

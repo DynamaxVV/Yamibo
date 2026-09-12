@@ -78,7 +78,11 @@ def _job_execution_diagnostics(job) -> dict[str, Any]:
     now = _parse_iso8601(utc_now_iso())
     created_at = _parse_iso8601(job.created_at)
     updated_at = _parse_iso8601(job.updated_at)
-    running_duration_seconds = _seconds_between(now, created_at)
+    started_at = _parse_iso8601(getattr(job, "started_at", None))
+    finished_at = _parse_iso8601(job.finished_at)
+    execution_end = finished_at if job.status in _TERMINAL_JOB_STATUSES else now
+    running_duration_seconds = _seconds_between(execution_end, started_at)
+    queue_wait_seconds = _seconds_between(now, created_at) if job.status == "queued" else None
     seconds_since_update = _seconds_between(now, updated_at)
 
     if job.status in _TERMINAL_JOB_STATUSES:
@@ -116,7 +120,7 @@ def _job_execution_diagnostics(job) -> dict[str, Any]:
         }
 
     if job.status == "queued":
-        if (running_duration_seconds or 0) >= 30:
+        if (queue_wait_seconds or 0) >= 30:
             return {
                 "running_duration_seconds": running_duration_seconds,
                 "seconds_since_update": seconds_since_update,

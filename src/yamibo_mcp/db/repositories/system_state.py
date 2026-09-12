@@ -19,11 +19,26 @@ class SystemStateRepository:
         if row is None:
             return None
         value = row["value_json"]
-        if value in {None, ""}:
+        if value is None or value == "":
             return None
         if isinstance(value, dict):
             return value
         return json.loads(value)
+
+    def list_json(self, prefix: str = "") -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            "SELECT key, value_json, updated_at FROM system_state WHERE key LIKE ? ORDER BY key",
+            (f"{prefix}%",),
+        ).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            value = row["value_json"]
+            if value is None or value == "":
+                continue
+            if not isinstance(value, dict):
+                value = json.loads(value)
+            result.append({"key": row["key"], "value": value, "updated_at": row["updated_at"]})
+        return result
 
     def set_json(self, key: str, value: dict[str, Any]) -> None:
         self.conn.execute(

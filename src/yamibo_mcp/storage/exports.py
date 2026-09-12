@@ -25,6 +25,8 @@ class ExportReadiness:
     images_complete: bool
     missing_image_count: int
     missing_files: list[str]
+    first_floor_complete: bool = True
+    first_floor_missing_image_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -50,7 +52,12 @@ def inspect_export_readiness(paths: StoragePaths, tid: int) -> ExportReadiness:
         raise ExportPrecheckError(f"metadata json not found: {metadata_path}")
 
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    missing_image_urls = metadata.get("missing_image_urls") or []
+    missing_image_urls = _unique_strings(
+        [
+            *(metadata.get("missing_image_urls") or []),
+            *(metadata.get("missing_shared_image_urls") or []),
+        ]
+    )
     archived_images = metadata.get("archived_images") or {}
     missing_files: list[str] = []
     for relpaths in archived_images.values():
@@ -59,13 +66,102 @@ def inspect_export_readiness(paths: StoragePaths, tid: int) -> ExportReadiness:
             file_path = thread_dir / relative_path
             if not file_path.exists():
                 missing_files.append(str(relpath))
+    first_floor_complete, first_floor_missing_image_count = _inspect_first_floor_readiness(
+        paths,
+        tid,
+        metadata,
+    )
     return ExportReadiness(
         context_exists=context_exists,
         metadata_exists=metadata_exists,
         images_complete=not missing_image_urls and not missing_files,
         missing_image_count=len(missing_image_urls),
         missing_files=missing_files,
+        first_floor_complete=first_floor_complete,
+        first_floor_missing_image_count=first_floor_missing_image_count,
     )
+
+
+def _inspect_first_floor_readiness(
+    paths: StoragePaths,
+    tid: int,
+    metadata: dict[str, object],
+) -> tuple[bool, int]:
+    """Check every materialized image slot on the comic's first floor.
+
+    The first floor is the primary comic payload.  Its ``image_slots`` retain
+    the remote URL-to-local-path mapping, so checking only the thread-level
+    ``missing_image_urls`` list is not sufficient for older or partially
+    materialized metadata.
+    """
+    missing_global = set(
+        _unique_strings(
+            [
+                *(metadata.get("missing_image_urls") or []),
+                *(metadata.get("missing_shared_image_urls") or []),
+            ]
+        )
+    )
+    missing_urls: set[str] = set()
+    floors = metadata.get("floors") or []
+    for floor in floors:
+        if not isinstance(floor, dict):
+            continue
+        try:
+            floor_no = int(floor.get("floor_no"))
+        except (TypeError, ValueError):
+            continue
+        if floor_no != 1:
+            continue
+
+        remote_urls = _unique_strings(
+            [*(floor.get("remote_image_urls") or [])]
+        )
+        slots = floor.get("image_slots") or []
+        slot_urls: set[str] = set()
+        if isinstance(slots, list) and slots:
+            for raw_slot in slots:
+                if not isinstance(raw_slot, dict):
+                    continue
+                remote_url = str(raw_slot.get("remote_url") or "").strip()
+                if not remote_url:
+                    continue
+                slot_urls.add(remote_url)
+                status = str(raw_slot.get("status") or "").strip().lower()
+                if status == "skipped":
+                    continue
+                local_path = str(raw_slot.get("local_path") or "").strip()
+                if status in {"missing", "missing_shared", "pending"} or not local_path:
+                    missing_urls.add(remote_url)
+                    continue
+                if not _metadata_image_path(paths, tid, local_path).is_file():
+                    missing_urls.add(remote_url)
+
+        # Older metadata may not contain image_slots.  In that case the
+        # thread-level missing lists are the only reliable URL-level signal.
+        missing_urls.update(url for url in remote_urls if url in missing_global and url not in slot_urls)
+
+    return not missing_urls, len(missing_urls)
+
+
+def _metadata_image_path(paths: StoragePaths, tid: int, local_path: str) -> Path:
+    path = Path(local_path)
+    if path.is_absolute():
+        return path
+    if str(path).startswith("shared/"):
+        return paths.data_dir / path
+    return paths.thread_dir(tid) / path
+
+
+def _unique_strings(values: list[object]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value).strip()
+        if text and text not in seen:
+            seen.add(text)
+            result.append(text)
+    return result
 
 
 def is_thread_stale(sync_time: str | datetime | None, *, stale_after_hours: int) -> bool:

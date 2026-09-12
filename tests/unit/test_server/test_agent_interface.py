@@ -38,6 +38,7 @@ RECOMMENDED_AGENT_TOOLS = {
     "search_archived_content",
     "read_job",
     "read_job_events",
+    "read_system_status",
     "wait_for_job",
     "read_forum_profiles",
     "create_discussion_trend_index_job",

@@ -200,6 +200,7 @@ def connect(
     db_path: Path | str | Settings | None = None,
     *,
     pool_role: str = "web",
+    bootstrap: bool = True,
 ) -> DatabaseConnection:
     """打开一个数据库连接。
 
@@ -208,6 +209,8 @@ def connect(
         pool_role: 连接池角色 —— ``"web"`` 用于短连接（Web 请求），
                    ``"daemon"`` 用于长连接（后台 job 处理）。
                    仅 PostgreSQL 生效；SQLite 忽略此参数。
+        bootstrap: 是否在打开连接前确保 schema 已初始化；Web 应用在启动阶段完成后，
+                   请求连接应传 ``False``。
     """
     settings = db_path if isinstance(db_path, Settings) else load_settings()
     # A Path that matches settings.db_path is NOT an explicit SQLite choice —
@@ -234,7 +237,8 @@ def connect(
             str(settings.db_ssl_root_cert) if settings.db_ssl_root_cert else None,
             pool_role=pool_role,
         )
-        _bootstrap_postgres_database(engine, settings.db_schema)
+        if bootstrap:
+            _bootstrap_postgres_database(engine, settings.db_schema)
         try:
             return DatabaseConnection(engine.connect(), backend="postgres")
         except SQLAlchemyTimeoutError:
@@ -242,7 +246,8 @@ def connect(
             raise
 
     db_path_value = _resolve_db_path(db_path, settings)
-    _bootstrap_sqlite_database(db_path_value, settings.db_connect_timeout)
+    if bootstrap:
+        _bootstrap_sqlite_database(db_path_value, settings.db_connect_timeout)
     engine = _sqlite_engine(db_path_value, settings.db_connect_timeout)
     return DatabaseConnection(engine.connect(), backend="sqlite")
 
