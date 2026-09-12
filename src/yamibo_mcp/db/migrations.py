@@ -308,6 +308,8 @@ def migrate(conn: Any, *, schema: str | None = None) -> None:
         upgrade_postgres_schema(conn, schema=schema or "public")
         return
     conn.executescript(SCHEMA_SQL)
+    from yamibo_mcp.db.chat_schema import SCHEMA as CHAT_SCHEMA
+    conn.executescript(CHAT_SCHEMA)
     conn.executescript(FTS_SQL)
     _ensure_column(conn, "title_parse", "chapter_title", "TEXT")
     _ensure_column(conn, "title_parse", "chapter_index_end", "REAL")

@@ -31,7 +31,7 @@
 
 更细的文档入口见 [docs/文档索引.md](docs/文档索引.md)。
 
-Capability Manifest、Job Recovery 和外部 Agent 接口边界见 [LLM 原生运行时路线图](docs/LLM原生运行时路线图.md)。Yamibo 不内建自主 Agent；Codex、Hermes 等外部终端可复用同一 MCP/CLI 接口。
+Capability Manifest、Job Recovery 和外部 Agent 接口边界见 [LLM 原生运行时路线图](docs/LLM原生运行时路线图.md)。Yamibo 提供可选的内置 Pydantic AI 业务助手，通过受限本地 MCP 调用业务能力；Codex、Hermes 等外部终端仍可复用公开 MCP/CLI 接口。内置助手的边界与验收记录见 [实现与配置](docs/内置Agent实现与配置.md)。
 
 ### 安装
 
@@ -144,7 +144,9 @@ MCP SSE 入口默认地址：`http://localhost:8000/sse`。
 
 1.0 的 Compose 默认只将 Web、MCP 和 PostgreSQL 绑定到 `127.0.0.1`。Web/MCP 尚未内置互联网身份认证；远程访问必须放在 TLS 反向代理、VPN 或 identity-aware proxy 后面，不能直接开放端口。
 
-对话页默认接入外部 OpenAI-compatible Hermes 容器；Yamibo 1.0 只转发对话消息，不在 Chat 后端实现模型推理或 MCP tool loop。若要让 Hermes 调用 Yamibo MCP，需要在外部 Hermes 运行时中单独配置。可在 `.env` 中配置：
+对话页支持内置 Pydantic AI 和外部 Hermes 两种后端，验证期间默认仍为 `hermes`。设置 `YAMIBO_CHAT_BACKEND=embedded` 并配置现有 `YAMIBO_LLM_*` 即可启用内置业务助手，保存后须重启 Web 宿主。完整认证、预算、持久化和回退步骤见 [内置 Agent 实现与配置](docs/内置Agent实现与配置.md)。
+
+以下为 Hermes 回退配置；它调用 Yamibo MCP 的连接仍需在外部 Hermes 运行时单独配置：
 
 ```env
 YAMIBO_LLM_BASE_URL=http://hermes:8000/v1

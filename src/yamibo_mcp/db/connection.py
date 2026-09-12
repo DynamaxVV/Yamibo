@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from contextlib import contextmanager
+from contextvars import ContextVar
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,19 @@ from yamibo_mcp.config import Settings, load_settings
 from yamibo_mcp.db.alembic_runner import upgrade_postgres_schema
 from yamibo_mcp.db.migrations import migrate
 from yamibo_mcp.db.observability import install_engine_observability, note_pool_timeout
+
+
+_SCHEMA_READY = ContextVar("yamibo_schema_ready", default=False)
+
+
+@contextmanager
+def existing_schema_only():
+    """A hosted MCP process may use an existing schema but never migrate it."""
+    token = _SCHEMA_READY.set(True)
+    try:
+        yield
+    finally:
+        _SCHEMA_READY.reset(token)
 
 
 class RowProxy:
@@ -212,6 +226,7 @@ def connect(
         bootstrap: 是否在打开连接前确保 schema 已初始化；Web 应用在启动阶段完成后，
                    请求连接应传 ``False``。
     """
+    bootstrap = bootstrap and not _SCHEMA_READY.get()
     settings = db_path if isinstance(db_path, Settings) else load_settings()
     # A Path that matches settings.db_path is NOT an explicit SQLite choice —
     # it's the caller passing along the default path. Respect db_backend.

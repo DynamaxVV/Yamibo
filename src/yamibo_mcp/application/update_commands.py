@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from yamibo_mcp.db.transaction_scope import BorrowedConnection
 
 from yamibo_mcp.application.contracts import AgentAction, AgentError, AgentResult
 from yamibo_mcp.config import load_settings
@@ -12,9 +13,9 @@ from yamibo_mcp.domain.enums import JobType
 from yamibo_mcp.yamibo.anti_bot import ensure_remote_access_allowed
 
 
-def create_update_thread_job(*, tid: int, base_url: str | None = None) -> dict[str, Any]:
+def create_update_thread_job(*, tid: int, base_url: str | None = None, connection=None) -> dict[str, Any]:
     settings = load_settings()
-    conn = connect(settings.db_path)
+    conn = BorrowedConnection(connection) if connection is not None else connect(settings.db_path)
     try:
         ensure_remote_access_allowed(conn)
         repo = JobsRepository(conn)

@@ -37,7 +37,29 @@ def create_app(settings) -> FastAPI:
 
     app.state.settings = settings
     from yamibo_mcp.services.web_chat import ChatService
-    app.state.chat_service = ChatService(settings)
+    if getattr(settings, "chat_backend", "hermes") == "embedded":
+        from yamibo_mcp.services.embedded_chat.runtime import EmbeddedChatService
+        app.state.chat_service = EmbeddedChatService(settings)
+    elif getattr(settings, "chat_backend", "hermes") == "hermes":
+        app.state.chat_service = ChatService(settings)
+    else:
+        raise ValueError("chat.backend must be hermes or embedded")
+
+    @app.middleware("http")
+    async def protect_embedded_chat(request: Request, call_next):
+        if getattr(settings, "chat_backend", "hermes") == "embedded" and (request.url.path.startswith("/api/chat/") or request.url.path.startswith("/api/settings")):
+            import hmac
+            origin = request.headers.get("origin")
+            if origin and origin != f"{request.url.scheme}://{request.url.netloc}":
+                return JSONResponse(status_code=403, content={"error": {"code": "CHAT_ORIGIN_DENIED", "message": "跨站请求被拒绝"}})
+            token = settings.chat_access_token
+            if token:
+                supplied = request.headers.get("Authorization", "").removeprefix("Bearer ")
+                if not hmac.compare_digest(supplied, token):
+                    return JSONResponse(status_code=401, content={"error": {"code": "CHAT_AUTH_REQUIRED", "message": "需要对话访问令牌"}})
+            elif not request.client or request.client.host not in {"127.0.0.1", "::1", "testclient"}:
+                return JSONResponse(status_code=403, content={"error": {"code": "CHAT_AUTH_REQUIRED", "message": "远程对话请配置 YAMIBO_CHAT_ACCESS_TOKEN"}})
+        return await call_next(request)
 
     @app.on_event("startup")
     def initialize_chat_service():

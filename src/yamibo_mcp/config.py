@@ -110,6 +110,13 @@ class Settings:
     image_backfill_daily_limit: int
     image_backfill_max_pages: int
     image_backfill_fixed_after: str | None
+    chat_backend: str = "hermes"
+    chat_max_requests: int = 20
+    chat_max_tools: int = 50
+    chat_timeout: int = 900
+    chat_max_parallel: int = 2
+    chat_batch_limit: int = 20
+    chat_access_token: str | None = None
 
 
 def _read_local_config(path: Path) -> dict[str, object]:
@@ -387,6 +394,13 @@ def load_settings() -> Settings:
             )
         ).lower()
         in {"1", "true", "yes", "on"},
+        chat_backend=str(os.environ.get("YAMIBO_CHAT_BACKEND", _cfg_value(config, "chat", "backend", "hermes"))),
+        chat_max_requests=int(os.environ.get("YAMIBO_CHAT_MAX_REQUESTS", _cfg_value(config, "chat", "max_requests", 20))),
+        chat_max_tools=int(os.environ.get("YAMIBO_CHAT_MAX_TOOLS", _cfg_value(config, "chat", "max_tools", 50))),
+        chat_timeout=int(os.environ.get("YAMIBO_CHAT_TIMEOUT", _cfg_value(config, "chat", "timeout", 900))),
+        chat_max_parallel=int(os.environ.get("YAMIBO_CHAT_MAX_PARALLEL", _cfg_value(config, "chat", "max_parallel", 2))),
+        chat_batch_limit=int(os.environ.get("YAMIBO_CHAT_BATCH_LIMIT", _cfg_value(config, "chat", "batch_limit", 20))),
+        chat_access_token=os.environ.get("YAMIBO_CHAT_ACCESS_TOKEN") or _cfg_value(config, "chat", "access_token", None),
         llm_base_url=llm_base_url,
         llm_api_key=llm_api_key,
         llm_model=str(

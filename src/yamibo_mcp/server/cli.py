@@ -252,6 +252,8 @@ def build_parser() -> argparse.ArgumentParser:
     stdio_parser.add_argument("--host", default="0.0.0.0")
     stdio_parser.add_argument("--port", type=int, default=8000)
     stdio_parser.add_argument("--path", default="/sse")
+    stdio_parser.add_argument("--profile", choices=["public", "embedded-chat"], default="public")
+    stdio_parser.add_argument("--run-id")
     sub.add_parser("create-noop-job")
     sync_parser = sub.add_parser("create-sync-thread-job")
     sync_parser.add_argument("--html-path")
@@ -417,10 +419,25 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
     configure_logging()
+    if getattr(args, 'profile', None) == 'embedded-chat':
+        import logging
+        import sys
+        for handler in logging.getLogger().handlers:
+            if isinstance(handler, logging.StreamHandler) and getattr(handler, 'stream', None) is sys.stdout:
+                handler.setStream(sys.stderr)
 
     command = args.command or "stdio"
     if command == "stdio":
-        build_mcp_server(host=args.host, port=args.port, sse_path=args.path).run(transport=args.transport)
+        if args.profile == "embedded-chat":
+            if args.transport != "stdio":
+                parser.error("embedded-chat only supports local stdio")
+            from yamibo_mcp.services.embedded_chat.mcp import build_restricted_server
+            from yamibo_mcp.config import load_settings
+            from yamibo_mcp.db.connection import existing_schema_only
+            with existing_schema_only():
+                build_restricted_server(load_settings(), args.run_id).run(transport="stdio")
+        else:
+            build_mcp_server(host=args.host, port=args.port, sse_path=args.path).run(transport=args.transport)
     elif command == "create-noop-job":
         print(create_noop_job())
     elif command == "create-sync-thread-job":
@@ -659,3 +676,7 @@ def main() -> None:
         print(dump_json(to_wire(_TREND_QUERY_RUNNERS[command](args))))
     else:
         parser.print_help()
+
+
+if __name__ == '__main__':
+    main()

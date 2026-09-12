@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from yamibo_mcp.db.transaction_scope import BorrowedConnection
 
 from yamibo_mcp.application.contracts import AgentAction, AgentError, AgentResult
 from yamibo_mcp.application.update_commands import create_update_thread_job
@@ -27,11 +28,12 @@ def archive_thread_job(
     url: str | None = None,
     base_url: str | None = None,
     forum_id: int | None = None,
+    connection=None,
 ) -> dict[str, Any]:
     if not html_path and not tid and not url:
         raise ValueError("archive_thread requires html_path or tid or url")
     settings = load_settings()
-    conn = connect(settings.db_path)
+    conn = BorrowedConnection(connection) if connection is not None else connect(settings.db_path)
     try:
         if html_path is None:
             ensure_remote_access_allowed(conn)
@@ -64,8 +66,10 @@ def create_thread_archive_job(
     html_path: str | None = None,
     base_url: str | None = None,
     forum_id: int | None = None,
+    connection=None,
 ) -> AgentResult:
     payload = archive_thread_job(
+        connection=connection,
         tid=tid,
         url=url,
         html_path=html_path,
@@ -93,12 +97,13 @@ def create_thread_archive_batch_jobs(
     tids: list[int],
     base_url: str | None = None,
     forum_id: int | None = None,
+    connection=None,
 ) -> AgentResult:
     normalized_tids = list(dict.fromkeys(int(tid) for tid in tids if tid))
     if not normalized_tids:
         raise ValueError("tids required")
     settings = load_settings()
-    conn = connect(settings.db_path)
+    conn = BorrowedConnection(connection) if connection is not None else connect(settings.db_path)
     try:
         ensure_remote_access_allowed(conn)
         repo = JobsRepository(conn)
@@ -171,9 +176,9 @@ def ensure_thread_archived(
     return result
 
 
-def create_thread_export_job(*, tid: int, strategy: str | None = None) -> AgentResult:
+def create_thread_export_job(*, tid: int, strategy: str | None = None, connection=None) -> AgentResult:
     settings = load_settings()
-    conn = connect(settings.db_path)
+    conn = BorrowedConnection(connection) if connection is not None else connect(settings.db_path)
     try:
         repo = JobsRepository(conn)
         payload = {key: value for key, value in {"tid": tid, "strategy": strategy}.items() if value is not None}
@@ -203,8 +208,8 @@ def create_thread_export_job(*, tid: int, strategy: str | None = None) -> AgentR
     )
 
 
-def create_thread_update_job(*, tid: int, base_url: str | None = None) -> AgentResult:
-    payload = create_update_thread_job(tid=tid, base_url=base_url)
+def create_thread_update_job(*, tid: int, base_url: str | None = None, connection=None) -> AgentResult:
+    payload = create_update_thread_job(tid=tid, base_url=base_url, connection=connection)
     job_id = str(payload["job_id"])
     created = bool(payload.get("created", True))
     return AgentResult(

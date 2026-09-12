@@ -38,6 +38,12 @@ TABLE_LAYOUT_DEFAULTS = {
 }
 
 SETTINGS_FIELD_SPECS = {
+    "chat_backend": {"section": "chat", "key": "backend", "type": "string", "default": "hermes", "env": "YAMIBO_CHAT_BACKEND", "effect": "restart_web"},
+    "chat_access_token": {"section": "chat", "key": "access_token", "type": "string", "default": None, "env": "YAMIBO_CHAT_ACCESS_TOKEN", "sensitive": True, "effect": "restart_web"},
+    "chat_max_requests": {"section": "chat", "key": "max_requests", "type": "int", "default": 20, "env": "YAMIBO_CHAT_MAX_REQUESTS", "effect": "restart_web"},
+    "chat_max_tools": {"section": "chat", "key": "max_tools", "type": "int", "default": 50, "env": "YAMIBO_CHAT_MAX_TOOLS", "effect": "restart_web"},
+    "chat_timeout": {"section": "chat", "key": "timeout", "type": "int", "default": 900, "env": "YAMIBO_CHAT_TIMEOUT", "effect": "restart_web"},
+
     "db_backend": {"section": "database", "key": "backend", "type": "string", "default": "sqlite", "env": "YAMIBO_DB_BACKEND", "effect": "restart_daemon_web"},
     "db_url": {"section": "database", "key": "url", "type": "string", "default": None, "env": "YAMIBO_DB_URL", "sensitive": True, "effect": "restart_daemon_web"},
     "db_pool_min": {"section": "database", "key": "pool_min", "type": "int", "default": 1, "env": "YAMIBO_DB_POOL_MIN", "effect": "restart_daemon_web"},
@@ -187,6 +193,10 @@ def _settings_payload(settings: Settings) -> dict:
 
 
 def _normalize_setting_input(name: str, value):
+    if name == "chat_backend" and value not in {"hermes", "embedded"}:
+        raise ValueError("chat_backend must be hermes or embedded")
+    if name in {"chat_max_requests", "chat_max_tools", "chat_timeout"} and int(value) < 1:
+        raise ValueError("chat limits must be positive")
     spec = SETTINGS_FIELD_SPECS[name]
     if spec["type"] == "json":
         if not isinstance(value, dict):

@@ -33,6 +33,16 @@ type SectionSpec = {
 
 const SECTIONS: SectionSpec[] = [
   {
+    key: 'embedded', titleKey: 'settings_embedded_title', descKey: 'settings_embedded_desc',
+    fields: [
+      { key: 'chat_backend', labelKey: 'settings_chat_backend', helpKey: 'settings_chat_backend_help', kind: 'select', section: 'embedded', options: [{ value: 'hermes', labelKey: 'settings_backend_hermes' }, { value: 'embedded', labelKey: 'settings_backend_embedded' }] },
+      { key: 'chat_access_token', labelKey: 'settings_chat_token', helpKey: 'settings_chat_token_help', kind: 'password', section: 'embedded' },
+      { key: 'chat_max_requests', labelKey: 'settings_chat_requests', helpKey: 'settings_chat_budget_help', kind: 'number', section: 'embedded', min: 1 },
+      { key: 'chat_max_tools', labelKey: 'settings_chat_tools', helpKey: 'settings_chat_budget_help', kind: 'number', section: 'embedded', min: 1 },
+      { key: 'chat_timeout', labelKey: 'settings_chat_timeout', helpKey: 'settings_chat_budget_help', kind: 'number', section: 'embedded', min: 1 },
+    ],
+  },
+  {
     key: 'archive',
     titleKey: 'settings_section_archive',
     descKey: 'settings_section_archive_desc',

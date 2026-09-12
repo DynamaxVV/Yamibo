@@ -70,7 +70,7 @@ export function ChatTranscript({ messages, events, assistant, pendingUser, strea
   const ref = useRef<HTMLDivElement>(null)
   const previousMessages = useRef(messages)
   const [follow, setFollow] = useState(true)
-  useEffect(() => { if (previousMessages.current !== messages && ref.current) ref.current.scrollTop = ref.current.scrollHeight; previousMessages.current = messages }, [messages])
+  useEffect(() => { if (previousMessages.current !== messages && follow && ref.current) ref.current.scrollTop = ref.current.scrollHeight; previousMessages.current = messages }, [messages, follow])
   useEffect(() => { if (follow && ref.current) ref.current.scrollTop = ref.current.scrollHeight }, [events, assistant, pendingUser, follow])
   const persistedReasoning = messages.flatMap(message => [message.reasoning, message.reasoning_content]).map(value => formatContent(value).trim()).filter(Boolean).map(value => value.replace(/\s+/g, ' ').trim())
   const seenReasoning = new Set<string>()

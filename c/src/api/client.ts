@@ -1,8 +1,12 @@
 const BASE = '/api'
+export function chatHeaders(): Record<string, string> {
+  const token = sessionStorage.getItem('yamibo.chat.access-token')
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
 
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...((path.startsWith('/chat/') || path.startsWith('/settings')) ? chatHeaders() : {}) },
     ...init,
   })
   if (!res.ok) {
@@ -15,7 +19,7 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
 async function postJson<T>(path: string, body: Record<string, unknown>): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...((path.startsWith('/chat/') || path.startsWith('/settings')) ? chatHeaders() : {}) },
     body: JSON.stringify(body),
   })
   if (!res.ok) {
@@ -842,6 +846,9 @@ export const api = {
     const s = qs.toString()
     return fetchJson<RemoteThreadDetail>(`/remote/threads/${tid}${s ? `?${s}` : ''}`)
   },
+  chatRuns: (id: string) => fetchJson<{ runs: (import('../types/chat').ChatRun & { input: string; operations?: unknown[] })[] }>(`/chat/sessions/${encodeURIComponent(id)}/runs`),
+  chatFiles: () => fetchJson<{ files: { file_id: string; name: string; revision: number; source: string }[] }>('/chat/files'),
+  chatFile: (id: string, offset = 0) => fetchJson<{ content: string; next_offset: number | null }>(`/chat/files/${encodeURIComponent(id)}?offset=${offset}`),
   chatContext: () => fetchJson<import('../types/chat').ChatContext>('/chat/context'),
   chatSessions: (params?: { limit?: number; offset?: number }, signal?: AbortSignal) => fetchJson<import('../types/chat').ChatSessionPage>(`/chat/sessions?limit=${params?.limit ?? 50}&offset=${params?.offset ?? 0}`, { signal }),
   createChatSession: (title?: string) => postJson<import('../types/chat').ChatSession>('/chat/sessions', title ? { title } : {}),
@@ -849,12 +856,12 @@ export const api = {
   renameChatSession: (id: string, title: string) => fetchJson<import('../types/chat').ChatSession>(`/chat/sessions/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify({ title }) }),
   deleteChatSession: (id: string) => fetchJson<{ ok: boolean }>(`/chat/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   chatMessages: async (id: string, signal?: AbortSignal) => { const payload = await fetchJson<{ messages?: import('../types/chat').ChatMessage[] } | import('../types/chat').ChatMessage[]>(`/chat/sessions/${encodeURIComponent(id)}/messages`, { signal }); return Array.isArray(payload) ? payload : payload.messages || [] },
-  startChatRun: (id: string, input: string) => postJson<import('../types/chat').StartRunResponse>(`/chat/sessions/${encodeURIComponent(id)}/runs`, { input }),
+  startChatRun: (id: string, input: string, client_request_id?: string) => postJson<import('../types/chat').StartRunResponse>(`/chat/sessions/${encodeURIComponent(id)}/runs`, { input, client_request_id }),
   getChatRun: (id: string) => fetchJson<import('../types/chat').ChatRun>(`/chat/runs/${encodeURIComponent(id)}`),
   stopChatRun: (id: string) => postJson<{ status: 'stopping' }>(`/chat/runs/${encodeURIComponent(id)}/stop`, {}),
-  approveChatRun: (id: string, choice: import('../types/chat').ApprovalChoice, resolve_all = false) => postJson<{ status: string }>(`/chat/runs/${encodeURIComponent(id)}/approval`, { choice, resolve_all }),
+  approveChatRun: (id: string, choice: import('../types/chat').ApprovalChoice, resolve_all = false, approval_id?: string, plan_hash?: string) => postJson<{ status: string }>(`/chat/runs/${encodeURIComponent(id)}/approval`, { choice, resolve_all, approval_id, plan_hash }),
   openChatRunEvents: async (id: string, lastEventId?: string, signal?: AbortSignal) => {
-    const headers: HeadersInit = { Accept: 'text/event-stream' }
+    const headers: HeadersInit = { Accept: 'text/event-stream', ...chatHeaders() }
     if (lastEventId) headers['Last-Event-ID'] = lastEventId
     const res = await fetch(`${BASE}/chat/runs/${encodeURIComponent(id)}/events`, { headers, signal })
     if (!res.ok || !res.body) { const payload = await res.json().catch(() => null); throw toApiError(payload, res.status, res.statusText) }
