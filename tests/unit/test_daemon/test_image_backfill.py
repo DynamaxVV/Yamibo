@@ -800,6 +800,31 @@ def test_v2_foreground_checks_scan_all_rows_and_auto_is_not_foreground(db):
     assert _foreground_work_available(repo, foreground.job_id) is True
 
 
+def test_cancel_requested_foreground_jobs_do_not_block_idle_image_backfill(db):
+    db.execute(
+        """
+        INSERT INTO threads (tid, raw_title, display_title, sync_time, image_count, archive_status, forum_id)
+        VALUES (9001, 'raw', 'display', '2026-07-01T00:00:00+00:00', 1, 'complete', 5)
+        """
+    )
+    db.execute(
+        "INSERT INTO floors (pid, tid, floor_no, content, has_images) VALUES (90011, 9001, 2, 'reply', 1)"
+    )
+    repo = JobsRepository(db)
+    daily = repo.create("daily_sign_in", tid=20260912, payload={"account_id": "a"})
+    db.execute("UPDATE jobs SET status = 'cancel_requested' WHERE job_id = ?", (daily.job_id,))
+    db.commit()
+
+    assert scheduler._has_foreground_work(repo) is False
+    assert maybe_enqueue_image_backfill_dry_run(repo, _scheduler_settings()) is True
+    auto_row = db.execute(
+        "SELECT job_id FROM jobs WHERE job_type = 'image_backfill' AND tid = 9001"
+    ).fetchone()
+    assert auto_row is not None
+    auto = repo.get(auto_row["job_id"])
+    assert _foreground_work_available(repo, auto.job_id) is False
+
+
 def test_v2_any_live_auto_campaign_blocks_but_terminal_old_campaign_does_not(db):
     repo = JobsRepository(db)
     old = repo.create("image_backfill", tid=10, payload={"internal_auto": True, "campaign": "old"})

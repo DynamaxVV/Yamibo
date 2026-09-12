@@ -22,6 +22,15 @@ _MODE = "reconcile_missing"
 _SCHEDULER_LOCK = threading.Lock()
 _SCAN_BATCH_SIZE = 200
 _CANDIDATE_LIMIT = 50
+# A cancellation request is terminal from the perspective of idle scheduling:
+# it is no longer acquirable and must not keep maintenance work waiting.
+_FOREGROUND_WORK_STATUSES = (
+    JobStatus.QUEUED.value,
+    JobStatus.RUNNING.value,
+    JobStatus.RETRYING.value,
+    JobStatus.INTERRUPTED.value,
+    JobStatus.PAUSED.value,
+)
 # A stable signed bigint for pg_try_advisory_xact_lock().  The lock is scoped
 # to the transaction, so a pooled PostgreSQL session cannot retain it.
 _POSTGRES_ADVISORY_LOCK_KEY = 0x59414D49424F5F32
@@ -376,11 +385,13 @@ def _has_live_automatic_job(repo: JobsRepository, *, campaign: str, fingerprint:
 
 
 def _has_foreground_work(repo: JobsRepository) -> bool:
+    placeholders = ",".join("?" for _ in _FOREGROUND_WORK_STATUSES)
     result = repo.conn.execute(
-        """
+        f"""
         SELECT job_type, payload_json FROM jobs
-        WHERE status IN ('queued', 'running', 'retrying', 'interrupted', 'cancel_requested', 'paused')
+        WHERE status IN ({placeholders})
         """,
+        _FOREGROUND_WORK_STATUSES,
     )
     rows = result.fetchall() if result is not None else []
     for row in rows:

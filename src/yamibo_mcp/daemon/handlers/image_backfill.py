@@ -48,6 +48,14 @@ from yamibo_mcp.yamibo.urls import remote_image_identity, stable_attachment_id
 
 LOG = logging.getLogger(__name__)
 
+_FOREGROUND_WORK_STATUSES = (
+    "queued",
+    "running",
+    "retrying",
+    "interrupted",
+    "paused",
+)
+
 
 def _foreground_work_available(repo: JobsRepository, job_id: str) -> bool:
     # A foreground export can hand off its own image repair as a child job.
@@ -68,11 +76,13 @@ def _foreground_work_available(repo: JobsRepository, job_id: str) -> bool:
         ignored_job_ids.add(parent_job_id)
         cursor = parent_job_id
 
+    placeholders = ",".join("?" for _ in _FOREGROUND_WORK_STATUSES)
     rows = repo.conn.execute(
-        """
+        f"""
         SELECT job_id, job_type, payload_json FROM jobs
-        WHERE status IN ('queued', 'running', 'retrying', 'interrupted', 'cancel_requested', 'paused')
+        WHERE status IN ({placeholders})
         """,
+        _FOREGROUND_WORK_STATUSES,
     ).fetchall()
     for row in rows:
         if str(row["job_id"]) in ignored_job_ids:
