@@ -148,7 +148,8 @@ def handle_image_backfill(
     thread = ThreadsRepository(repo.conn).get_thread(tid)
     if thread is None:
         raise ValueError(f"local archive not found for image_backfill: {tid}")
-    local_assets = _local_assets_by_url(AssetsRepository(repo.conn).list_assets(tid))
+    asset_rows = AssetsRepository(repo.conn).list_assets(tid)
+    local_assets = _local_assets_by_url(asset_rows)
     local_snapshot = _load_local_snapshot_for_backfill(paths, repo.conn, thread)
     target_positions = _target_positions(paths, tid, job.payload, target_urls)
     if reconcile_mode and not dry_run and not target_urls:
@@ -156,6 +157,33 @@ def handle_image_backfill(
         metadata_positions = _metadata_target_positions(paths, tid)
         target_positions = {url: metadata_positions[url] for url in target_urls if url in metadata_positions}
     expected_paths = _expected_target_paths(paths, tid, target_positions, target_urls)
+    if reconcile_mode and not dry_run and not target_urls:
+        image_rows = [row for row in asset_rows if row["asset_type"] in {"image", "attachment"}]
+        covered_pids = {row["pid"] for row in image_rows}
+        # Empty missing metadata alone is not proof: check coverage and files.
+        if (
+            image_rows
+            and len(image_rows) >= int(thread["image_count"] or 0)
+            and all(not floor.has_images or floor.pid in covered_pids for floor in local_snapshot.floors)
+            and not _diff_snapshot_images(
+                local_snapshot, local_assets=local_assets, paths=paths,
+                scope="selected", include_first_floor=True,
+            )["missing_items_for_apply"]
+            and all(
+                row["local_path"] and _is_valid_image_file(
+                    _asset_path(tid=tid, local_path=row["local_path"], paths=paths)
+                )
+                for row in image_rows
+            )
+        ):
+            repo.update_stage(job.job_id, "reconcile", progress_current=4, progress_total=4)
+            repo.succeed(job.job_id, {
+                "tid": tid, "mode": "reconcile_missing",
+                "campaign": job.payload.get("campaign"),
+                "already_complete": True, "downloaded_image_count": 0,
+                "remote_fetch": False,
+            })
+            return
     if reconcile_mode and not dry_run and target_urls:
         reconciled = _reconcile_missing_targets(
             repo.conn, paths=paths, tid=tid, target_urls=target_urls,

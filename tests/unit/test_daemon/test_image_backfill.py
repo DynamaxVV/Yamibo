@@ -778,6 +778,38 @@ def test_v2_missing_slot_24_fallback_preserves_original_target_position(tmp_path
     assert (tmp_path / "staging/jobs/image_backfill_slot24/images/floor_001_24.png").exists()
 
 
+@pytest.mark.parametrize("valid_file", [True, False])
+def test_idle_backfill_checks_files_before_already_complete(db, tmp_path, monkeypatch, valid_file):
+    tid = 901
+    paths = StoragePaths(tmp_path)
+    image = paths.thread_images_dir(tid) / "floor_001_01.png"
+    image.parent.mkdir(parents=True)
+    png = bytearray(b"\x89PNG\r\n\x1a\n" + b"\x00" * 108 + b"\x00\x00\x00\x00IEND\xaeB`\x82")
+    png[16:20] = (640).to_bytes(4, "big")
+    png[20:24] = (480).to_bytes(4, "big")
+    image.write_bytes(png if valid_file else b"broken")
+    db.execute("INSERT INTO threads (tid, raw_title, image_count, archive_status) VALUES (?, 'x', 1, 'complete')", (tid,))
+    db.execute("INSERT INTO assets (asset_id, tid, pid, asset_type, remote_url, local_path, exportable, status) VALUES ('done', ?, 1, 'image', 'https://example.org/image.png', 'images/floor_001_01.png', 1, 'downloaded')", (tid,))
+    db.commit()
+    snapshot = _snapshot(tid, [])
+    # An already satisfied image job need not repair unrelated floor numbering.
+    snapshot = replace(snapshot, floors=[replace(snapshot.floors[0], pid=1, floor_no=2, has_images=True)])
+    monkeypatch.setattr("yamibo_mcp.daemon.handlers.image_backfill._load_local_snapshot_for_backfill", lambda *args: snapshot)
+    monkeypatch.setattr("yamibo_mcp.daemon.handlers.image_backfill.borrow_yamibo_client", lambda *args, **kwargs: pytest.fail("unexpected remote fetch"))
+    repo = JobsRepository(db)
+    job = repo.create("image_backfill", tid=tid, payload={"mode": "reconcile_missing", "internal_auto": True, "dry_run": False})
+    settings = SimpleNamespace(data_dir=tmp_path, export_dir=tmp_path / "exports", novel_txt_export_dir=tmp_path / "novels")
+    if valid_file:
+        handle_image_backfill(repo, job, "test", 60, settings)
+        result = repo.get(job.job_id)
+        assert result.status == "succeeded"
+        assert result.artifacts["already_complete"] is True
+        assert result.artifacts["remote_fetch"] is False
+    else:
+        with pytest.raises(ValueError, match="local floor sequence"):
+            handle_image_backfill(repo, job, "test", 60, settings)
+
+
 def test_v2_scheduler_accepts_first_floor_metadata_missing_candidate(db):
     tid = 575257
     db.execute("INSERT INTO threads (tid, raw_title, display_title, image_count, archive_status, forum_id, missing_images_json) VALUES (?, 'x', 'x', 1, 'complete', 5, ?)", (tid, json.dumps(["https://bbs.yamibo.com/forum.php?mod=attachment&aid=MTY0MDQzM3wx&nothumb=yes"])))

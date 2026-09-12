@@ -67,6 +67,7 @@ export function JobDetail() {
       return kind ? <span className="badge badge-muted">{formatJobFailureKind(kind, lang)}</span> : '-'
     })()],
     ...(isImageBackfill ? [
+      [lang === 'en' ? 'Local archive' : '本地归档', job.tid ? <Link to={`/threads/${job.tid}`}>{lang === 'en' ? `Open archived thread #${job.tid}` : `打开本地归档帖子 #${job.tid}`}</Link> : '-'],
       [lang === 'en' ? 'Total remote images' : '图片总数', remoteImageCount == null ? '-' : String(remoteImageCount)],
       [lang === 'en' ? 'Images to backfill' : '待补图片', applyNeedFetchCount == null ? '-' : String(applyNeedFetchCount)],
     ] : []),
