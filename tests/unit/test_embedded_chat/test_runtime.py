@@ -347,6 +347,10 @@ def test_chat_auth_request_validation_and_replay(settings):
             client.get("/api/chat/context", headers=headers).json()["mode"]
             == "embedded"
         )
+        proxy_headers = {**headers, "Origin": "https://testserver"}
+        assert client.post("/api/chat/sessions", headers=proxy_headers, json={}).status_code == 201
+        assert client.get("/api/settings", headers={"Origin": "https://testserver"}).status_code == 401
+        assert client.post("/api/chat/sessions", headers={**headers, "Origin": "https://evil.example"}, json={}).status_code == 403
         s = client.post("/api/chat/sessions", headers=headers, json={}).json()["id"]
         assert (
             client.post(

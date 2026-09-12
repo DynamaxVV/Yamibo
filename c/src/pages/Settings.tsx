@@ -446,6 +446,9 @@ export function Settings() {
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [authRequired, setAuthRequired] = useState(false)
+  const [accessToken, setAccessToken] = useState('')
+  const [unlocking, setUnlocking] = useState(false)
 
   useEffect(() => {
     let active = true
@@ -461,6 +464,7 @@ export function Settings() {
     }).catch((e: Error) => {
       if (!active) return
       setError(e.message)
+      setAuthRequired((e as Error & { code?: string }).code === 'CHAT_AUTH_REQUIRED')
       setLoading(false)
     })
     return () => { active = false }
@@ -585,7 +589,24 @@ export function Settings() {
   }
 
   if (loading) return <div className="panel">{t('loading')}</div>
-  if (!payload) return <div className="panel">{error || t('error')}</div>
+  if (!payload) return <section className="panel">
+    <h2>{authRequired ? '验证访问令牌' : '无法加载设置'}</h2>
+    <p role="alert">{error || t('error')}</p>
+    {authRequired ? <form onSubmit={async event => {
+      event.preventDefault(); if (!accessToken.trim() || unlocking) return
+      setUnlocking(true)
+      try {
+        sessionStorage.setItem('yamibo.chat.access-token', accessToken.trim())
+        await refresh(); setError(null); setAuthRequired(false); setAccessToken('')
+      } catch (e) { setError((e as Error).message) }
+      finally { setUnlocking(false) }
+    }}>
+      <p>输入你设置的对话访问令牌即可进入设置。它不是模型 API Key，仅保存在当前标签页。</p>
+      <label htmlFor="settings-access-token">对话访问令牌</label>
+      <input id="settings-access-token" type="password" autoComplete="off" value={accessToken} onChange={e => setAccessToken(e.target.value)} disabled={unlocking} />
+      <button className="btn-primary" type="submit" disabled={unlocking || !accessToken.trim()}>{unlocking ? '验证中…' : '验证并打开设置'}</button>
+    </form> : <button className="btn-subtle" onClick={() => void refresh().catch(e => { setError(e.message); setAuthRequired(e.code === 'CHAT_AUTH_REQUIRED') })}>重试</button>}
+  </section>
 
   return (
     <div className="settings-page">

@@ -50,7 +50,12 @@ def create_app(settings) -> FastAPI:
         if getattr(settings, "chat_backend", "hermes") == "embedded" and (request.url.path.startswith("/api/chat/") or request.url.path.startswith("/api/settings")):
             import hmac
             origin = request.headers.get("origin")
-            if origin and origin != f"{request.url.scheme}://{request.url.netloc}":
+            # A TLS-terminating proxy may forward the same host over HTTP.
+            # Permit that scheme change only with token protection still enforced below.
+            allowed_origins = {f"{request.url.scheme}://{request.url.netloc}"}
+            if settings.chat_access_token and request.url.scheme == "http":
+                allowed_origins.add(f"https://{request.url.netloc}")
+            if origin and origin not in allowed_origins:
                 return JSONResponse(status_code=403, content={"error": {"code": "CHAT_ORIGIN_DENIED", "message": "跨站请求被拒绝"}})
             token = settings.chat_access_token
             if token:
