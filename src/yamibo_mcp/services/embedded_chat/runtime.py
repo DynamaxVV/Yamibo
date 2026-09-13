@@ -55,6 +55,11 @@ SYSTEM = """你是单用户 Yamibo 业务助手，默认中文。只能使用提
 输出中展示相关 Job ID、文件 ID 及完成/未完成情况。不要输出凭据。
 """
 
+# The stdio child normally starts in well under a second.  Keep a generous
+# cold-start margin for container imports and transient host load, while
+# allowing the actual model/tool read timeout to remain independently bounded.
+MCP_START_TIMEOUT_SECONDS = 60
+
 
 class Subscription:
     def __init__(self, store, run_id, after):
@@ -510,7 +515,7 @@ class EmbeddedChatService:
             ],
             env=self.child_env(),
             allow_sampling=False,
-            timeout=15,
+            timeout=MCP_START_TIMEOUT_SECONDS,
             read_timeout=self.settings.chat_timeout + 30,
             max_retries=0,
         )

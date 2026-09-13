@@ -99,6 +99,23 @@ def test_profile_excludes_unsafe_arguments_and_resources(service, settings):
         resources = await server.list_resources()
         assert len(resources) == 2
         assert await server.list_resource_templates() == []
+    asyncio.run(check())
+
+
+def test_server_build_does_not_query_database(service, settings, monkeypatch):
+    """MCP handshake construction must not wait on a PostgreSQL connection."""
+    r = run(service)
+    from yamibo_mcp.services.embedded_chat import store as store_module
+
+    def unexpected_database_read(*args, **kwargs):
+        raise AssertionError("server construction performed database I/O")
+
+    monkeypatch.setattr(store_module.Store, "get", unexpected_database_read)
+    server = build_restricted_server(settings, r["run_id"])
+
+    async def check():
+        names = {tool.name for tool in await server.list_tools()}
+        assert "read_job" in names and "create_jobs" in names
 
     asyncio.run(check())
 

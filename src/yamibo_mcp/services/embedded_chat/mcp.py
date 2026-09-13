@@ -235,10 +235,20 @@ class RestrictedTools:
 
 
 def build_restricted_server(settings, run_id):
+    """Build the per-run MCP server without doing blocking I/O.
+
+    The parent runtime has already loaded the bound run before spawning the
+    stdio child.  Server construction is part of the MCP handshake, so an
+    eager database read here could consume the entire initialization timeout
+    when PostgreSQL is briefly saturated.  Every callable tool goes through
+    ``RestrictedTools.invoke``/``Policy.guard`` before doing work; resources
+    that expose state perform the same check.  Invalid or expired run IDs are
+    therefore rejected at the first operation while the protocol can still
+    initialize promptly.
+    """
     if not run_id:
         raise ValueError("embedded-chat requires a bound run")
     tools = RestrictedTools(settings, run_id)
-    tools.store.get("runs", run_id)
     server = FastMCP(
         "yamibo-embedded-chat",
         instructions="只提供受限 Yamibo 业务与工作文件能力。创建 Job 不等于完成。",

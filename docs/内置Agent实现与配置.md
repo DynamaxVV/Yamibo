@@ -5,7 +5,7 @@
 ## 已实现
 
 - Pydantic AI 接入现有 OpenAI-compatible LLM 配置；启动和读取页面状态不发起模型请求。
-- 本地 stdio `embedded-chat` MCP profile：工具、参数、资源独立白名单，MCP 子进程禁止执行 schema bootstrap，日志仅写 stderr。
+- 本地 stdio `embedded-chat` MCP profile：工具、参数、资源独立白名单，MCP 子进程禁止执行 schema bootstrap，日志仅写 stderr；服务器构造不做数据库读取，Run 绑定在首次受控调用时校验，冷启动握手窗口为 60 秒。
 - 本地会话与 Run 队列、事件回放、停止、中断记录、预算；单数据目录仅一个执行宿主。
 - 宿主批准具体计划；明确的简短请求可以直接执行，复杂自然语言或不明确范围进入确认界面。
 - 大批量先 `authorize_job_plan` 确认完整范围，再分批 `create_jobs`；重叠 tid 复用同一请求的回执。创建 Job 与操作回执同事务提交。
@@ -107,6 +107,23 @@ cd c && npm run build
 ```bash
 sudo docker compose logs --since=10m yamibo | grep embedded_chat_failed
 ```
+
+如果日志显示 MCP handshake 超时，先在容器内测量受限服务器构造耗时：
+
+```bash
+sudo docker compose exec -T yamibo python - <<'PY'
+import time
+from yamibo_mcp.config import load_settings
+from yamibo_mcp.services.embedded_chat.mcp import build_restricted_server
+
+run_id = "替换为失败 Run ID"
+started = time.monotonic()
+build_restricted_server(load_settings(), run_id)
+print("MCP server built", round(time.monotonic() - started, 1), "seconds")
+PY
+```
+
+更新到包含延后 Run 校验的版本后，这一步只应包含受限工具 schema 注册，通常应在数秒内完成；若仍接近数据库连接超时，说明运行容器尚未使用新代码或存在其他启动阶段阻塞。
 
 `TimeoutError` / `ConnectError` 等异常类型可帮助区分超时和连接问题，HTTP 状态可帮助定位认证或请求拒绝；并非所有提供商错误都包含状态码。日志只覆盖部署该修复之后的新请求，无法补回之前被丢弃的异常。
 
