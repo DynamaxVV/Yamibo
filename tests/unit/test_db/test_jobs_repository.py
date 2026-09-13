@@ -788,3 +788,68 @@ class TestPausedRecovery:
         assert ok is False
         updated = repo.get(job.job_id)
         assert updated.status == JobStatus.PAUSED
+
+
+def _floor_failure(repo, tid=901):
+    job = repo.create('image_backfill', tid=tid, payload={'internal_auto': True, 'max_pages': 1})
+    repo.conn.execute("UPDATE jobs SET status='failed', stage='load_local', error_message=? WHERE job_id=?", (
+        'local floor sequence is invalid; full resync required: duplicate', job.job_id))
+    repo.conn.commit()
+    return job
+
+
+def test_floor_recovery_cleans_only_same_thread_failed_jobs(db):
+    repo = JobsRepository(db)
+    source = _floor_failure(repo)
+    sibling = repo.create('export_thread', tid=901)
+    repo.fail(sibling.job_id, error_code='OTHER', error_message='failed')
+    other = _floor_failure(repo, tid=902)
+    active = repo.create('image_backfill', tid=901)
+    partial = repo.create('export_thread', tid=901, payload={'partial': True})
+    db.execute("UPDATE jobs SET status='partial' WHERE job_id=?", (partial.job_id,))
+    db.commit()
+    new, count = repo.resync_failed_floor_job(source.job_id)
+    assert count == 2
+    assert new.job_type == 'sync_thread' and new.status == 'queued'
+    assert new.payload == {'tid': 901}
+    for deleted in [source, sibling]:
+        with pytest.raises(JobNotFound):
+            repo.get(deleted.job_id)
+        assert JobEventsRepository(db).list(job_id=deleted.job_id) == []
+    for kept in [other, active, partial]:
+        assert repo.get(kept.job_id)
+    assert JobEventsRepository(db).list(job_id=new.job_id)[0].payload['source_job_id'] == source.job_id
+
+
+def test_floor_recovery_reuses_existing_full_sync(db):
+    repo = JobsRepository(db)
+    source = _floor_failure(repo)
+    existing = repo.create('sync_thread', tid=901, payload={'tid': 901})
+    new, count = repo.resync_failed_floor_job(source.job_id)
+    assert new.job_id == existing.job_id and count == 1
+
+
+def test_floor_recovery_rolls_back_creation_and_cleanup(db, monkeypatch):
+    repo = JobsRepository(db)
+    source = _floor_failure(repo)
+    original = repo._delete_jobs_without_commit
+    def fail_after_delete(ids):
+        original(ids)
+        raise RuntimeError('cleanup failed')
+    monkeypatch.setattr(repo, '_delete_jobs_without_commit', fail_after_delete)
+    with pytest.raises(RuntimeError, match='cleanup failed'):
+        repo.resync_failed_floor_job(source.job_id)
+    assert repo.get(source.job_id).status == 'failed'
+    assert repo.find_live_job_for_thread(job_type='sync_thread', tid=901) is None
+    assert JobEventsRepository(db).list(job_id=source.job_id)
+
+
+@pytest.mark.parametrize('field,value', [('status', 'running'), ('stage', 'materialize'), ('error_message', 'different failure'), ('job_type', 'sync_thread')])
+def test_floor_recovery_rejects_unrelated_jobs(db, field, value):
+    repo = JobsRepository(db)
+    source = _floor_failure(repo)
+    db.execute(f'UPDATE jobs SET {field}=? WHERE job_id=?', (value, source.job_id))
+    db.commit()
+    with pytest.raises(ValueError):
+        repo.resync_failed_floor_job(source.job_id)
+    assert repo.get(source.job_id)

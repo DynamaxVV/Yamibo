@@ -267,6 +267,66 @@ class JobsRepository:
         self._append_event(next_job_id, "job.created", status=JobStatus.QUEUED.value)
         return self.get(next_job_id)
 
+    def resync_failed_floor_job(self, job_id: str) -> tuple[Job, int]:
+        """Queue a full sync and remove this thread's failed jobs atomically."""
+        try:
+            source = self.get(job_id)
+            # Serialize recovery from different failed jobs of the same archive.
+            self.conn.execute(
+                "UPDATE threads SET tid = tid WHERE tid = ?", (source.tid,)
+            )
+            self.conn.execute(
+                "UPDATE jobs SET status = status WHERE job_id = ?", (job_id,)
+            )
+            source = self.get(job_id)
+            if not (
+                source.status == "failed"
+                and source.job_type == "image_backfill"
+                and source.stage == "load_local"
+                and source.tid
+                and (source.error_message or "").startswith(
+                    "local floor sequence is invalid; full resync required"
+                )
+            ):
+                raise ValueError("Only failed local floor sequence backfill jobs can be resynced")
+            payload = {"tid": source.tid}
+            live = self.find_live_job_for_thread(job_type="sync_thread", tid=source.tid)
+            if live and live.payload != payload:
+                raise ValueError("A different sync job already exists for this thread; wait for it to finish")
+            next_job_id = live.job_id if live else new_job_id("sync_thread")
+            now = utc_now_iso()
+            if live is None:
+                self.conn.execute(
+                    """INSERT INTO jobs (
+                        job_id, job_type, tid, payload_json, status,
+                        max_retries, resumable, created_at, updated_at
+                    ) VALUES (?, 'sync_thread', ?, ?, 'queued', 3, ?, ?, ?)""",
+                    (next_job_id, source.tid, json.dumps(payload), True, now, now),
+                )
+            # Lock the records selected for cleanup against concurrent state changes.
+            self.conn.execute(
+                "UPDATE jobs SET status = status WHERE tid = ? AND status = 'failed'",
+                (source.tid,),
+            )
+            failed_ids = [row["job_id"] for row in self.conn.execute(
+                "SELECT job_id FROM jobs WHERE tid = ? AND status = 'failed'", (source.tid,)
+            ).fetchall()]
+            self._delete_jobs_without_commit(failed_ids)
+            self.conn.execute(
+                """INSERT INTO job_events
+                    (job_id, event_type, status, payload_json, created_at)
+                    VALUES (?, 'job.floor_recovery_requested', ?, ?, ?)""",
+                (next_job_id, live.status if live else "queued", json.dumps({
+                    "source_job_id": job_id, "deleted_failed_job_ids": failed_ids,
+                    "tid": source.tid,
+                }), now),
+            )
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        return self.get(next_job_id), len(failed_ids)
+
     def get(self, job_id: str) -> Job:
         row = self.conn.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
         if row is None:

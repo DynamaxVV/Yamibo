@@ -249,6 +249,16 @@ def retry_job(body: JobActionRequest, conn: DatabaseConnection = Depends(get_con
     }
 
 
+@router.post("/jobs/resync-thread")
+def resync_failed_job(body: JobActionRequest, conn: DatabaseConnection = Depends(get_conn)):
+    try:
+        job, deleted = JobsRepository(conn).resync_failed_floor_job(body.job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    _clear_jobs_cache()
+    return {"ok": True, "job_id": job.job_id, "deleted_failed_count": deleted}
+
+
 @router.post("/jobs/pause")
 def pause_job(body: JobActionRequest, conn: DatabaseConnection = Depends(get_conn)):
     _clear_jobs_cache()

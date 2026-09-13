@@ -820,6 +820,7 @@ export const api = {
   batchDeleteJobIds: (jobIds: string[]) => postJson<{ ok: boolean; deleted: number }>('/jobs/batch-delete-ids', { job_ids: jobIds }),
   safeDeleteJob: (jobId: string) => postJson<{ ok: boolean; action: string; job_id: string }>('/jobs/safe-delete', { job_id: jobId }),
   retryJob: (jobId: string) => postJson<{ ok: boolean; job_id: string; source_job_id: string; status: string }>('/jobs/retry', { job_id: jobId }),
+  resyncFailedJob: (jobId: string) => postJson<{ ok: boolean; job_id: string; deleted_failed_count: number }>('/jobs/resync-thread', { job_id: jobId }),
   pauseJob: (jobId: string) => postJson<{ ok: boolean; job_id: string; status: string }>('/jobs/pause', { job_id: jobId }),
   resumeJob: (jobId: string) => postJson<{ ok: boolean; job_id: string; status: string }>('/jobs/resume', { job_id: jobId }),
   updateChapter: (

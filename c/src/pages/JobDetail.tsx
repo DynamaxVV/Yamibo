@@ -18,14 +18,19 @@ export function JobDetail() {
   const [refreshNotice, setRefreshNotice] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [rerunSubmitting, setRerunSubmitting] = useState(false)
+  const [resyncSubmitting, setResyncSubmitting] = useState(false)
   const jobRef = useRef<JobSummary | null>(null)
 
   useEffect(() => {
+    let active = true
+    setError(null)
     api.job(id).then(next => {
+      if (!active) return
       setJob(next)
       jobRef.current = next
-    }).catch(e => setError(e.message))
-    api.jobEvents(id).then(setEvents).catch(() => {})
+    }).catch(e => { if (active) setError(e.message) })
+    api.jobEvents(id).then(next => { if (active) setEvents(next) }).catch(() => {})
+    return () => { active = false }
   }, [id])
 
   useEffect(() => {
@@ -104,6 +109,8 @@ export function JobDetail() {
   const missingCount = Number(job.artifacts?.missing_image_count || 0)
   const missingSharedCount = Number(job.artifacts?.missing_shared_image_count || 0)
   const canRerun = job.status === 'partial' || job.status === 'failed' || job.status === 'interrupted'
+  const canResync = job.status === 'failed' && isImageBackfill && job.stage === 'load_local'
+    && !!job.tid && (job.error_message || '').startsWith('local floor sequence is invalid; full resync required')
   const failureTitle = lang === 'en' ? 'Failure diagnostics' : '失败诊断'
   const eventPayloadTitle = lang === 'en' ? 'Event payload' : '事件负载'
 
@@ -134,6 +141,23 @@ export function JobDetail() {
     }
   }
 
+  const handleResync = async () => {
+    setActionError(null)
+    setResyncSubmitting(true)
+    try {
+      const result = await api.resyncFailedJob(job.job_id)
+      setEvents([])
+      setJob(null)
+      jobRef.current = null
+      setRefreshNotice(null)
+      navigate(`/jobs/${result.job_id}`)
+    } catch (e: any) {
+      setActionError(e.message || String(e))
+    } finally {
+      setResyncSubmitting(false)
+    }
+  }
+
   return (
     <>
       <div className="threads-filter-row" style={{ marginBottom: 12 }}>
@@ -142,7 +166,7 @@ export function JobDetail() {
           <Link to="/jobs" className="btn-subtle">← {t('job_list')}</Link>
           {(canRerun || job.status === 'queued' || job.status === 'running' || job.status === 'retrying' || job.status === 'paused') && (
             <>
-              {canRerun && (
+              {canRerun && !canResync && (
                 <button className="btn-subtle" onClick={() => void handleRerun()} disabled={rerunSubmitting}>
                   {rerunSubmitting ? t('running') : t('rerun')}
                 </button>
@@ -168,6 +192,16 @@ export function JobDetail() {
           )}
         </div>
       </div>
+      {canResync && (
+        <div className="panel" style={{ marginBottom: 12 }}>
+          <p>{lang === 'en'
+            ? 'Local floor numbering is invalid. Queue a full thread sync and clear all failed jobs for this thread, including this job. The daemon will execute the sync.'
+            : '本地楼层编号异常，需要重新同步帖子。提交成功后将清除同帖子的所有失败任务（包括当前任务），由后台执行同步。'}</p>
+          <button className="btn-primary" onClick={() => void handleResync()} disabled={resyncSubmitting}>
+            {resyncSubmitting ? (lang === 'en' ? 'Submitting…' : '正在提交…') : (lang === 'en' ? 'Resync thread' : '重新同步帖子')}
+          </button>
+        </div>
+      )}
       {actionError && <div className="panel" style={{ marginBottom: 12, color: 'var(--status-error)' }}>{actionError}</div>}
       <div className="table-wrap"><table>
         <tbody>{rows.map(([k, v], i) => <tr key={i}><th style={{ width: 120 }}>{k}</th><td style={{ textAlign: 'left' }}>{v}</td></tr>)}</tbody>

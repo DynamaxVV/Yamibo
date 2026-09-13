@@ -745,3 +745,26 @@ def test_job_events_encode_postgres_datetimes(client, monkeypatch):
     assert response.json()[0]['created_at'] == stamp.isoformat()
     assert response.json()[0]['payload']['observed_at'] == stamp.isoformat()
     assert response.headers['X-Next-Event-ID'] == '7'
+
+
+def test_resync_failed_floor_job_endpoint(client, test_settings):
+    from yamibo_mcp.db.connection import connect
+    conn = connect(test_settings.db_path)
+    try:
+        repo = JobsRepository(conn)
+        source = repo.create('image_backfill', tid=901)
+        conn.execute("UPDATE jobs SET status='failed', stage='load_local', error_message=? WHERE job_id=?", (
+            'local floor sequence is invalid; full resync required: duplicate', source.job_id))
+        conn.commit()
+    finally:
+        conn.close()
+    response = client.post('/api/jobs/resync-thread', json={'job_id': source.job_id})
+    assert response.status_code == 200
+    result = response.json()
+    assert result['deleted_failed_count'] == 1
+    new = client.get('/api/jobs/' + result['job_id']).json()
+    assert new['job_type'] == 'sync_thread'
+    assert new['payload'] == {'tid': 901}
+    assert client.get('/api/jobs/' + source.job_id).status_code == 404
+    assert client.post('/api/jobs/resync-thread', json={'job_id': result['job_id']}).status_code == 400
+    assert client.post('/api/jobs/resync-thread', json={'job_id': 'missing'}).status_code == 404
