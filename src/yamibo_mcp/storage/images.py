@@ -14,7 +14,7 @@ from http.cookiejar import CookieJar
 from mimetypes import guess_extension
 from pathlib import Path
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, NoReturn
 from urllib.parse import urlparse
 
 from yamibo_mcp.domain.models import ThreadSnapshot
@@ -38,11 +38,20 @@ class _ImageHTTPError(Exception):
 
 
 class _ImageContentError(ValueError):
-    def __init__(self, error_type: str) -> None:
-        super().__init__("WAF interception page returned instead of image" if error_type == "waf" else "non-image response")
+    _MESSAGES = {
+        "waf_response": "WAF interception page returned instead of image",
+        "html_response": "HTML response returned instead of image",
+        "truncated_image": "image response body is truncated or incomplete",
+        "invalid_image_body": "invalid image response body",
+    }
+
+    def __init__(self, error_type: str, *, retryable: bool | None = None) -> None:
+        super().__init__(self._MESSAGES.get(error_type, "invalid image response"))
         self.error_type = error_type
-        # The authenticated fetcher already performed its challenge retry.
-        self.retryable = False
+        # A truncated body is often caused by a transient upstream/proxy
+        # transport problem and is safe to retry.  HTML/WAF and otherwise
+        # invalid bodies are deterministic enough to avoid retry storms.
+        self.retryable = error_type == "truncated_image" if retryable is None else retryable
 
 
 @dataclass(frozen=True)
@@ -188,11 +197,20 @@ def download_images_to_staging(
     referer: str | None = None,
     on_progress: Callable[[], None] | None = None,
     cancel_check: Callable[[], None] | None = None,
+    control_check: Callable[[], None] | None = None,
     stage_deadline_seconds: float | None = None,
     download_slot_wait_seconds: float | None = None,
     target_urls: set[str] | None = None,
     fetcher: ImageFetcher | None = None,
 ) -> ImageDownloadResult:
+    """Download image targets without invoking database callbacks in workers.
+
+    ``cancel_check`` is passed to download workers and therefore must be
+    thread-safe.  ``control_check`` is called only by this function's caller
+    thread while it is collecting work.  Job handlers use an in-memory event
+    for the worker callback and keep database-backed cancellation/pause checks
+    in ``control_check``.
+    """
     started_at = time.monotonic()
     slot_wait_seconds = timeout if download_slot_wait_seconds is None else download_slot_wait_seconds
     try:
@@ -229,9 +247,16 @@ def download_images_to_staging(
                     return True
                 return False
 
+            def _main_control_check() -> None:
+                # Keep the legacy callback useful for callers that do not need
+                # a separate main-thread control callback.  Production job
+                # handlers pass both callbacks explicitly.
+                check = control_check or cancel_check
+                if check is not None:
+                    check()
+
             for floor in snapshot.floors:
-                if cancel_check is not None:
-                    cancel_check()
+                _main_control_check()
                 if _stop_if_timed_out():
                     break
                 for index, image_url in enumerate(floor.image_urls, start=1):
@@ -310,8 +335,7 @@ def download_images_to_staging(
                     }
                     future_results: list[_DownloadTaskResult | None] = [None] * len(tasks)
                     while futures:
-                        if cancel_check is not None:
-                            cancel_check()
+                        _main_control_check()
                         if _stop_if_timed_out():
                             stopped_reason = stopped_reason or "stage_timeout"
                             for future in futures:
@@ -496,6 +520,50 @@ def _download_to_explicit_target_with_retries(
     raise last_error
 
 
+def _classify_invalid_image_body(body: bytes, *, content_type: str | None = None) -> str:
+    """Classify an HTTP body that failed image validation.
+
+    A response can have HTTP 200 and an image content type while still being
+    truncated.  Keep that case distinct from an HTML/WAF interception page so
+    callers can choose an appropriate retry policy.
+    """
+    text = body.decode("utf-8", errors="ignore")
+    if is_soft_block_page(text):
+        return "waf_response"
+
+    normalized_type = (content_type or "").split(";", 1)[0].strip().lower()
+    stripped = body.lstrip().lower()
+    if normalized_type in {"text/html", "application/xhtml+xml"} or stripped.startswith(
+        (b"<!doctype html", b"<html", b"<head", b"<body")
+    ):
+        return "html_response"
+
+    if normalized_type.startswith("image/") or _suffix_from_bytes(body[:64]) is not None:
+        return "truncated_image"
+    return "invalid_image_body"
+
+
+def _content_length_mismatch(body: bytes, content_length: Any) -> bool:
+    if content_length in {None, ""}:
+        return False
+    try:
+        expected = int(str(content_length).strip())
+    except (TypeError, ValueError):
+        return False
+    return expected >= 0 and expected != len(body)
+
+
+def _raise_invalid_image_body(
+    body: bytes,
+    *,
+    content_type: str | None = None,
+    content_length: Any = None,
+) -> NoReturn:
+    if _content_length_mismatch(body, content_length):
+        raise _ImageContentError("truncated_image")
+    raise _ImageContentError(_classify_invalid_image_body(body, content_type=content_type))
+
+
 def _fetch_to_path(
     image_url: str,
     *,
@@ -539,7 +607,14 @@ def _fetch_to_path(
                 first_bytes = body[:64]
                 response_headers = getattr(response, "headers", {})
                 if metadata is not None:
-                    metadata.update(status_code=status, final_url=getattr(response, "final_url", image_url), content_type=_header_value(response_headers, "Content-Type"), bytes=len(body))
+                    metadata.update(
+                        status_code=status,
+                        final_url=getattr(response, "final_url", image_url),
+                        content_type=_header_value(response_headers, "Content-Type"),
+                        content_length=_header_value(response_headers, "Content-Length"),
+                        content_range=_header_value(response_headers, "Content-Range"),
+                        bytes=len(body),
+                    )
                 if status >= 400:
                     raise _ImageHTTPError(status)
                 suffix = _suffix_from_response_headers(response_headers, image_url=image_url, final_url=getattr(response, "final_url", image_url), first_bytes=first_bytes)
@@ -548,16 +623,28 @@ def _fetch_to_path(
                 part_target.write_bytes(body)
                 try:
                     _require_valid_image_file(part_target)
-                except ValueError as exc:
-                    error_type = "waf" if is_soft_block_page(body.decode("utf-8", errors="ignore")) else "non_image_response"
-                    raise _ImageContentError(error_type) from exc
+                except ValueError:
+                    _raise_invalid_image_body(
+                        body,
+                        content_type=_header_value(response_headers, "Content-Type"),
+                        content_length=_header_value(response_headers, "Content-Length"),
+                    )
                 os.replace(part_target, target)
                 return target
             request = urllib.request.Request(image_url, headers=request_headers)
             with opener.open(request, timeout=timeout) as response:
                 status = getattr(response, "status", 200)
+                content_type = _header_value(response.headers, "Content-Type")
+                content_length = _header_value(response.headers, "Content-Length")
                 if metadata is not None:
-                    metadata.update(status_code=int(status), final_url=getattr(response, "geturl", lambda: image_url)(), content_type=_header_value(response.headers, "Content-Type"), bytes=0)
+                    metadata.update(
+                        status_code=int(status),
+                        final_url=getattr(response, "geturl", lambda: image_url)(),
+                        content_type=content_type,
+                        content_length=content_length,
+                        content_range=_header_value(response.headers, "Content-Range"),
+                        bytes=0,
+                    )
                 if status >= 400:
                     LOG.warning("Image download returned HTTP %d for %s", status, image_url)
                     raise _ImageHTTPError(status)
@@ -579,7 +666,14 @@ def _fetch_to_path(
                         fp.write(chunk)
                 if metadata is not None:
                     metadata["bytes"] = part_target.stat().st_size
-                _require_valid_image_file(part_target)
+                try:
+                    _require_valid_image_file(part_target)
+                except ValueError:
+                    _raise_invalid_image_body(
+                        part_target.read_bytes(),
+                        content_type=content_type,
+                        content_length=content_length,
+                    )
                 os.replace(part_target, target)
             return target
         source = Path(image_url)
@@ -633,17 +727,34 @@ def _fetch_to_explicit_target(
             if fetcher is not None:
                 response = fetcher(image_url, referer=referer, timeout=timeout)
                 status = int(getattr(response, "status_code", 200))
+                response_headers = getattr(response, "headers", {})
+                body = bytes(getattr(response, "content", b""))
                 if metadata is not None:
-                    metadata.update(status_code=status, final_url=getattr(response, "final_url", image_url), content_type=_header_value(getattr(response, "headers", {}), "Content-Type"), bytes=len(getattr(response, "content", b"")))
+                    metadata.update(
+                        status_code=status,
+                        final_url=getattr(response, "final_url", image_url),
+                        content_type=_header_value(response_headers, "Content-Type"),
+                        content_length=_header_value(response_headers, "Content-Length"),
+                        content_range=_header_value(response_headers, "Content-Range"),
+                        bytes=len(body),
+                    )
                 if status >= 400:
                     raise _ImageHTTPError(status)
-                part_target.write_bytes(bytes(getattr(response, "content", b"")))
+                part_target.write_bytes(body)
             else:
                 request = urllib.request.Request(image_url, headers=request_headers)
                 with opener.open(request, timeout=timeout) as response, part_target.open("wb") as fp:
                     status = getattr(response, "status", 200)
+                    content_type = _header_value(response.headers, "Content-Type")
+                    content_length = _header_value(response.headers, "Content-Length")
                     if metadata is not None:
-                        metadata.update(status_code=int(status), final_url=getattr(response, "geturl", lambda: image_url)(), content_type=_header_value(response.headers, "Content-Type"))
+                        metadata.update(
+                            status_code=int(status),
+                            final_url=getattr(response, "geturl", lambda: image_url)(),
+                            content_type=content_type,
+                            content_length=content_length,
+                            content_range=_header_value(response.headers, "Content-Range"),
+                        )
                     if status >= 400:
                         LOG.warning("Image download returned HTTP %d for %s", status, image_url)
                         raise _ImageHTTPError(status)
@@ -663,12 +774,12 @@ def _fetch_to_explicit_target(
             shutil.copy2(source, part_target)
         try:
             _require_valid_image_file(part_target)
-        except ValueError as exc:
-            if fetcher is not None:
-                body = part_target.read_bytes()
-                error_type = "waf" if is_soft_block_page(body.decode("utf-8", errors="ignore")) else "non_image_response"
-                raise _ImageContentError(error_type) from exc
-            raise
+        except ValueError:
+            _raise_invalid_image_body(
+                part_target.read_bytes(),
+                content_type=(metadata or {}).get("content_type"),
+                content_length=(metadata or {}).get("content_length"),
+            )
         if metadata is not None:
             metadata["bytes"] = part_target.stat().st_size
         os.replace(part_target, target)
@@ -744,7 +855,7 @@ def _diagnostic(
         http_status = getattr(exc, "status_code", None) or getattr(exc, "code", None) or details.get("status_code")
     error_type = _error_type(exc, http_status=http_status)
     retryable = _is_retryable_image_error(exc, http_status=http_status, details=details)
-    return {
+    result = {
         "url": url,
         "final_url": info.get("final_url") or final_url or url,
         "content_type": info.get("content_type"),
@@ -758,6 +869,10 @@ def _diagnostic(
         "error_message": None if exc is None else _sanitize_error_message(str(exc)),
         "retryable": retryable,
     }
+    for key in ("content_length", "content_range"):
+        if info.get(key) is not None:
+            result[key] = info[key]
+    return result
 
 
 def _error_type(exc: Exception | None, *, http_status: Any = None) -> str | None:
@@ -773,9 +888,9 @@ def _error_type(exc: Exception | None, *, http_status: Any = None) -> str | None
     if isinstance(exc, TimeoutError) or "timed out" in message or "timeout" in name:
         return "timeout"
     if isinstance(exc, ValueError) and "image" in message:
-        return "non_image_response"
+        return "invalid_image_body"
     if "waf" in name or "challenge" in message or "soft block" in message:
-        return "waf"
+        return "waf_response"
     if isinstance(exc, FileNotFoundError):
         return "not_found"
     return "network_error"
@@ -794,7 +909,12 @@ def _is_retryable_image_error(exc: Exception | None, *, http_status: Any, detail
         return status in {408, 425, 429} or status >= 500
     if isinstance(exc, FileNotFoundError):
         return False
-    return _error_type(exc, http_status=http_status) in {"timeout", "network_error", "waf"}
+    return _error_type(exc, http_status=http_status) in {
+        "timeout",
+        "network_error",
+        "waf_response",
+        "truncated_image",
+    }
 
 
 def _should_retry_exception(exc: Exception, *, metadata: Mapping[str, Any] | None) -> bool:

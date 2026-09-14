@@ -16,7 +16,7 @@ from yamibo_mcp.domain.job_state import new_job_id
 from yamibo_mcp.storage.images import _is_valid_image_file
 from yamibo_mcp.storage.paths import StoragePaths
 from yamibo_mcp.time_utils import utc_now_iso
-from yamibo_mcp.yamibo.urls import is_yamibo_site_image_url
+from yamibo_mcp.yamibo.urls import is_yamibo_site_content_image_url
 
 LOG = logging.getLogger(__name__)
 
@@ -347,13 +347,13 @@ def _select_candidate_batch(
 
 
 def _has_auto_repairable_site_image(settings: Settings, tid: int) -> bool:
-    """Return whether a candidate has a missing first-party image target.
+    """Return whether a candidate has a clearly missing content image.
 
     The SQL candidate query intentionally detects broad archive gaps.  The
     metadata file is the only local source that retains the remote URL for
-    floor rows without an asset, so use it to avoid scheduling external-only
-    images.  Missing or unreadable metadata fails open to preserve recovery of
-    older archives whose metadata predates image slots.
+    floor rows without an asset, so use it to avoid scheduling external-only,
+    static, or decorative resources.  Missing or unreadable metadata is not
+    sufficiently explicit for automatic repair and is therefore skipped.
     """
     data_dir_value = getattr(settings, "data_dir", None)
     if data_dir_value is None:
@@ -364,15 +364,14 @@ def _has_auto_repairable_site_image(settings: Settings, tid: int) -> bool:
     paths = StoragePaths(Path(data_dir_value))
     metadata_path = paths.thread_metadata(tid)
     if not metadata_path.exists():
-        return True
+        return False
     try:
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     except (OSError, TypeError, ValueError):
-        return True
+        return False
     if not isinstance(metadata, dict):
-        return True
+        return False
 
-    observed_remote_urls = False
     floors = metadata.get("floors") or []
     if isinstance(floors, list):
         for floor in floors:
@@ -392,8 +391,7 @@ def _has_auto_repairable_site_image(settings: Settings, tid: int) -> bool:
                 url = str(raw_url or "").strip()
                 if not _is_remote_image_url(url):
                     continue
-                observed_remote_urls = True
-                if not is_yamibo_site_image_url(url):
+                if not is_yamibo_site_content_image_url(url):
                     continue
                 slot = slots[index] if index < len(slots) and isinstance(slots[index], dict) else {}
                 if _metadata_slot_needs_repair(paths, tid, slot):
@@ -405,13 +403,12 @@ def _has_auto_repairable_site_image(settings: Settings, tid: int) -> bool:
     ]
     remote_missing_urls = [str(value).strip() for value in missing_urls if _is_remote_image_url(str(value).strip())]
     if remote_missing_urls:
-        observed_remote_urls = True
-        if any(is_yamibo_site_image_url(url) for url in remote_missing_urls):
+        if any(is_yamibo_site_content_image_url(url) for url in remote_missing_urls):
             return True
 
-    # No remote URL means this is likely an older metadata shape.  Keep the
-    # SQL candidate eligible rather than silently losing a valid repair.
-    return not observed_remote_urls
+    # A metadata file without an explicit first-party content target is not
+    # actionable by the automatic repair campaign.
+    return False
 
 
 def _is_remote_image_url(url: str) -> bool:
@@ -424,7 +421,7 @@ def _metadata_slot_needs_repair(paths: StoragePaths, tid: int, slot: dict[str, A
     if status == "skipped":
         return False
     local_path = str(slot.get("local_path") or "").strip()
-    if not local_path or status in {"missing", "missing_shared", "pending"}:
+    if not local_path:
         return True
     path = Path(local_path)
     if path.is_absolute():
@@ -433,6 +430,8 @@ def _metadata_slot_needs_repair(paths: StoragePaths, tid: int, slot: dict[str, A
         resolved = paths.data_dir / path
     else:
         resolved = paths.thread_dir(tid) / path
+    # A stale ``missing``/``pending`` label must not enqueue a download when
+    # the referenced file is already a valid image.
     return not _is_valid_image_file(resolved)
 
 

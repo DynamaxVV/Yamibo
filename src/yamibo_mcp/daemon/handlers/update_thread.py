@@ -15,7 +15,12 @@ from yamibo_mcp.db.repositories.assets import AssetsRepository
 from yamibo_mcp.db.repositories.content_blocks import ContentBlocksRepository
 from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
-from yamibo_mcp.daemon.handlers.sync_thread import _check_cancelled, _check_paused, _merge_thread_snapshots
+from yamibo_mcp.daemon.handlers.sync_thread import (
+    _build_download_control_checks,
+    _check_cancelled,
+    _check_paused,
+    _merge_thread_snapshots,
+)
 from yamibo_mcp.daemon.heartbeat import HeartbeatPacer
 from yamibo_mcp.domain.content import build_content_snapshot
 from yamibo_mcp.domain.models import FloorSnapshot, Job, ThreadSnapshot, TitleSnapshot
@@ -352,13 +357,11 @@ def handle_update_thread(repo: JobsRepository, job: Job, worker_id: str, lease_s
             min_interval_seconds=max(float(getattr(settings, "worker_heartbeat_seconds", 15)), 1.0),
         )
         heartbeat_pacer.beat(force=True)
-        def _cancel_check() -> None:
-            _check_cancelled(repo, job.job_id)
+        worker_cancel_check, main_control_check = _build_download_control_checks(repo, job.job_id)
 
         def _progress() -> None:
             heartbeat_pacer.beat()
-            _cancel_check()
-            _check_paused(repo, job.job_id)
+            main_control_check()
 
         image_result = download_images_to_staging(
             paths,
@@ -374,7 +377,8 @@ def handle_update_thread(repo: JobsRepository, job: Job, worker_id: str, lease_s
             referer=tail_page.final_url,
             fetcher=getattr(client, "fetch_image", None),
             on_progress=_progress,
-            cancel_check=_cancel_check,
+            cancel_check=worker_cancel_check,
+            control_check=main_control_check,
             stage_deadline_seconds=download_stage_timeout_seconds,
         )
         _check_paused(repo, job.job_id)

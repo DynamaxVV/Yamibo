@@ -37,6 +37,18 @@ def is_yamibo_site_image_url(url: str) -> bool:
     return bool(mod_values & {"attachment", "attachment/image"})
 
 
+def is_yamibo_site_content_image_url(url: str) -> bool:
+    """Return whether *url* is a first-party post-content image target.
+
+    Shared forum chrome such as smileys and decorative resources is served
+    from ``/static/image/``.  Automatic repair only queues content-bearing
+    attachment URLs, so those shared resources are deliberately excluded.
+    """
+    if not is_yamibo_site_image_url(url):
+        return False
+    return not urlparse(str(url).strip()).path.lower().startswith("/static/image/")
+
+
 def stable_attachment_id(url: str) -> str | None:
     """Return the stable numeric component of a signed Yamibo attachment URL."""
     parsed = urlparse(url)

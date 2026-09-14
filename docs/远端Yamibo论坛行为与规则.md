@@ -266,7 +266,10 @@ HTTP 200 不代表图片成功。应同时检查：
 | `BAIDU_WAF`、`__noxExpire`、`nox_jst_v1`、`acw_sc__v2` | WAF 或反爬挑战 | `soft_blocked` |
 | HTTP 429 | 限流 | `rate_limited` |
 | HTTP 444、连接重置、未知挑战页 | 访问被拦截或传输异常 | `soft_blocked` / `transport_error` |
-| HTTP 200 但图片响应是 HTML | 图片请求失败 | `non_image_response` |
+| HTTP 200 且响应是 WAF/挑战页 | 图片请求被反爬页面拦截 | `waf_response` |
+| HTTP 200 但图片响应是普通 HTML | 图片请求返回网页而非图片 | `html_response` |
+| HTTP 200 且带图片头但文件不完整 | 图片体被截断或传输不完整 | `truncated_image` |
+| HTTP 200 但既不是图片也不是 HTML | 图片响应体无效 | `invalid_image_body` |
 
 其中删除、权限不足、分区关闭属于业务语义，不应通过无限更换代理重试。WAF、限流和传输异常才适合进入有上限的等待、退避或恢复流程。
 

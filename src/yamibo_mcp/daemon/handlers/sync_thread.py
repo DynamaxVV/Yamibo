@@ -5,6 +5,7 @@ import shutil
 import time
 from contextlib import ExitStack
 from dataclasses import replace
+from threading import Event
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -54,6 +55,40 @@ def _check_cancelled(repo: JobsRepository, job_id: str) -> None:
 def _check_paused(repo: JobsRepository, job_id: str) -> None:
     if repo.is_paused(job_id):
         raise JobPaused(f"Job {job_id} was paused")
+
+
+def _build_download_control_checks(repo: JobsRepository, job_id: str):
+    """Build main-thread DB checks and a worker-safe cancellation callback."""
+    stop_event = Event()
+    stop_reason = {"value": None}
+
+    def _main_control_check() -> None:
+        try:
+            _check_cancelled(repo, job_id)
+            _check_paused(repo, job_id)
+        except JobCancelled:
+            stop_reason["value"] = "cancelled"
+            stop_event.set()
+            raise
+        except JobPaused:
+            stop_reason["value"] = "paused"
+            stop_event.set()
+            raise
+        except Exception:
+            stop_reason["value"] = "control_error"
+            stop_event.set()
+            raise
+
+    def _worker_cancel_check() -> None:
+        # This callback is invoked by download worker threads.  It must never
+        # touch the shared database connection.
+        if not stop_event.is_set():
+            return
+        if stop_reason["value"] == "paused":
+            raise JobPaused(f"Job {job_id} was paused")
+        raise JobCancelled(f"Job {job_id} was cancelled")
+
+    return _worker_cancel_check, _main_control_check
 
 
 def _proxy_pool_artifacts(
@@ -557,15 +592,12 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
             )
             heartbeat_pacer.beat(force=True)
             progress_state = {"count": 0, "last_log": 0}
-
-            def _cancel_check() -> None:
-                _check_cancelled(repo, job.job_id)
+            worker_cancel_check, main_control_check = _build_download_control_checks(repo, job.job_id)
 
             def _progress() -> None:
                 progress_state["count"] += 1
                 heartbeat_pacer.beat()
-                _check_paused(repo, job.job_id)
-                _cancel_check()
+                main_control_check()
                 if progress_state["count"] - progress_state["last_log"] >= 25:
                     progress_state["last_log"] = progress_state["count"]
                     LOG.info(
@@ -591,7 +623,8 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
                 referer=source_url,
                 fetcher=None if client is None else getattr(client, "fetch_image", None),
                 on_progress=_progress,
-                cancel_check=_cancel_check,
+                cancel_check=worker_cancel_check,
+                control_check=main_control_check,
                 stage_deadline_seconds=download_stage_timeout_seconds,
             )
             _check_paused(repo, job.job_id)

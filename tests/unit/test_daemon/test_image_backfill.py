@@ -210,19 +210,21 @@ def test_metadata_missing_targets_site_only_excludes_external_urls(tmp_path):
     paths = StoragePaths(tmp_path)
     external_url = "http://mis.im.tku.edu.tw/~fireflyyen19a/new/src/image.jpg"
     site_url = "https://bbs.yamibo.com/forum.php?mod=attachment&aid=MQ%3D%3D"
+    static_url = "https://bbs.yamibo.com/static/image/smiley/gexing/008.gif"
     metadata_path = paths.thread_metadata(tid)
     metadata_path.parent.mkdir(parents=True)
     metadata_path.write_text(json.dumps({
         "floors": [{
-            "remote_image_urls": [external_url, site_url],
+            "remote_image_urls": [external_url, site_url, static_url],
             "image_slots": [
                 {"remote_url": external_url, "local_path": None, "status": "missing"},
                 {"remote_url": site_url, "local_path": None, "status": "missing"},
+                {"remote_url": static_url, "local_path": None, "status": "missing"},
             ],
         }],
     }), encoding="utf-8")
 
-    assert _metadata_missing_targets(paths, tid) == [external_url, site_url]
+    assert _metadata_missing_targets(paths, tid) == [external_url, site_url, static_url]
     assert _metadata_missing_targets(paths, tid, site_only=True) == [site_url]
 
 
@@ -555,6 +557,44 @@ def test_auto_scheduler_skips_external_only_and_accepts_mixed_site_candidate(db,
 
     assert scan["candidate"]["tid"] == mixed_tid
     assert scan["candidate_count"] == 1
+    assert scan["non_site_candidate_count"] == 1
+
+
+def test_auto_scheduler_skips_static_only_candidate(db, tmp_path):
+    tid = 3053
+    static_url = "https://bbs.yamibo.com/static/image/smiley/gexing/008.gif"
+    db.execute(
+        """
+        INSERT INTO threads (tid, raw_title, display_title, sync_time, image_count, archive_status, forum_id)
+        VALUES (?, 'raw', 'display', '2026-07-01T00:00:00+00:00', 1, 'complete', 5)
+        """,
+        (tid,),
+    )
+    db.execute(
+        "INSERT INTO floors (pid, tid, floor_no, content, has_images) VALUES (?, ?, 2, 'reply', 1)",
+        (tid * 10 + 2, tid),
+    )
+    db.commit()
+
+    paths = StoragePaths(tmp_path)
+    metadata_path = paths.thread_metadata(tid)
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
+    metadata_path.write_text(json.dumps({
+        "floors": [{
+            "remote_image_urls": [static_url],
+            "image_slots": [{"remote_url": static_url, "local_path": None, "status": "missing"}],
+        }],
+        "missing_shared_image_urls": [static_url],
+    }), encoding="utf-8")
+
+    settings = _scheduler_settings()
+    settings.data_dir = tmp_path
+    scan = scheduler._select_candidate_batch(
+        JobsRepository(db), settings, dry_run=False, cursor_tid=0, campaign="metadata_reconcile_v1"
+    )
+
+    assert scan["candidate"] is None
+    assert scan["candidate_count"] == 0
     assert scan["non_site_candidate_count"] == 1
 
 
@@ -996,9 +1036,11 @@ def test_auto_backfill_does_not_fail_selected_guard_for_external_only_target(db,
     handle_image_backfill(repo, repo.get(job.job_id), "worker", 60, settings)
 
     completed = repo.get(job.job_id)
-    assert completed.status == "partial"
+    assert completed.status == "succeeded"
     assert completed.error_code is None
-    assert download_targets == [set()]
+    assert completed.artifacts["already_complete"] is True
+    assert completed.artifacts["download_skipped_reason"] == "no_missing_content_targets"
+    assert download_targets == []
 
 
 def test_v2_scheduler_accepts_first_floor_metadata_missing_candidate(db):

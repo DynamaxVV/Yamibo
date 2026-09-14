@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import replace
+import threading
 import time
 from types import SimpleNamespace
 import urllib.request
@@ -262,8 +263,118 @@ def test_authenticated_html_response_is_non_image_and_not_retried(tmp_path):
     assert calls == 1
     assert result.missing_urls == [url]
     assert result.diagnostics[0]["http_status"] == 200
-    assert result.diagnostics[0]["error_type"] == "non_image_response"
+    assert result.diagnostics[0]["error_type"] == "html_response"
     assert result.diagnostics[0]["retryable"] is False
+
+
+def test_authenticated_truncated_image_body_is_retryable_and_distinct(tmp_path):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    paths = StoragePaths(data_dir, export_dir=tmp_path / "exports", novel_txt_export_dir=tmp_path / "novel_exports")
+    url = "https://bbs.yamibo.com/forum.php?mod=attachment&aid=1640438"
+    floor = replace(_make_snapshot().floors[0], image_urls=[url])
+    snapshot = replace(_make_snapshot(), floors=[floor], image_count=1)
+    calls = 0
+    truncated_jpeg = b"\xff\xd8\xff\xc0\x00\x0b\x08\x01\xe0\x02\x80\x03\x01\x11\x00" + b"\x00" * 80
+
+    def fetcher(image_url, **kwargs):
+        nonlocal calls
+        calls += 1
+        return SimpleNamespace(
+            status_code=200,
+            final_url=image_url,
+            headers={"Content-Type": "image/jpeg"},
+            content=truncated_jpeg,
+        )
+
+    result = download_images_to_staging(
+        paths,
+        "job-authenticated-truncated",
+        snapshot,
+        timeout=1,
+        retries=2,
+        fetcher=fetcher,
+        target_urls={url},
+    )
+
+    assert calls == 3
+    assert result.missing_urls == [url]
+    assert result.diagnostics[0]["error_type"] == "truncated_image"
+    assert result.diagnostics[0]["retryable"] is True
+    assert result.diagnostics[0]["attempts"] == 3
+
+
+def test_authenticated_waf_response_is_distinct_from_plain_html(tmp_path):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    paths = StoragePaths(data_dir, export_dir=tmp_path / "exports", novel_txt_export_dir=tmp_path / "novel_exports")
+    url = "https://bbs.yamibo.com/forum.php?mod=attachment&aid=1640438"
+    floor = replace(_make_snapshot().floors[0], image_urls=[url])
+    snapshot = replace(_make_snapshot(), floors=[floor], image_count=1)
+
+    def fetcher(image_url, **kwargs):
+        return SimpleNamespace(
+            status_code=200,
+            final_url=image_url,
+            headers={"Content-Type": "text/html"},
+            content=b"<html><title>Just a moment...</title></html>",
+        )
+
+    result = download_images_to_staging(
+        paths,
+        "job-authenticated-waf",
+        snapshot,
+        timeout=1,
+        retries=2,
+        fetcher=fetcher,
+        target_urls={url},
+    )
+
+    assert result.diagnostics[0]["error_type"] == "waf_response"
+    assert result.diagnostics[0]["retryable"] is False
+
+
+def test_download_control_check_runs_on_main_thread_and_worker_cancel_is_separate(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    paths = StoragePaths(data_dir, export_dir=tmp_path / "exports", novel_txt_export_dir=tmp_path / "novel_exports")
+    floor = replace(
+        _make_snapshot().floors[0],
+        image_urls=[
+            "https://img.example.com/a.jpg",
+            "https://img.example.com/b.jpg",
+        ],
+    )
+    snapshot = replace(_make_snapshot(), floors=[floor], image_count=2)
+    main_thread_id = threading.get_ident()
+    worker_thread_ids: list[int] = []
+    control_thread_ids: list[int] = []
+
+    def _fake_download(image_url, *, staging_dir, stem, cancel_check=None, **kwargs):
+        worker_thread_ids.append(threading.get_ident())
+        if cancel_check is not None:
+            cancel_check()
+        target = staging_dir / f"{stem}.jpg"
+        target.write_bytes(b"image_data")
+        return target
+
+    monkeypatch.setattr(images, "_download_with_retries", _fake_download)
+    monkeypatch.setattr(images, "_should_exclude_from_export", lambda *args, **kwargs: False)
+
+    result = download_images_to_staging(
+        paths,
+        "job-control-check",
+        snapshot,
+        timeout=1,
+        cancel_check=lambda: None,
+        control_check=lambda: control_thread_ids.append(threading.get_ident()),
+    )
+
+    assert result.downloaded_count == 2
+    assert worker_thread_ids
+    assert all(thread_id != main_thread_id for thread_id in worker_thread_ids)
+    assert control_thread_ids
+    assert all(thread_id == main_thread_id for thread_id in control_thread_ids)
 
 
 def test_external_image_does_not_use_yamibo_fetcher(tmp_path, monkeypatch):

@@ -30,7 +30,12 @@ from yamibo_mcp.storage.atomic import atomic_write_text
 from yamibo_mcp.storage.paths import StoragePaths
 from yamibo_mcp.storage.thread_archive import materialize_thread
 from yamibo_mcp.daemon.handlers.update_thread import _load_local_thread_snapshot
-from yamibo_mcp.daemon.handlers.sync_thread import _check_cancelled, _check_paused, _merge_thread_snapshots
+from yamibo_mcp.daemon.handlers.sync_thread import (
+    _build_download_control_checks,
+    _check_cancelled,
+    _check_paused,
+    _merge_thread_snapshots,
+)
 from yamibo_mcp.errors import (
     ThreadPermissionRequiredError,
     UnexpectedPageError,
@@ -43,6 +48,7 @@ from yamibo_mcp.yamibo.anti_bot import ensure_no_maintenance_pause
 from yamibo_mcp.yamibo.parsers.thread_detail import parse_thread_snapshot
 from yamibo_mcp.yamibo.proxy_pool import DIRECT_NODE_NAME, activate_proxy_binding, select_thread_proxy
 from yamibo_mcp.daemon.remote_attempt import build_attempt
+from yamibo_mcp.yamibo.urls import is_yamibo_site_content_image_url as _is_yamibo_site_content_url
 from yamibo_mcp.yamibo.urls import is_yamibo_site_image_url as _is_yamibo_site_url
 from yamibo_mcp.yamibo.urls import remote_image_identity, stable_attachment_id
 
@@ -423,9 +429,30 @@ def handle_image_backfill(
                     repo.succeed(job.job_id, artifacts)
                     return
 
+                if not diff["missing_items_for_apply"]:
+                    # The metadata/DB gap that queued this maintenance job may
+                    # already have been repaired by another run, or may have
+                    # consisted only of static/decorative resources.  Once the
+                    # current remote snapshot confirms there is no content
+                    # target to fetch, this is a successful no-op rather than
+                    # IMAGE_TARGET_NOT_DOWNLOADED.
+                    artifacts.update(
+                        {
+                            "already_complete": True,
+                            "remote_fetch": True,
+                            "downloaded_image_count": 0,
+                            "reconciled_image_count": 0,
+                            "download_skipped_reason": "no_missing_content_targets",
+                        }
+                    )
+                    repo.update_stage(job.job_id, "finalize", progress_current=4, progress_total=4)
+                    repo.succeed(job.job_id, artifacts)
+                    return
+
                 apply_snapshot = _merge_remote_into_local(local_snapshot, snapshot)
                 repo.update_stage(job.job_id, "download_missing_images", progress_current=4, progress_total=6)
                 missing_snapshot = _snapshot_for_missing_images(snapshot, diff["missing_items_for_apply"])
+                worker_cancel_check, main_control_check = _build_download_control_checks(repo, job.job_id)
                 image_result = download_images_to_staging(
                     paths,
                     job.job_id,
@@ -443,6 +470,8 @@ def handle_image_backfill(
                     referer=final_url,
                     fetcher=getattr(client, "fetch_image", None),
                     target_urls={str(item["url"]) for item in diff["missing_items_for_apply"]},
+                    cancel_check=worker_cancel_check,
+                    control_check=main_control_check,
                     stage_deadline_seconds=float(getattr(settings, "image_download_stage_timeout_seconds", 600.0)),
                 )
                 diagnostics = [_safe_image_diagnostic(item) for item in image_result.diagnostics]
@@ -508,7 +537,10 @@ def handle_image_backfill(
                 successful_urls = set(image_result.relative_path_by_url)
                 if selected_scope:
                     successful_urls = _successful_selected_url_aliases(successful_urls, selected_url_map)
-                    missing_image_urls, missing_shared_image_urls = _missing_urls_from_assets(synced_assets)
+                    missing_image_urls, missing_shared_image_urls = _missing_urls_from_assets(
+                        synced_assets,
+                        include_shared=not site_only,
+                    )
                 else:
                     missing_image_urls = _unique([
                         *[url for url in previous_missing if not _url_was_successfully_downloaded(url, successful_urls)],
@@ -740,8 +772,14 @@ def _metadata_missing_targets(paths: StoragePaths, tid: int, *, site_only: bool 
             continue
         urls = [str(url) for url in floor.get("remote_image_urls") or floor.get("image_urls") or []]
         slots = floor.get("image_slots") or []
+        if not urls and isinstance(slots, list):
+            urls = [
+                str(slot.get("remote_url") or "")
+                for slot in slots
+                if isinstance(slot, dict) and slot.get("remote_url")
+            ]
         for index, url in enumerate(urls):
-            if site_only and not _is_yamibo_site_url(url):
+            if site_only and not _is_yamibo_site_content_url(url):
                 continue
             slot = slots[index] if index < len(slots) and isinstance(slots[index], dict) else {}
             status = str(slot.get("status") or "").strip().lower()
@@ -1181,9 +1219,11 @@ def _diff_snapshot_images(
             if site_only and not _is_yamibo_site_url(url):
                 continue
             image_class = _classify_backfill_image(url)
+            if site_only and image_class in {"static", "decorative"}:
+                continue
             # Automatic idle repair intentionally remains restricted to known
-            # forum/static assets.  A user-selected external URL may still be
-            # attempted through the interactive endpoint.
+            # first-party content assets.  A user-selected external URL may
+            # still be attempted through the interactive endpoint.
             if image_class == "external" and scope != "selected":
                 continue
             class_counts[image_class] += 1
@@ -1444,14 +1484,19 @@ def _image_slot_overrides_from_assets(assets) -> dict[str, dict[str, str | None]
     return overrides
 
 
-def _missing_urls_from_assets(assets) -> tuple[list[str], list[str]]:
+def _missing_urls_from_assets(
+    assets,
+    *,
+    include_shared: bool = True,
+) -> tuple[list[str], list[str]]:
     missing_images: list[str] = []
     missing_shared: list[str] = []
     for asset in assets:
         if asset.local_path or _classify_backfill_image(asset.remote_url) == "embedded":
             continue
         if _classify_backfill_image(asset.remote_url) in {"static", "decorative"}:
-            missing_shared.append(asset.remote_url)
+            if include_shared:
+                missing_shared.append(asset.remote_url)
         else:
             missing_images.append(asset.remote_url)
     return _unique(missing_images), _unique(missing_shared)
