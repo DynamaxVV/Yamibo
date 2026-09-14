@@ -13,6 +13,30 @@ DEFAULT_COMIC_FORUM_ID = 30
 DEFAULT_FORUM_ID = DEFAULT_COMIC_FORUM_ID
 
 
+def is_yamibo_site_image_url(url: str) -> bool:
+    """Return whether *url* is a first-party Yamibo image resource.
+
+    Automatic image backfill is allowed to repair resources served by the
+    forum itself.  Image URLs embedded in a post may point at arbitrary third
+    party hosts, so checking the path alone is not sufficient: an external
+    host can also use a path such as ``/data/attachment/...``.
+    """
+    parsed = urlparse(str(url).strip())
+    if parsed.scheme.lower() not in {"http", "https"}:
+        return False
+    if (parsed.hostname or "").lower() != "bbs.yamibo.com":
+        return False
+
+    path = parsed.path.lower()
+    if path.startswith("/static/image/") or path.startswith("/data/attachment/"):
+        return True
+    if path != "/forum.php":
+        return False
+
+    mod_values = {value.lower() for value in parse_qs(parsed.query).get("mod", [])}
+    return bool(mod_values & {"attachment", "attachment/image"})
+
+
 def stable_attachment_id(url: str) -> str | None:
     """Return the stable numeric component of a signed Yamibo attachment URL."""
     parsed = urlparse(url)

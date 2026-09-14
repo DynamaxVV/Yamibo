@@ -43,6 +43,7 @@ from yamibo_mcp.yamibo.anti_bot import ensure_no_maintenance_pause
 from yamibo_mcp.yamibo.parsers.thread_detail import parse_thread_snapshot
 from yamibo_mcp.yamibo.proxy_pool import DIRECT_NODE_NAME, activate_proxy_binding, select_thread_proxy
 from yamibo_mcp.daemon.remote_attempt import build_attempt
+from yamibo_mcp.yamibo.urls import is_yamibo_site_image_url as _is_yamibo_site_url
 from yamibo_mcp.yamibo.urls import remote_image_identity, stable_attachment_id
 
 
@@ -138,6 +139,9 @@ def handle_image_backfill(
     selected_scope = scope == "selected" or reconcile_mode
     include_first_floor = bool(job.payload.get("include_first_floor", selected_scope))
     target_urls = _unique([str(url) for url in (job.payload.get("target_urls") or []) if str(url).strip()])
+    site_only = bool(job.payload.get("internal_auto"))
+    if site_only:
+        target_urls = [url for url in target_urls if _is_yamibo_site_url(url)]
 
     max_pages = max(int(job.payload.get("max_pages") or getattr(settings, "image_backfill_max_pages", 1)), 1)
     base_url = str(job.payload.get("base_url") or "https://bbs.yamibo.com")
@@ -153,7 +157,7 @@ def handle_image_backfill(
     local_snapshot = _load_local_snapshot_for_backfill(paths, repo.conn, thread)
     target_positions = _target_positions(paths, tid, job.payload, target_urls)
     if reconcile_mode and not dry_run and not target_urls:
-        target_urls = _metadata_missing_targets(paths, tid)
+        target_urls = _metadata_missing_targets(paths, tid, site_only=site_only)
         metadata_positions = _metadata_target_positions(paths, tid)
         target_positions = {url: metadata_positions[url] for url in target_urls if url in metadata_positions}
     expected_paths = _expected_target_paths(paths, tid, target_positions, target_urls)
@@ -168,6 +172,7 @@ def handle_image_backfill(
             and not _diff_snapshot_images(
                 local_snapshot, local_assets=local_assets, paths=paths,
                 scope="selected", include_first_floor=True,
+                site_only=site_only,
             )["missing_items_for_apply"]
             and all(
                 row["local_path"] and _is_valid_image_file(
@@ -200,7 +205,8 @@ def handle_image_backfill(
                 "remote_fetch": False,
             })
             return
-    if selected_scope and target_urls:
+    strict_selected_scope = selected_scope and bool(target_urls)
+    if strict_selected_scope:
         reconciled = _reconcile_selected_targets(
             repo.conn,
             paths=paths,
@@ -364,11 +370,11 @@ def handle_image_backfill(
                 repo.update_stage(job.job_id, "diff_images", progress_current=3, progress_total=4)
                 selected_url_map = (
                     _resolve_selected_remote_urls(snapshot, target_urls, target_positions)
-                    if selected_scope and target_urls
+                    if strict_selected_scope
                     else {}
                 )
                 selected_remote_urls = set(selected_url_map.values())
-                if selected_scope and target_urls and not selected_remote_urls:
+                if strict_selected_scope and not selected_remote_urls:
                     repo.fail(
                         job.job_id,
                         "IMAGE_TARGET_NOT_FOUND",
@@ -383,9 +389,10 @@ def handle_image_backfill(
                     include_shared_static=True,
                     scope=scope,
                     include_first_floor=include_first_floor,
+                    site_only=site_only,
                     target_urls=(
                         selected_remote_urls
-                        if selected_scope and target_urls
+                        if strict_selected_scope
                         else (set(target_urls) if target_urls else None)
                     ),
                 )
@@ -425,7 +432,7 @@ def handle_image_backfill(
                     missing_snapshot,
                     timeout=settings.image_download_timeout_seconds,
                     retries=_selected_download_retries(
-                        target_urls=set(target_urls) if selected_scope else None,
+                        target_urls=set(target_urls) if strict_selected_scope else None,
                         configured_retries=settings.image_download_retries,
                     ),
                     headers=client.headers,
@@ -589,14 +596,14 @@ def handle_image_backfill(
                         "backfilled_image_count": image_result.downloaded_count + image_result.non_export_count + image_result.shared_downloaded_count,
                     }
                 )
-                if selected_scope and not resolved_selected_urls:
+                if strict_selected_scope and not resolved_selected_urls:
                     repo.fail(
                         job.job_id,
                         "IMAGE_TARGET_NOT_DOWNLOADED",
                         "selected image target was not downloaded or reconciled",
                         artifacts,
                     )
-                elif selected_scope and set(selected_remote_urls or target_urls).issubset(resolved_selected_urls):
+                elif strict_selected_scope and set(selected_remote_urls or target_urls).issubset(resolved_selected_urls):
                     repo.succeed(job.job_id, artifacts)
                 elif archive_status == "partial":
                     repo.partial(job.job_id, artifacts)
@@ -725,7 +732,7 @@ def _metadata_target_positions(paths: StoragePaths, tid: int) -> dict[str, dict[
     return positions
 
 
-def _metadata_missing_targets(paths: StoragePaths, tid: int) -> list[str]:
+def _metadata_missing_targets(paths: StoragePaths, tid: int, *, site_only: bool = False) -> list[str]:
     metadata = _load_archive_metadata(paths, tid)
     targets: list[str] = []
     for floor in metadata.get("floors") or []:
@@ -734,6 +741,8 @@ def _metadata_missing_targets(paths: StoragePaths, tid: int) -> list[str]:
         urls = [str(url) for url in floor.get("remote_image_urls") or floor.get("image_urls") or []]
         slots = floor.get("image_slots") or []
         for index, url in enumerate(urls):
+            if site_only and not _is_yamibo_site_url(url):
+                continue
             slot = slots[index] if index < len(slots) and isinstance(slots[index], dict) else {}
             status = str(slot.get("status") or "").strip().lower()
             local_path = str(slot.get("local_path") or "")
@@ -1149,6 +1158,7 @@ def _diff_snapshot_images(
     scope: str = "non_first_floor",
     include_first_floor: bool = False,
     target_urls: set[str] | None = None,
+    site_only: bool = False,
 ) -> dict[str, Any]:
     reason_counts: Counter[str] = Counter()
     class_counts: Counter[str] = Counter()
@@ -1168,6 +1178,8 @@ def _diff_snapshot_images(
             if not include_first_floor and floor.floor_no <= 1:
                 continue
             remote_non_first_image_count += 1
+            if site_only and not _is_yamibo_site_url(url):
+                continue
             image_class = _classify_backfill_image(url)
             # Automatic idle repair intentionally remains restricted to known
             # forum/static assets.  A user-selected external URL may still be
@@ -1461,11 +1473,11 @@ def _classify_backfill_image(url: str) -> str:
     parsed = urlparse(lower)
     if lower.startswith("data:") or lower.startswith("http://data:") or lower.startswith("https://data:"):
         return "embedded"
-    if "/static/image/" in lower:
+    if _is_yamibo_site_url(url) and parsed.path.lower().startswith("/static/image/"):
         if parsed.path.endswith("/common/back.gif"):
             return "decorative"
         return "static"
-    if _is_site_attachment(url) or "/data/attachment/" in parsed.path.lower():
+    if _is_yamibo_site_url(url):
         return "content"
     if parsed.scheme in {"http", "https"}:
         return "external"

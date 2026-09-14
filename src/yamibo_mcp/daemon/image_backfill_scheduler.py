@@ -5,6 +5,7 @@ import logging
 import threading
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from yamibo_mcp.config import Settings
@@ -12,7 +13,10 @@ from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.db.repositories.system_state import SystemStateRepository
 from yamibo_mcp.domain.enums import JobStatus, JobType
 from yamibo_mcp.domain.job_state import new_job_id
+from yamibo_mcp.storage.images import _is_valid_image_file
+from yamibo_mcp.storage.paths import StoragePaths
 from yamibo_mcp.time_utils import utc_now_iso
+from yamibo_mcp.yamibo.urls import is_yamibo_site_image_url
 
 LOG = logging.getLogger(__name__)
 
@@ -21,7 +25,6 @@ _CAMPAIGN = "metadata_reconcile_v1"
 _MODE = "reconcile_missing"
 _SCHEDULER_LOCK = threading.Lock()
 _SCAN_BATCH_SIZE = 200
-_CANDIDATE_LIMIT = 50
 # A cancellation request is terminal from the perspective of idle scheduling:
 # it is no longer acquirable and must not keep maintenance work waiting.
 _FOREGROUND_WORK_STATUSES = (
@@ -314,15 +317,19 @@ def _select_candidate_batch(
         ORDER BY tid ASC
         LIMIT ?
         """,
-        (forum_id, max(int(cursor_tid), 0), _SCAN_BATCH_SIZE, True, _CANDIDATE_LIMIT),
+        (forum_id, max(int(cursor_tid), 0), _SCAN_BATCH_SIZE, True, _SCAN_BATCH_SIZE),
     ).fetchall()
 
-    tids = [int(row["tid"]) for row in rows]
+    eligible_rows = [
+        row for row in rows
+        if _has_auto_repairable_site_image(settings, int(row["tid"]))
+    ]
+    tids = [int(row["tid"]) for row in eligible_rows]
     blocked_tids = _blocking_backfill_tids(repo, tids, dry_run=dry_run, campaign=campaign)
     candidate = next(
         (
             {"tid": int(row["tid"]), "sync_time": row["sync_time"], "reason": row["reason"]}
-            for row in rows
+            for row in eligible_rows
             if int(row["tid"]) not in blocked_tids
         ),
         None,
@@ -330,12 +337,103 @@ def _select_candidate_batch(
     return {
         "candidate": candidate,
         "batch_size": len(batch_tids),
-        "candidate_count": len(rows),
+        "candidate_count": len(eligible_rows),
+        "non_site_candidate_count": len(rows) - len(eligible_rows),
         "blocking_count": len(blocked_tids),
         "cursor_after": cursor_after,
         "wrap_count": wrap_count,
         "elapsed_ms": (time.perf_counter() - started) * 1000,
     }
+
+
+def _has_auto_repairable_site_image(settings: Settings, tid: int) -> bool:
+    """Return whether a candidate has a missing first-party image target.
+
+    The SQL candidate query intentionally detects broad archive gaps.  The
+    metadata file is the only local source that retains the remote URL for
+    floor rows without an asset, so use it to avoid scheduling external-only
+    images.  Missing or unreadable metadata fails open to preserve recovery of
+    older archives whose metadata predates image slots.
+    """
+    data_dir_value = getattr(settings, "data_dir", None)
+    if data_dir_value is None:
+        # Lightweight scheduler test doubles and legacy callers may not expose
+        # the storage root; retain the previous candidate behavior there.
+        return True
+
+    paths = StoragePaths(Path(data_dir_value))
+    metadata_path = paths.thread_metadata(tid)
+    if not metadata_path.exists():
+        return True
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError):
+        return True
+    if not isinstance(metadata, dict):
+        return True
+
+    observed_remote_urls = False
+    floors = metadata.get("floors") or []
+    if isinstance(floors, list):
+        for floor in floors:
+            if not isinstance(floor, dict):
+                continue
+            raw_urls = floor.get("remote_image_urls")
+            if raw_urls is None:
+                raw_urls = floor.get("image_urls") or []
+            slots = floor.get("image_slots") or []
+            if not isinstance(slots, list):
+                slots = []
+            if not raw_urls:
+                raw_urls = [slot.get("remote_url") for slot in slots if isinstance(slot, dict)]
+            if not isinstance(raw_urls, list):
+                continue
+            for index, raw_url in enumerate(raw_urls):
+                url = str(raw_url or "").strip()
+                if not _is_remote_image_url(url):
+                    continue
+                observed_remote_urls = True
+                if not is_yamibo_site_image_url(url):
+                    continue
+                slot = slots[index] if index < len(slots) and isinstance(slots[index], dict) else {}
+                if _metadata_slot_needs_repair(paths, tid, slot):
+                    return True
+
+    missing_urls = [
+        *(metadata.get("missing_image_urls") or []),
+        *(metadata.get("missing_shared_image_urls") or []),
+    ]
+    remote_missing_urls = [str(value).strip() for value in missing_urls if _is_remote_image_url(str(value).strip())]
+    if remote_missing_urls:
+        observed_remote_urls = True
+        if any(is_yamibo_site_image_url(url) for url in remote_missing_urls):
+            return True
+
+    # No remote URL means this is likely an older metadata shape.  Keep the
+    # SQL candidate eligible rather than silently losing a valid repair.
+    return not observed_remote_urls
+
+
+def _is_remote_image_url(url: str) -> bool:
+    lowered = url.lower()
+    return lowered.startswith(("http://", "https://"))
+
+
+def _metadata_slot_needs_repair(paths: StoragePaths, tid: int, slot: dict[str, Any]) -> bool:
+    status = str(slot.get("status") or "").strip().lower()
+    if status == "skipped":
+        return False
+    local_path = str(slot.get("local_path") or "").strip()
+    if not local_path or status in {"missing", "missing_shared", "pending"}:
+        return True
+    path = Path(local_path)
+    if path.is_absolute():
+        resolved = path
+    elif local_path.startswith("shared/"):
+        resolved = paths.data_dir / path
+    else:
+        resolved = paths.thread_dir(tid) / path
+    return not _is_valid_image_file(resolved)
 
 
 _LIVE_STATUSES = (

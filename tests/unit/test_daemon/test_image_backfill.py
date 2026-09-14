@@ -21,6 +21,7 @@ from yamibo_mcp.daemon.handlers.image_backfill import (
     _reconcile_missing_targets,
     _foreground_work_available,
     _expected_target_paths,
+    _metadata_missing_targets,
     _metadata_target_positions,
     _resolve_selected_remote_urls,
     _selected_download_retries,
@@ -39,6 +40,7 @@ from yamibo_mcp.errors import RemoteFetchError, ThreadPermissionRequiredError
 from yamibo_mcp.storage.images import ImageDownloadResult, download_images_to_staging
 from yamibo_mcp.domain.models import AssetSnapshot, FloorSnapshot, ThreadSnapshot, TitleSnapshot
 from yamibo_mcp.storage.paths import StoragePaths
+from yamibo_mcp.yamibo.urls import is_yamibo_site_image_url
 
 
 def _snapshot(tid: int, image_urls: list[str]) -> ThreadSnapshot:
@@ -168,6 +170,60 @@ def test_image_backfill_diff_counts_content_missing_separately_from_static(tmp_p
     assert result["shared_static_missing_count"] == 1
     assert result["need_fetch_by_class"]["content"] == 1
     assert result["need_fetch_by_class"]["decorative"] == 1
+
+
+def test_yamibo_site_image_url_requires_a_first_party_image_endpoint():
+    assert is_yamibo_site_image_url("https://bbs.yamibo.com/static/image/smiley/gexing/008.gif")
+    assert is_yamibo_site_image_url("https://bbs.yamibo.com/data/attachment/forum/202501/01/image.jpg")
+    assert is_yamibo_site_image_url("https://bbs.yamibo.com/forum.php?mod=attachment&aid=MQ%3D%3D")
+    assert not is_yamibo_site_image_url("http://mis.im.tku.edu.tw/~fireflyyen19a/new/src/image.jpg")
+    assert not is_yamibo_site_image_url("https://example.org/data/attachment/forum/image.jpg")
+    assert not is_yamibo_site_image_url("https://bbs.yamibo.com/forum.php?mod=viewthread&tid=123")
+
+
+def test_image_backfill_diff_site_only_skips_external_image_urls(tmp_path):
+    paths = StoragePaths(tmp_path)
+    external_url = "http://mis.im.tku.edu.tw/~fireflyyen19a/new/src/image.jpg"
+    site_url = "https://bbs.yamibo.com/data/attachment/forum/202501/01/image.jpg"
+
+    result = _diff_snapshot_images(
+        _snapshot(125, [external_url, site_url]),
+        local_assets={},
+        paths=paths,
+        include_first_floor=True,
+        site_only=True,
+    )
+
+    assert result["remote_image_count"] == 2
+    assert result["need_fetch_count"] == 1
+    assert result["missing_items_for_apply"] == [{
+        "pid": 1252,
+        "floor_no": 2,
+        "url": site_url,
+        "class": "content",
+        "reason": "not_in_assets",
+    }]
+
+
+def test_metadata_missing_targets_site_only_excludes_external_urls(tmp_path):
+    tid = 126
+    paths = StoragePaths(tmp_path)
+    external_url = "http://mis.im.tku.edu.tw/~fireflyyen19a/new/src/image.jpg"
+    site_url = "https://bbs.yamibo.com/forum.php?mod=attachment&aid=MQ%3D%3D"
+    metadata_path = paths.thread_metadata(tid)
+    metadata_path.parent.mkdir(parents=True)
+    metadata_path.write_text(json.dumps({
+        "floors": [{
+            "remote_image_urls": [external_url, site_url],
+            "image_slots": [
+                {"remote_url": external_url, "local_path": None, "status": "missing"},
+                {"remote_url": site_url, "local_path": None, "status": "missing"},
+            ],
+        }],
+    }), encoding="utf-8")
+
+    assert _metadata_missing_targets(paths, tid) == [external_url, site_url]
+    assert _metadata_missing_targets(paths, tid, site_only=True) == [site_url]
 
 
 def test_selected_attachment_signature_rotation_matches_stable_aid():
@@ -456,6 +512,50 @@ def _insert_gap_thread(db, tid: int) -> None:
         (tid,),
     )
     db.commit()
+
+
+def test_auto_scheduler_skips_external_only_and_accepts_mixed_site_candidate(db, tmp_path):
+    external_only_tid = 3051
+    mixed_tid = 3052
+    external_url = "http://mis.im.tku.edu.tw/~fireflyyen19a/new/src/image.jpg"
+    site_url = "https://bbs.yamibo.com/data/attachment/forum/202501/01/image.jpg"
+    for tid, image_count in ((external_only_tid, 1), (mixed_tid, 2)):
+        db.execute(
+            """
+            INSERT INTO threads (tid, raw_title, display_title, sync_time, image_count, archive_status, forum_id)
+            VALUES (?, 'raw', 'display', '2026-07-01T00:00:00+00:00', ?, 'complete', 5)
+            """,
+            (tid, image_count),
+        )
+    db.commit()
+
+    paths = StoragePaths(tmp_path)
+    for tid, urls in (
+        (external_only_tid, [external_url]),
+        (mixed_tid, [external_url, site_url]),
+    ):
+        metadata_path = paths.thread_metadata(tid)
+        metadata_path.parent.mkdir(parents=True, exist_ok=True)
+        metadata_path.write_text(json.dumps({
+            "floors": [{
+                "remote_image_urls": urls,
+                "image_slots": [
+                    {"remote_url": url, "local_path": None, "status": "missing"}
+                    for url in urls
+                ],
+            }],
+            "missing_image_urls": urls,
+        }), encoding="utf-8")
+
+    settings = _scheduler_settings()
+    settings.data_dir = tmp_path
+    scan = scheduler._select_candidate_batch(
+        JobsRepository(db), settings, dry_run=True, cursor_tid=0, campaign="metadata_reconcile_v1"
+    )
+
+    assert scan["candidate"]["tid"] == mixed_tid
+    assert scan["candidate_count"] == 1
+    assert scan["non_site_candidate_count"] == 1
 
 
 def test_auto_scheduler_persists_cursor_and_wraps_without_second_scan(db):
@@ -808,6 +908,97 @@ def test_idle_backfill_checks_files_before_already_complete(db, tmp_path, monkey
     else:
         with pytest.raises(ValueError, match="local floor sequence"):
             handle_image_backfill(repo, job, "test", 60, settings)
+
+
+def test_auto_backfill_does_not_fail_selected_guard_for_external_only_target(db, tmp_path, monkeypatch):
+    tid = 902
+    external_url = "http://mis.im.tku.edu.tw/~fireflyyen19a/new/src/image.jpg"
+    db.execute(
+        """
+        INSERT INTO threads (tid, raw_title, display_title, image_count, archive_status, forum_id)
+        VALUES (?, 'raw', 'display', 1, 'partial', 5)
+        """,
+        (tid,),
+    )
+    db.execute(
+        "INSERT INTO floors (pid, tid, floor_no, content, has_images) VALUES (?, ?, 2, 'reply', 1)",
+        (tid * 10 + 2, tid),
+    )
+    db.commit()
+    paths = StoragePaths(tmp_path)
+    metadata_path = paths.thread_metadata(tid)
+    metadata_path.parent.mkdir(parents=True)
+    metadata_path.write_text(json.dumps({
+        "floors": [{
+            "remote_image_urls": [external_url],
+            "image_slots": [{"remote_url": external_url, "local_path": None, "status": "missing"}],
+        }],
+        "missing_image_urls": [external_url],
+    }), encoding="utf-8")
+
+    snapshot = _snapshot(tid, [external_url])
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.image_backfill._load_local_snapshot_for_backfill",
+        lambda *args: snapshot,
+    )
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.image_backfill.select_thread_proxy",
+        lambda *args, **kwargs: None,
+    )
+
+    class _Fetch:
+        html = "<html></html>"
+        final_url = f"https://bbs.yamibo.com/forum.php?mod=viewthread&tid={tid}"
+
+    class _Client:
+        headers = {}
+        cookie_jar = None
+        cookie_file = None
+        use_system_proxy = False
+        proxy_url = None
+
+        def fetch_thread_page(self, **kwargs):
+            return _Fetch()
+
+    @contextmanager
+    def _borrow(settings, **kwargs):
+        yield SimpleNamespace(account_id="pool", permission_level=10), _Client()
+
+    monkeypatch.setattr("yamibo_mcp.daemon.handlers.image_backfill.borrow_yamibo_client", _borrow)
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.image_backfill.parse_thread_snapshot",
+        lambda *args, **kwargs: snapshot,
+    )
+    download_targets = []
+
+    def _download(*args, **kwargs):
+        download_targets.append(kwargs["target_urls"])
+        return ImageDownloadResult()
+
+    monkeypatch.setattr("yamibo_mcp.daemon.handlers.image_backfill.download_images_to_staging", _download)
+
+    repo = JobsRepository(db)
+    job = repo.create(
+        "image_backfill",
+        tid=tid,
+        payload={"tid": tid, "mode": "reconcile_missing", "internal_auto": True, "dry_run": False},
+    )
+    settings = SimpleNamespace(
+        data_dir=tmp_path,
+        export_dir=tmp_path / "exports",
+        novel_txt_export_dir=tmp_path / "novel_exports",
+        image_backfill_max_pages=1,
+        image_backfill_fixed_after=None,
+        image_download_timeout_seconds=1.0,
+        image_download_retries=0,
+    )
+
+    handle_image_backfill(repo, repo.get(job.job_id), "worker", 60, settings)
+
+    completed = repo.get(job.job_id)
+    assert completed.status == "partial"
+    assert completed.error_code is None
+    assert download_targets == [set()]
 
 
 def test_v2_scheduler_accepts_first_floor_metadata_missing_candidate(db):
