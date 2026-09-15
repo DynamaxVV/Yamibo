@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from yamibo_mcp.db.connection import DatabaseConnection, _normalize_postgres_url
+from yamibo_mcp.db.connection import DatabaseConnection, _normalize_postgres_url, transaction
 
 
 class _Result:
@@ -15,6 +15,9 @@ class _RawConn:
     def execute(self, statement, parameters=None):
         self.calls.append((statement, parameters))
         return _Result()
+
+    def in_transaction(self):
+        return True
 
 
 def test_execute_strips_nul_from_parameters():
@@ -40,6 +43,13 @@ def test_postgres_url_uses_declared_psycopg3_driver():
     assert _normalize_postgres_url(
         "postgresql://yamibo:secret@db.example.com:5432/yamibo"
     ) == "postgresql+psycopg://yamibo:secret@db.example.com:5432/yamibo"
+
+
+def test_transaction_joins_existing_sqlalchemy_transaction():
+    raw = _RawConn()
+    conn = DatabaseConnection(raw, backend="postgres")
+    with transaction(conn) as joined:
+        assert joined is conn
     assert _normalize_postgres_url(
         "postgresql+psycopg://yamibo:secret@db.example.com:5432/yamibo"
     ) == "postgresql+psycopg://yamibo:secret@db.example.com:5432/yamibo"

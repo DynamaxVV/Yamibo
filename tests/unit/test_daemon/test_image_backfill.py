@@ -1098,6 +1098,23 @@ def test_v2_any_live_auto_campaign_blocks_but_terminal_old_campaign_does_not(db)
     assert scheduler._has_live_automatic_job(repo, campaign="metadata_reconcile_v1", fingerprint="new") is False
 
 
+def test_campaign_blocks_same_campaign_failed_job(db):
+    repo = JobsRepository(db)
+    job = repo.create(
+        "image_backfill",
+        tid=777,
+        payload={"internal_auto": True, "campaign": "metadata_reconcile_v1", "dry_run": False},
+    )
+    db.execute(
+        "UPDATE jobs SET status='failed', error_code='INVALID_ARGUMENT' WHERE job_id=?",
+        (job.job_id,),
+    )
+    db.commit()
+    assert scheduler._blocking_backfill_tids(
+        repo, [777], dry_run=False, campaign="metadata_reconcile_v1"
+    ) == {777}
+
+
 def test_image_backfill_apply_downloads_and_persists_missing_images(db, tmp_path, monkeypatch):
     tid = 2002
     db.execute(

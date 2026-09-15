@@ -269,6 +269,13 @@ def connect(
 
 @contextmanager
 def transaction(conn: DatabaseConnection):
+    # SQLAlchemy 2.x starts a transaction on the first statement (including
+    # a read).  Join that transaction instead of calling begin() a second
+    # time; this is especially important for PostgreSQL reconciliation paths
+    # that inspect rows before applying their updates.
+    if conn.in_transaction():
+        yield conn
+        return
     if conn.backend == "postgres":
         with conn.begin():
             yield conn

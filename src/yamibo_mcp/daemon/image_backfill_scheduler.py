@@ -439,6 +439,7 @@ _LIVE_STATUSES = (
     JobStatus.QUEUED.value, JobStatus.RUNNING.value, JobStatus.RETRYING.value,
     JobStatus.INTERRUPTED.value, JobStatus.CANCEL_REQUESTED.value, JobStatus.PAUSED.value,
 )
+_CAMPAIGN_BLOCKING_STATUSES = (*_LIVE_STATUSES, JobStatus.FAILED.value)
 
 
 def _blocking_backfill_tids(repo: JobsRepository, tids: list[int], *, dry_run: bool, campaign: str | None = None) -> set[int]:
@@ -451,9 +452,9 @@ def _blocking_backfill_tids(repo: JobsRepository, tids: list[int], *, dry_run: b
         FROM jobs
         WHERE job_type = ?
           AND tid IN ({placeholders})
-          AND status IN ({','.join('?' for _ in (_LIVE_STATUSES if campaign else _BLOCKING_STATUSES))})
+          AND status IN ({','.join('?' for _ in (_CAMPAIGN_BLOCKING_STATUSES if campaign else _BLOCKING_STATUSES))})
         """,
-        (JobType.IMAGE_BACKFILL.value, *tids, *(_LIVE_STATUSES if campaign else _BLOCKING_STATUSES)),
+        (JobType.IMAGE_BACKFILL.value, *tids, *(_CAMPAIGN_BLOCKING_STATUSES if campaign else _BLOCKING_STATUSES)),
     ).fetchall()
     blocked: set[int] = set()
     for row in rows:
