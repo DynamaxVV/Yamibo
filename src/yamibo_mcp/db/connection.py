@@ -273,7 +273,7 @@ def transaction(conn: DatabaseConnection):
     # a read).  Join that transaction instead of calling begin() a second
     # time; this is especially important for PostgreSQL reconciliation paths
     # that inspect rows before applying their updates.
-    if conn.in_transaction():
+    if conn.backend == "postgres" and conn.in_transaction():
         yield conn
         return
     if conn.backend == "postgres":
