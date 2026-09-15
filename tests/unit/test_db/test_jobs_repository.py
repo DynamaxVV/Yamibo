@@ -457,6 +457,58 @@ class TestHeartbeat:
         assert refreshed.worker_id == "worker-1"
 
 
+class TestLeaseFencing:
+    def test_reclaimed_job_rejects_stale_worker_writes(self, db):
+        stale_repo = JobsRepository(db, owner_id="worker-a")
+        job = stale_repo.create("sync_thread", tid=42)
+        stale_repo.acquire(job.job_id, "worker-a", 300)
+
+        db.execute(
+            "UPDATE jobs SET lease_until = '2000-01-01T00:00:00+00:00' WHERE job_id = ?",
+            (job.job_id,),
+        )
+        db.commit()
+        JobsRepository(db).mark_expired_running_interrupted()
+
+        current_repo = JobsRepository(db, owner_id="worker-b")
+        current_repo.acquire(job.job_id, "worker-b", 300)
+
+        with pytest.raises(LeaseNotAcquired, match="Lease lost"):
+            stale_repo.heartbeat(job.job_id, "worker-a", 300)
+        with pytest.raises(LeaseNotAcquired, match="Lease lost"):
+            stale_repo.update_stage(job.job_id, "stale_write")
+        with pytest.raises(LeaseNotAcquired, match="Lease lost"):
+            stale_repo.succeed(job.job_id, artifacts={"winner": "stale"})
+
+        current_repo.succeed(job.job_id, artifacts={"winner": "current"})
+        finished = current_repo.get(job.job_id)
+        assert finished.status == JobStatus.SUCCEEDED
+        assert finished.artifacts == {"winner": "current"}
+
+    def test_reclaimed_job_rejects_stale_token_when_worker_id_is_reused(self, db):
+        stale_repo = JobsRepository(db, owner_id="worker-restarted")
+        job = stale_repo.create("sync_thread", tid=43)
+        stale_repo.acquire(job.job_id, "worker-restarted", 300)
+
+        db.execute(
+            "UPDATE jobs SET lease_until = '2000-01-01T00:00:00+00:00' WHERE job_id = ?",
+            (job.job_id,),
+        )
+        db.commit()
+        JobsRepository(db).mark_expired_running_interrupted()
+
+        current_repo = JobsRepository(db, owner_id="worker-restarted")
+        current_repo.acquire(job.job_id, "worker-restarted", 300)
+
+        with pytest.raises(LeaseNotAcquired, match="Lease lost"):
+            stale_repo.update_stage(job.job_id, "stale_write")
+        current_repo.succeed(job.job_id, artifacts={"winner": "restarted-worker"})
+
+        finished = current_repo.get(job.job_id)
+        assert finished.status == JobStatus.SUCCEEDED
+        assert finished.artifacts == {"winner": "restarted-worker"}
+
+
 class TestSucceed:
     def test_succeed_changes_status(self, db):
         # Arrange

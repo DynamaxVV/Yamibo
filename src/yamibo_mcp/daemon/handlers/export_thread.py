@@ -172,6 +172,7 @@ def handle_export_thread(repo: JobsRepository, job: Job, worker_id: str, lease_s
 
     repo.update_stage(job.job_id, "db_commit", progress_current=3, progress_total=4)
     with transaction(repo.conn):
+        repo.assert_lease(job.job_id, for_update=True)
         ThreadsRepository(repo.conn).mark_exported(tid, relative_export)
 
     repo.update_stage(job.job_id, "finalize", progress_current=4, progress_total=4)

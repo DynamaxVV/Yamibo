@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   progress_current INTEGER NOT NULL DEFAULT 0,
   progress_total INTEGER,
   worker_id TEXT,
+  lease_token TEXT,
   heartbeat_at TEXT,
   lease_until TEXT,
   retry_count INTEGER NOT NULL DEFAULT 0,
@@ -329,6 +330,7 @@ def migrate(conn: Any, *, schema: str | None = None) -> None:
     _ensure_column(conn, "jobs", "paused_at", "TEXT")
     _ensure_column(conn, "jobs", "started_at", "TEXT")
     _ensure_column(conn, "jobs", "priority", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "jobs", "lease_token", "TEXT")
     _backfill_thread_forum_fields(conn)
     _ensure_column(conn, "forums", "name_en", "TEXT")
     _ensure_column(conn, "floors", "quote_text", "TEXT")

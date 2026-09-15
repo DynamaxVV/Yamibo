@@ -28,7 +28,7 @@ from yamibo_mcp.services.title_hints import update_title_hints
 from yamibo_mcp.services.title_llm import refine_title_parse_with_llm, title_parse_to_dict
 from yamibo_mcp.daemon.heartbeat import HeartbeatPacer
 from yamibo_mcp.yamibo.account_pool import borrow_yamibo_client, has_configured_account_pool, next_permission_threshold
-from yamibo_mcp.errors import LoginRequiredError, ThreadPermissionRequiredError, UnexpectedPageError, _extract_permission_code
+from yamibo_mcp.errors import LeaseNotAcquired, LoginRequiredError, ThreadPermissionRequiredError, UnexpectedPageError, _extract_permission_code
 from yamibo_mcp.yamibo.client import YamiboClient
 from yamibo_mcp.yamibo.parsers.thread_detail import parse_thread_snapshot
 from yamibo_mcp.yamibo.proxy_pool import activate_proxy_binding, select_thread_proxy
@@ -58,20 +58,36 @@ def _check_paused(repo: JobsRepository, job_id: str) -> None:
 
 
 def _build_download_control_checks(repo: JobsRepository, job_id: str):
-    """Build main-thread DB checks and a worker-safe cancellation callback."""
+    """Build main-thread DB checks and worker-safe stop callbacks.
+
+    The lease check is deliberately kept on the collecting/main thread.  The
+    download workers only observe ``stop_event`` and never use the database
+    connection, so a reclaimed job can stop cooperatively without recreating
+    the transaction-sharing race this callback was introduced to avoid.
+    """
     stop_event = Event()
     stop_reason = {"value": None}
+    lease_check = getattr(repo, "assert_lease", None)
+    last_lease_check = {"at": 0.0}
 
     def _main_control_check() -> None:
         try:
             _check_cancelled(repo, job_id)
             _check_paused(repo, job_id)
+            now = time.monotonic()
+            if callable(lease_check) and now - last_lease_check["at"] >= 1.0:
+                lease_check(job_id)
+                last_lease_check["at"] = now
         except JobCancelled:
             stop_reason["value"] = "cancelled"
             stop_event.set()
             raise
         except JobPaused:
             stop_reason["value"] = "paused"
+            stop_event.set()
+            raise
+        except LeaseNotAcquired:
+            stop_reason["value"] = "lease_lost"
             stop_event.set()
             raise
         except Exception:
@@ -86,6 +102,8 @@ def _build_download_control_checks(repo: JobsRepository, job_id: str):
             return
         if stop_reason["value"] == "paused":
             raise JobPaused(f"Job {job_id} was paused")
+        if stop_reason["value"] == "lease_lost":
+            raise LeaseNotAcquired(f"Lease lost for job {job_id}")
         raise JobCancelled(f"Job {job_id} was cancelled")
 
     return _worker_cancel_check, _main_control_check
@@ -662,6 +680,10 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
             ]
             all_blocks = [block for post in content.posts for block in post.blocks]
             with transaction(repo.conn):
+                # Fence the domain-data transaction against a concurrent lease
+                # recovery/reclaim.  PostgreSQL locks this job row until all
+                # thread writes below have committed.
+                repo.assert_lease(job.job_id, for_update=True)
                 ThreadsRepository(repo.conn).upsert_snapshot(
                     snapshot,
                     forum_id=forum_id,
@@ -803,6 +825,9 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
             # materialize_thread 已将图片 copy 到正式归档目录，
             # staging 数据已完成使命，清理释放磁盘空间。
             shutil.rmtree(paths.staging_job_dir(job.job_id), ignore_errors=True)
+    except LeaseNotAcquired:
+        LOG.warning("Sync thread %s stopped after losing its lease", job.job_id)
+        raise
     except Exception as exc:
         write_staging_failure(
             paths,

@@ -6,6 +6,7 @@ import sqlite3
 import time
 from collections.abc import Callable
 from typing import Any, TypeVar
+from uuid import uuid4
 
 from yamibo_mcp.domain.enums import JobStatus
 from yamibo_mcp.domain.job_state import new_job_id
@@ -119,8 +120,90 @@ def _job_from_row(row: sqlite3.Row) -> Job:
 
 
 class JobsRepository:
-    def __init__(self, conn: sqlite3.Connection):
+    def __init__(self, conn: sqlite3.Connection, *, owner_id: str | None = None):
         self.conn = conn
+        # ``owner_id`` identifies the logical daemon worker.  ``_lease_tokens``
+        # is the actual fencing token for each acquisition; it changes every
+        # time a job is claimed, including when the same worker id reclaims it.
+        self.owner_id = owner_id
+        self._lease_tokens: dict[str, str] = {}
+
+    def _lease_guard(
+        self,
+        job_id: str,
+        *,
+        now: str,
+        statuses: tuple[str, ...],
+        worker_id: str | None = None,
+    ) -> tuple[str, list[Any], bool]:
+        """Build a conditional-write predicate for the current job owner.
+
+        Unbound repositories are also used by the web/admin and legacy test
+        paths.  They retain their historical job-id-only mutation semantics.
+        Daemon repositories are bound to an owner and, after acquisition, use
+        the per-claim token as a fencing value.  The lease-time check prevents
+        a delayed heartbeat or finalizer from resurrecting an expired claim.
+        """
+        token = self._lease_tokens.get(job_id)
+        owner = self.owner_id or worker_id
+        if token is not None:
+            placeholders = ", ".join("?" for _ in statuses)
+            worker_condition = " AND worker_id = ?" if worker_id is not None else ""
+            worker_params = [worker_id] if worker_id is not None else []
+            return (
+                f"job_id = ? AND lease_token = ?{worker_condition} AND status IN ({placeholders}) "
+                "AND lease_until IS NOT NULL AND lease_until >= ?",
+                [job_id, token, *worker_params, *statuses, now],
+                True,
+            )
+        if owner is not None:
+            placeholders = ", ".join("?" for _ in statuses)
+            return (
+                f"job_id = ? AND worker_id = ? AND status IN ({placeholders}) "
+                "AND lease_until IS NOT NULL AND lease_until >= ?",
+                [job_id, owner, *statuses, now],
+                True,
+            )
+        return "job_id = ?", [job_id], False
+
+    def assert_lease(self, job_id: str, *, for_update: bool = False) -> None:
+        """Verify this repository still owns a running job.
+
+        ``for_update=True`` is used at the start of a domain-data transaction.
+        On PostgreSQL it locks the job row for the transaction, so expiry
+        recovery cannot transfer ownership between the check and the archive
+        writes.  SQLite's enclosing ``BEGIN IMMEDIATE`` provides the same
+        serialization for its single-writer connection.
+        """
+        token = self._lease_tokens.get(job_id)
+        owner = self.owner_id
+        if token is None and owner is None:
+            return
+        now = utc_now_iso()
+        if token is not None:
+            predicate = "job_id = ? AND lease_token = ?"
+            params: list[Any] = [job_id, token]
+        else:
+            predicate = "job_id = ? AND worker_id = ?"
+            params = [job_id, owner]
+        sql = f"""
+            SELECT job_id
+            FROM jobs
+            WHERE {predicate}
+              AND status = ?
+              AND lease_until IS NOT NULL
+              AND lease_until >= ?
+        """
+        params.extend([JobStatus.RUNNING.value, now])
+        if for_update and getattr(self.conn, "backend", None) in {"postgres", "postgresql"}:
+            sql += " FOR UPDATE"
+        row = self.conn.execute(sql, params).fetchone()
+        if row is None:
+            raise LeaseNotAcquired(f"Lease lost for job {job_id}")
+
+    def _raise_if_lease_lost(self, job_id: str, *, guarded: bool, rowcount: int) -> None:
+        if guarded and rowcount != 1:
+            raise LeaseNotAcquired(f"Lease lost for job {job_id}")
 
     def _with_locked_retry(self, operation: Callable[[], T]) -> T:
         for delay in (*_LOCK_RETRY_DELAYS_SECONDS, None):
@@ -508,11 +591,12 @@ class JobsRepository:
         def _acquire() -> sqlite3.Cursor:
             now = utc_now_iso()
             lease_until = utc_after_iso(lease_seconds)
+            lease_token = uuid4().hex
             # 通过条件 UPDATE 做租约抢占，保证多 worker 下只有一个执行者能拿到任务。
             cur = self.conn.execute(
                 """
                 UPDATE jobs
-                SET status = ?, worker_id = ?, heartbeat_at = ?, lease_until = ?,
+                SET status = ?, worker_id = ?, lease_token = ?, heartbeat_at = ?, lease_until = ?,
                     stage = COALESCE(stage, 'acquired'), started_at = ?, updated_at = ?
                 WHERE job_id = ?
                   AND status IN (?, ?, ?)
@@ -521,6 +605,7 @@ class JobsRepository:
                 (
                     JobStatus.RUNNING.value,
                     worker_id,
+                    lease_token,
                     now,
                     lease_until,
                     now,
@@ -534,6 +619,7 @@ class JobsRepository:
             )
             self.conn.commit()
             if cur.rowcount:
+                self._lease_tokens[job_id] = lease_token
                 SystemStateRepository(self.conn).set_json(
                     f"worker_heartbeat:{worker_id}",
                     {
@@ -542,6 +628,8 @@ class JobsRepository:
                         "heartbeat_at": now,
                     },
                 )
+            else:
+                self._lease_tokens.pop(job_id, None)
             return cur
 
         cur = self._with_locked_retry(_acquire)
@@ -562,13 +650,19 @@ class JobsRepository:
         def _heartbeat() -> None:
             now = utc_now_iso()
             lease_until = utc_after_iso(lease_seconds)
+            guard, guard_params, _guarded = self._lease_guard(
+                job_id,
+                now=now,
+                statuses=(JobStatus.RUNNING.value, JobStatus.PAUSED.value),
+                worker_id=worker_id,
+            )
             cur = self.conn.execute(
-                """
+                f"""
                 UPDATE jobs
                 SET heartbeat_at = ?, lease_until = ?, updated_at = ?
-                WHERE job_id = ? AND worker_id = ? AND status IN (?, ?)
+                WHERE {guard}
                 """,
-                (now, lease_until, now, job_id, worker_id, JobStatus.RUNNING.value, JobStatus.PAUSED.value),
+                [now, lease_until, now, *guard_params],
             )
             self.conn.commit()
             if cur.rowcount:
@@ -580,6 +674,8 @@ class JobsRepository:
                         "heartbeat_at": now,
                     },
                 )
+            elif self.owner_id is not None:
+                raise LeaseNotAcquired(f"Lease lost for job {job_id}")
 
         self._with_locked_retry(_heartbeat)
 
@@ -598,18 +694,25 @@ class JobsRepository:
             params.append(progress_current)
         if progress_total is not None:
             params.append(progress_total)
-        params.extend([utc_now_iso(), job_id])
+        now = utc_now_iso()
+        guard, guard_params, guarded = self._lease_guard(
+            job_id,
+            now=now,
+            statuses=(JobStatus.RUNNING.value, JobStatus.CANCEL_REQUESTED.value),
+        )
+        params.extend([now, *guard_params])
         def _update_stage() -> None:
-            self.conn.execute(
+            cur = self.conn.execute(
                 f"""
                 UPDATE jobs
                 SET stage = ?, progress_current = {current}, progress_total = {total},
                     updated_at = ?
-                WHERE job_id = ?
+                WHERE {guard}
                 """,
                 params,
             )
             self.conn.commit()
+            self._raise_if_lease_lost(job_id, guarded=guarded, rowcount=cur.rowcount)
 
         self._with_locked_retry(_update_stage)
         self._append_event(
@@ -638,18 +741,25 @@ class JobsRepository:
                 if values:
                     next_attempt[history_key] = values
             next_artifacts = _merge_artifacts(artifacts, {"remote_attempt": next_attempt})
-            self.conn.execute(
-                "UPDATE jobs SET artifacts_json = ?, updated_at = ? WHERE job_id = ?",
-                (json.dumps(next_artifacts, ensure_ascii=False), utc_now_iso(), job_id),
+            now = utc_now_iso()
+            guard, guard_params, guarded = self._lease_guard(
+                job_id,
+                now=now,
+                statuses=(JobStatus.RUNNING.value, JobStatus.CANCEL_REQUESTED.value),
+            )
+            cur = self.conn.execute(
+                f"UPDATE jobs SET artifacts_json = ?, updated_at = ? WHERE {guard}",
+                [json.dumps(next_artifacts, ensure_ascii=False), now, *guard_params],
             )
             self.conn.commit()
+            self._raise_if_lease_lost(job_id, guarded=guarded, rowcount=cur.rowcount)
             return next_artifacts["remote_attempt"]
 
         remote_attempt = self._with_locked_retry(_record)
         self._append_event(job_id, "job.remote_attempt", payload={"remote_attempt": remote_attempt})
 
     def succeed(self, job_id: str, artifacts: dict[str, Any] | None = None) -> None:
-        def _succeed() -> dict[str, Any]:
+        def _succeed() -> tuple[bool, dict[str, Any]]:
             now = utc_now_iso()
             current = self.get(job_id)
             next_artifacts = current.artifacts if isinstance(current.artifacts, dict) else {}
@@ -659,26 +769,40 @@ class JobsRepository:
                     "remote_attempt": {**next_artifacts["remote_attempt"], "outcome": "success", "finished_at": now},
                 }
             next_artifacts = _merge_artifacts(next_artifacts, artifacts)
-            self.conn.execute(
-                """
+            guard, guard_params, guarded = self._lease_guard(
+                job_id,
+                now=now,
+                statuses=(JobStatus.RUNNING.value, JobStatus.CANCEL_REQUESTED.value),
+            )
+            cur = self.conn.execute(
+                f"""
                 UPDATE jobs
                 SET status = ?, stage = 'finalize', progress_current = COALESCE(progress_total, progress_current),
                     artifacts_json = ?, updated_at = ?, finished_at = ?,
-                    error_code = NULL, error_message = NULL, lease_until = NULL
-                WHERE job_id = ?
+                    error_code = NULL, error_message = NULL, worker_id = NULL,
+                    heartbeat_at = NULL, lease_until = NULL, lease_token = NULL
+                WHERE {guard}
                 """,
                 (
                     JobStatus.SUCCEEDED.value,
                     json.dumps(next_artifacts, ensure_ascii=False),
                     now,
                     now,
-                    job_id,
+                    *guard_params,
                 ),
             )
             self.conn.commit()
-            return next_artifacts
+            if cur.rowcount != 1:
+                if guarded:
+                    raise LeaseNotAcquired(f"Lease lost for job {job_id}")
+                return False, next_artifacts
+            self._lease_tokens.pop(job_id, None)
+            return True, next_artifacts
 
-        next_artifacts = self._with_locked_retry(_succeed)
+        applied, next_artifacts = self._with_locked_retry(_succeed)
+        if not applied:
+            LOG.warning("Ignoring succeed for job %s after lease ownership was lost", job_id)
+            return
         self._append_event(
             job_id,
             "job.succeeded",
@@ -696,7 +820,7 @@ class JobsRepository:
         artifacts: dict[str, Any] | None = None,
     ) -> None:
         """Finish a job without archiving it, while keeping an explicit audit trail."""
-        def _exclude() -> dict[str, Any]:
+        def _exclude() -> tuple[bool, dict[str, Any]]:
             now = utc_now_iso()
             current = self.get(job_id)
             next_artifacts = current.artifacts if isinstance(current.artifacts, dict) else {}
@@ -718,27 +842,40 @@ class JobsRepository:
                     **(artifacts or {}),
                 },
             )
-            self.conn.execute(
-                """
+            guard, guard_params, guarded = self._lease_guard(
+                job_id,
+                now=now,
+                statuses=(JobStatus.RUNNING.value, JobStatus.CANCEL_REQUESTED.value),
+            )
+            cur = self.conn.execute(
+                f"""
                 UPDATE jobs
                 SET status = ?, stage = 'finalize', progress_current = COALESCE(progress_total, progress_current),
                     artifacts_json = ?, updated_at = ?, finished_at = ?,
                     error_code = NULL, error_message = NULL, worker_id = NULL,
-                    heartbeat_at = NULL, lease_until = NULL
-                WHERE job_id = ?
+                    heartbeat_at = NULL, lease_until = NULL, lease_token = NULL
+                WHERE {guard}
                 """,
                 (
                     JobStatus.SUCCEEDED.value,
                     json.dumps(next_artifacts, ensure_ascii=False),
                     now,
                     now,
-                    job_id,
+                    *guard_params,
                 ),
             )
             self.conn.commit()
-            return next_artifacts
+            if cur.rowcount != 1:
+                if guarded:
+                    raise LeaseNotAcquired(f"Lease lost for job {job_id}")
+                return False, next_artifacts
+            self._lease_tokens.pop(job_id, None)
+            return True, next_artifacts
 
-        next_artifacts = self._with_locked_retry(_exclude)
+        applied, next_artifacts = self._with_locked_retry(_exclude)
+        if not applied:
+            LOG.warning("Ignoring exclude for job %s after lease ownership was lost", job_id)
+            return
         self._append_event(
             job_id,
             "job.excluded",
@@ -763,17 +900,23 @@ class JobsRepository:
         error_message: str,
         artifacts: dict[str, Any] | None = None,
     ) -> None:
-        def _fail() -> dict[str, Any]:
+        def _fail() -> tuple[bool, dict[str, Any]]:
             now = utc_now_iso()
             current = self.get(job_id)
             next_artifacts = current.artifacts if isinstance(current.artifacts, dict) else {}
             next_artifacts = _merge_artifacts(next_artifacts, artifacts)
-            self.conn.execute(
-                """
+            guard, guard_params, guarded = self._lease_guard(
+                job_id,
+                now=now,
+                statuses=(JobStatus.RUNNING.value, JobStatus.CANCEL_REQUESTED.value),
+            )
+            cur = self.conn.execute(
+                f"""
                 UPDATE jobs
                 SET status = ?, error_code = ?, error_message = ?,
-                    artifacts_json = ?, updated_at = ?, finished_at = ?, lease_until = NULL
-                WHERE job_id = ?
+                    artifacts_json = ?, updated_at = ?, finished_at = ?, worker_id = NULL,
+                    heartbeat_at = NULL, lease_until = NULL, lease_token = NULL
+                WHERE {guard}
                 """,
                 (
                     JobStatus.FAILED.value,
@@ -782,13 +925,21 @@ class JobsRepository:
                     json.dumps(next_artifacts, ensure_ascii=False),
                     now,
                     now,
-                    job_id,
+                    *guard_params,
                 ),
             )
             self.conn.commit()
-            return next_artifacts
+            if cur.rowcount != 1:
+                if guarded:
+                    raise LeaseNotAcquired(f"Lease lost for job {job_id}")
+                return False, next_artifacts
+            self._lease_tokens.pop(job_id, None)
+            return True, next_artifacts
 
-        next_artifacts = self._with_locked_retry(_fail)
+        applied, next_artifacts = self._with_locked_retry(_fail)
+        if not applied:
+            LOG.warning("Ignoring fail for job %s after lease ownership was lost", job_id)
+            return
         self._append_event(
             job_id,
             "job.failed",
@@ -812,23 +963,29 @@ class JobsRepository:
         artifacts: dict[str, Any] | None = None,
         delay_seconds: int | None = None,
     ) -> bool:
-        def _retry_later() -> tuple[sqlite3.Cursor | None, dict[str, Any]]:
+        def _retry_later() -> tuple[sqlite3.Cursor | None, dict[str, Any], bool]:
             now = utc_now_iso()
             current = self.get(job_id)
             if current.retry_count >= current.max_retries:
-                return None, {}
+                return None, {}, False
             retry_delay = min(int(delay_seconds) if delay_seconds is not None else 5 * (2 ** current.retry_count), 60)
             # PONETAIL: retrying jobs reuse lease_until as a not-before timestamp;
             # split it into next_retry_at only if scheduling semantics expand.
             next_retry_at = utc_after_iso(retry_delay)
             next_artifacts = current.artifacts if isinstance(current.artifacts, dict) else {}
             next_artifacts = _merge_artifacts(next_artifacts, artifacts)
+            guard, guard_params, _guarded = self._lease_guard(
+                job_id,
+                now=now,
+                statuses=(JobStatus.RUNNING.value,),
+            )
             cur = self.conn.execute(
-                """
+                f"""
                 UPDATE jobs
                 SET status = ?, retry_count = retry_count + 1, error_code = ?, error_message = ?,
-                    artifacts_json = ?, worker_id = NULL, heartbeat_at = NULL, lease_until = ?, updated_at = ?
-                WHERE job_id = ? AND status = ?
+                    artifacts_json = ?, worker_id = NULL, heartbeat_at = NULL, lease_until = ?,
+                    lease_token = NULL, updated_at = ?
+                WHERE {guard}
                 """,
                 (
                     JobStatus.RETRYING.value,
@@ -837,17 +994,18 @@ class JobsRepository:
                     json.dumps(next_artifacts, ensure_ascii=False),
                     next_retry_at,
                     now,
-                    job_id,
-                    JobStatus.RUNNING.value,
+                    *guard_params,
                 ),
             )
             self.conn.commit()
-            return cur, next_artifacts
+            return cur, next_artifacts, _guarded
 
-        cur, next_artifacts = self._with_locked_retry(_retry_later)
+        cur, next_artifacts, guarded = self._with_locked_retry(_retry_later)
         if cur is None:
             return False
         if cur.rowcount != 1:
+            if guarded:
+                raise LeaseNotAcquired(f"Lease lost for job {job_id}")
             return False
         refreshed = self.get(job_id)
         self._append_event(
@@ -870,7 +1028,7 @@ class JobsRepository:
         return True
 
     def partial(self, job_id: str, artifacts: dict[str, Any] | None = None) -> None:
-        def _partial() -> dict[str, Any]:
+        def _partial() -> tuple[bool, dict[str, Any]]:
             now = utc_now_iso()
             current = self.get(job_id)
             next_artifacts = current.artifacts if isinstance(current.artifacts, dict) else {}
@@ -880,26 +1038,40 @@ class JobsRepository:
                     "remote_attempt": {**next_artifacts["remote_attempt"], "outcome": "success", "finished_at": now},
                 }
             next_artifacts = _merge_artifacts(next_artifacts, artifacts)
-            self.conn.execute(
-                """
+            guard, guard_params, guarded = self._lease_guard(
+                job_id,
+                now=now,
+                statuses=(JobStatus.RUNNING.value, JobStatus.CANCEL_REQUESTED.value),
+            )
+            cur = self.conn.execute(
+                f"""
                 UPDATE jobs
                 SET status = ?, stage = 'finalize', progress_current = COALESCE(progress_total, progress_current),
                     artifacts_json = ?, updated_at = ?, finished_at = ?,
-                    error_code = NULL, error_message = NULL, lease_until = NULL
-                WHERE job_id = ?
+                    error_code = NULL, error_message = NULL, worker_id = NULL,
+                    heartbeat_at = NULL, lease_until = NULL, lease_token = NULL
+                WHERE {guard}
                 """,
                 (
                     JobStatus.PARTIAL.value,
                     json.dumps(next_artifacts, ensure_ascii=False),
                     now,
                     now,
-                    job_id,
+                    *guard_params,
                 ),
             )
             self.conn.commit()
-            return next_artifacts
+            if cur.rowcount != 1:
+                if guarded:
+                    raise LeaseNotAcquired(f"Lease lost for job {job_id}")
+                return False, next_artifacts
+            self._lease_tokens.pop(job_id, None)
+            return True, next_artifacts
 
-        next_artifacts = self._with_locked_retry(_partial)
+        applied, next_artifacts = self._with_locked_retry(_partial)
+        if not applied:
+            LOG.warning("Ignoring partial for job %s after lease ownership was lost", job_id)
+            return
         self._append_event(
             job_id,
             "job.partial",
@@ -957,15 +1129,25 @@ class JobsRepository:
     def finalize_pause(self, job_id: str) -> bool:
         def _finalize_pause() -> sqlite3.Cursor:
             now = utc_now_iso()
+            guard, guard_params, guarded = self._lease_guard(
+                job_id,
+                now=now,
+                statuses=(JobStatus.PAUSED.value,),
+            )
             cur = self.conn.execute(
-                """
+                f"""
                 UPDATE jobs
-                SET status = ?, worker_id = NULL, heartbeat_at = NULL, lease_until = NULL, updated_at = ?
-                WHERE job_id = ? AND status = ?
+                SET status = ?, worker_id = NULL, heartbeat_at = NULL, lease_until = NULL,
+                    lease_token = NULL, updated_at = ?
+                WHERE {guard}
                 """,
-                (JobStatus.PAUSED.value, now, job_id, JobStatus.PAUSED.value),
+                (JobStatus.PAUSED.value, now, *guard_params),
             )
             self.conn.commit()
+            if cur.rowcount == 1:
+                self._lease_tokens.pop(job_id, None)
+            elif guarded:
+                raise LeaseNotAcquired(f"Lease lost for job {job_id}")
             return cur
 
         cur = self._with_locked_retry(_finalize_pause)
@@ -977,7 +1159,8 @@ class JobsRepository:
             cur = self.conn.execute(
                 """
                 UPDATE jobs
-                SET status = ?, paused_at = NULL, worker_id = NULL, heartbeat_at = NULL, lease_until = NULL, updated_at = ?
+                SET status = ?, paused_at = NULL, worker_id = NULL, heartbeat_at = NULL,
+                    lease_until = NULL, lease_token = NULL, updated_at = ?
                 WHERE job_id = ?
                   AND status = ?
                   AND (worker_id IS NULL OR lease_until IS NULL OR lease_until < ?)
@@ -1015,7 +1198,7 @@ class JobsRepository:
             self.conn.execute(
                 """
                 UPDATE jobs
-                SET worker_id = NULL, heartbeat_at = NULL, lease_until = NULL, updated_at = ?
+                SET worker_id = NULL, heartbeat_at = NULL, lease_until = NULL, lease_token = NULL, updated_at = ?
                 WHERE status = ?
                   AND worker_id IS NOT NULL
                   AND lease_until IS NOT NULL
@@ -1061,7 +1244,7 @@ class JobsRepository:
             cur = self.conn.execute(
                 """
                 UPDATE jobs
-                SET status = ?, updated_at = ?
+                SET status = ?, lease_token = NULL, updated_at = ?
                 WHERE status = ? AND lease_until IS NOT NULL AND lease_until < ?
                 """,
                 (

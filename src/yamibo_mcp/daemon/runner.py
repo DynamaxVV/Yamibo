@@ -136,6 +136,24 @@ def _jittered_retry_delay(retry_count: int, *, base_seconds: int = 10, cap_secon
     return random.randint(lower, upper)
 
 
+def _effective_job_lease_seconds(settings) -> int:
+    """Keep the initial lease alive through one bounded remote/image stage.
+
+    Handlers may extend the lease again for a particular stage, but the first
+    remote request used to start with the raw short worker lease.  A slow
+    request could therefore be recovered and reclaimed before the handler's
+    next main-thread heartbeat.
+    """
+    configured = int(getattr(settings, "worker_lease_seconds", 60))
+    request_timeout = float(getattr(settings, "request_timeout_seconds", 30.0))
+    image_timeout = float(getattr(settings, "image_download_timeout_seconds", 0.0))
+    return max(
+        configured,
+        int(max(request_timeout * 4.0, 120.0)),
+        int(max(image_timeout * 3.0, 120.0)),
+    )
+
+
 @dataclass(frozen=True)
 class DaemonResult:
     processed: int
@@ -163,7 +181,7 @@ class DaemonRunner:
             self._publish_worker_heartbeat(conn, settings)
             if not getattr(settings, "jobs_enabled", True):
                 return DaemonResult(processed=0)
-            repo = JobsRepository(conn)
+            repo = JobsRepository(conn, owner_id=self.worker_id)
             recover_expired_jobs(repo)
             _restore_444_events(conn)
             try:
@@ -217,7 +235,8 @@ class DaemonRunner:
                     record_remote_access_probe_failure(conn)
 
             # 维护期间：跳过自动任务，但手动恢复的任务可以执行（作为维护探测）。
-            job = repo.acquire_next(self.worker_id, settings.worker_lease_seconds)
+            lease_seconds = _effective_job_lease_seconds(settings)
+            job = repo.acquire_next(self.worker_id, lease_seconds)
             if job is None:
                 # 空闲时尝试入队闲时任务（image_backfill）
                 if maintenance_state is None and remote_access_state is None:
@@ -243,7 +262,7 @@ class DaemonRunner:
                     repo.fail(job.job_id, "UNKNOWN_JOB_TYPE", f"No handler for job type: {job.job_type}")
                     return DaemonResult(processed=1)
                 try:
-                    handler(repo, job, self.worker_id, settings.worker_lease_seconds, settings)
+                    handler(repo, job, self.worker_id, lease_seconds, settings)
                     record_node_outcome(get_job_node(job.job_id), "success")
                     _record_account_feedback(repo, job.job_id, "success")
                     # 远程任务成功说明维护已结束。
@@ -254,6 +273,13 @@ class DaemonRunner:
                             job.job_id,
                             result.get("resumed_job_count", 0),
                         )
+                except LeaseNotAcquired as exc:
+                    # A recovery pass may have transferred this job to a new
+                    # worker while this handler was blocked in I/O.  The
+                    # repository fences every subsequent write, so the stale
+                    # handler must simply stop without recording an outcome.
+                    LOG.warning("Job %s lost its lease; stale worker is stopping: %s", job.job_id, exc)
+                    return DaemonResult(processed=0)
                 except JobCancelled:
                     LOG.info("Job %s was cancelled", job.job_id)
                     repo.fail(job.job_id, "CANCELLED", "Job was cancelled by user")

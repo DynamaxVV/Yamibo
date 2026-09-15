@@ -148,13 +148,13 @@ class ThreadsRepository:
         from yamibo_mcp.domain.forums import resolve_forum
         profile = resolve_forum(forum_id)
         if profile.default_series_key:
-            series_id, needs_series_review = series_repo.resolve_for_forum(forum_id)
+            series_id, needs_series_review = series_repo.resolve_for_forum(forum_id, commit=False)
         elif forum_id is None or profile.forum_id in {30, 55}:
             # Preserve the repository API's historical default: omitted forum_id
             # is the comic/novel title-series path.
-            series_id, needs_series_review = series_repo.resolve_for_title(snapshot.title)
+            series_id, needs_series_review = series_repo.resolve_for_title(snapshot.title, commit=False)
         else:
-            series_id, needs_series_review = series_repo.resolve_for_quarantine(profile.forum_id)
+            series_id, needs_series_review = series_repo.resolve_for_quarantine(profile.forum_id, commit=False)
         missing_images_json = json.dumps(missing_image_urls or [], ensure_ascii=False)
         self.conn.execute(
             """

@@ -34,7 +34,7 @@ class SeriesRepository:
         backend = getattr(self.conn, "backend", None)
         return f"{column} IS TRUE" if backend in {"postgres", "postgresql"} else f"{column} = 1"
 
-    def resolve_for_title(self, title: TitleSnapshot) -> tuple[int, bool]:
+    def resolve_for_title(self, title: TitleSnapshot, *, commit: bool = True) -> tuple[int, bool]:
         decision = build_series_match_decision(title)
         base_key = decision.base_key
         creator_key = decision.creator_key
@@ -85,7 +85,8 @@ class SeriesRepository:
             ),
         )
         row = cur.fetchone()
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
         return (int(row["series_id"]) if row is not None else 0), needs_review
 
     def _update_series(
@@ -131,7 +132,7 @@ class SeriesRepository:
         )
         return int(row["series_id"])
 
-    def resolve_for_forum(self, forum_id: int) -> tuple[int, bool]:
+    def resolve_for_forum(self, forum_id: int, *, commit: bool = True) -> tuple[int, bool]:
         from yamibo_mcp.domain.forums import resolve_forum
         profile = resolve_forum(forum_id)
         if not profile.default_series_key:
@@ -155,10 +156,11 @@ class SeriesRepository:
             (profile.default_series_title, profile.default_series_title, profile.default_series_key, False),
         )
         row = cur.fetchone()
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
         return (int(row["series_id"]) if row is not None else 0), False
 
-    def resolve_for_quarantine(self, forum_id: int) -> tuple[int, bool]:
+    def resolve_for_quarantine(self, forum_id: int, *, commit: bool = True) -> tuple[int, bool]:
         """Return a stable review bucket for a forum without a default series."""
         from yamibo_mcp.domain.forums import resolve_forum
 
@@ -189,7 +191,8 @@ class SeriesRepository:
             (display_name, display_name, series_key, True),
         )
         row = cur.fetchone()
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
         return (int(row["series_id"]) if row is not None else 0), True
 
     def _creator_compatible(self, existing: str | None, incoming: str | None) -> bool:

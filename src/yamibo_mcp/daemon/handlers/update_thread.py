@@ -25,7 +25,8 @@ from yamibo_mcp.daemon.heartbeat import HeartbeatPacer
 from yamibo_mcp.domain.content import build_content_snapshot
 from yamibo_mcp.domain.models import FloorSnapshot, Job, ThreadSnapshot, TitleSnapshot
 from yamibo_mcp.domain.thread_fingerprint import floor_content_hash
-from yamibo_mcp.domain.validation import validate_thread_snapshot
+from yamibo_mcp.domain.validation import validate_floor_sequence, validate_thread_snapshot
+from yamibo_mcp.storage.atomic import atomic_write_text
 from yamibo_mcp.storage.images import download_images_to_staging
 from yamibo_mcp.storage.paths import StoragePaths
 from yamibo_mcp.storage.thread_archive import materialize_thread
@@ -414,6 +415,7 @@ def handle_update_thread(repo: JobsRepository, job: Job, worker_id: str, lease_s
 
         repo.update_stage(job.job_id, "db_commit", progress_current=4, progress_total=4)
         with transaction(repo.conn):
+            repo.assert_lease(job.job_id, for_update=True)
             ThreadsRepository(repo.conn).upsert_snapshot(
                 merged_snapshot,
                 forum_id=forum_id,
@@ -504,13 +506,37 @@ def handle_update_thread(repo: JobsRepository, job: Job, worker_id: str, lease_s
 
 
 def _load_local_thread_snapshot(paths: StoragePaths, conn, thread_row) -> ThreadSnapshot:
-    meta = _load_local_metadata(paths, int(thread_row["tid"]))
+    tid = int(thread_row["tid"])
+    db_floors = _load_db_floor_snapshots(conn, tid)
+    meta = _load_local_metadata(paths, tid)
     if meta:
-        return _snapshot_from_metadata(meta, conn, int(thread_row["tid"]))
-    floors = [
+        metadata_snapshot = _snapshot_from_metadata(meta, conn, tid)
+        # The database is the canonical source for floor identity and order.
+        # Archive metadata can predate a successful DB resync and retain the
+        # old page-local numbering, so only use it as enrichment when the DB
+        # floor sequence is valid.
+        db_floor_errors = validate_floor_sequence(db_floors)
+        if db_floors and not db_floor_errors:
+            merged_floors = _merge_db_floor_metadata(db_floors, metadata_snapshot.floors)
+            _repair_metadata_floor_sequence(paths, tid, meta, db_floors)
+            return replace(
+                metadata_snapshot,
+                tid=tid,
+                floors=merged_floors,
+                image_count=metadata_snapshot.image_count or int(
+                    thread_row["image_count"] if "image_count" in thread_row.keys() else 0
+                ),
+            )
+        return metadata_snapshot
+
+    return _snapshot_from_db(conn, thread_row, db_floors)
+
+
+def _load_db_floor_snapshots(conn, tid: int) -> list[FloorSnapshot]:
+    return [
         FloorSnapshot(
             pid=row["pid"],
-            tid=int(thread_row["tid"]),
+            tid=tid,
             floor_no=row["floor_no"],
             publisher=row["publisher"],
             content=row["content"] or "",
@@ -520,9 +546,13 @@ def _load_local_thread_snapshot(paths: StoragePaths, conn, thread_row) -> Thread
             quote_text=row["quote_text"] if "quote_text" in row.keys() else None,
             reply_text=row["reply_text"] if "reply_text" in row.keys() else None,
         )
-        for row in ThreadsRepository(conn).list_floors(int(thread_row["tid"]))
+        for row in ThreadsRepository(conn).list_floors(tid)
     ]
-    title_row = ThreadsRepository(conn).get_title_parse(int(thread_row["tid"]))
+
+
+def _snapshot_from_db(conn, thread_row, floors: list[FloorSnapshot]) -> ThreadSnapshot:
+    tid = int(thread_row["tid"])
+    title_row = ThreadsRepository(conn).get_title_parse(tid)
     if title_row is None:
         raise ValueError(f"missing title parse for thread {thread_row['tid']}")
     title = TitleSnapshot(
@@ -545,7 +575,7 @@ def _load_local_thread_snapshot(paths: StoragePaths, conn, thread_row) -> Thread
         parser_version=title_row["parser_version"],
     )
     return ThreadSnapshot(
-        tid=int(thread_row["tid"]),
+        tid=tid,
         url=None,
         page_type=thread_row["page_type"] if "page_type" in thread_row.keys() else "thread_detail",
         raw_title=thread_row["raw_title"],
@@ -558,6 +588,87 @@ def _load_local_thread_snapshot(paths: StoragePaths, conn, thread_row) -> Thread
         floors=floors,
         image_count=thread_row["image_count"] if "image_count" in thread_row.keys() else 0,
     )
+
+
+def _merge_db_floor_metadata(
+    db_floors: list[FloorSnapshot],
+    metadata_floors: list[FloorSnapshot],
+) -> list[FloorSnapshot]:
+    metadata_by_pid: dict[int, FloorSnapshot] = {}
+    for floor in metadata_floors:
+        metadata_by_pid.setdefault(floor.pid, floor)
+
+    merged: list[FloorSnapshot] = []
+    for db_floor in db_floors:
+        metadata_floor = metadata_by_pid.get(db_floor.pid)
+        if metadata_floor is None:
+            merged.append(db_floor)
+            continue
+        merged.append(
+            replace(
+                db_floor,
+                publisher=metadata_floor.publisher or db_floor.publisher,
+                content=metadata_floor.content or db_floor.content,
+                pub_time=metadata_floor.pub_time or db_floor.pub_time,
+                has_images=db_floor.has_images or metadata_floor.has_images or bool(metadata_floor.image_urls),
+                publisher_uid=metadata_floor.publisher_uid or db_floor.publisher_uid,
+                image_urls=list(metadata_floor.image_urls or db_floor.image_urls),
+                quote_text=metadata_floor.quote_text or db_floor.quote_text,
+                reply_text=metadata_floor.reply_text or db_floor.reply_text,
+                rich_body_html=metadata_floor.rich_body_html or db_floor.rich_body_html,
+            )
+        )
+    return merged
+
+
+def _repair_metadata_floor_sequence(
+    paths: StoragePaths,
+    tid: int,
+    metadata: dict[str, Any],
+    db_floors: list[FloorSnapshot],
+) -> None:
+    """Repair only floor order/numbering when metadata and DB pids align."""
+    raw_floors = metadata.get("floors")
+    if not isinstance(raw_floors, list) or len(raw_floors) != len(db_floors):
+        return
+
+    metadata_by_pid: dict[int, dict[str, Any]] = {}
+    for raw_floor in raw_floors:
+        if not isinstance(raw_floor, dict):
+            return
+        try:
+            pid = int(raw_floor.get("pid") or 0)
+        except (TypeError, ValueError):
+            return
+        if pid <= 0 or pid in metadata_by_pid:
+            return
+        metadata_by_pid[pid] = raw_floor
+
+    db_pids = [floor.pid for floor in db_floors]
+    if len(metadata_by_pid) != len(db_pids) or set(metadata_by_pid) != set(db_pids):
+        return
+
+    repaired_floors: list[dict[str, Any]] = []
+    changed = [raw.get("pid") for raw in raw_floors] != db_pids
+    for db_floor in db_floors:
+        raw_floor = dict(metadata_by_pid[db_floor.pid])
+        if raw_floor.get("floor_no") != db_floor.floor_no:
+            changed = True
+        raw_floor["floor_no"] = db_floor.floor_no
+        repaired_floors.append(raw_floor)
+    if not changed:
+        return
+
+    metadata["floors"] = repaired_floors
+    try:
+        atomic_write_text(
+            paths.thread_metadata(tid),
+            json.dumps(metadata, ensure_ascii=False, indent=2),
+        )
+    except (OSError, TypeError, ValueError):
+        # The current job can continue with the repaired in-memory snapshot;
+        # a later materialization will retry the metadata write.
+        LOG.warning("Failed to repair floor numbering in metadata for thread %s", tid, exc_info=True)
 
 
 def _snapshot_from_metadata(meta: dict[str, Any], conn, tid: int) -> ThreadSnapshot:
@@ -604,6 +715,13 @@ def _snapshot_from_metadata(meta: dict[str, Any], conn, tid: int) -> ThreadSnaps
 
 
 def _floor_snapshot_from_metadata(meta: dict[str, Any], recovered_image_urls: list[str] | None = None) -> FloorSnapshot:
+    metadata_image_urls = meta.get("remote_image_urls")
+    if not isinstance(metadata_image_urls, list):
+        metadata_image_urls = [
+            url for url in (meta.get("image_urls") or [])
+            if str(url).startswith(("http://", "https://"))
+        ]
+    image_urls = list(recovered_image_urls or [str(url) for url in metadata_image_urls])
     return FloorSnapshot(
         pid=int(meta.get("pid") or 0),
         tid=int(meta.get("tid") or 0),
@@ -611,9 +729,9 @@ def _floor_snapshot_from_metadata(meta: dict[str, Any], recovered_image_urls: li
         publisher=meta.get("publisher"),
         content=str(meta.get("content") or ""),
         pub_time=meta.get("pub_time"),
-        has_images=bool(recovered_image_urls) or bool(meta.get("has_images")),
+        has_images=bool(image_urls) or bool(meta.get("has_images")),
         publisher_uid=meta.get("publisher_uid"),
-        image_urls=list(recovered_image_urls or meta.get("image_urls") or []),
+        image_urls=image_urls,
         quote_text=meta.get("quote_text"),
         reply_text=meta.get("reply_text"),
         rich_body_html=meta.get("rich_body_html"),

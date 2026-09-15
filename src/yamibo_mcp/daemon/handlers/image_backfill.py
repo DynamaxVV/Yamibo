@@ -37,6 +37,7 @@ from yamibo_mcp.daemon.handlers.sync_thread import (
     _merge_thread_snapshots,
 )
 from yamibo_mcp.errors import (
+    LeaseNotAcquired,
     ThreadPermissionRequiredError,
     UnexpectedPageError,
     _extract_permission_code,
@@ -197,7 +198,7 @@ def handle_image_backfill(
             return
     if reconcile_mode and not dry_run and target_urls:
         reconciled = _reconcile_missing_targets(
-            repo.conn, paths=paths, tid=tid, target_urls=target_urls,
+            repo, job_id=job.job_id, paths=paths, tid=tid, target_urls=target_urls,
         )
         target_urls = [url for url in target_urls if url not in reconciled]
         if not target_urls:
@@ -214,7 +215,8 @@ def handle_image_backfill(
     strict_selected_scope = selected_scope and bool(target_urls)
     if strict_selected_scope:
         reconciled = _reconcile_selected_targets(
-            repo.conn,
+            repo,
+            job_id=job.job_id,
             paths=paths,
             tid=tid,
             target_urls=target_urls,
@@ -503,6 +505,7 @@ def handle_image_backfill(
                 )
                 event_payload = {"tid": tid, "summary": diagnostic_summary, "diagnostics": diagnostics}
                 try:
+                    repo.assert_lease(job.job_id)
                     JobEventsRepository(repo.conn).append(
                         job_id=job.job_id,
                         event_type="image.download.result",
@@ -510,6 +513,8 @@ def handle_image_backfill(
                         stage="download_missing_images",
                         payload=event_payload,
                     )
+                except LeaseNotAcquired:
+                    raise
                 except Exception:
                     LOG.warning("Failed to persist image download diagnostics for job %s", job.job_id, exc_info=True)
                 first_failure = next((item for item in diagnostics if item.get("status") != "ok"), None)
@@ -559,6 +564,9 @@ def handle_image_backfill(
 
                 repo.update_stage(job.job_id, "db_commit", progress_current=5, progress_total=6)
                 with transaction(repo.conn):
+                    # Do not let an expired handler mutate the archive after
+                    # another worker has reclaimed this job.
+                    repo.assert_lease(job.job_id, for_update=True)
                     ThreadsRepository(repo.conn).upsert_snapshot(
                         apply_snapshot,
                         forum_id=thread["forum_id"] if "forum_id" in thread.keys() else None,
@@ -799,14 +807,24 @@ def _metadata_missing_targets(paths: StoragePaths, tid: int, *, site_only: bool 
     return _unique(targets)
 
 
-def _reconcile_missing_targets(conn, *, paths: StoragePaths, tid: int, target_urls: list[str]) -> set[str]:
+def _reconcile_missing_targets(
+    repo_or_conn,
+    *,
+    job_id: str | None = None,
+    paths: StoragePaths,
+    tid: int,
+    target_urls: list[str],
+) -> set[str]:
     """Reconcile rotated attachment signatures from valid local assets, without HTTP."""
+    repo = repo_or_conn if isinstance(repo_or_conn, JobsRepository) else JobsRepository(repo_or_conn)
+    conn = repo.conn
     if not target_urls:
         return set()
     rows = AssetsRepository(conn).list_assets(tid)
     positions = _metadata_target_positions(paths, tid)
     used: set[str] = set()
     reconciled: set[str] = set()
+    selected_rows: list[tuple[str, Any]] = []
     for url in target_urls:
         identity = remote_image_identity(url)
         position = positions.get(url) or {}
@@ -825,25 +843,29 @@ def _reconcile_missing_targets(conn, *, paths: StoragePaths, tid: int, target_ur
         path = _asset_path(tid=tid, local_path=str(row["local_path"]), paths=paths)
         if not _is_valid_image_file(path):
             continue
-        conn.execute(
-            "UPDATE assets SET remote_url = ?, status = 'downloaded' WHERE tid = ? AND asset_id = ?",
-            (url, tid, row["asset_id"]),
-        )
+        selected_rows.append((url, row))
         used.add(str(row["asset_id"]))
         reconciled.add(url)
     if not reconciled:
         return reconciled
     metadata = _load_archive_metadata(paths, tid)
-    asset_rows = AssetsRepository(conn).list_assets(tid)
-    missing, missing_shared = _refresh_metadata_from_asset_rows(
-        paths=paths, tid=tid, metadata=metadata, asset_rows=asset_rows,
-    )
+    with transaction(conn):
+        if job_id:
+            repo.assert_lease(job_id, for_update=True)
+        for url, row in selected_rows:
+            conn.execute(
+                "UPDATE assets SET remote_url = ?, status = 'downloaded' WHERE tid = ? AND asset_id = ?",
+                (url, tid, row["asset_id"]),
+            )
+        asset_rows = AssetsRepository(conn).list_assets(tid)
+        missing, missing_shared = _refresh_metadata_from_asset_rows(
+            paths=paths, tid=tid, metadata=metadata, asset_rows=asset_rows,
+        )
+        conn.execute(
+            "UPDATE threads SET missing_images_json = ?, archive_status = ? WHERE tid = ?",
+            (json.dumps([*missing, *missing_shared], ensure_ascii=False), metadata["archive_status"], tid),
+        )
     atomic_write_text(paths.thread_metadata(tid), json.dumps(metadata, ensure_ascii=False, indent=2))
-    conn.execute(
-        "UPDATE threads SET missing_images_json = ?, archive_status = ? WHERE tid = ?",
-        (json.dumps([*missing, *missing_shared], ensure_ascii=False), metadata["archive_status"], tid),
-    )
-    conn.commit()
     return reconciled
 
 
@@ -884,8 +906,9 @@ def _expected_target_paths(
 
 
 def _reconcile_selected_targets(
-    conn,
+    repo_or_conn,
     *,
+    job_id: str | None = None,
     paths: StoragePaths,
     tid: int,
     target_urls: list[str],
@@ -894,12 +917,15 @@ def _reconcile_selected_targets(
     target_asset_id: str,
 ) -> set[str]:
     """Repair DB/metadata from an already-valid expected file without HTTP."""
+    repo = repo_or_conn if isinstance(repo_or_conn, JobsRepository) else JobsRepository(repo_or_conn)
+    conn = repo.conn
     if not expected_paths:
         return set()
     asset_rows = AssetsRepository(conn).list_assets(tid)
     asset_by_url = {str(row["remote_url"]): row for row in asset_rows if row["remote_url"]}
     metadata = _load_archive_metadata(paths, tid)
     reconciled: set[str] = set()
+    selected_rows: list[tuple[str, str, Any]] = []
     for url in target_urls:
         path = expected_paths.get(url)
         if path is None or not _is_valid_image_file(path):
@@ -912,27 +938,31 @@ def _reconcile_selected_targets(
         if row is None:
             continue
         relative_path = str(path.relative_to(paths.thread_dir(tid)))
-        conn.execute(
-            "UPDATE assets SET local_path = ?, status = 'downloaded' WHERE tid = ? AND asset_id = ? AND remote_url = ?",
-            (relative_path, tid, row["asset_id"], url),
-        )
+        selected_rows.append((url, relative_path, row))
         reconciled.add(url)
 
     if not reconciled:
         return reconciled
-    asset_rows = AssetsRepository(conn).list_assets(tid)
-    missing, missing_shared = _refresh_metadata_from_asset_rows(
-        paths=paths,
-        tid=tid,
-        metadata=metadata,
-        asset_rows=asset_rows,
-    )
+    with transaction(conn):
+        if job_id:
+            repo.assert_lease(job_id, for_update=True)
+        for url, relative_path, row in selected_rows:
+            conn.execute(
+                "UPDATE assets SET local_path = ?, status = 'downloaded' WHERE tid = ? AND asset_id = ? AND remote_url = ?",
+                (relative_path, tid, row["asset_id"], url),
+            )
+        asset_rows = AssetsRepository(conn).list_assets(tid)
+        missing, missing_shared = _refresh_metadata_from_asset_rows(
+            paths=paths,
+            tid=tid,
+            metadata=metadata,
+            asset_rows=asset_rows,
+        )
+        conn.execute(
+            "UPDATE threads SET missing_images_json = ?, archive_status = ? WHERE tid = ?",
+            (json.dumps([*missing, *missing_shared], ensure_ascii=False), metadata["archive_status"], tid),
+        )
     atomic_write_text(paths.thread_metadata(tid), json.dumps(metadata, ensure_ascii=False, indent=2))
-    conn.execute(
-        "UPDATE threads SET missing_images_json = ?, archive_status = ? WHERE tid = ?",
-        (json.dumps([*missing, *missing_shared], ensure_ascii=False), metadata["archive_status"], tid),
-    )
-    conn.commit()
     return reconciled
 
 
