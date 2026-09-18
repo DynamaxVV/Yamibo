@@ -21,7 +21,7 @@ from yamibo_mcp.domain.models import ThreadSnapshot
 from yamibo_mcp.storage.paths import StoragePaths
 from yamibo_mcp.structured_logging import emit
 from yamibo_mcp.yamibo.anti_bot import is_http_429_error, is_http_444_error, is_soft_block_page
-from yamibo_mcp.yamibo.urls import stable_attachment_id
+from yamibo_mcp.yamibo.urls import is_yamibo_site_content_image_url, stable_attachment_id
 from yamibo_mcp.yamibo.runtime_limits import CookieDownloadSlotTimeoutError, acquire_cookie_download_slot, throttle_cookie_request
 
 
@@ -819,7 +819,11 @@ def _transport(fetcher: ImageFetcher | None) -> str:
 
 
 def _use_authenticated_fetcher(url: str, fetcher: ImageFetcher | None) -> bool:
-    return fetcher is not None and stable_attachment_id(url) is not None
+    # All first-party post-content images should share the authenticated
+    # Yamibo session. Legacy /data/attachment/... URLs can otherwise receive
+    # misleading 404 responses when fetched through plain urllib without the
+    # browser/session fingerprint used for thread pages.
+    return fetcher is not None and is_yamibo_site_content_image_url(url)
 
 
 def _header_value(headers: Mapping[str, Any], name: str) -> str | None:

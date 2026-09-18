@@ -40,6 +40,7 @@ from yamibo_mcp.yamibo.urls import (
     DEFAULT_FORUM_ID,
     dateline_forum_page_url,
     forum_page_url,
+    is_yamibo_site_content_image_url,
     normalize_forum_page_url,
     normalize_thread_url,
     thread_page_url_from_tid,
@@ -378,7 +379,9 @@ class YamiboClient:
                     self._reset_session()
                 raise
             body = bytes(response.content)
-            if stable_attachment_id(url) is not None and is_soft_block_page(body.decode("utf-8", errors="ignore")):
+            if is_yamibo_site_content_image_url(url) and is_soft_block_page(
+                body.decode("utf-8", errors="ignore")
+            ):
                 # _open_html solves nox/acw challenges and persists cookies.
                 self._open_html(url, referer=referer)
                 request_headers = self._image_request_headers(referer=referer)
