@@ -21,6 +21,8 @@ T = TypeVar("T")
 
 _LOCK_RETRY_DELAYS_SECONDS = (0.1, 0.2, 0.5, 1.0, 2.0)
 _REMOTE_ATTEMPT_HISTORY_KEYS = ("nodes_tried", "account_ids_tried")
+_REMOTE_ATTEMPT_HISTORY_LIMIT = 20
+_REMOTE_ATTEMPT_HISTORY_FIELD = "history"
 
 _LIVE_JOB_STATUSES = (
     JobStatus.QUEUED.value,
@@ -32,25 +34,52 @@ _LIVE_JOB_STATUSES = (
 )
 
 
+def _remote_attempt_history_entry(attempt: dict[str, Any]) -> dict[str, Any]:
+    """Return a compact immutable snapshot suitable for bounded history."""
+    excluded = {*_REMOTE_ATTEMPT_HISTORY_KEYS, _REMOTE_ATTEMPT_HISTORY_FIELD}
+    return {key: value for key, value in attempt.items() if key not in excluded}
+
+
 def _merge_artifacts(current: dict[str, Any], update: dict[str, Any] | None) -> dict[str, Any]:
-    """Merge artifacts while preserving the structured remote_attempt snapshot."""
+    """Merge artifacts while preserving remote-attempt history without stale fields."""
     merged = {**current}
     if not update:
         return merged
     for key, value in update.items():
         if key == "remote_attempt" and isinstance(value, dict):
             previous = merged.get(key) if isinstance(merged.get(key), dict) else {}
-            remote_attempt = {**previous, **value}
+            incoming_started = value.get("started_at")
+            previous_started = previous.get("started_at")
+            new_attempt = bool(
+                incoming_started
+                and previous_started
+                and incoming_started != previous_started
+            )
+
+            prior_history = previous.get(_REMOTE_ATTEMPT_HISTORY_FIELD)
+            history = list(prior_history) if isinstance(prior_history, list) else []
+            if new_attempt:
+                previous_entry = _remote_attempt_history_entry(previous)
+                if previous_entry:
+                    history.append(previous_entry)
+                    history = history[-_REMOTE_ATTEMPT_HISTORY_LIMIT:]
+                remote_attempt = dict(value)
+            else:
+                remote_attempt = {**previous, **value}
+
             for history_key in _REMOTE_ATTEMPT_HISTORY_KEYS:
-                history: list[Any] = []
+                cumulative: list[Any] = []
                 for source in (previous.get(history_key), value.get(history_key)):
                     if not isinstance(source, list):
                         continue
                     for item in source:
-                        if item and item not in history:
-                            history.append(item)
-                if history:
-                    remote_attempt[history_key] = history
+                        if item and item not in cumulative:
+                            cumulative.append(item)
+                if cumulative:
+                    remote_attempt[history_key] = cumulative
+
+            if history:
+                remote_attempt[_REMOTE_ATTEMPT_HISTORY_FIELD] = history
             merged[key] = remote_attempt
         else:
             merged[key] = value
@@ -731,7 +760,14 @@ class JobsRepository:
             current = self.get(job_id)
             artifacts = current.artifacts if isinstance(current.artifacts, dict) else {}
             previous_attempt = artifacts.get("remote_attempt") if isinstance(artifacts.get("remote_attempt"), dict) else {}
-            next_attempt = {**previous_attempt, **dict(attempt)}
+            incoming_started = attempt.get("started_at")
+            previous_started = previous_attempt.get("started_at")
+            new_attempt = bool(
+                incoming_started
+                and previous_started
+                and incoming_started != previous_started
+            )
+            next_attempt = dict(attempt) if new_attempt else {**previous_attempt, **dict(attempt)}
             for history_key, current_key in (("nodes_tried", "node"), ("account_ids_tried", "account_id")):
                 previous_values = previous_attempt.get(history_key, [])
                 values = list(previous_values) if isinstance(previous_values, list) else []

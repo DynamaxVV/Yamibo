@@ -50,14 +50,13 @@ from yamibo_mcp.yamibo.urls import (
 
 # ── Browser-like UA pool ──────────────────────────────────────────────────
 
-_USER_AGENTS = [
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:133.0) Gecko/20100101 Firefox/133.0",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-]
+# Keep the visible browser identity aligned with curl_cffi's
+# BrowserType.chrome131 TLS fingerprint and sec-ch-ua-platform="macOS".
+_BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/131.0.0.0 Safari/537.36"
+)
 
 _SEC_CH_UA = '"Chromium";v="131", "Google Chrome";v="131", "Not_A Brand";v="24"'
 
@@ -129,9 +128,22 @@ class BurstThrottle:
 
 LOG = logging.getLogger(__name__)
 
+_CHALLENGE_COOKIE_NAMES = ("nox_jst_v1", "acw_sc__v2")
+
+
+def _is_soft_block_fetch_error(exc: Exception) -> bool:
+    if not isinstance(exc, RemoteFetchError):
+        return False
+    text = str(exc).lower()
+    return any(
+        marker in text
+        for marker in ("soft block", "cf challenge", "captcha", "waf challenge")
+    )
+
 
 def _random_ua() -> str:
-    return random.choice(_USER_AGENTS)
+    # Stable UA keeps persisted WAF cookies bound to one coherent browser identity.
+    return _BROWSER_USER_AGENT
 
 
 @dataclass(frozen=True)
@@ -718,6 +730,14 @@ class YamiboClient:
         )
         self._burst.wait()
 
+    def _clear_challenge_cookies(self) -> None:
+        """Drop only anti-bot challenge cookies before a bounded local retry."""
+        for name in _CHALLENGE_COOKIE_NAMES:
+            try:
+                self._session.cookies.delete(name)
+            except (KeyError, ValueError):
+                pass
+
     def _reset_session(self) -> None:
         """重新创建 curl_cffi Session，用于 HTTP/2 协议错误后恢复。
 
@@ -754,6 +774,7 @@ class YamiboClient:
         self._throttle()
         last_error: Exception | None = None
         last_error_details: dict[str, object] = {}
+        soft_block_recovery_used = False
         for attempt in range(self.retries + 1):
             try:
                 result = self._open_html(url, referer=referer)
@@ -773,6 +794,29 @@ class YamiboClient:
                         time.sleep(self._retry_delay(attempt))
                         continue
                 break
+            except RemoteFetchError as exc:
+                if (
+                    _is_soft_block_fetch_error(exc)
+                    and not soft_block_recovery_used
+                    and attempt < self.retries
+                ):
+                    soft_block_recovery_used = True
+                    last_error = exc
+                    LOG.info(
+                        "Soft-block detected for %s; retrying once in the same session before proxy/account rotation",
+                        url,
+                    )
+                    self._clear_challenge_cookies()
+                    time.sleep(min(self._retry_delay(attempt), 2.0))
+                    continue
+                if _is_soft_block_fetch_error(exc):
+                    details = dict(getattr(exc, "details", {}) or {})
+                    details.update({
+                        "session_recovery_attempted": soft_block_recovery_used,
+                        "attempts": attempt + 1,
+                    })
+                    raise RemoteFetchError(str(exc), details=details) from exc
+                raise
             except (TimeoutError, curl_requests.errors.RequestsError) as exc:
                 last_error = exc
                 last_error_details = {
@@ -780,7 +824,6 @@ class YamiboClient:
                 }
                 if attempt >= self.retries:
                     break
-                # HTTP/2 协议错误后重建 session + 降级到 HTTP/1.1
                 if self._is_protocol_error(exc):
                     LOG.info(
                         "HTTP/2 protocol error detected, resetting session with http_version=%s before retry %d/%d: %s",
