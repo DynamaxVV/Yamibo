@@ -275,6 +275,8 @@ def job_failure_kind(job, *, artifacts: dict[str, object] | None = None) -> str 
     # 维护 / 反爬暂停
     if error_code in {"remotemaintenanceerror", "remote_maintenance", "remote_access_paused"} or "maintenance" in combined:
         return "maintenance"
+    if error_code == "image_target_not_downloaded":
+        return "image_download_failed"
     # 远程抓取类 — 细分
     if error_code in {"remote_http_404"}:
         return "remote_http_404"

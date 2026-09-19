@@ -36,6 +36,7 @@ from yamibo_mcp.daemon.handlers.sync_thread import (
     _check_paused,
     _merge_thread_snapshots,
 )
+from yamibo_mcp.daemon.heartbeat import HeartbeatPacer
 from yamibo_mcp.errors import (
     LeaseNotAcquired,
     ThreadPermissionRequiredError,
@@ -127,6 +128,29 @@ class _LocalAsset:
     asset_type: str
     local_path: str | None
     status: str | None
+
+
+def _should_retry_image_download(image_result, diagnostics: list[dict[str, Any]]) -> bool:
+    if image_result.stopped_reason in {"stage_timeout", "download_slot_timeout"}:
+        return True
+    return any(
+        item.get("status") != "ok"
+        and (bool(item.get("retryable")) or item.get("error_type") == "waf_response")
+        for item in diagnostics
+    )
+
+
+def _image_download_failure_code(diagnostics: list[dict[str, Any]]) -> str:
+    """Map per-image diagnostics to the task-level failure classification."""
+    if any(
+        item.get("status") != "ok" and item.get("error_type") == "waf_response"
+        for item in diagnostics
+    ):
+        # The remote service returned an interception page.  This is not
+        # evidence that the selected attachment is gone, even when the edge
+        # used HTTP 404/403 for the block.
+        return "REMOTE_SOFT_BLOCK"
+    return "IMAGE_TARGET_NOT_DOWNLOADED"
 
 
 def handle_image_backfill(
@@ -318,7 +342,14 @@ def handle_image_backfill(
         lease_seconds,
         int(max(float(getattr(settings, "request_timeout_seconds", 30.0)) * 4.0, 120.0)),
     )
-    repo.heartbeat(job.job_id, worker_id, fetch_lease_seconds)
+    fetch_heartbeat = HeartbeatPacer(
+        repo=repo,
+        job_id=job.job_id,
+        worker_id=worker_id,
+        lease_seconds=fetch_lease_seconds,
+        min_interval_seconds=max(float(getattr(settings, "worker_heartbeat_seconds", 15)), 1.0),
+    )
+    fetch_heartbeat.beat(force=True)
     min_permission: int | None = None
     while True:
         identity = None
@@ -326,6 +357,7 @@ def handle_image_backfill(
         try:
             _check_cancelled(repo, job.job_id)
             _check_paused(repo, job.job_id)
+            fetch_heartbeat.beat()
             if reconcile_mode and _foreground_work_available(repo, job.job_id):
                 repo.retry_later(
                     job.job_id,
@@ -354,6 +386,7 @@ def handle_image_backfill(
                 if callable(record_attempt):
                     record_attempt(job.job_id, {"account_id": selected_account_id})
                 borrowed_client = True
+                fetch_heartbeat.beat()
                 first_page = client.fetch_thread_page(tid=tid, page=1, base_url=base_url)
                 if max_pages > 1:
                     page_results, remote_total_pages, stopped_reason = client.fetch_thread_pages(
@@ -362,6 +395,7 @@ def handle_image_backfill(
                         max_pages=max_pages,
                         first_page=first_page,
                         page_delay_seconds=max(float(getattr(settings, "request_interval_seconds", 1.0)), 1.0),
+                        before_each_page=fetch_heartbeat.beat,
                     )
                     final_url = page_results[-1].final_url
                     pages_fetched = len(page_results)
@@ -375,6 +409,7 @@ def handle_image_backfill(
                     pages_fetched = 1
                     snapshot = parse_thread_snapshot(first_page.html, url=first_page.final_url, tid=tid)
 
+                fetch_heartbeat.beat()
                 repo.update_stage(job.job_id, "diff_images", progress_current=3, progress_total=4)
                 selected_url_map = (
                     _resolve_selected_remote_urls(snapshot, target_urls, target_positions)
@@ -455,6 +490,27 @@ def handle_image_backfill(
                 repo.update_stage(job.job_id, "download_missing_images", progress_current=4, progress_total=6)
                 missing_snapshot = _snapshot_for_missing_images(snapshot, diff["missing_items_for_apply"])
                 worker_cancel_check, main_control_check = _build_download_control_checks(repo, job.job_id)
+                download_lease_seconds = max(
+                    fetch_lease_seconds,
+                    int(max(float(getattr(settings, "image_download_timeout_seconds", 45.0)) * 3.0, 120.0)),
+                )
+                download_heartbeat = HeartbeatPacer(
+                    repo=repo,
+                    job_id=job.job_id,
+                    worker_id=worker_id,
+                    lease_seconds=download_lease_seconds,
+                    min_interval_seconds=max(float(getattr(settings, "worker_heartbeat_seconds", 15)), 1.0),
+                )
+                download_heartbeat.beat(force=True)
+
+                def _download_control() -> None:
+                    download_heartbeat.beat()
+                    main_control_check()
+
+                def _download_progress() -> None:
+                    download_heartbeat.beat()
+                    main_control_check()
+
                 image_result = download_images_to_staging(
                     paths,
                     job.job_id,
@@ -473,7 +529,8 @@ def handle_image_backfill(
                     fetcher=getattr(client, "fetch_image", None),
                     target_urls={str(item["url"]) for item in diff["missing_items_for_apply"]},
                     cancel_check=worker_cancel_check,
-                    control_check=main_control_check,
+                    control_check=_download_control,
+                    on_progress=_download_progress,
                     stage_deadline_seconds=float(getattr(settings, "image_download_stage_timeout_seconds", 600.0)),
                 )
                 diagnostics = [_safe_image_diagnostic(item) for item in image_result.diagnostics]
@@ -490,12 +547,22 @@ def handle_image_backfill(
                     "attempted": len(diagnostics),
                     "succeeded": sum(1 for item in diagnostics if item.get("status") == "ok"),
                     "failed": sum(1 for item in diagnostics if item.get("status") != "ok"),
-                    "retryable_failed": sum(1 for item in diagnostics if item.get("status") != "ok" and item.get("retryable")),
+                    "retryable_failed": sum(
+                        1
+                        for item in diagnostics
+                        if item.get("status") != "ok"
+                        and (item.get("retryable") or item.get("error_type") == "waf_response")
+                    ),
                     "transports": sorted({str(item.get("transport")) for item in diagnostics}),
                     "error_type_counts": error_type_counts,
                     "http_status_counts": http_status_counts,
                     "stopped_reason": image_result.stopped_reason,
                 }
+                should_retry_image_download = _should_retry_image_download(image_result, diagnostics)
+                image_failure_code = _image_download_failure_code(diagnostics)
+                diagnostic_summary["failure_code"] = (
+                    image_failure_code if any(item.get("status") != "ok" for item in diagnostics) else None
+                )
                 artifacts["image_download_diagnostics"] = diagnostics
                 artifacts["image_download_summary"] = diagnostic_summary
                 has_failures = bool(
@@ -521,7 +588,7 @@ def handle_image_backfill(
                 emit(LOG, logging.INFO if not has_failures else logging.WARNING, "image.download.result",
                      "image download result", result="success" if not has_failures else "partial",
                      status="ok" if not has_failures else "error", job_id=job.job_id, tid=tid,
-                     error_code=None if not has_failures else "IMAGE_TARGET_NOT_DOWNLOADED",
+                     error_code=None if not has_failures else image_failure_code,
                      error_message=None if first_failure is None else str(first_failure.get("error_message") or first_failure.get("error_type") or "image download failed"),
                      retryable=bool(diagnostic_summary["retryable_failed"]), tags=["image", "download"], operation="image_backfill",
                      payload=event_payload)
@@ -637,10 +704,28 @@ def handle_image_backfill(
                     }
                 )
                 if strict_selected_scope and not resolved_selected_urls:
+                    if should_retry_image_download:
+                        retry_scheduled = repo.retry_later(
+                            job.job_id,
+                            error_code=image_failure_code,
+                            error_message=(
+                                "remote image request was blocked by WAF; retrying with a fresh remote attempt"
+                                if image_failure_code == "REMOTE_SOFT_BLOCK"
+                                else "selected image target download was transiently unsuccessful; retrying"
+                            ),
+                            artifacts=artifacts,
+                        )
+                        if retry_scheduled:
+                            shutil.rmtree(paths.staging_job_dir(job.job_id), ignore_errors=True)
+                            return
                     repo.fail(
                         job.job_id,
-                        "IMAGE_TARGET_NOT_DOWNLOADED",
-                        "selected image target was not downloaded or reconciled",
+                        image_failure_code,
+                        (
+                            "remote image request was blocked by WAF; selected target was not confirmed missing"
+                            if image_failure_code == "REMOTE_SOFT_BLOCK"
+                            else "selected image target was not downloaded or reconciled"
+                        ),
                         artifacts,
                     )
                 elif strict_selected_scope and set(selected_remote_urls or target_urls).issubset(resolved_selected_urls):

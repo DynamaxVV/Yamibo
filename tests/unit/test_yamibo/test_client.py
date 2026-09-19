@@ -336,3 +336,73 @@ def test_burst_throttle_has_long_pause():
     finally:
         _time.sleep = orig
     assert any(s > 1.5 for s in sleeps), f"Expected a long pause in {sleeps}"
+
+def test_browser_identity_matches_chrome131_impersonation():
+    client = YamiboClient(timeout=0.1, retries=0)
+    assert "Chrome/131." in client.headers["User-Agent"]
+    assert "Safari/605." not in client.headers["User-Agent"]
+    assert "Firefox/" not in client.headers["User-Agent"]
+    assert client.headers["sec-ch-ua-platform"] == '"macOS"'
+
+
+def test_fetch_validation_retries_soft_block_once_in_same_session(monkeypatch):
+    client = YamiboClient(timeout=0.1, retries=2)
+    calls = {"open": 0, "clear": 0}
+    url = "https://bbs.yamibo.com/forum.php?mod=viewthread&tid=13979"
+    responses = [
+        FetchResult(url=url, final_url=url, status_code=200, html="blocked"),
+        FetchResult(url=url, final_url=url, status_code=200, html="ok"),
+    ]
+
+    def fake_open(_url, *, referer=None):
+        index = calls["open"]
+        calls["open"] += 1
+        return responses[index]
+
+    def validator(result):
+        if result.html == "blocked":
+            raise RemoteFetchError(
+                f"soft block (CF challenge / CAPTCHA) detected for {result.final_url}",
+                details={"url": result.final_url, "status_code": 200, "retryable": False},
+            )
+
+    monkeypatch.setattr(client, "_open_html", fake_open)
+    monkeypatch.setattr(
+        client,
+        "_clear_challenge_cookies",
+        lambda: calls.__setitem__("clear", calls["clear"] + 1),
+    )
+    monkeypatch.setattr(client, "_retry_delay", lambda _attempt: 0.0)
+    monkeypatch.setattr(client, "_throttle", lambda: None)
+
+    result = client._fetch_with_validation(url, validator)
+    assert result.html == "ok"
+    assert calls == {"open": 2, "clear": 1}
+
+
+def test_fetch_validation_reports_local_soft_block_recovery_exhausted(monkeypatch):
+    client = YamiboClient(timeout=0.1, retries=2)
+    url = "https://bbs.yamibo.com/forum.php?mod=viewthread&tid=13979"
+
+    monkeypatch.setattr(
+        client,
+        "_open_html",
+        lambda _url, *, referer=None: FetchResult(
+            url=url, final_url=url, status_code=200, html="blocked"
+        ),
+    )
+    monkeypatch.setattr(client, "_clear_challenge_cookies", lambda: None)
+    monkeypatch.setattr(client, "_retry_delay", lambda _attempt: 0.0)
+    monkeypatch.setattr(client, "_throttle", lambda: None)
+
+    def validator(result):
+        raise RemoteFetchError(
+            f"soft block (CF challenge / CAPTCHA) detected for {result.final_url}",
+            details={"url": result.final_url, "status_code": 200, "retryable": False},
+        )
+
+    with pytest.raises(RemoteFetchError) as excinfo:
+        client._fetch_with_validation(url, validator)
+
+    assert excinfo.value.details["session_recovery_attempted"] is True
+    assert excinfo.value.details["attempts"] == 2

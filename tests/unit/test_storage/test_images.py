@@ -141,12 +141,15 @@ def test_download_with_retries_stops_at_retry_limit(tmp_path, monkeypatch):
 def test_image_validation_rejects_truncated_jpeg_after_size_header(tmp_path):
     truncated = tmp_path / "truncated.jpg"
     complete = tmp_path / "complete.jpg"
+    padded = tmp_path / "padded.jpg"
     jpeg = b"\xff\xd8\xff\xc0\x00\x0b\x08\x01\xe0\x02\x80\x03\x01\x11\x00" + b"\x00" * 80
     truncated.write_bytes(jpeg)
     complete.write_bytes(jpeg + b"\xff\xd9")
+    padded.write_bytes(jpeg + b"\xff\xd9" + b"\xca\x00\x31\xc5")
 
     assert _is_valid_image_file(truncated) is False
     assert _is_valid_image_file(complete) is True
+    assert _is_valid_image_file(padded) is True
 
 
 def test_yamibo_attachment_uses_authenticated_fetcher_and_records_diagnostics(tmp_path):
@@ -297,11 +300,61 @@ def test_authenticated_truncated_image_body_is_retryable_and_distinct(tmp_path):
         target_urls={url},
     )
 
-    assert calls == 3
+    # One bounded continuation request is attempted before the two remaining
+    # full-response retries.
+    assert calls == 4
     assert result.missing_urls == [url]
     assert result.diagnostics[0]["error_type"] == "truncated_image"
     assert result.diagnostics[0]["retryable"] is True
     assert result.diagnostics[0]["attempts"] == 3
+    assert result.diagnostics[0]["range_attempted"] is True
+
+
+def test_authenticated_truncated_image_body_recovers_with_range(tmp_path):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    paths = StoragePaths(data_dir, export_dir=tmp_path / "exports", novel_txt_export_dir=tmp_path / "novel_exports")
+    url = "https://bbs.yamibo.com/forum.php?mod=attachment&aid=1640438"
+    floor = replace(_make_snapshot().floors[0], image_urls=[url])
+    snapshot = replace(_make_snapshot(), floors=[floor], image_count=1)
+    full_jpeg = b"\xff\xd8\xff\xc0\x00\x0b\x08\x01\xe0\x02\x80\x03\x01\x11\x00" + b"\x00" * 80 + b"\xff\xd9"
+    prefix = full_jpeg[:-2]
+    calls = []
+
+    def fetcher(image_url, **kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return SimpleNamespace(
+                status_code=200,
+                final_url=image_url,
+                headers={"Content-Type": "image/jpeg"},
+                content=prefix,
+            )
+        return SimpleNamespace(
+            status_code=206,
+            final_url=image_url,
+            headers={
+                "Content-Type": "image/jpeg",
+                "Content-Range": f"bytes {len(prefix)}-{len(full_jpeg) - 1}/{len(full_jpeg)}",
+            },
+            content=full_jpeg[len(prefix):],
+        )
+
+    result = download_images_to_staging(
+        paths,
+        "job-authenticated-range-recovery",
+        snapshot,
+        timeout=1,
+        retries=0,
+        fetcher=fetcher,
+        target_urls={url},
+    )
+
+    assert result.missing_urls == []
+    assert result.relative_path_by_url[url] == "images/floor_001_01.jpg"
+    assert calls[1]["headers"] == {"Range": f"bytes={len(prefix)}-"}
+    assert result.diagnostics[0]["status"] == "ok"
+    assert result.diagnostics[0]["range_recovered"] is True
 
 
 def test_authenticated_waf_response_is_distinct_from_plain_html(tmp_path):
@@ -316,8 +369,9 @@ def test_authenticated_waf_response_is_distinct_from_plain_html(tmp_path):
         return SimpleNamespace(
             status_code=200,
             final_url=image_url,
-            headers={"Content-Type": "text/html"},
-            content=b"<html><title>Just a moment...</title></html>",
+            # The edge can mislabel an interception page as an image.
+            headers={"Content-Type": "image/jpeg", "Content-Length": "1"},
+            content=b"<html><title>Attention Required! | Cloudflare</title>Sorry, you have been blocked</html>",
         )
 
     result = download_images_to_staging(
@@ -332,6 +386,37 @@ def test_authenticated_waf_response_is_distinct_from_plain_html(tmp_path):
 
     assert result.diagnostics[0]["error_type"] == "waf_response"
     assert result.diagnostics[0]["retryable"] is False
+
+
+def test_authenticated_http_404_waf_response_is_retryable_not_missing(tmp_path):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    paths = StoragePaths(data_dir, export_dir=tmp_path / "exports", novel_txt_export_dir=tmp_path / "novel_exports")
+    url = "https://bbs.yamibo.com/data/attachment/album/200910/31/90813_1257006804MR3F.jpg"
+    floor = replace(_make_snapshot().floors[0], image_urls=[url])
+    snapshot = replace(_make_snapshot(), floors=[floor], image_count=1)
+
+    def fetcher(image_url, **kwargs):
+        return SimpleNamespace(
+            status_code=404,
+            final_url=image_url,
+            headers={"Content-Type": "text/html"},
+            content=b"<html><title>Attention Required! | Cloudflare</title>Sorry, you have been blocked</html>",
+        )
+
+    result = download_images_to_staging(
+        paths,
+        "job-http-404-waf",
+        snapshot,
+        timeout=1,
+        retries=0,
+        fetcher=fetcher,
+        target_urls={url},
+    )
+
+    assert result.diagnostics[0]["http_status"] == 404
+    assert result.diagnostics[0]["error_type"] == "waf_response"
+    assert result.diagnostics[0]["retryable"] is True
 
 
 def test_download_control_check_runs_on_main_thread_and_worker_cancel_is_separate(tmp_path, monkeypatch):

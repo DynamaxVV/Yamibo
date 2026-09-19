@@ -686,9 +686,16 @@ Web 控制台基于 HTTP，提供 JSON API 和页面路由。
 }
 ```
 
-相同 `tid + asset_id + remote_url` 已存在活动 selected Job 时，返回同一个 `job_id`，并令 `created=false`。调用方应只轮询该 Job；所选图片恢复后 Job 可以是 `succeeded`，即使帖子因其他缺图仍保持 `partial`。
+相同 `tid + target_asset_id` 已存在活动 selected Job 时，返回同一个 `job_id`，并令 `created=false`。去重使用稳定资产身份，不把可能轮换的 `remote_url` 纳入重复判断；调用方应只轮询该 Job。所选图片恢复后 Job 可以是 `succeeded`，即使帖子因其他缺图仍保持 `partial`。
 
 站内 `bbs.yamibo.com/forum.php?mod=attachment...` 图片会复用帖子抓取使用的 `curl_cffi` 会话、Cookie、代理和浏览器请求头。下载结果以 `image.download.result` / `image.download.summary` 写入结构化日志；selected 回填还会把脱敏后的逐图诊断写入 Job artifacts 和 `/api/jobs/{job_id}/events`。诊断字段包含稳定附件身份、HTTP 状态、内容类型、响应字节数、尝试次数、耗时、传输方式、错误分类和可重试性，不包含 Cookie、Authorization 或签名查询串。
+
+图片诊断与任务分类：
+
+- `truncated_image`：响应看起来是图片，但内容校验发现传输不完整；下载器会先进行一次有边界的 `Range: bytes=<已收到长度>-` 续传，再使用任务重试预算。JPEG 结束标记后的少量服务端尾部填充不再被误判为截断。
+- `waf_response`：响应正文命中 Cloudflare/Baidu WAF 等拦截页，包括 `Sorry, you have been blocked`；即使 HTTP 状态是 200、403 或 404，也不能据此判定附件不存在。selected `image_backfill` 会将任务错误码归类为 `REMOTE_SOFT_BLOCK`。
+- `html_response`：返回普通 HTML 而非图片；通常是页面或资源类型错误，不归入资源不存在。
+- `http_error`：没有识别出 WAF 正文时的 HTTP 错误。HTTP 404 只有在排除 WAF/边缘拦截后，才可作为资源失效的证据。
 
 ```text
 /api/logs?job_id=<job_id>&event_type=image.download.result&limit=100

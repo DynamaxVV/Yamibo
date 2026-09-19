@@ -55,6 +55,14 @@ class _ImageContentError(ValueError):
 
 
 @dataclass(frozen=True)
+class _FetchedImageResponse:
+    status_code: int
+    final_url: str
+    headers: Mapping[str, Any]
+    body: bytes
+
+
+@dataclass(frozen=True)
 class ImageDownloadResult:
     downloaded_relpaths: dict[int, list[str]] = field(default_factory=dict)
     non_export_relpaths: dict[int, list[str]] = field(default_factory=dict)
@@ -559,9 +567,248 @@ def _raise_invalid_image_body(
     content_type: str | None = None,
     content_length: Any = None,
 ) -> NoReturn:
+    error_type = _classify_invalid_image_body(body, content_type=content_type)
+    # A WAF/HTML page can also have a misleading or incomplete length header.
+    # Content classification must win over transport-length heuristics.
+    if error_type in {"waf_response", "html_response"}:
+        raise _ImageContentError(error_type)
     if _content_length_mismatch(body, content_length):
         raise _ImageContentError("truncated_image")
-    raise _ImageContentError(_classify_invalid_image_body(body, content_type=content_type))
+    raise _ImageContentError(error_type)
+
+
+def _raise_image_http_error(status: int, *, body: bytes = b"") -> NoReturn:
+    """Keep an HTML/WAF body from being mistaken for a missing image."""
+    if body and is_soft_block_page(body.decode("utf-8", errors="ignore")):
+        raise _ImageContentError("waf_response", retryable=True)
+    raise _ImageHTTPError(status)
+
+
+def _call_image_fetcher(
+    fetcher: ImageFetcher,
+    image_url: str,
+    *,
+    referer: str | None,
+    timeout: float,
+    request_headers: Mapping[str, str] | None = None,
+) -> Any:
+    """Call an authenticated image fetcher, preserving compatibility with old adapters.
+
+    The normal request deliberately keeps the existing fetcher contract.  A
+    Range header is only added for the bounded continuation request below;
+    older test/custom fetchers that do not accept ``headers`` can still serve
+    the initial request and simply skip continuation recovery.
+    """
+    kwargs: dict[str, Any] = {"referer": referer, "timeout": timeout}
+    if request_headers:
+        kwargs["headers"] = dict(request_headers)
+        try:
+            return fetcher(image_url, **kwargs)
+        except TypeError as exc:
+            if "unexpected keyword argument" not in str(exc) or "headers" not in str(exc):
+                raise
+            return fetcher(image_url, referer=referer, timeout=timeout)
+    return fetcher(image_url, **kwargs)
+
+
+def _response_from_fetcher(response: Any, *, image_url: str) -> _FetchedImageResponse:
+    return _FetchedImageResponse(
+        status_code=int(getattr(response, "status_code", 200)),
+        final_url=str(getattr(response, "final_url", image_url)),
+        headers=getattr(response, "headers", {}) or {},
+        body=bytes(getattr(response, "content", b"")),
+    )
+
+
+def _record_response_metadata(
+    metadata: dict[str, Any] | None,
+    response: _FetchedImageResponse,
+) -> None:
+    if metadata is None:
+        return
+    metadata.update(
+        status_code=response.status_code,
+        final_url=response.final_url,
+        content_type=_header_value(response.headers, "Content-Type"),
+        content_length=_header_value(response.headers, "Content-Length"),
+        content_range=_header_value(response.headers, "Content-Range"),
+        bytes=len(response.body),
+    )
+
+
+def _parse_content_range(value: str | None) -> tuple[int, int, int | None] | None:
+    if not value:
+        return None
+    match = re.fullmatch(r"\s*bytes\s+(\d+)-(\d+)/(\d+|\*)\s*", value, flags=re.IGNORECASE)
+    if match is None:
+        return None
+    start = int(match.group(1))
+    end = int(match.group(2))
+    total = None if match.group(3) == "*" else int(match.group(3))
+    if end < start or (total is not None and end >= total):
+        return None
+    return start, end, total
+
+
+def _resume_truncated_authenticated_image(
+    image_url: str,
+    *,
+    body: bytes,
+    fetcher: ImageFetcher | None,
+    referer: str | None,
+    timeout: float,
+    metadata: dict[str, Any] | None,
+) -> _FetchedImageResponse | None:
+    """Try one HTTP Range continuation after a 200 image body is incomplete.
+
+    Some attachment edges close a response after a valid image prefix while
+    still returning HTTP 200.  A fresh full GET repeats the same failure, so a
+    single ``bytes=<received>-`` continuation is a safer recovery path.  If
+    the edge ignores Range or does not advertise a valid Content-Range, the
+    caller keeps the original failure classification.
+    """
+    if fetcher is None or not body:
+        return None
+    # Keep continuation bounded across the outer retry loop.  If the edge
+    # ignores Range, repeating that extra request for every full retry only
+    # adds load without improving recovery odds.
+    if metadata is not None and metadata.get("range_attempted"):
+        return None
+    if metadata is not None:
+        metadata["range_attempted"] = True
+    response = _response_from_fetcher(
+        _call_image_fetcher(
+            fetcher,
+            image_url,
+            referer=referer,
+            timeout=timeout,
+            request_headers={"Range": f"bytes={len(body)}-"},
+        ),
+        image_url=image_url,
+    )
+    if response.status_code >= 400:
+        # A second response may reveal that the remote edge is now blocking
+        # the session.  Preserve that stronger classification; ordinary
+        # unsupported-range errors leave the original truncation evidence.
+        if is_soft_block_page(response.body.decode("utf-8", errors="ignore")):
+            _raise_image_http_error(response.status_code, body=response.body)
+        return None
+    if response.status_code == 206:
+        if is_soft_block_page(response.body.decode("utf-8", errors="ignore")):
+            raise _ImageContentError("waf_response")
+        content_range = _parse_content_range(_header_value(response.headers, "Content-Range"))
+        if (
+            content_range is None
+            or content_range[0] != len(body)
+            or content_range[1] - content_range[0] + 1 != len(response.body)
+        ):
+            return None
+        combined = _FetchedImageResponse(
+            status_code=200,
+            final_url=response.final_url,
+            headers=response.headers,
+            body=body + response.body,
+        )
+        _record_response_metadata(metadata, combined)
+        if metadata is not None:
+            metadata["range_recovered"] = True
+        return combined
+
+    if response.status_code == 200:
+        # A server that ignores Range may still return the complete object.
+        # The caller validates it before accepting the recovery.
+        response_error_type = _classify_invalid_image_body(
+            response.body,
+            content_type=_header_value(response.headers, "Content-Type"),
+        )
+        if response_error_type == "waf_response":
+            raise _ImageContentError("waf_response")
+        if response_error_type == "html_response":
+            return None
+        _record_response_metadata(metadata, response)
+        return response
+    return None
+
+
+def _write_and_validate_authenticated_image(
+    image_url: str,
+    *,
+    part_target: Path,
+    response: _FetchedImageResponse,
+    fetcher: ImageFetcher | None,
+    referer: str | None,
+    timeout: float,
+    metadata: dict[str, Any] | None,
+) -> _FetchedImageResponse:
+    """Write and validate a response, with one bounded Range recovery."""
+    part_target.write_bytes(response.body)
+    content_type = _header_value(response.headers, "Content-Type")
+    content_length = _header_value(response.headers, "Content-Length")
+    length_mismatch = _content_length_mismatch(response.body, content_length)
+    try:
+        if not length_mismatch:
+            _require_valid_image_file(part_target)
+            return response
+        # A length mismatch is only a transport signal for an image-like
+        # response.  WAF/HTML classification must still take precedence.
+        if _classify_invalid_image_body(response.body, content_type=content_type) != "truncated_image":
+            _raise_invalid_image_body(
+                response.body,
+                content_type=content_type,
+                content_length=content_length,
+            )
+        raise _ImageContentError("truncated_image")
+    except ValueError:
+        error_type = _classify_invalid_image_body(
+            response.body,
+            content_type=content_type,
+        )
+        if error_type != "truncated_image":
+            _raise_invalid_image_body(
+                response.body,
+                content_type=content_type,
+                content_length=content_length,
+            )
+        recovered = _resume_truncated_authenticated_image(
+            image_url,
+            body=response.body,
+            fetcher=fetcher,
+            referer=referer,
+            timeout=timeout,
+            metadata=metadata,
+        )
+        if recovered is None:
+            _raise_invalid_image_body(
+                response.body,
+                content_type=content_type,
+                content_length=content_length,
+            )
+        recovered_content_range = _header_value(recovered.headers, "Content-Range")
+        if (
+            recovered.status_code == 200
+            and not recovered_content_range
+            and _content_length_mismatch(
+                recovered.body,
+                _header_value(recovered.headers, "Content-Length"),
+            )
+        ):
+            _raise_invalid_image_body(
+                recovered.body,
+                content_type=_header_value(recovered.headers, "Content-Type"),
+                content_length=_header_value(recovered.headers, "Content-Length"),
+            )
+        part_target.write_bytes(recovered.body)
+        try:
+            _require_valid_image_file(part_target)
+        except ValueError:
+            _raise_invalid_image_body(
+                recovered.body,
+                content_type=_header_value(recovered.headers, "Content-Type"),
+                # Content-Length on a 206 response describes only the
+                # continuation, not the combined object.
+                content_length=None,
+            )
+        return recovered
 
 
 def _fetch_to_path(
@@ -601,34 +848,35 @@ def _fetch_to_path(
             if referer:
                 request_headers.setdefault("Referer", referer)
             if fetcher is not None:
-                response = fetcher(image_url, referer=referer, timeout=timeout)
-                status = int(getattr(response, "status_code", 200))
-                body = bytes(getattr(response, "content", b""))
-                first_bytes = body[:64]
-                response_headers = getattr(response, "headers", {})
-                if metadata is not None:
-                    metadata.update(
-                        status_code=status,
-                        final_url=getattr(response, "final_url", image_url),
-                        content_type=_header_value(response_headers, "Content-Type"),
-                        content_length=_header_value(response_headers, "Content-Length"),
-                        content_range=_header_value(response_headers, "Content-Range"),
-                        bytes=len(body),
-                    )
-                if status >= 400:
-                    raise _ImageHTTPError(status)
-                suffix = _suffix_from_response_headers(response_headers, image_url=image_url, final_url=getattr(response, "final_url", image_url), first_bytes=first_bytes)
+                response = _response_from_fetcher(
+                    _call_image_fetcher(
+                        fetcher,
+                        image_url,
+                        referer=referer,
+                        timeout=timeout,
+                    ),
+                    image_url=image_url,
+                )
+                _record_response_metadata(metadata, response)
+                if response.status_code >= 400:
+                    _raise_image_http_error(response.status_code, body=response.body)
+                suffix = _suffix_from_response_headers(
+                    response.headers,
+                    image_url=image_url,
+                    final_url=response.final_url,
+                    first_bytes=response.body[:64],
+                )
                 target = staging_dir / f"{stem}{suffix}"
                 part_target = target.with_name(target.name + ".part")
-                part_target.write_bytes(body)
-                try:
-                    _require_valid_image_file(part_target)
-                except ValueError:
-                    _raise_invalid_image_body(
-                        body,
-                        content_type=_header_value(response_headers, "Content-Type"),
-                        content_length=_header_value(response_headers, "Content-Length"),
-                    )
+                response = _write_and_validate_authenticated_image(
+                    image_url,
+                    part_target=part_target,
+                    response=response,
+                    fetcher=fetcher,
+                    referer=referer,
+                    timeout=timeout,
+                    metadata=metadata,
+                )
                 os.replace(part_target, target)
                 return target
             request = urllib.request.Request(image_url, headers=request_headers)
@@ -647,7 +895,7 @@ def _fetch_to_path(
                     )
                 if status >= 400:
                     LOG.warning("Image download returned HTTP %d for %s", status, image_url)
-                    raise _ImageHTTPError(status)
+                    _raise_image_http_error(status)
                 first_bytes = response.read(64)
                 if cancel_check is not None:
                     cancel_check()
@@ -725,22 +973,27 @@ def _fetch_to_explicit_target(
             if referer:
                 request_headers.setdefault("Referer", referer)
             if fetcher is not None:
-                response = fetcher(image_url, referer=referer, timeout=timeout)
-                status = int(getattr(response, "status_code", 200))
-                response_headers = getattr(response, "headers", {})
-                body = bytes(getattr(response, "content", b""))
-                if metadata is not None:
-                    metadata.update(
-                        status_code=status,
-                        final_url=getattr(response, "final_url", image_url),
-                        content_type=_header_value(response_headers, "Content-Type"),
-                        content_length=_header_value(response_headers, "Content-Length"),
-                        content_range=_header_value(response_headers, "Content-Range"),
-                        bytes=len(body),
-                    )
-                if status >= 400:
-                    raise _ImageHTTPError(status)
-                part_target.write_bytes(body)
+                response = _response_from_fetcher(
+                    _call_image_fetcher(
+                        fetcher,
+                        image_url,
+                        referer=referer,
+                        timeout=timeout,
+                    ),
+                    image_url=image_url,
+                )
+                _record_response_metadata(metadata, response)
+                if response.status_code >= 400:
+                    _raise_image_http_error(response.status_code, body=response.body)
+                _write_and_validate_authenticated_image(
+                    image_url,
+                    part_target=part_target,
+                    response=response,
+                    fetcher=fetcher,
+                    referer=referer,
+                    timeout=timeout,
+                    metadata=metadata,
+                )
             else:
                 request = urllib.request.Request(image_url, headers=request_headers)
                 with opener.open(request, timeout=timeout) as response, part_target.open("wb") as fp:
@@ -757,7 +1010,7 @@ def _fetch_to_explicit_target(
                         )
                     if status >= 400:
                         LOG.warning("Image download returned HTTP %d for %s", status, image_url)
-                        raise _ImageHTTPError(status)
+                        _raise_image_http_error(status)
                     while True:
                         if cancel_check is not None:
                             cancel_check()
@@ -873,7 +1126,7 @@ def _diagnostic(
         "error_message": None if exc is None else _sanitize_error_message(str(exc)),
         "retryable": retryable,
     }
-    for key in ("content_length", "content_range"):
+    for key in ("content_length", "content_range", "range_attempted", "range_recovered"):
         if info.get(key) is not None:
             result[key] = info[key]
     return result
@@ -1109,12 +1362,12 @@ def _is_valid_image_file(path: Path) -> bool:
             return False
         with path.open("rb") as fp:
             header = fp.read(64)
-            fp.seek(max(file_size - 16, 0))
-            tail = fp.read(16)
+            fp.seek(max(file_size - 64, 0))
+            tail = fp.read(64)
         suffix = _suffix_from_bytes(header)
         if suffix is None:
             return False
-        if suffix == ".jpg" and not tail.endswith(b"\xff\xd9"):
+        if suffix == ".jpg" and not _jpeg_has_end_marker_near_tail(tail):
             return False
         if suffix == ".png" and not tail.endswith(b"\x00\x00\x00\x00IEND\xaeB`\x82"):
             return False
@@ -1128,6 +1381,19 @@ def _is_valid_image_file(path: Path) -> bool:
         return bool(size and size[0] > 0 and size[1] > 0)
     except (OSError, ValueError):
         return False
+
+
+def _jpeg_has_end_marker_near_tail(tail: bytes, *, max_trailing_bytes: int = 64) -> bool:
+    """Accept JPEG padding emitted by some attachment edges after EOI.
+
+    A JPEG decoder stops at EOI, and the live attachment service has been
+    observed to append a few bytes after that marker while still returning a
+    decodable image.  Requiring EOI to be the final two bytes turns those
+    valid responses into false ``truncated_image`` failures.  A bounded tail
+    allowance keeps genuinely incomplete bodies (which have no EOI) invalid.
+    """
+    marker = tail.rfind(b"\xff\xd9")
+    return marker >= 0 and len(tail) - marker - 2 <= max_trailing_bytes
 
 
 def _require_valid_image_file(path: Path) -> None:

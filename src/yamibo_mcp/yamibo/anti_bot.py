@@ -210,6 +210,7 @@ _SOFT_BLOCK_SIGNATURES = [
     "cf-browser-verification",
     "checking your browser",
     "attention required",
+    "sorry, you have been blocked",
     "captcha",
     "challenge-platform",
     # Baidu WAF's JavaScript challenge currently returned by bbs.yamibo.com.

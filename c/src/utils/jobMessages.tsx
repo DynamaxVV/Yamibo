@@ -19,6 +19,7 @@ export type JobFailureKind =
   | 'remote_blocked'
   | 'remote_fetch'
   | 'unexpected_page'
+  | 'image_download_failed'
   | 'validation'
   | 'other'
 
@@ -40,6 +41,7 @@ const JOB_FAILURE_KIND_LABELS: Record<'zh' | 'en', Record<JobFailureKind, string
     remote_blocked: '反爬拦截',
     remote_fetch: '远程抓取失败',
     unexpected_page: '页面不符合预期',
+    image_download_failed: '图片下载失败',
     validation: '校验失败',
     other: '其他失败',
   },
@@ -60,6 +62,7 @@ const JOB_FAILURE_KIND_LABELS: Record<'zh' | 'en', Record<JobFailureKind, string
     remote_blocked: 'Blocked',
     remote_fetch: 'Remote fetch failed',
     unexpected_page: 'Unexpected page',
+    image_download_failed: 'Image download failed',
     validation: 'Validation failed',
     other: 'Other failure',
   },
@@ -140,6 +143,7 @@ export function getJobFailureKind(job: JobFailureLike): JobFailureKind | null {
   if (includesAny(errorCode, ['remote_timeout'])) return 'remote_timeout'
   if (includesAny(errorCode, ['remote_connection_error'])) return 'remote_connection'
   if (includesAny(errorCode, ['remote_soft_block'])) return 'remote_blocked'
+  if (includesAny(errorCode, ['image_target_not_downloaded'])) return 'image_download_failed'
   // 远程抓取兜底
   if (includesAny(errorCode, ['remotefetcherror', 'remote_fetch_failed']) || includesAny(combined, ['failed to read', 'remote fetch'])) return 'remote_fetch'
   if (includesAny(errorCode, ['unexpectedpageerror', 'unexpected_remote_page']) || includesAny(combined, ['unexpected page', 'expected thread detail page'])) return 'unexpected_page'

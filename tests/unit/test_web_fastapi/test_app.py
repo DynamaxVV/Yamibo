@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from unittest.mock import patch
 
 import pytest
@@ -175,6 +177,21 @@ def test_deleted_prompt_in_remote_attempt_is_classified_as_thread_deleted(client
 
     body = client.get(f"/api/jobs/{job.job_id}").json()
     assert body["failure_kind"] == "thread_deleted"
+
+
+def test_image_target_download_failure_has_a_dedicated_failure_kind(client, test_settings):
+    from yamibo_mcp.db.connection import connect
+
+    conn = connect(test_settings.db_path)
+    try:
+        repo = JobsRepository(conn)
+        job = repo.create("image_backfill", tid=42)
+        repo.fail(job.job_id, "IMAGE_TARGET_NOT_DOWNLOADED", "selected image target was not downloaded")
+    finally:
+        conn.close()
+
+    body = client.get(f"/api/jobs/{job.job_id}").json()
+    assert body["failure_kind"] == "image_download_failed"
 
 
 def test_jobs_list_filters_other_failure_kind(client, test_settings):
@@ -446,6 +463,84 @@ def test_thread_image_retry_matches_rotated_attachment_signature(client, test_se
             "image_index": 1,
             "url": old_url,
         }]
+    finally:
+        conn.close()
+
+
+def test_thread_image_retry_dedupes_same_asset_when_url_rotated(client, test_settings):
+    from yamibo_mcp.db.connection import connect
+
+    tid = 575091
+    asset_id = "asset-rotated-dedupe-575091"
+    old_url = "https://bbs.yamibo.com/data/attachment/forum/2026/old-target.jpg"
+    current_url = "https://bbs.yamibo.com/data/attachment/forum/2026/current-target.jpg"
+    conn = connect(test_settings.db_path)
+    try:
+        conn.execute("INSERT INTO threads (tid, raw_title, display_title) VALUES (?, ?, ?)", (tid, "raw", "display"))
+        conn.execute(
+            "INSERT INTO assets (asset_id, tid, pid, asset_type, remote_url, status) VALUES (?, ?, ?, ?, ?, ?)",
+            (asset_id, tid, tid * 10 + 1, "attachment", current_url, "missing"),
+        )
+        existing = JobsRepository(conn).create(
+            "image_backfill",
+            tid=tid,
+            payload={
+                "tid": tid,
+                "scope": "selected",
+                "target_asset_id": asset_id,
+                "target_urls": [old_url],
+            },
+        )
+    finally:
+        conn.close()
+
+    response = client.post(f"/api/threads/{tid}/images/{asset_id}/retry")
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": True,
+        "job_id": existing.job_id,
+        "status": "queued",
+        "created": False,
+    }
+
+
+def test_thread_image_retry_serializes_concurrent_requests(client, test_settings):
+    from yamibo_mcp.db.connection import connect
+
+    tid = 575092
+    asset_id = "asset-concurrent-dedupe-575092"
+    remote_url = "https://bbs.yamibo.com/data/attachment/forum/2026/concurrent-target.jpg"
+    conn = connect(test_settings.db_path)
+    try:
+        conn.execute("INSERT INTO threads (tid, raw_title, display_title) VALUES (?, ?, ?)", (tid, "raw", "display"))
+        conn.execute(
+            "INSERT INTO assets (asset_id, tid, pid, asset_type, remote_url, status) VALUES (?, ?, ?, ?, ?, ?)",
+            (asset_id, tid, tid * 10 + 1, "attachment", remote_url, "missing"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    barrier = Barrier(2)
+
+    def submit_retry():
+        barrier.wait()
+        return client.post(f"/api/threads/{tid}/images/{asset_id}/retry")
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        responses = list(executor.map(lambda _index: submit_retry(), range(2)))
+
+    assert [response.status_code for response in responses] == [200, 200]
+    bodies = [response.json() for response in responses]
+    assert sorted(body["created"] for body in bodies) == [False, True]
+    assert len({body["job_id"] for body in bodies}) == 1
+
+    conn = connect(test_settings.db_path)
+    try:
+        assert conn.execute(
+            "SELECT COUNT(*) AS n FROM jobs WHERE job_type = 'image_backfill' AND tid = ?",
+            (tid,),
+        ).fetchone()["n"] == 1
     finally:
         conn.close()
 

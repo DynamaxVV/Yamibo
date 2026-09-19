@@ -698,6 +698,33 @@ class TestMarkExpiredRunningInterrupted:
         assert count == 1
         updated = repo.get(job.job_id)
         assert updated.status == JobStatus.INTERRUPTED
+        assert updated.retry_count == 1
+        assert updated.error_code == "LEASE_LOST"
+        assert updated.worker_id is None
+        assert updated.lease_until is None
+
+    def test_marks_expired_job_failed_when_retry_budget_is_exhausted(self, db):
+        repo = JobsRepository(db)
+        events = JobEventsRepository(db)
+        job = repo.create("image_backfill", tid=42, max_retries=3)
+        repo.acquire(job.job_id, "w", 300)
+        db.execute(
+            "UPDATE jobs SET retry_count = max_retries, lease_until = '2000-01-01T00:00:00' WHERE job_id = ?",
+            (job.job_id,),
+        )
+        db.commit()
+
+        assert repo.mark_expired_running_interrupted() == 1
+
+        updated = repo.get(job.job_id)
+        assert updated.status == JobStatus.FAILED
+        assert updated.retry_count == updated.max_retries == 3
+        assert updated.error_code == "LEASE_LOST"
+        assert updated.finished_at is not None
+        assert repo.acquire_next("another-worker", 300) is None
+        failed = [event for event in events.list(job_id=job.job_id) if event.event_type == "job.failed"]
+        assert len(failed) == 1
+        assert failed[0].payload["error_code"] == "LEASE_LOST"
 
     def test_does_not_mark_non_expired_jobs(self, db):
         # Arrange
@@ -905,3 +932,61 @@ def test_floor_recovery_rejects_unrelated_jobs(db, field, value):
     with pytest.raises(ValueError):
         repo.resync_failed_floor_job(source.job_id)
     assert repo.get(source.job_id)
+
+def test_remote_attempt_new_start_clears_stale_terminal_fields_and_keeps_history(db):
+    repo = JobsRepository(db)
+    job = repo.create("sync_thread", tid=13979)
+
+    repo.record_remote_attempt(job.job_id, {
+        "source": "thread_detail",
+        "started_at": "2026-09-18T10:00:00+00:00",
+        "node": "node-a",
+        "account_id": "acct-a",
+    })
+    repo.record_remote_attempt(job.job_id, {
+        "finished_at": "2026-09-18T10:00:02+00:00",
+        "outcome": "soft_block",
+        "status_code": 200,
+        "retry_delay_seconds": 10,
+    })
+    repo.record_remote_attempt(job.job_id, {
+        "source": "thread_detail",
+        "started_at": "2026-09-18T10:10:00+00:00",
+        "node": "node-b",
+        "outcome": "pending",
+    })
+
+    attempt = repo.get(job.job_id).artifacts["remote_attempt"]
+    assert attempt["started_at"] == "2026-09-18T10:10:00+00:00"
+    assert attempt["node"] == "node-b"
+    assert attempt["outcome"] == "pending"
+    assert "finished_at" not in attempt
+    assert "status_code" not in attempt
+    assert "retry_delay_seconds" not in attempt
+    assert attempt["nodes_tried"] == ["node-a", "node-b"]
+    assert attempt["account_ids_tried"] == ["acct-a"]
+    assert attempt["history"][-1]["started_at"] == "2026-09-18T10:00:00+00:00"
+    assert attempt["history"][-1]["finished_at"] == "2026-09-18T10:00:02+00:00"
+    assert attempt["history"][-1]["outcome"] == "soft_block"
+
+
+def test_remote_attempt_history_is_bounded(db):
+    repo = JobsRepository(db)
+    job = repo.create("sync_thread", tid=13980)
+
+    for index in range(25):
+        repo.record_remote_attempt(job.job_id, {
+            "source": "thread_detail",
+            "started_at": f"2026-09-18T10:{index:02d}:00+00:00",
+            "node": f"node-{index}",
+            "outcome": "pending",
+        })
+        repo.record_remote_attempt(job.job_id, {
+            "finished_at": f"2026-09-18T10:{index:02d}:01+00:00",
+            "outcome": "soft_block",
+        })
+
+    attempt = repo.get(job.job_id).artifacts["remote_attempt"]
+    assert len(attempt["history"]) == 20
+    assert attempt["history"][0]["node"] == "node-4"
+    assert attempt["history"][-1]["node"] == "node-23"

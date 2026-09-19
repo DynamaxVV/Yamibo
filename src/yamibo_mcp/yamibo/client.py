@@ -8,7 +8,7 @@ import re
 import time
 import threading
 import urllib.parse
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from http.cookiejar import Cookie, CookieJar
 from pathlib import Path
@@ -372,6 +372,7 @@ class YamiboClient:
         *,
         referer: str | None = None,
         timeout: float | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> ImageFetchResponse:
         """Fetch an image through this client's current session.
 
@@ -382,6 +383,8 @@ class YamiboClient:
         resulting cookies.
         """
         request_headers = self._image_request_headers(referer=referer)
+        if headers:
+            request_headers.update(headers)
         request_timeout = self.timeout if timeout is None else timeout
         with self._session_lock:
             try:
@@ -397,6 +400,8 @@ class YamiboClient:
                 # _open_html solves nox/acw challenges and persists cookies.
                 self._open_html(url, referer=referer)
                 request_headers = self._image_request_headers(referer=referer)
+                if headers:
+                    request_headers.update(headers)
                 response = self._session.get(url, headers=request_headers, timeout=request_timeout)
                 body = bytes(response.content)
             self._save_cookies()

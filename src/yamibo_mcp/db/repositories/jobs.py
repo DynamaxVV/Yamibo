@@ -1264,44 +1264,108 @@ class JobsRepository:
         return row is not None and row["status"] == JobStatus.PAUSED.value
 
     def mark_expired_running_interrupted(self) -> int:
+        """Recover expired running jobs without allowing stale-job loops.
+
+        A handler that is blocked in I/O can outlive its lease.  Recovery must
+        consume the same retry budget as the normal exception path; otherwise
+        a job at ``retry_count == max_retries`` is repeatedly interrupted and
+        immediately acquired again forever.
+        """
         now = utc_now_iso()
-        expired_job_ids = [
-            row["job_id"]
-            for row in self.conn.execute(
+
+        def _recover_expired() -> list[dict[str, Any]]:
+            rows = self.conn.execute(
                 """
-                SELECT job_id FROM jobs
+                SELECT job_id, stage, retry_count, max_retries, error_code,
+                       error_message
+                FROM jobs
                 WHERE status = ? AND lease_until IS NOT NULL AND lease_until < ?
                 """,
                 (JobStatus.RUNNING.value, now),
             ).fetchall()
-        ]
-        # Worker 重启时先把超时的 running 标成 interrupted，后续再重新抢占执行。
-        def _mark_interrupted() -> sqlite3.Cursor:
-            cur = self.conn.execute(
-                """
-                UPDATE jobs
-                SET status = ?, lease_token = NULL, updated_at = ?
-                WHERE status = ? AND lease_until IS NOT NULL AND lease_until < ?
-                """,
-                (
-                    JobStatus.INTERRUPTED.value,
-                    now,
-                    JobStatus.RUNNING.value,
-                    now,
-                ),
-            )
+            recovered: list[dict[str, Any]] = []
+            for row in rows:
+                retry_count = int(row["retry_count"] or 0)
+                max_retries = int(row["max_retries"] or 0)
+                retry_budget_exhausted = retry_count >= max_retries
+                next_retry_count = retry_count if retry_budget_exhausted else retry_count + 1
+                next_status = (
+                    JobStatus.FAILED.value
+                    if retry_budget_exhausted
+                    else JobStatus.INTERRUPTED.value
+                )
+                error_message = (
+                    "job lease expired while handler was running; retry budget exhausted"
+                    if retry_budget_exhausted
+                    else "job lease expired while handler was running; scheduled for recovery"
+                )
+                previous_error_code = row["error_code"]
+                previous_error_message = row["error_message"]
+                cur = self.conn.execute(
+                    """
+                    UPDATE jobs
+                    SET status = ?, retry_count = ?, error_code = ?, error_message = ?,
+                        worker_id = NULL, heartbeat_at = NULL, lease_until = NULL,
+                        lease_token = NULL, updated_at = ?,
+                        finished_at = ?
+                    WHERE job_id = ? AND status = ?
+                      AND lease_until IS NOT NULL AND lease_until < ?
+                    """,
+                    (
+                        next_status,
+                        next_retry_count,
+                        "LEASE_LOST",
+                        error_message,
+                        now,
+                        now if next_status == JobStatus.FAILED.value else None,
+                        row["job_id"],
+                        JobStatus.RUNNING.value,
+                        now,
+                    ),
+                )
+                if cur.rowcount == 1:
+                    recovered.append(
+                        {
+                            "job_id": row["job_id"],
+                            "stage": row["stage"],
+                            "status": next_status,
+                            "retry_count": next_retry_count,
+                            "max_retries": max_retries,
+                            "previous_error_code": previous_error_code,
+                            "previous_error_message": previous_error_message,
+                            "error_message": error_message,
+                        }
+                    )
             self.conn.commit()
-            return cur
+            return recovered
 
-        cur = self._with_locked_retry(_mark_interrupted)
-        for job_id in expired_job_ids:
-            LOG.info("mark_expired_running_interrupted job_id=%s", job_id)
+        recovered = self._with_locked_retry(_recover_expired)
+        for item in recovered:
+            job_id = str(item["job_id"])
+            status = str(item["status"])
+            event_type = "job.failed" if status == JobStatus.FAILED.value else "job.interrupted"
+            LOG.info(
+                "mark_expired_running_interrupted job_id=%s status=%s retry_count=%s/%s",
+                job_id,
+                status,
+                item["retry_count"],
+                item["max_retries"],
+            )
             self._append_event(
                 job_id,
-                "job.interrupted",
-                status=JobStatus.INTERRUPTED.value,
+                event_type,
+                status=status,
+                stage=item["stage"],
+                payload={
+                    "error_code": "LEASE_LOST",
+                    "error_message": item["error_message"],
+                    "retry_count": item["retry_count"],
+                    "max_retries": item["max_retries"],
+                    "previous_error_code": item["previous_error_code"],
+                    "previous_error_message": item["previous_error_message"],
+                },
             )
-        return cur.rowcount
+        return len(recovered)
 
     def count(self) -> int:
         row = self.conn.execute("SELECT COUNT(*) AS c FROM jobs").fetchone()

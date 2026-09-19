@@ -9,7 +9,7 @@ import { formatJobFailureKind, getJobFailureKind, type JobFailureKind } from '..
 import { useTableLayout } from '../components/TableLayoutEditor'
 
 const STATUSES = [null, 'queued', 'running', 'retrying', 'paused', 'succeeded', 'partial', 'failed', 'interrupted'] as const
-const FAILURE_KINDS: Array<JobFailureKind | null> = [null, 'forum_closed', 'thread_deleted', 'thread_permission', 'thread_missing', 'login_required', 'maintenance', 'remote_http_404', 'remote_http_error', 'remote_timeout', 'remote_connection', 'remote_blocked', 'remote_fetch', 'unexpected_page', 'empty_content', 'local_missing', 'validation', 'cancelled', 'other']
+const FAILURE_KINDS: Array<JobFailureKind | null> = [null, 'forum_closed', 'thread_deleted', 'thread_permission', 'thread_missing', 'login_required', 'maintenance', 'remote_http_404', 'remote_http_error', 'remote_timeout', 'remote_connection', 'remote_blocked', 'remote_fetch', 'unexpected_page', 'image_download_failed', 'empty_content', 'local_missing', 'validation', 'cancelled', 'other']
 const PAGE_SIZE_OPTIONS = [25, 50, 100] as const
 const STORAGE_KEY = 'yamibo_jobs_status'
 const FAILURE_STORAGE_KEY = 'yamibo_jobs_failure_kind'

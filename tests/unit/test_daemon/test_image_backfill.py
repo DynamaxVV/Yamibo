@@ -25,6 +25,8 @@ from yamibo_mcp.daemon.handlers.image_backfill import (
     _metadata_target_positions,
     _resolve_selected_remote_urls,
     _selected_download_retries,
+    _image_download_failure_code,
+    _should_retry_image_download,
     _snapshot_for_missing_images,
     _stable_attachment_id,
     _successful_selected_url_aliases,
@@ -423,6 +425,31 @@ def test_selected_download_attempts_non_publisher_image_and_external_is_one_shot
         target_urls={"https://bbs.yamibo.com/forum.php?mod=attachment&aid=1"},
         configured_retries=3,
     ) == 3
+
+
+def test_selected_image_download_retries_only_transient_failures():
+    assert _should_retry_image_download(
+        ImageDownloadResult(stopped_reason="stage_timeout"),
+        [],
+    ) is True
+    assert _should_retry_image_download(
+        ImageDownloadResult(),
+        [{"status": "error", "error_type": "truncated_image", "retryable": True}],
+    ) is True
+    assert _should_retry_image_download(
+        ImageDownloadResult(),
+        [{"status": "error", "error_type": "http_error", "retryable": False}],
+    ) is False
+    assert _should_retry_image_download(
+        ImageDownloadResult(),
+        [{"status": "error", "error_type": "waf_response", "retryable": False}],
+    ) is True
+    assert _image_download_failure_code(
+        [{"status": "error", "error_type": "waf_response", "retryable": False}],
+    ) == "REMOTE_SOFT_BLOCK"
+    assert _image_download_failure_code(
+        [{"status": "error", "error_type": "truncated_image", "retryable": True}],
+    ) == "IMAGE_TARGET_NOT_DOWNLOADED"
 
 
 def test_auto_scheduler_creates_internal_image_backfill_dry_run_job(db, tmp_path):

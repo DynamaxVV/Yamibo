@@ -329,6 +329,12 @@ def retry_thread_image(
     if target_positions:
         payload["target_positions"] = target_positions
 
+    # Serialize retries for one thread before checking the live queue.  The
+    # old read-then-insert sequence allowed two concurrent UI clicks to both
+    # observe an empty queue and create the same selected target.  Updating
+    # the thread row is a portable row-level write lock on PostgreSQL and
+    # serializes SQLite writers as well.
+    conn.execute("UPDATE threads SET tid = tid WHERE tid = ?", (int(tid),))
     live_statuses = ("queued", "running", "retrying", "paused", "cancel_requested", "interrupted")
     placeholders = ",".join("?" for _ in live_statuses)
     rows = conn.execute(
@@ -343,8 +349,11 @@ def retry_thread_image(
         if (
             existing_payload.get("scope") == "selected"
             and str(existing_payload.get("target_asset_id") or "") == asset_id
-            and list(existing_payload.get("target_urls") or []) == [remote_url]
         ):
+            # target_asset_id is the stable identity.  Its URL can rotate
+            # between archive snapshots, so it must not participate in the
+            # duplicate decision.
+            conn.commit()
             return {"ok": True, "job_id": row["job_id"], "status": row["status"], "created": False}
 
     job = JobsRepository(conn).create("image_backfill", tid=int(tid), payload=payload)
