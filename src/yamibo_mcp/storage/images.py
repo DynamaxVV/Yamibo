@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import random
@@ -14,7 +15,7 @@ from http.cookiejar import CookieJar
 from mimetypes import guess_extension
 from pathlib import Path
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from typing import Any, Callable, Mapping, NoReturn
+from typing import Any, Callable, Iterable, Mapping, NoReturn
 from urllib.parse import urlparse
 
 from yamibo_mcp.domain.models import ThreadSnapshot
@@ -26,6 +27,55 @@ from yamibo_mcp.yamibo.runtime_limits import CookieDownloadSlotTimeoutError, acq
 
 
 LOG = logging.getLogger(__name__)
+
+
+_DIAGNOSTIC_RESPONSE_HEADERS = (
+    "Accept-Ranges",
+    "Cache-Control",
+    "Content-Encoding",
+    "ETag",
+    "Server",
+)
+
+_ATTEMPT_METADATA_KEYS = (
+    "content_type",
+    "content_length",
+    "content_range",
+    "bytes",
+    "response_headers",
+    "body_sha256",
+    "body_format",
+    "content_length_matches",
+    "jpeg_has_soi",
+    "jpeg_eoi_offset",
+    "jpeg_trailing_bytes",
+    "range_attempted",
+    "range_recovered",
+)
+
+_TRANSIENT_ATTEMPT_METADATA_KEYS = (
+    "status_code",
+    "final_url",
+    "content_type",
+    "content_length",
+    "content_range",
+    "bytes",
+    "response_headers",
+    "body_sha256",
+    "body_format",
+    "content_length_matches",
+    "jpeg_has_soi",
+    "jpeg_eoi_offset",
+    "jpeg_trailing_bytes",
+    "phase",
+)
+
+_DIAGNOSTIC_NULLABLE_KEYS = {
+    "content_length_matches",
+    "jpeg_has_soi",
+    "jpeg_eoi_offset",
+    "jpeg_trailing_bytes",
+}
 
 
 class _ImageHTTPError(Exception):
@@ -454,10 +504,13 @@ def _download_with_retries(
     attempts = max(0, retries) + 1
     last_error: Exception | None = None
     for attempt in range(attempts):
+        attempt_started_at = time.monotonic()
+        _clear_transient_attempt_metadata(metadata)
         try:
             if metadata is not None:
                 metadata["attempts"] = attempt + 1
-            return _fetch_to_path(
+            _set_download_phase(metadata, "request")
+            target = _fetch_to_path(
                 image_url,
                 staging_dir=staging_dir,
                 stem=stem,
@@ -469,13 +522,32 @@ def _download_with_retries(
                 fetcher=fetcher,
                 metadata=metadata,
             )
+            _record_attempt_diagnostic(
+                metadata,
+                attempt=attempt + 1,
+                started_at=attempt_started_at,
+                exc=None,
+            )
+            return target
         except _ImageHTTPError as exc:
             last_error = exc
+            _record_attempt_diagnostic(
+                metadata,
+                attempt=attempt + 1,
+                started_at=attempt_started_at,
+                exc=exc,
+            )
             if exc.status_code in {429, 444} or not exc.retryable or attempt + 1 >= attempts:
                 raise
             time.sleep(min(0.5 * (attempt + 1), 2.0))
         except Exception as exc:  # noqa: BLE001 - 上层只关心最终是否成功
             last_error = exc
+            _record_attempt_diagnostic(
+                metadata,
+                attempt=attempt + 1,
+                started_at=attempt_started_at,
+                exc=exc,
+            )
             if attempt + 1 >= attempts or not _should_retry_exception(exc, metadata=metadata):
                 break
             time.sleep(min(0.5 * (attempt + 1), 2.0))
@@ -499,9 +571,12 @@ def _download_to_explicit_target_with_retries(
     attempts = max(0, retries) + 1
     last_error: Exception | None = None
     for attempt in range(attempts):
+        attempt_started_at = time.monotonic()
+        _clear_transient_attempt_metadata(metadata)
         try:
             if metadata is not None:
                 metadata["attempts"] = attempt + 1
+            _set_download_phase(metadata, "request")
             _fetch_to_explicit_target(
                 image_url,
                 target=target,
@@ -513,14 +588,32 @@ def _download_to_explicit_target_with_retries(
                 fetcher=fetcher,
                 metadata=metadata,
             )
+            _record_attempt_diagnostic(
+                metadata,
+                attempt=attempt + 1,
+                started_at=attempt_started_at,
+                exc=None,
+            )
             return
         except _ImageHTTPError as exc:
             last_error = exc
+            _record_attempt_diagnostic(
+                metadata,
+                attempt=attempt + 1,
+                started_at=attempt_started_at,
+                exc=exc,
+            )
             if exc.status_code in {429, 444} or not exc.retryable or attempt + 1 >= attempts:
                 raise
             time.sleep(min(0.5 * (attempt + 1), 2.0))
         except Exception as exc:  # noqa: BLE001
             last_error = exc
+            _record_attempt_diagnostic(
+                metadata,
+                attempt=attempt + 1,
+                started_at=attempt_started_at,
+                exc=exc,
+            )
             if attempt + 1 >= attempts or not _should_retry_exception(exc, metadata=metadata):
                 break
             time.sleep(min(0.5 * (attempt + 1), 2.0))
@@ -620,20 +713,163 @@ def _response_from_fetcher(response: Any, *, image_url: str) -> _FetchedImageRes
     )
 
 
+def _set_download_phase(metadata: dict[str, Any] | None, phase: str) -> None:
+    if metadata is not None:
+        metadata["phase"] = phase
+
+
+def _image_probe_from_chunks(
+    chunks: Iterable[bytes],
+    *,
+    content_length: Any = None,
+    content_range: str | None = None,
+) -> dict[str, Any]:
+    """Collect bounded, non-sensitive evidence about an image response.
+
+    The body itself is never persisted in diagnostics.  A digest makes
+    repeated attempts comparable, while JPEG marker offsets explain why a
+    response passed or failed structural validation.  ``content_range``
+    disables the ordinary Content-Length comparison because a 206 response
+    describes only a byte range, not necessarily the assembled body.
+    """
+    digest = hashlib.sha256()
+    first_bytes = bytearray()
+    previous = b""
+    total = 0
+    eoi_offset: int | None = None
+    marker = b"\xff\xd9"
+
+    for raw_chunk in chunks:
+        chunk = bytes(raw_chunk)
+        if not chunk:
+            continue
+        digest.update(chunk)
+        if len(first_bytes) < 64:
+            first_bytes.extend(chunk[: 64 - len(first_bytes)])
+        combined = previous + chunk
+        marker_index = combined.rfind(marker)
+        if marker_index >= 0:
+            eoi_offset = total - len(previous) + marker_index
+        total += len(chunk)
+        previous = chunk[-1:]
+
+    suffix = _suffix_from_bytes(bytes(first_bytes))
+    result: dict[str, Any] = {
+        "body_sha256": digest.hexdigest(),
+        "body_format": None if suffix is None else suffix.removeprefix("."),
+    }
+    if content_range:
+        result["content_length_matches"] = None
+    elif content_length in {None, ""}:
+        result["content_length_matches"] = None
+    else:
+        try:
+            result["content_length_matches"] = int(str(content_length).strip()) == total
+        except (TypeError, ValueError):
+            result["content_length_matches"] = None
+
+    if suffix == ".jpg":
+        result["jpeg_has_soi"] = bytes(first_bytes).startswith(b"\xff\xd8")
+        result["jpeg_eoi_offset"] = eoi_offset
+        result["jpeg_trailing_bytes"] = None if eoi_offset is None else total - eoi_offset - 2
+    return result
+
+
+def _record_file_body_metadata(
+    metadata: dict[str, Any] | None,
+    path: Path,
+    *,
+    content_length: Any = None,
+    content_range: str | None = None,
+) -> None:
+    if metadata is None:
+        return
+    try:
+        with path.open("rb") as fp:
+            probe = _image_probe_from_chunks(
+                iter(lambda: fp.read(64 * 1024), b""),
+                content_length=content_length,
+                content_range=content_range,
+            )
+    except OSError:
+        return
+    metadata.update(probe)
+
+
 def _record_response_metadata(
     metadata: dict[str, Any] | None,
     response: _FetchedImageResponse,
 ) -> None:
     if metadata is None:
         return
+    content_range = _header_value(response.headers, "Content-Range")
+    response_headers = {
+        name: value
+        for name in _DIAGNOSTIC_RESPONSE_HEADERS
+        if (value := _header_value(response.headers, name)) is not None
+    }
     metadata.update(
         status_code=response.status_code,
         final_url=response.final_url,
         content_type=_header_value(response.headers, "Content-Type"),
         content_length=_header_value(response.headers, "Content-Length"),
-        content_range=_header_value(response.headers, "Content-Range"),
+        content_range=content_range,
         bytes=len(response.body),
+        response_headers=response_headers,
     )
+    metadata.update(
+        _image_probe_from_chunks(
+            (response.body,),
+            content_length=_header_value(response.headers, "Content-Length"),
+            content_range=content_range,
+        )
+    )
+    _set_download_phase(metadata, "response")
+
+
+def _clear_transient_attempt_metadata(metadata: dict[str, Any] | None) -> None:
+    if metadata is None:
+        return
+    for key in _TRANSIENT_ATTEMPT_METADATA_KEYS:
+        metadata.pop(key, None)
+
+
+def _record_attempt_diagnostic(
+    metadata: dict[str, Any] | None,
+    *,
+    attempt: int,
+    started_at: float,
+    exc: Exception | None,
+) -> None:
+    if metadata is None:
+        return
+    details = getattr(exc, "details", {}) if exc is not None else {}
+    if not isinstance(details, Mapping):
+        details = {}
+    http_status = metadata.get("status_code")
+    if http_status is None and exc is not None:
+        http_status = getattr(exc, "status_code", None) or getattr(exc, "code", None) or details.get("status_code")
+    item: dict[str, Any] = {
+        "attempt": attempt,
+        "phase": metadata.get("phase", "request"),
+        "duration_ms": _elapsed_ms(started_at),
+        "status": "ok" if exc is None else "error",
+        "http_status": http_status,
+    }
+    for key in _ATTEMPT_METADATA_KEYS:
+        value = metadata.get(key)
+        if value is None and key not in _DIAGNOSTIC_NULLABLE_KEYS:
+            continue
+        item[key] = dict(value) if key == "response_headers" else value
+    if exc is None:
+        item.update(error_type=None, error_message=None, retryable=None)
+    else:
+        item.update(
+            error_type=_error_type(exc, http_status=http_status),
+            error_message=_sanitize_error_message(str(exc)),
+            retryable=_is_retryable_image_error(exc, http_status=http_status, details=details),
+        )
+    metadata.setdefault("attempt_history", []).append(item)
 
 
 def _parse_content_range(value: str | None) -> tuple[int, int, int | None] | None:
@@ -741,6 +977,7 @@ def _write_and_validate_authenticated_image(
     metadata: dict[str, Any] | None,
 ) -> _FetchedImageResponse:
     """Write and validate a response, with one bounded Range recovery."""
+    _set_download_phase(metadata, "validation")
     part_target.write_bytes(response.body)
     content_type = _header_value(response.headers, "Content-Type")
     content_length = _header_value(response.headers, "Content-Length")
@@ -798,6 +1035,7 @@ def _write_and_validate_authenticated_image(
                 content_length=_header_value(recovered.headers, "Content-Length"),
             )
         part_target.write_bytes(recovered.body)
+        _set_download_phase(metadata, "validation")
         try:
             _require_valid_image_file(part_target)
         except ValueError:
@@ -877,9 +1115,11 @@ def _fetch_to_path(
                     timeout=timeout,
                     metadata=metadata,
                 )
+                _set_download_phase(metadata, "persist")
                 os.replace(part_target, target)
                 return target
             request = urllib.request.Request(image_url, headers=request_headers)
+            _set_download_phase(metadata, "request")
             with opener.open(request, timeout=timeout) as response:
                 status = getattr(response, "status", 200)
                 content_type = _header_value(response.headers, "Content-Type")
@@ -893,10 +1133,12 @@ def _fetch_to_path(
                         content_range=_header_value(response.headers, "Content-Range"),
                         bytes=0,
                     )
+                    _set_download_phase(metadata, "response")
                 if status >= 400:
                     LOG.warning("Image download returned HTTP %d for %s", status, image_url)
                     _raise_image_http_error(status)
                 first_bytes = response.read(64)
+                _set_download_phase(metadata, "stream")
                 if cancel_check is not None:
                     cancel_check()
                 suffix = _suffix_from_response(response, image_url=image_url, first_bytes=first_bytes)
@@ -914,6 +1156,13 @@ def _fetch_to_path(
                         fp.write(chunk)
                 if metadata is not None:
                     metadata["bytes"] = part_target.stat().st_size
+                _record_file_body_metadata(
+                    metadata,
+                    part_target,
+                    content_length=content_length,
+                    content_range=_header_value(response.headers, "Content-Range"),
+                )
+                _set_download_phase(metadata, "validation")
                 try:
                     _require_valid_image_file(part_target)
                 except ValueError:
@@ -922,6 +1171,7 @@ def _fetch_to_path(
                         content_type=content_type,
                         content_length=content_length,
                     )
+                _set_download_phase(metadata, "persist")
                 os.replace(part_target, target)
             return target
         source = Path(image_url)
@@ -931,7 +1181,9 @@ def _fetch_to_path(
             target = staging_dir / f"{stem}{source.suffix or '.bin'}"
             part_target = target.with_name(target.name + ".part")
             shutil.copy2(source, part_target)
+            _set_download_phase(metadata, "validation")
             _require_valid_image_file(part_target)
+            _set_download_phase(metadata, "persist")
             os.replace(part_target, target)
             if cancel_check is not None:
                 cancel_check()
@@ -994,8 +1246,10 @@ def _fetch_to_explicit_target(
                     timeout=timeout,
                     metadata=metadata,
                 )
+                _set_download_phase(metadata, "persist")
             else:
                 request = urllib.request.Request(image_url, headers=request_headers)
+                _set_download_phase(metadata, "request")
                 with opener.open(request, timeout=timeout) as response, part_target.open("wb") as fp:
                     status = getattr(response, "status", 200)
                     content_type = _header_value(response.headers, "Content-Type")
@@ -1008,9 +1262,11 @@ def _fetch_to_explicit_target(
                             content_length=content_length,
                             content_range=_header_value(response.headers, "Content-Range"),
                         )
+                        _set_download_phase(metadata, "response")
                     if status >= 400:
                         LOG.warning("Image download returned HTTP %d for %s", status, image_url)
                         _raise_image_http_error(status)
+                    _set_download_phase(metadata, "stream")
                     while True:
                         if cancel_check is not None:
                             cancel_check()
@@ -1025,7 +1281,16 @@ def _fetch_to_explicit_target(
             if cancel_check is not None:
                 cancel_check()
             shutil.copy2(source, part_target)
+        if metadata is not None:
+            metadata["bytes"] = part_target.stat().st_size
+            _record_file_body_metadata(
+                metadata,
+                part_target,
+                content_length=metadata.get("content_length"),
+                content_range=metadata.get("content_range"),
+            )
         try:
+            _set_download_phase(metadata, "validation")
             _require_valid_image_file(part_target)
         except ValueError:
             _raise_invalid_image_body(
@@ -1033,8 +1298,7 @@ def _fetch_to_explicit_target(
                 content_type=(metadata or {}).get("content_type"),
                 content_length=(metadata or {}).get("content_length"),
             )
-        if metadata is not None:
-            metadata["bytes"] = part_target.stat().st_size
+        _set_download_phase(metadata, "persist")
         os.replace(part_target, target)
         if cancel_check is not None:
             cancel_check()
@@ -1126,9 +1390,23 @@ def _diagnostic(
         "error_message": None if exc is None else _sanitize_error_message(str(exc)),
         "retryable": retryable,
     }
-    for key in ("content_length", "content_range", "range_attempted", "range_recovered"):
-        if info.get(key) is not None:
-            result[key] = info[key]
+    for key in (
+        "content_length",
+        "content_range",
+        "range_attempted",
+        "range_recovered",
+        "phase",
+        "response_headers",
+        "body_sha256",
+        "body_format",
+        "content_length_matches",
+        "jpeg_has_soi",
+        "jpeg_eoi_offset",
+        "jpeg_trailing_bytes",
+        "attempt_history",
+    ):
+        if key in info and (info.get(key) is not None or key in _DIAGNOSTIC_NULLABLE_KEYS):
+            result[key] = list(info[key]) if key == "attempt_history" else info[key]
     return result
 
 
@@ -1367,7 +1645,7 @@ def _is_valid_image_file(path: Path) -> bool:
         suffix = _suffix_from_bytes(header)
         if suffix is None:
             return False
-        if suffix == ".jpg" and not _jpeg_has_end_marker_near_tail(tail):
+        if suffix == ".jpg" and not _jpeg_has_end_marker(path):
             return False
         if suffix == ".png" and not tail.endswith(b"\x00\x00\x00\x00IEND\xaeB`\x82"):
             return False
@@ -1383,17 +1661,27 @@ def _is_valid_image_file(path: Path) -> bool:
         return False
 
 
-def _jpeg_has_end_marker_near_tail(tail: bytes, *, max_trailing_bytes: int = 64) -> bool:
-    """Accept JPEG padding emitted by some attachment edges after EOI.
+def _jpeg_has_end_marker(path: Path) -> bool:
+    """Accept JPEGs with valid metadata after EOI.
 
-    A JPEG decoder stops at EOI, and the live attachment service has been
-    observed to append a few bytes after that marker while still returning a
-    decodable image.  Requiring EOI to be the final two bytes turns those
-    valid responses into false ``truncated_image`` failures.  A bounded tail
-    allowance keeps genuinely incomplete bodies (which have no EOI) invalid.
+    JPEG decoders stop at the EOI marker; it is not required to be the final
+    two bytes of the HTTP body.  In particular, Yamibo attachments uploaded
+    from some Samsung phones contain a ``SEF`` metadata trailer after EOI.
+    Looking only at the final 64 bytes incorrectly classified those complete
+    images as ``truncated_image``.  Scan incrementally so the check remains
+    bounded in memory while still rejecting a body with no EOI marker.
     """
-    marker = tail.rfind(b"\xff\xd9")
-    return marker >= 0 and len(tail) - marker - 2 <= max_trailing_bytes
+    marker = b"\xff\xd9"
+    previous = b""
+    try:
+        with path.open("rb") as fp:
+            while chunk := fp.read(1024 * 1024):
+                if marker in previous + chunk:
+                    return True
+                previous = chunk[-1:]
+    except OSError:
+        return False
+    return False
 
 
 def _require_valid_image_file(path: Path) -> None:

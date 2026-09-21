@@ -299,7 +299,7 @@ export function JobDetail() {
             <thead><tr><th>{t('key')}</th><th>{t('value')}</th></tr></thead>
             <tbody>
               {artifactEntries.map(([k, v], i) => (
-                <tr key={i}><td className="mono">{k}</td><td style={{ textAlign: 'left' }}>{typeof v === 'object' ? JSON.stringify(v) : String(v ?? '-')}</td></tr>
+                <tr key={i}><td className="mono">{k}</td><td style={{ textAlign: 'left' }}>{renderValue(v)}</td></tr>
               ))}
             </tbody>
           </table></div>

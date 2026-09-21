@@ -142,14 +142,17 @@ def test_image_validation_rejects_truncated_jpeg_after_size_header(tmp_path):
     truncated = tmp_path / "truncated.jpg"
     complete = tmp_path / "complete.jpg"
     padded = tmp_path / "padded.jpg"
+    samsung_sef = tmp_path / "samsung-sef.jpg"
     jpeg = b"\xff\xd8\xff\xc0\x00\x0b\x08\x01\xe0\x02\x80\x03\x01\x11\x00" + b"\x00" * 80
     truncated.write_bytes(jpeg)
     complete.write_bytes(jpeg + b"\xff\xd9")
     padded.write_bytes(jpeg + b"\xff\xd9" + b"\xca\x00\x31\xc5")
+    samsung_sef.write_bytes(jpeg + b"\xff\xd9" + b"\x00" * 1100 + b"SEF")
 
     assert _is_valid_image_file(truncated) is False
     assert _is_valid_image_file(complete) is True
     assert _is_valid_image_file(padded) is True
+    assert _is_valid_image_file(samsung_sef) is True
 
 
 def test_yamibo_attachment_uses_authenticated_fetcher_and_records_diagnostics(tmp_path):
@@ -217,20 +220,23 @@ def test_authenticated_fetch_failure_keeps_http_diagnostics_and_cleans_part(tmp_
     )
 
     assert result.missing_urls == [url]
-    assert result.diagnostics[0] == {
-        "url": url,
-        "final_url": url,
-        "content_type": "text/html",
-        "http_status": 403,
-        "bytes": len(b"<html>forbidden</html>"),
-        "attempts": 1,
-        "duration_ms": result.diagnostics[0]["duration_ms"],
-        "transport": "yamibo_session",
-        "status": "error",
-        "error_type": "http_error",
-        "error_message": "HTTP 403",
-        "retryable": False,
-    }
+    diagnostic = result.diagnostics[0]
+    assert diagnostic["url"] == url
+    assert diagnostic["final_url"] == url
+    assert diagnostic["content_type"] == "text/html"
+    assert diagnostic["http_status"] == 403
+    assert diagnostic["bytes"] == len(b"<html>forbidden</html>")
+    assert diagnostic["attempts"] == 1
+    assert diagnostic["transport"] == "yamibo_session"
+    assert diagnostic["status"] == "error"
+    assert diagnostic["error_type"] == "http_error"
+    assert diagnostic["error_message"] == "HTTP 403"
+    assert diagnostic["retryable"] is False
+    assert diagnostic["phase"] == "response"
+    assert len(diagnostic["body_sha256"]) == 64
+    assert diagnostic["attempt_history"][0]["http_status"] == 403
+    assert diagnostic["attempt_history"][0]["phase"] == "response"
+    assert diagnostic["attempt_history"][0]["error_type"] == "http_error"
     assert not list(paths.staging_job_images_dir("job-authenticated-failure").glob("*.part"))
 
 
@@ -308,6 +314,52 @@ def test_authenticated_truncated_image_body_is_retryable_and_distinct(tmp_path):
     assert result.diagnostics[0]["retryable"] is True
     assert result.diagnostics[0]["attempts"] == 3
     assert result.diagnostics[0]["range_attempted"] is True
+    assert result.diagnostics[0]["phase"] == "validation"
+    assert len(result.diagnostics[0]["attempt_history"]) == 3
+    assert all(item["error_type"] == "truncated_image" for item in result.diagnostics[0]["attempt_history"])
+    assert all(item["jpeg_has_soi"] is True for item in result.diagnostics[0]["attempt_history"])
+    assert all(item["jpeg_eoi_offset"] is None for item in result.diagnostics[0]["attempt_history"])
+
+
+def test_authenticated_success_records_jpeg_trailer_evidence(tmp_path):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    paths = StoragePaths(data_dir, export_dir=tmp_path / "exports", novel_txt_export_dir=tmp_path / "novel_exports")
+    url = "https://bbs.yamibo.com/data/attachment/forum/202309/08/example.jpg"
+    floor = replace(_make_snapshot().floors[0], image_urls=[url])
+    snapshot = replace(_make_snapshot(), floors=[floor], image_count=1)
+    jpeg = b"\xff\xd8\xff\xc0\x00\x0b\x08\x01\xe0\x02\x80\x03\x01\x11\x00" + b"\x00" * 80
+    body = jpeg + b"\xff\xd9" + b"\x00" * 1100 + b"SEF"
+
+    def fetcher(image_url, **kwargs):
+        return SimpleNamespace(
+            status_code=200,
+            final_url=image_url,
+            headers={"Content-Type": "image/jpeg", "Content-Length": str(len(body))},
+            content=body,
+        )
+
+    result = download_images_to_staging(
+        paths,
+        "job-authenticated-jpeg-trailer",
+        snapshot,
+        timeout=1,
+        retries=0,
+        fetcher=fetcher,
+        target_urls={url},
+    )
+
+    diagnostic = result.diagnostics[0]
+    eoi_offset = body.rfind(b"\xff\xd9")
+    assert result.missing_urls == []
+    assert diagnostic["status"] == "ok"
+    assert diagnostic["body_format"] == "jpg"
+    assert diagnostic["content_length_matches"] is True
+    assert diagnostic["jpeg_has_soi"] is True
+    assert diagnostic["jpeg_eoi_offset"] == eoi_offset
+    assert diagnostic["jpeg_trailing_bytes"] == len(body) - eoi_offset - 2
+    assert diagnostic["attempt_history"][0]["phase"] == "persist"
+    assert diagnostic["attempt_history"][0]["status"] == "ok"
 
 
 def test_authenticated_truncated_image_body_recovers_with_range(tmp_path):
