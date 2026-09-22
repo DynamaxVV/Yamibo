@@ -21,11 +21,21 @@ def should_refine_title_with_llm(parsed: TitleParseResult) -> bool:
 
 
 def should_parse_title_with_llm(settings: Settings, parsed: TitleParseResult) -> bool:
-    if not settings.llm_api_key:
+    mode = _title_parse_mode(settings)
+    if not settings.llm_api_key or mode == "rules_only":
         return False
-    if settings.title_parse_use_llm:
+    if mode == "always":
         return True
     return should_refine_title_with_llm(parsed)
+
+
+def _title_parse_mode(settings: Settings) -> str:
+    mode = getattr(settings, "title_parse_mode", None)
+    if mode is None:
+        return "always" if settings.title_parse_use_llm else "rules_only"
+    if mode not in {"rules_only", "fallback", "always"}:
+        raise ValueError("title.parse_mode must be rules_only, fallback or always")
+    return mode
 
 
 def refine_title_parse_with_llm(
@@ -42,7 +52,7 @@ def refine_title_parse_with_llm(
     meta: dict[str, object] = {
         "attempted": True,
         "used": False,
-        "strategy": "llm_primary" if settings.title_parse_use_llm else "llm_fallback",
+        "strategy": "llm_primary" if _title_parse_mode(settings) == "always" else "llm_fallback",
         "model": settings.llm_model,
         "raw_title": raw_title,
         "baseline": title_parse_to_dict(base),

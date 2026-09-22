@@ -277,6 +277,137 @@ def test_settings_get_returns_config(client, test_settings):
     assert "table_layouts" in data["values"]
 
 
+def test_settings_session_cookie_lifecycle(client):
+    sessions = client.app.state.settings_sessions
+    sessions.token = "private-settings-token"
+    assert client.get("/api/settings/session").json() == {"required": True, "authenticated": False}
+    assert client.get("/api/settings").status_code == 401
+    assert client.get("/api/settings/models").status_code == 401
+    assert client.post("/api/settings/session", json={"token": "wrong"}).status_code == 401
+    login = client.post("/api/settings/session", json={"token": sessions.token})
+    assert login.status_code == 200
+    cookie = login.headers["set-cookie"]
+    assert "HttpOnly" in cookie and "SameSite=strict" in cookie and "Path=/api/settings" in cookie
+    assert "Max-Age" not in cookie and "expires=" not in cookie.lower()
+    assert sessions.token not in cookie
+    assert client.get("/api/settings").status_code == 200
+    assert client.post("/api/settings", headers={"Origin": "https://evil.example"}, json={"values": {}}).status_code == 403
+    assert client.delete("/api/settings/session").status_code == 200
+    assert client.get("/api/settings").status_code == 401
+
+
+def test_settings_login_uses_secure_cookie_behind_https_proxy(client):
+    response = client.post("/api/settings/session", headers={"Origin": "https://testserver"}, json={"token": ""})
+    assert response.status_code == 200
+    assert "Secure" in response.headers["set-cookie"]
+
+
+def test_settings_login_rate_limited(client):
+    client.app.state.settings_sessions.token = "secret"
+    for _ in range(5):
+        assert client.post("/api/settings/session", json={"token": "wrong"}).status_code == 401
+    assert client.post("/api/settings/session", json={"token": "wrong"}).status_code == 429
+
+
+@pytest.mark.parametrize("values", [
+    {"jobs_enabled": "false"}, {"hermes_port": 65536}, {"worker_parallelism": -1},
+    {"worker_heartbeat_seconds": 60, "worker_lease_seconds": 30},
+    {"llm_base_url": "file:///etc/passwd"}, {"rag_min_chunk_chars": 10},
+    {"chat_max_parallel": 1.5}, {"settings_access_token": "new-token"},
+])
+def test_settings_rejects_invalid_values(client, values):
+    assert client.post("/api/settings", json={"values": values}).status_code == 400
+
+
+def test_settings_saved_and_active_values_are_distinct(client):
+    assert client.post("/api/settings", json={"values": {"hermes_port": 9000}}).status_code == 200
+    body = client.get("/api/settings").json()
+    assert body["values"]["hermes_port"] == 9000
+    assert body["active_values"]["hermes_port"] == 8642
+    assert "hermes_port" in body["pending_fields"]
+
+
+def test_disabled_signin_does_not_inspect_accounts():
+    from types import SimpleNamespace
+    from yamibo_mcp.daemon.daily_sign_in_scheduler import maybe_enqueue_daily_sign_ins
+    assert maybe_enqueue_daily_sign_ins(None, SimpleNamespace(auto_signin_enabled=False)) == 0
+
+
+def test_settings_requires_origin_for_writes(client):
+    client.headers.pop("origin")
+    assert client.post("/api/settings/session", json={"token": ""}).status_code == 403
+    assert client.post("/api/settings", json={"values": {}}).status_code == 403
+
+
+def test_settings_session_matches_browser_cookie_lifecycle_and_remote_without_token(client):
+    from types import SimpleNamespace
+    sessions = client.app.state.settings_sessions
+    assert not sessions.authenticated(SimpleNamespace(client=SimpleNamespace(host="203.0.113.5")))
+    sessions.token = "secret"
+    assert client.post("/api/settings/session", json={"token": "secret"}).status_code == 200
+    assert client.get("/api/settings").status_code == 200
+    # Authentication is derived from the session Cookie rather than process
+    # memory, so a fresh manager (web restart/multi-worker) accepts it too.
+    from yamibo_mcp.web_fastapi.settings_session import SettingsSessions
+    client.app.state.settings_sessions = SettingsSessions(SimpleNamespace(settings_access_token="secret", chat_access_token=None))
+    assert client.get("/api/settings").status_code == 200
+    assert client.delete("/api/settings/session").status_code == 200
+
+
+def test_table_layouts_are_public_but_settings_remain_protected(client):
+    client.app.state.settings_sessions.token = "secret"
+    assert client.get("/api/settings").status_code == 401
+    response = client.get("/api/settings-layouts")
+    assert response.status_code == 200
+    assert set(response.json()["table_layouts"]) == {"threads", "jobs"}
+
+
+def test_legacy_title_parse_environment_locks_three_state_setting(client, monkeypatch):
+    monkeypatch.delenv("YAMIBO_TITLE_PARSE_MODE", raising=False)
+    monkeypatch.setenv("YAMIBO_TITLE_PARSE_USE_LLM", "false")
+    body = client.get("/api/settings").json()
+    assert body["sources"]["title_parse_mode"] == "env"
+    assert "title_parse_mode" in body["locked_fields"]
+    assert client.post("/api/settings", json={"values": {"title_parse_mode": "always"}}).status_code == 400
+
+
+@pytest.mark.parametrize("mode,expected", [("rules_only", False), ("fallback", True), ("always", True)])
+def test_title_parse_modes_control_llm(mode, expected):
+    from types import SimpleNamespace
+    from yamibo_mcp.services.title_llm import should_parse_title_with_llm
+    settings = SimpleNamespace(llm_api_key="configured", title_parse_mode=mode, title_parse_use_llm=True)
+    parsed = SimpleNamespace(needs_review=True)
+    assert should_parse_title_with_llm(settings, parsed) is expected
+
+
+def test_title_parse_mode_roundtrips(client):
+    response = client.post("/api/settings", json={"values": {"title_parse_mode": "rules_only"}})
+    assert response.status_code == 200
+    assert client.get("/api/settings").json()["values"]["title_parse_mode"] == "rules_only"
+    assert client.post("/api/settings", json={"values": {"title_parse_mode": "unknown"}}).status_code == 400
+
+
+def test_settings_revision_rejects_stale_save(client):
+    revision = client.get("/api/settings").json()["revision"]
+    assert client.post("/api/settings", json={"revision": revision, "values": {"hermes_port": 9000}}).status_code == 200
+    assert client.post("/api/settings", json={"revision": revision, "values": {"hermes_port": 9001}}).status_code == 409
+    assert client.get("/api/settings").json()["values"]["hermes_port"] == 9000
+
+
+def test_settings_token_migration_environment_precedence(test_settings, monkeypatch):
+    from yamibo_mcp.config import load_settings
+    monkeypatch.setenv("YAMIBO_CONFIG_PATH", str(test_settings.config_path))
+    test_settings.config_path.write_text(json.dumps({"security": {"access_token": "new-file"}, "chat": {"access_token": "legacy-file"}}))
+    monkeypatch.delenv("YAMIBO_SETTINGS_ACCESS_TOKEN", raising=False)
+    monkeypatch.setenv("YAMIBO_CHAT_ACCESS_TOKEN", "legacy-env")
+    assert load_settings().settings_access_token == "legacy-env"
+    monkeypatch.setenv("YAMIBO_SETTINGS_ACCESS_TOKEN", "new-env")
+    assert load_settings().settings_access_token == "new-env"
+    monkeypatch.delenv("YAMIBO_SETTINGS_ACCESS_TOKEN")
+    monkeypatch.delenv("YAMIBO_CHAT_ACCESS_TOKEN")
+    assert load_settings().settings_access_token == "new-file"
+
+
 def test_settings_exposes_hermes_connection_fields_without_secret(client):
     response = client.get("/api/settings")
     assert response.status_code == 200

@@ -40,6 +40,7 @@ export default function App() {
             <Route path="/rag" element={<Rag />} />
             <Route path="/chat" element={<Chat />} />
             <Route path="/settings" element={<Settings />} />
+            <Route path="/settings/advanced" element={<Settings advanced />} />
             <Route path="/logs" element={<Logs />} />
           </Route>
         </Routes>

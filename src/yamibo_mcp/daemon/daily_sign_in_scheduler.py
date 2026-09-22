@@ -26,6 +26,8 @@ def maybe_enqueue_daily_sign_ins(
     now: datetime | None = None,
 ) -> int:
     """After 01:00, enqueue a sign-in only when the cache is not from today."""
+    if not getattr(settings, "auto_signin_enabled", True):
+        return 0
     current = (now or datetime.now(LOCAL_TIMEZONE)).astimezone(LOCAL_TIMEZONE)
     if current.hour < SIGN_IN_HOUR:
         return 0

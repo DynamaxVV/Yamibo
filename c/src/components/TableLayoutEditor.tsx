@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { api, type TableLayout, type TableLayouts } from '../api/client'
+import { api, type TableLayout, type TableLayouts, type SettingsUpdateResponse } from '../api/client'
 import { useI18n } from '../context/I18nContext'
 
 type TableName = keyof TableLayouts
@@ -60,26 +60,37 @@ export function getTableLayout(value: unknown, table: TableName): TableLayout[] 
 export function useTableLayout(table: TableName) {
   const [layouts, setLayouts] = useState<TableLayout[]>(() => getTableLayout(readCachedLayouts(), table))
   useEffect(() => {
-    api.settings().then(result => {
-      cacheLayouts(result.values.table_layouts)
-      setLayouts(getTableLayout(result.values.table_layouts, table))
+    api.settingsLayouts().then(result => {
+      cacheLayouts(result.table_layouts)
+      setLayouts(getTableLayout(result.table_layouts, table))
     }).catch(() => {})
   }, [table])
   return layouts
 }
 
-export function TableLayoutEditor({ value, onSaved }: { value: unknown; onSaved: (layouts: TableLayouts) => void }) {
+export function TableLayoutEditor({ value, revision, onSaved, onDirtyChange, onAuthRequired }: {
+  value: unknown
+  revision?: string
+  onSaved: (result: SettingsUpdateResponse) => void
+  onDirtyChange?: (dirty: boolean) => void
+  onAuthRequired?: (error: Error) => void
+}) {
   const { t } = useI18n()
   const [layouts, setLayouts] = useState<TableLayouts>(() => normalizeLayouts(value))
   const [table, setTable] = useState<TableName>('threads')
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
+  const [messageIsError, setMessageIsError] = useState(false)
+  const savedLayoutJson = JSON.stringify(normalizeLayouts(value))
 
   useEffect(() => {
-    const normalized = normalizeLayouts(value)
+    const normalized = JSON.parse(savedLayoutJson) as TableLayouts
     cacheLayouts(normalized)
     setLayouts(normalized)
-  }, [value])
+  }, [savedLayoutJson])
+  useEffect(() => {
+    onDirtyChange?.(JSON.stringify(layouts) !== savedLayoutJson)
+  }, [layouts, savedLayoutJson, onDirtyChange])
   const definitions = DEFINITIONS[table]
   const current = layouts[table]
   const ordered = useMemo(() => current.map(item => definitions.find(def => def.key === item.key)!).filter(Boolean), [current, definitions])
@@ -88,13 +99,16 @@ export function TableLayoutEditor({ value, onSaved }: { value: unknown; onSaved:
   const save = async () => {
     setSaving(true)
     setMessage(null)
+    setMessageIsError(false)
     try {
-      const result = await api.updateSettings({ table_layouts: layouts })
+      const result = await api.updateSettings({ table_layouts: layouts }, revision)
       cacheLayouts(result.values.table_layouts)
-      onSaved(normalizeLayouts(result.values.table_layouts))
+      onSaved(result)
       setMessage(t('settings_table_layout_saved'))
     } catch (error: any) {
+      setMessageIsError(true)
       setMessage(error?.message || String(error))
+      if (error?.code === 'SETTINGS_AUTH_REQUIRED') onAuthRequired?.(error)
     } finally { setSaving(false) }
   }
 
@@ -120,7 +134,7 @@ export function TableLayoutEditor({ value, onSaved }: { value: unknown; onSaved:
         </div>
         <div className="table-layout-preview"><div className="table-layout-preview-label">{t('settings_table_preview')}</div><div className="table-layout-preview-table">{current.filter(item => item.visible).map(item => <span key={item.key} style={{ width: `${Math.min(item.width, 240)}px` }}>{t(definitions.find(def => def.key === item.key)!.labelKey)}</span>)}</div></div>
       </div>
-      {message && <div className="settings-note settings-note-ok">{message}</div>}
+      {message && <div role={messageIsError ? 'alert' : 'status'} className={`settings-note ${messageIsError ? 'settings-note-error' : 'settings-note-ok'}`}>{message}</div>}
     </section>
   )
 }

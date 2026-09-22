@@ -132,7 +132,7 @@ def test_load_settings_reads_rag_configuration(monkeypatch, tmp_path):
     assert settings.rag_api_key == "rag-key"
     assert settings.rag_embedding_model == "text-embedding-3-small"
     assert settings.rag_embedding_dimensions == 256
-    assert settings.rag_chunker_version == "rag-chunker-v2"
+    assert settings.rag_chunker_version == "anime-chunker-1.2"
     assert settings.rag_min_chunk_chars == 42
     assert settings.rag_max_chunk_chars == 777
     assert settings.rag_hybrid_fts_candidates == 12
@@ -327,3 +327,16 @@ def test_load_settings_rag_endpoint_falls_back_to_llm(monkeypatch, tmp_path):
     assert settings.llm_api_key == "shared-key"
     assert settings.rag_base_url == "https://chat.example.com/v1"
     assert settings.rag_api_key == "shared-key"
+
+
+def test_legacy_title_parse_environment_overrides_file_mode(monkeypatch, tmp_path):
+    config_path = tmp_path / "yamibo.local.json"
+    config_path.write_text(json.dumps({"title": {"parse_mode": "always"}}), encoding="utf-8")
+    monkeypatch.setenv("YAMIBO_CONFIG_PATH", str(config_path))
+    monkeypatch.setenv("YAMIBO_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.delenv("YAMIBO_TITLE_PARSE_MODE", raising=False)
+    monkeypatch.setenv("YAMIBO_TITLE_PARSE_USE_LLM", "false")
+
+    settings = load_settings()
+
+    assert settings.title_parse_mode == "rules_only"

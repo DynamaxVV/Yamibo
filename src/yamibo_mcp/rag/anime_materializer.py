@@ -11,7 +11,7 @@ from pathlib import Path
 from statistics import mean
 from typing import Any
 
-from yamibo_mcp.config import Settings, load_settings
+from yamibo_mcp.config import RAG_CHUNKER_VERSION, Settings, load_settings
 from yamibo_mcp.db.connection import connect
 from yamibo_mcp.rag.anime_dry_run import (
     ANIME_FORUM_ID,
@@ -32,7 +32,7 @@ from yamibo_mcp.storage.paths import StoragePaths
 
 MATERIALIZER_VERSION = "1.2"
 CLEANER_VERSION = "anime-cleaner-1.2"
-CHUNKER_VERSION = "anime-chunker-1.2"
+CHUNKER_VERSION = RAG_CHUNKER_VERSION
 REPORT_BASENAME = "anime-rag-cleaned-corpus-stats.1.2"
 SUPPORTED_MATERIALIZER_VERSIONS = ("1.1", "1.2")
 _VALID_STATUS_SQL = "('complete', 'partial')"

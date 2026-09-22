@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { Badge } from '../components/Badge'
-import { api, type SettingsResponse, type SettingsUpdateResponse, type TableLayouts } from '../api/client'
+import { api, type SettingsResponse, type SettingsUpdateResponse } from '../api/client'
 import { useI18n } from '../context/I18nContext'
 import { TableLayoutEditor } from '../components/TableLayoutEditor'
 
@@ -36,7 +37,6 @@ const SECTIONS: SectionSpec[] = [
     key: 'embedded', titleKey: 'settings_embedded_title', descKey: 'settings_embedded_desc',
     fields: [
       { key: 'chat_backend', labelKey: 'settings_chat_backend', helpKey: 'settings_chat_backend_help', kind: 'select', section: 'embedded', options: [{ value: 'hermes', labelKey: 'settings_backend_hermes' }, { value: 'embedded', labelKey: 'settings_backend_embedded' }] },
-      { key: 'chat_access_token', labelKey: 'settings_chat_token', helpKey: 'settings_chat_token_help', kind: 'password', section: 'embedded' },
       { key: 'chat_max_requests', labelKey: 'settings_chat_requests', helpKey: 'settings_chat_budget_help', kind: 'number', section: 'embedded', min: 1 },
       { key: 'chat_max_tools', labelKey: 'settings_chat_tools', helpKey: 'settings_chat_budget_help', kind: 'number', section: 'embedded', min: 1 },
       { key: 'chat_timeout', labelKey: 'settings_chat_timeout', helpKey: 'settings_chat_budget_help', kind: 'number', section: 'embedded', min: 1 },
@@ -63,7 +63,6 @@ const SECTIONS: SectionSpec[] = [
     titleKey: 'settings_section_title',
     descKey: 'settings_section_title_desc',
     fields: [
-      { key: 'title_parse_use_llm', labelKey: 'settings_title_parse_use_llm', helpKey: 'settings_title_parse_use_llm_help', kind: 'checkbox', section: 'title', fullWidth: true },
       { key: 'common_scanlation_groups', labelKey: 'settings_common_scanlation_groups', helpKey: 'settings_common_scanlation_groups_help', kind: 'tags', section: 'title' },
       { key: 'common_authors', labelKey: 'settings_common_authors', helpKey: 'settings_common_authors_help', kind: 'tags', section: 'title' },
     ],
@@ -136,9 +135,6 @@ const SECTIONS: SectionSpec[] = [
     titleKey: 'settings_section_advanced',
     descKey: 'settings_section_advanced_desc',
     fields: [
-      { key: 'rag_chunker_version', labelKey: 'settings_rag_chunker_version', helpKey: 'settings_rag_chunker_version_help', kind: 'text', section: 'advanced', placeholderKey: 'settings_placeholder_chunker_version' },
-      { key: 'rag_min_chunk_chars', labelKey: 'settings_rag_min_chunk_chars', helpKey: 'settings_rag_min_chunk_chars_help', kind: 'number', section: 'advanced', min: 1, step: 1 },
-      { key: 'rag_max_chunk_chars', labelKey: 'settings_rag_max_chunk_chars', helpKey: 'settings_rag_max_chunk_chars_help', kind: 'number', section: 'advanced', min: 1, step: 1 },
       { key: 'rag_hybrid_fts_candidates', labelKey: 'settings_rag_hybrid_fts_candidates', helpKey: 'settings_rag_hybrid_fts_candidates_help', kind: 'number', section: 'advanced', min: 1, step: 1 },
       { key: 'rag_hybrid_vector_candidates', labelKey: 'settings_rag_hybrid_vector_candidates', helpKey: 'settings_rag_hybrid_vector_candidates_help', kind: 'number', section: 'advanced', min: 1, step: 1 },
       { key: 'rag_debug_indexing', labelKey: 'settings_rag_debug_indexing', helpKey: 'settings_rag_debug_indexing_help', kind: 'checkbox', section: 'advanced' },
@@ -146,17 +142,50 @@ const SECTIONS: SectionSpec[] = [
   },
 ]
 
-const ALL_FIELDS = SECTIONS.flatMap(section => section.fields)
-const VISIBLE_SECTIONS = SECTIONS.filter(section => section.key !== 'advanced')
-const ADVANCED_SECTION = SECTIONS.find(section => section.key === 'advanced')!
+const ORIGINAL_FIELDS = SECTIONS.flatMap(section => section.fields)
+const extraField = (key: string, kind: FieldKind = 'number', min = 1): FieldSpec => ({
+  key, kind, min, step: 1, labelKey: 'settings_' + key, helpKey: 'settings_' + key + '_help', section: '',
+})
+const ALL_FIELDS = [
+  ...ORIGINAL_FIELDS,
+  { ...extraField('title_parse_mode', 'select'), options: [
+    { value: 'rules_only', labelKey: 'settings_title_rules_only' },
+    { value: 'fallback', labelKey: 'settings_title_fallback' },
+    { value: 'always', labelKey: 'settings_title_always' },
+  ] },
+  extraField('chat_max_parallel'), extraField('chat_batch_limit'),
+  extraField('image_backfill_enabled', 'checkbox'), extraField('image_backfill_dry_run', 'checkbox'),
+  extraField('image_backfill_forum_id'), { ...extraField('image_backfill_auto_interval_seconds', 'number', 0.01), step: 0.01 },
+  extraField('image_backfill_daily_limit'), extraField('image_backfill_max_pages'),
+  extraField('auto_signin_enabled', 'checkbox'), { ...extraField('cookie_refresh_interval_hours', 'number', 0.01), step: 0.01 },
+]
+function section(key: string, fields: string[]): SectionSpec {
+  const original = SECTIONS.find(item => item.key === key)
+  return {
+    key, titleKey: original?.titleKey || 'settings_section_' + key,
+    descKey: original?.descKey || 'settings_section_' + key + '_desc',
+    fields: fields.map(name => ALL_FIELDS.find(field => field.key === name)!).filter(Boolean),
+  }
+}
+const COMMON_SECTIONS = [
+  section('archive', SECTIONS.find(item => item.key === 'archive')!.fields.map(field => field.key)),
+  section('llm', ['llm_base_url', 'llm_api_key', 'llm_model']),
+  section('embedded', ['chat_max_requests', 'chat_max_tools', 'chat_timeout', 'chat_max_parallel', 'chat_batch_limit']),
+  section('export', ['export_default_strategy', 'export_stale_after_hours', 'novel_txt_include_filtered_notes']),
+  section('jobs', ['jobs_enabled', 'worker_parallelism', 'auto_signin_enabled', 'image_backfill_enabled', 'image_backfill_dry_run', 'image_backfill_daily_limit']),
+]
+const ADVANCED_SECTIONS = [
+  section('worker', ['worker_poll_seconds', 'worker_lease_seconds', 'worker_heartbeat_seconds']),
+  section('backfill', ['image_backfill_forum_id', 'image_backfill_auto_interval_seconds', 'image_backfill_max_pages']),
+  section('rag', ['rag_enabled', 'rag_base_url', 'rag_api_key', 'rag_embedding_model', 'rag_embedding_dimensions', 'rag_hybrid_fts_candidates', 'rag_hybrid_vector_candidates']),
+  section('maintenance', ['backup_keep_count', 'cleanup_staging_older_than_hours', 'cookie_refresh_interval_hours', 'novel_txt_debug_markers', 'rag_debug_indexing']),
+  section('hermes', ['chat_backend', 'hermes_host', 'hermes_port', 'hermes_model', 'hermes_api_key', 'chat_streaming_enabled']),
+  section('title', ['title_parse_mode', 'common_scanlation_groups', 'common_authors']),
+]
 
 function valueToInput(field: FieldSpec, payload: SettingsResponse | null) {
   if (!payload) return ''
-  const source = payload.sources[field.key]
-  const locked = payload.locked_fields.includes(field.key)
-  const stored = payload.stored[field.key]
-  const effective = payload.values[field.key]
-  const raw = field.inheritable && source === 'derived' && !locked ? stored : (stored ?? effective)
+  const raw = payload.values[field.key]
   if (field.kind === 'checkbox') return raw ? '1' : '0'
   if (field.kind === 'textarea' || field.kind === 'tags') return Array.isArray(raw) ? raw.join('\n') : String(raw ?? '')
   return raw == null ? '' : String(raw)
@@ -186,7 +215,9 @@ function formatListInput(value: string) {
   return value.split('\n').map(line => line.trim()).filter(Boolean)
 }
 
-function TagEditor({ value, disabled, onChange }: { value: string; disabled: boolean; onChange: (v: string) => void }) {
+function TagEditor({ id, value, disabled, onChange }: { id: string; value: string; disabled: boolean; onChange: (v: string) => void }) {
+  const { t } = useI18n()
+  const [query, setQuery] = useState('')
   const [draft, setDraft] = useState('')
   const tags = formatListInput(value)
 
@@ -209,17 +240,22 @@ function TagEditor({ value, disabled, onChange }: { value: string; disabled: boo
 
   return (
     <div className={`tag-editor ${disabled ? 'tag-editor-disabled' : ''}`}>
-      {tags.map(tag => (
+      <input id={id} value={query} placeholder={t('settings_dictionary_search')} onChange={e => setQuery(e.target.value)} />
+      <small>{tags.length} {t('settings_dictionary_count')}</small>
+      <div className="settings-tag-list">
+      {tags.filter(tag => tag.toLowerCase().includes(query.toLowerCase())).map(tag => (
         <span key={tag} className="tag-chip">
           {tag}
           {!disabled && <button type="button" className="tag-chip-x" onClick={() => remove(tag)} aria-label={`Remove ${tag}`}>&times;</button>}
         </span>
       ))}
+      </div>
       {!disabled && (
         <input
           className="tag-editor-input"
           value={draft}
-          placeholder={tags.length ? '' : '输入后回车添加...'}
+          aria-label={t('settings_dictionary_add')}
+          placeholder={t('settings_dictionary_add')}
           onChange={e => { setDraft(e.target.value) }}
           onKeyDown={handleKey}
           onBlur={() => { if (draft.trim()) add(draft) }}
@@ -272,8 +308,8 @@ function parseFieldValue(
   if (field.kind === 'textarea' || field.kind === 'tags') return formatListInput(raw)
   if (field.kind === 'number') {
     if (!raw.trim()) throw new Error(t('settings_required_value', { label: t(field.labelKey) }))
-    const parsed = field.step && field.step < 1 ? Number.parseFloat(raw) : Number.parseInt(raw, 10)
-    if (Number.isNaN(parsed)) throw new Error(t('settings_invalid_number', { label: t(field.labelKey) }))
+    const parsed = Number(raw)
+    if (!Number.isFinite(parsed) || ((field.step || 1) >= 1 && !Number.isInteger(parsed)) || (field.min !== undefined && parsed < field.min) || (field.max !== undefined && parsed > field.max)) throw new Error(t('settings_invalid_number', { label: t(field.labelKey) }))
     return parsed
   }
   if (field.kind === 'select') {
@@ -284,19 +320,6 @@ function parseFieldValue(
   const trimmed = raw.trim()
   if (!trimmed && !field.inheritable) throw new Error(t('settings_required_value', { label: t(field.labelKey) }))
   return trimmed
-}
-
-function restartTargetsLabel(
-  summary: Pick<SettingsUpdateResponse, 'effect_mode_summary' | 'restart_targets'>,
-  t: (key: string, vars?: Record<string, string | number>) => string,
-) {
-  if (summary.effect_mode_summary === 'restart_daemon_web') return t('settings_effect_restart_daemon_web')
-  if (summary.effect_mode_summary === 'restart_web') return t('settings_effect_restart_web')
-  if (summary.effect_mode_summary === 'restart_daemon') return t('settings_effect_restart_daemon')
-  if (summary.restart_targets.includes('daemon') && summary.restart_targets.includes('web')) return t('settings_effect_restart_daemon_web')
-  if (summary.restart_targets.includes('web')) return t('settings_effect_restart_web')
-  if (summary.restart_targets.includes('daemon')) return t('settings_effect_restart_daemon')
-  return t('settings_effect_immediate')
 }
 
 function savedMessage(
@@ -324,6 +347,7 @@ function SettingsSection({
   saveSection,
   renderModelSelect,
   modelError,
+  feedback,
 }: {
   section: SectionSpec
   payload: SettingsResponse
@@ -333,8 +357,10 @@ function SettingsSection({
   saveSection: (section: SectionSpec) => Promise<void>
   renderModelSelect: (field: FieldSpec, locked: boolean) => JSX.Element
   modelError: string | null
+  feedback?: { error: boolean; text: string }
 }) {
   const { t } = useI18n()
+  const dirtyCount = changedFieldsForSection(section, payload, formValues).length
 
   return (
     <section className="panel settings-section">
@@ -342,25 +368,27 @@ function SettingsSection({
         <div>
           <div className="settings-section-title-row">
             <h3 className="settings-section-title">{t(section.titleKey)}</h3>
+            {dirtyCount > 0 && <Badge status="warn">{t('settings_dirty_count', { count: dirtyCount })}</Badge>}
             <Badge status={sectionSummaryKey(section, payload) === 'settings_effect_immediate' ? 'ok' : 'warn'}>
               {t(sectionSummaryKey(section, payload))}
             </Badge>
           </div>
           <p className="settings-copy">{t(section.descKey)}</p>
         </div>
-        <button type="button" className="btn-primary settings-section-save" onClick={() => void saveSection(section)} disabled={saving}>
+        <button type="button" className="btn-primary settings-section-save" onClick={() => void saveSection(section)} disabled={saving || dirtyCount === 0}>
           {saving ? t('running') : t('save')}
         </button>
       </div>
+      {feedback && <div role={feedback.error ? 'alert' : 'status'} className={`settings-note ${feedback.error ? 'settings-note-error' : 'settings-note-ok'}`}>{feedback.text}</div>}
       <div className="settings-grid">
         {section.fields.map(field => {
-          const locked = payload.locked_fields.includes(field.key)
+          const locked = payload.locked_fields.includes(field.key) || Boolean(payload.readonly_fields?.includes(field.key))
           const source = payload.sources[field.key] || 'default'
           const effect = payload.effects[field.key] || 'immediate'
           return (
             <div key={field.key} className={`settings-field settings-field-${field.kind}`} style={field.fullWidth ? { gridColumn: '1 / -1' } : undefined}>
               <div className="settings-field-head">
-                <span className="settings-field-label">{t(field.labelKey)}</span>
+                <label htmlFor={`setting-${field.key}`} className="settings-field-label">{t(field.labelKey)}</label>
                 <div className="settings-field-badges">
                   <Badge status={effectBadgeStatus(effect)}>{t(effectLabelKey(effect))}</Badge>
                   {locked && <Badge status="warn">{t('settings_locked')}</Badge>}
@@ -368,12 +396,14 @@ function SettingsSection({
               </div>
               {field.kind === 'tags' ? (
                 <TagEditor
+                  id={`setting-${field.key}`}
                   value={formValues[field.key] || ''}
                   disabled={locked}
                   onChange={v => setFormValues(prev => ({ ...prev, [field.key]: v }))}
                 />
               ) : field.kind === 'textarea' ? (
                 <textarea
+                  id={`setting-${field.key}`}
                   rows={field.rows || 4}
                   value={formValues[field.key] || ''}
                   disabled={locked}
@@ -385,6 +415,7 @@ function SettingsSection({
                   ? renderModelSelect(field, locked)
                   : (
                     <select
+                      id={`setting-${field.key}`}
                       value={formValues[field.key] || ''}
                       disabled={locked}
                       onChange={e => setFormValues(v => ({ ...v, [field.key]: e.target.value }))}
@@ -397,6 +428,7 @@ function SettingsSection({
               ) : field.kind === 'checkbox' ? (
                 <label className="settings-check">
                   <input
+                    id={`setting-${field.key}`}
                     type="checkbox"
                     checked={(formValues[field.key] || '0') === '1'}
                     disabled={locked}
@@ -406,6 +438,7 @@ function SettingsSection({
                 </label>
               ) : (
                 <input
+                  id={`setting-${field.key}`}
                   type={field.kind === 'password' ? 'password' : field.kind === 'number' ? 'number' : 'text'}
                   min={field.min}
                   max={field.max}
@@ -422,7 +455,11 @@ function SettingsSection({
               </small>
               <small className="settings-source">
                 {t('settings_current_source')}: {sourceLabel(t, source)}
+                {field.kind === 'password' && payload.configured?.[field.key] && ` · ${t('settings_secret_configured')}`}
               </small>
+              {payload.pending_fields?.includes(field.key) && field.kind !== 'password' && <small className="settings-source">
+                {t('settings_active_value')}: {String(payload.active_values?.[field.key] ?? '—')} · {t('settings_pending_fields')}
+              </small>}
               {field.key === 'llm_model' && modelError && <small className="settings-source settings-source-error">{modelError}</small>}
             </div>
           )
@@ -432,309 +469,238 @@ function SettingsSection({
   )
 }
 
-export function Settings() {
+export function Settings({ advanced = false }: { advanced?: boolean }) {
   const { t } = useI18n()
   const [payload, setPayload] = useState<SettingsResponse | null>(null)
   const [formValues, setFormValues] = useState<Record<string, string>>({})
   const [modelOptions, setModelOptions] = useState<string[]>([])
   const [modelLoading, setModelLoading] = useState(false)
-  const [modelLoaded, setModelLoaded] = useState(false)
   const [modelError, setModelError] = useState<string | null>(null)
-  const [advancedOpen, setAdvancedOpen] = useState(false)
   const modelLoadLock = useRef(false)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
-  const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [authRequired, setAuthRequired] = useState(false)
+  const [sessionProtected, setSessionProtected] = useState(true)
+  const [sessionAvailable, setSessionAvailable] = useState(true)
   const [accessToken, setAccessToken] = useState('')
+  const [showToken, setShowToken] = useState(false)
   const [unlocking, setUnlocking] = useState(false)
+  const [feedback, setFeedback] = useState<Record<string, { error: boolean; text: string }>>({})
+  const [layoutDirty, setLayoutDirty] = useState(false)
+  const [layoutReset, setLayoutReset] = useState(0)
+  const dirty = layoutDirty || (payload ? ALL_FIELDS.some(field => changedFieldsForSection({ key: '', titleKey: '', descKey: '', fields: [field] }, payload, formValues).length > 0) : false)
 
+  const handleError = (e: unknown) => {
+    const issue = e as Error & { code?: string }
+    if (issue.code === 'SETTINGS_AUTH_REQUIRED') {
+      setAuthRequired(true)
+      setError(t('settings_session_expired'))
+    } else setError(issue.message || t('error'))
+  }
+  const refresh = async (preserveDraft = false) => {
+    const next = await api.settings()
+    if (!preserveDraft) {
+      setPayload(next)
+      setFormValues(Object.fromEntries(ALL_FIELDS.map(field => [field.key, valueToInput(field, next)])))
+      setLayoutDirty(false)
+      setLayoutReset(value => value + 1)
+    }
+    const session = await api.settingsSession()
+    setSessionProtected(session.required)
+    setSessionAvailable(session.available !== false)
+  }
   useEffect(() => {
     let active = true
-    api.settings().then(next => {
+    Promise.all([api.settings(), api.settingsSession()]).then(([next, session]) => {
       if (!active) return
       setPayload(next)
-      const initial: Record<string, string> = {}
-      ALL_FIELDS.forEach(field => {
-        initial[field.key] = valueToInput(field, next)
-      })
-      setFormValues(initial)
-      setLoading(false)
-    }).catch((e: Error) => {
+      setSessionProtected(session.required)
+      setFormValues(Object.fromEntries(ALL_FIELDS.map(field => [field.key, valueToInput(field, next)])))
+    }).catch(async e => {
       if (!active) return
-      setError(e.message)
-      setAuthRequired((e as Error & { code?: string }).code === 'CHAT_AUTH_REQUIRED')
-      setLoading(false)
-    })
+      handleError(e)
+      try {
+        const session = await api.settingsSession()
+        if (active) setSessionAvailable(session.available !== false)
+      } catch { /* The original request error remains visible. */ }
+    }).finally(() => { if (active) setLoading(false) })
     return () => { active = false }
   }, [])
+  useEffect(() => {
+    if (!dirty) return
+    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }
+    const currentUrl = location.href
+    const resetDraft = () => {
+      setFormValues(Object.fromEntries(ALL_FIELDS.map(field => [field.key, valueToInput(field, payload)])))
+      setLayoutDirty(false)
+      setLayoutReset(value => value + 1)
+    }
+    const guardHistory = () => {
+      if (!window.confirm(t('settings_discard_prompt'))) history.pushState(null, '', currentUrl)
+      else resetDraft()
+    }
+    const guard = (event: MouseEvent) => {
+      const target = event.target as Element
+      const link = target.closest('a[href]') as HTMLAnchorElement | null
+      if (link && link.origin === location.origin && link.pathname !== location.pathname) {
+        if (!window.confirm(t('settings_discard_prompt'))) {
+          event.preventDefault(); event.stopPropagation()
+        } else resetDraft()
+      }
+    }
+    window.addEventListener('beforeunload', warn)
+    window.addEventListener('popstate', guardHistory)
+    document.addEventListener('click', guard, true)
+    return () => { window.removeEventListener('beforeunload', warn); window.removeEventListener('popstate', guardHistory); document.removeEventListener('click', guard, true) }
+  }, [dirty, t, payload])
 
   const loadModels = async () => {
-    if (modelLoadLock.current || modelLoaded) return
-    modelLoadLock.current = true
-    setModelLoading(true)
-    setModelError(null)
-    try {
-      const result = await api.settingsModels()
-      setModelOptions(result.models)
-      setModelLoaded(true)
-    } catch (e: any) {
-      setModelError(e?.message || String(e))
-    } finally {
-      modelLoadLock.current = false
-      setModelLoading(false)
-    }
+    if (modelLoadLock.current) return
+    modelLoadLock.current = true; setModelLoading(true); setModelError(null)
+    try { setModelOptions((await api.settingsModels({ base_url: formValues.llm_base_url || '', api_key: formValues.llm_api_key || '' })).models) }
+    catch (e) { setModelError((e as Error).message); handleError(e) }
+    finally { modelLoadLock.current = false; setModelLoading(false) }
   }
-
-  const currentModels = (() => {
-    const current = formValues.llm_model || ''
-    return Array.from(new Set([current, ...modelOptions].filter(Boolean)))
-  })()
-
   const renderModelSelect = (field: FieldSpec, locked: boolean) => (
     <div className="settings-select-wrap">
-      <select
-        value={formValues[field.key] || ''}
-        disabled={locked}
-        onMouseDown={() => { void loadModels() }}
-        onFocus={() => { void loadModels() }}
-        onChange={e => setFormValues(v => ({ ...v, [field.key]: e.target.value }))}
-      >
-        {modelLoading ? (
-          <option value="">{t('settings_models_loading')}</option>
-        ) : currentModels.length > 0 ? (
-          currentModels.map(option => (
-            <option key={option} value={option}>{option}</option>
-          ))
-        ) : (
-          <option value="">{t('settings_models_empty')}</option>
-        )}
-      </select>
+      <input id={`setting-${field.key}`} list="settings-model-options" value={formValues[field.key] || ''} disabled={locked}
+        onChange={e => setFormValues(v => ({ ...v, [field.key]: e.target.value }))} />
+      <datalist id="settings-model-options">{modelOptions.map(model => <option key={model} value={model} />)}</datalist>
       <button type="button" className="btn-subtle settings-model-refresh" onClick={() => void loadModels()} disabled={locked || modelLoading}>
         {modelLoading ? t('loading') : t('settings_models_refresh')}
       </button>
     </div>
   )
-
-  const refresh = async () => {
-    const next = await api.settings()
-    setPayload(next)
-    const initial: Record<string, string> = {}
-    ALL_FIELDS.forEach(field => {
-      initial[field.key] = valueToInput(field, next)
-    })
-    setFormValues(initial)
-  }
-
-  const saveSection = async (section: SectionSpec) => {
+  const saveSection = async (current: SectionSpec) => {
     if (!payload) return
-    const changedFields = changedFieldsForSection(section, payload, formValues)
-    if (changedFields.length === 0) {
-      setMessage(t('settings_no_changes'))
-      setError(null)
-      return
-    }
-
-    const changedEffects = changedFields.map(field => payload.effects[field.key] || 'immediate')
-    const requiresRestart = changedEffects.some(mode => mode !== 'immediate')
-    if (requiresRestart) {
-      const restartTargets = Array.from(new Set(changedEffects.flatMap(mode => {
-        if (mode === 'restart_daemon_web') return ['daemon', 'web']
-        if (mode === 'restart_daemon') return ['daemon']
-        if (mode === 'restart_web') return ['web']
-        return []
-      })))
-      const confirmed = window.confirm(t('settings_restart_required_prompt', {
-        section: t(section.titleKey),
-        targets: restartTargetsLabel(
-          {
-            effect_mode_summary: restartTargets.includes('daemon') && restartTargets.includes('web')
-              ? 'restart_daemon_web'
-              : restartTargets.includes('web')
-                ? 'restart_web'
-                : 'restart_daemon',
-            restart_targets: restartTargets as Array<'daemon' | 'web'>,
-          },
-          t,
-        ),
-      }))
-      if (!confirmed) return
-    }
-
-    setSaving(true)
-    setError(null)
-    setMessage(null)
+    const changedFields = changedFieldsForSection(current, payload, formValues)
+    if (!changedFields.length) return
+    setSaving(true); setError(null)
     try {
       const values: Record<string, unknown> = {}
-      for (const field of section.fields) {
-        if (payload.locked_fields.includes(field.key)) continue
-        values[field.key] = parseFieldValue(field, formValues[field.key] ?? '', t)
-      }
-      const next = await api.updateSettings(values)
+      for (const field of changedFields) values[field.key] = parseFieldValue(field, formValues[field.key] ?? '', t)
+      const next = await api.updateSettings(values, payload.revision)
       setPayload(next)
-      setFormValues(current => {
-        const nextValues = { ...current }
-        section.fields.forEach(field => {
-          nextValues[field.key] = valueToInput(field, next)
-        })
-        return nextValues
+      setFormValues(previous => {
+        const updated = { ...previous }
+        current.fields.forEach(field => { updated[field.key] = valueToInput(field, next) })
+        return updated
       })
-      setMessage(savedMessage(next, t))
-    } catch (e: any) {
-      setError(e?.message || String(e))
-    } finally {
-      setSaving(false)
-    }
+      setFeedback(previous => ({ ...previous, [current.key]: { error: false, text: savedMessage(next, t) } }))
+    } catch (e) {
+      setFeedback(previous => ({ ...previous, [current.key]: { error: true, text: (e as Error).message } }))
+      handleError(e)
+    } finally { setSaving(false) }
   }
-
+  const unlock = async (event: React.FormEvent) => {
+    event.preventDefault()
+    if (!accessToken.trim() || unlocking) return
+    setUnlocking(true); setError(null)
+    try {
+      await api.loginSettings(accessToken.trim())
+      await refresh(Boolean(payload))
+      setAuthRequired(false); setAccessToken('')
+    } catch (e) { handleError(e) }
+    finally { setUnlocking(false) }
+  }
+  const logout = async () => {
+    if (dirty && !window.confirm(t('settings_discard_prompt'))) return
+    try { await api.logoutSettings(); setPayload(null); setFormValues({}); setAuthRequired(true); setError(null) }
+    catch (e) { handleError(e) }
+  }
   if (loading) return <div className="panel">{t('loading')}</div>
-  if (!payload) return <section className="panel">
-    <h2>{authRequired ? '验证访问令牌' : '无法加载设置'}</h2>
-    <p role="alert">{error || t('error')}</p>
-    {authRequired ? <form onSubmit={async event => {
-      event.preventDefault(); if (!accessToken.trim() || unlocking) return
-      setUnlocking(true)
-      try {
-        sessionStorage.setItem('yamibo.chat.access-token', accessToken.trim())
-        await refresh(); setError(null); setAuthRequired(false); setAccessToken('')
-      } catch (e) { setError((e as Error).message) }
-      finally { setUnlocking(false) }
-    }}>
-      <p>输入你设置的对话访问令牌即可进入设置。它不是模型 API Key，仅保存在当前标签页。</p>
-      <label htmlFor="settings-access-token">对话访问令牌</label>
-      <input id="settings-access-token" type="password" autoComplete="off" value={accessToken} onChange={e => setAccessToken(e.target.value)} disabled={unlocking} />
-      <button className="btn-primary" type="submit" disabled={unlocking || !accessToken.trim()}>{unlocking ? '验证中…' : '验证并打开设置'}</button>
-    </form> : <button className="btn-subtle" onClick={() => void refresh().catch(e => { setError(e.message); setAuthRequired(e.code === 'CHAT_AUTH_REQUIRED') })}>重试</button>}
-  </section>
+  const authView = (
+    <div className="settings-auth-shell">
+      <section className="panel settings-auth">
+        <div className="settings-eyebrow">{t('settings_admin_area')}</div>
+        <h1>{t('settings_auth_title')}</h1>
+        <p className="settings-auth-copy">{payload ? t('settings_session_expired') : t('settings_auth_desc')}</p>
+        <form onSubmit={unlock}>
+          <label htmlFor="settings-access-token">{t('settings_access_token')}</label>
+          <div className="settings-token-input">
+            <input id="settings-access-token" type={showToken ? 'text' : 'password'} autoComplete="off" autoFocus
+              value={accessToken} onChange={e => setAccessToken(e.target.value)} disabled={unlocking || !sessionAvailable} />
+            <button type="button" className="btn-subtle" onClick={() => setShowToken(value => !value)} aria-pressed={showToken}>
+              {t(showToken ? 'settings_hide' : 'settings_show')}
+            </button>
+          </div>
+          {error && <p role="alert" className="settings-note settings-note-error">{error}</p>}
+          {!sessionAvailable && <p role="alert" className="settings-note settings-note-error">{t('settings_session_unavailable')}</p>}
+          <button className="btn-primary" type="submit" disabled={unlocking || !sessionAvailable || !accessToken.trim()}>{t(unlocking ? 'settings_unlocking' : 'settings_enter')}</button>
+        </form>
+        <p className="settings-auth-footnote">{t('settings_session_hint')}</p>
+        <Link to="/chat">{t('settings_back_chat')}</Link>
+      </section>
+    </div>
+  )
+  if (authRequired && !payload) return authView
+  if (!payload) return <section className="panel"><h2>{t('settings_load_failed')}</h2><p role="alert">{error}</p>
+    <button className="btn-subtle" onClick={() => void refresh().catch(handleError)}>{t('refresh')}</button></section>
 
+  const sections = (advanced ? ADVANCED_SECTIONS : COMMON_SECTIONS)
+    .filter(item => item.key !== 'embedded' || formValues.chat_backend === 'embedded')
+    .map(item => ({
+      ...item,
+      fields: item.fields.filter(field => field.key in payload.values)
+        .filter(field => item.key !== 'hermes' || field.key === 'chat_backend' || formValues.chat_backend === 'hermes')
+        .filter(field => item.key !== 'rag' || field.key === 'rag_enabled' || formValues.rag_enabled === '1'),
+    }))
   return (
-    <div className="settings-page">
+    <>
+    {authRequired && authView}
+    <div className="settings-page" style={authRequired ? { display: 'none' } : undefined}>
+      <header className="settings-page-header">
+        <div><div className="settings-eyebrow">{t('settings_workspace')}</div>
+          <h1>{t(advanced ? 'settings_advanced_page' : 'settings_title')}</h1>
+          <p className="settings-copy">{t(advanced ? 'settings_advanced_page_desc' : 'settings_common_desc')}</p>
+        </div>
+        <div className="settings-session-actions">
+          <Badge status={sessionProtected ? 'ok' : 'warn'}>{t(sessionProtected ? 'settings_session_verified' : 'settings_session_unprotected')}</Badge>
+          {sessionProtected && <button type="button" className="btn-subtle" onClick={() => void logout()}>{t('settings_logout')}</button>}
+        </div>
+      </header>
+      <nav className="settings-page-nav" aria-label={t('settings_title')}>
+        <Link className={!advanced ? 'active' : ''} to="/settings" aria-current={!advanced ? 'page' : undefined}>{t('settings_common_page')}</Link>
+        <Link className={advanced ? 'active' : ''} to="/settings/advanced" aria-current={advanced ? 'page' : undefined}>{t('settings_advanced_page')}</Link>
+        <button className="btn-subtle" disabled={saving} onClick={() => {
+          if (dirty && !window.confirm(t('settings_discard_prompt'))) return
+          void refresh().then(() => { setFeedback({}); setError(null) }).catch(handleError)
+        }}>{t('refresh')}</button>
+      </nav>
+      {error && <div role="alert" className="settings-note settings-note-error">{error}</div>}
+      {(payload.pending_fields?.length || 0) > 0 && <div className="settings-note settings-note-ok">{t('settings_pending', { count: payload.pending_fields!.length })}</div>}
       <div className="settings-form">
-        <section className="panel settings-hero">
-          <div>
-            <h2 className="settings-title">{t('settings_title')}</h2>
-            <p className="settings-copy">{t('settings_desc')}</p>
-          </div>
-          <div className="settings-hero-actions">
-            <button type="button" className="btn-subtle" onClick={() => void refresh()} disabled={saving}>{t('refresh')}</button>
-          </div>
-          <div className="settings-legend">
-            <p className="settings-legend-copy">{t('settings_legend_desc')}</p>
-            <div className="settings-legend-items">
-              <Badge status="ok">{t('settings_effect_immediate')}</Badge>
-              <Badge status="warn">{t('settings_effect_restart_daemon')}</Badge>
-              <Badge status="warn">{t('settings_effect_restart_web')}</Badge>
-              <Badge status="warn">{t('settings_effect_restart_daemon_web')}</Badge>
-            </div>
-          </div>
-          {payload.locked_fields.length > 0 && (
-            <div className="settings-warning">
-              <Badge status="warn">{t('settings_env_locked')}</Badge>
-              <span>{t('settings_env_locked_desc', { count: payload.locked_fields.length })}</span>
-            </div>
-          )}
-          {message && <div className="settings-note settings-note-ok">{message}</div>}
-          {error && <div className="settings-note settings-note-error">{error}</div>}
-        </section>
-
-        {VISIBLE_SECTIONS.map(section => (
-          <SettingsSection
-            key={section.key}
-            section={section}
-            payload={payload}
-            formValues={formValues}
-            setFormValues={setFormValues}
-            saving={saving}
-            saveSection={saveSection}
-            renderModelSelect={renderModelSelect}
-            modelError={modelError}
-          />
-        ))}
-
-        <TableLayoutEditor
-          value={payload.values.table_layouts}
-          onSaved={(layouts: TableLayouts) => setPayload(prev => prev ? { ...prev, values: { ...prev.values, table_layouts: layouts }, stored: { ...prev.stored, table_layouts: layouts } } : prev)}
-        />
-
-        <section className="panel settings-footer">
-          <div className="settings-footer-copy">{t('settings_footer_note')}</div>
-        </section>
-
-        <details className="panel settings-section settings-section-advanced" open={advancedOpen} onToggle={e => setAdvancedOpen((e.currentTarget as HTMLDetailsElement).open)}>
-          <summary className="settings-advanced-summary">
-            <div className="settings-section-head">
-              <div>
-                <div className="settings-section-title-row">
-                  <h3 className="settings-section-title">{t('settings_section_advanced')}</h3>
-                  <Badge status={sectionSummaryKey(ADVANCED_SECTION, payload) === 'settings_effect_immediate' ? 'ok' : 'warn'}>
-                    {t(sectionSummaryKey(ADVANCED_SECTION, payload))}
-                  </Badge>
-                </div>
-                <p className="settings-copy">{t('settings_section_advanced_desc')}</p>
-              </div>
-              <button type="button" className="btn-primary settings-section-save" onClick={(e) => { e.preventDefault(); void saveSection(ADVANCED_SECTION) }} disabled={saving}>
-                {saving ? t('running') : t('save')}
-              </button>
-            </div>
-          </summary>
-          <div className="settings-grid">
-            {ADVANCED_SECTION.fields.map(field => {
-              const locked = payload.locked_fields.includes(field.key)
-              const source = payload.sources[field.key] || 'default'
-              const effect = payload.effects[field.key] || 'immediate'
-              return (
-                <div key={field.key} className={`settings-field settings-field-${field.kind}`} style={field.fullWidth ? { gridColumn: '1 / -1' } : undefined}>
-                  <div className="settings-field-head">
-                    <span className="settings-field-label">{t(field.labelKey)}</span>
-                    <div className="settings-field-badges">
-                      <Badge status={effectBadgeStatus(effect)}>{t(effectLabelKey(effect))}</Badge>
-                      {locked && <Badge status="warn">{t('settings_locked')}</Badge>}
-                    </div>
-                  </div>
-                  {field.kind === 'checkbox' ? (
-                    <label className="settings-check">
-                      <input
-                        type="checkbox"
-                        checked={(formValues[field.key] || '0') === '1'}
-                        disabled={locked}
-                        onChange={e => setFormValues(v => ({ ...v, [field.key]: e.target.checked ? '1' : '0' }))}
-                      />
-                      <span>{locked ? t('settings_locked_edit') : t('settings_toggle_hint')}</span>
-                    </label>
-                  ) : field.kind === 'number' ? (
-                    <input
-                      type="number"
-                      min={field.min}
-                      max={field.max}
-                      step={field.step}
-                      value={formValues[field.key] || ''}
-                      disabled={locked}
-                      placeholder={field.placeholderKey ? t(field.placeholderKey) : undefined}
-                      onChange={e => setFormValues(v => ({ ...v, [field.key]: e.target.value }))}
-                    />
-                  ) : (
-                    <input
-                      type={field.kind === 'password' ? 'password' : 'text'}
-                      value={formValues[field.key] || ''}
-                      disabled={locked}
-                      placeholder={field.placeholderKey ? t(field.placeholderKey) : undefined}
-                      onChange={e => setFormValues(v => ({ ...v, [field.key]: e.target.value }))}
-                    />
-                  )}
-                  <small className="settings-help">
-                    {t(field.helpKey)}
-                    {field.inheritable && source === 'derived' && ` · ${t('settings_inherit_from_llm')}`}
-                  </small>
-                  <small className="settings-source">
-                    {t('settings_current_source')}: {sourceLabel(t, source)}
-                  </small>
-                </div>
-              )
-            })}
-          </div>
-        </details>
+        {sections.map(current => <div key={current.key}>
+          <SettingsSection section={current} payload={payload} formValues={formValues} setFormValues={setFormValues}
+            saving={saving} saveSection={saveSection} renderModelSelect={renderModelSelect} modelError={modelError} feedback={feedback[current.key]} />
+          {current.key === 'rag' && formValues.rag_enabled !== '1' && <p className="settings-inline-summary">{t('settings_rag_disabled_summary')} · {String(payload.values.rag_embedding_model || '—')}</p>}
+        </div>)}
+        {advanced && <>
+          <section className="panel settings-section">
+            <h2 className="settings-section-title">{t('settings_security_title')}</h2>
+            <p className="settings-copy">{t('settings_session_hint')}</p>
+            <p className="settings-copy">{t('settings_token_managed')}</p>
+          </section>
+          <section className="panel settings-section">
+            <h2 className="settings-section-title">{t('settings_deployment_title')}</h2>
+            <p className="settings-copy">{t('settings_deployment_desc')}</p>
+            <dl className="settings-deployment">
+              <dt>{t('settings_config_file')}</dt><dd>{payload.config_path}</dd>
+              <dt>Chunker</dt><dd>{payload.chunker_version || '—'}</dd>
+              {['db_backend', 'db_schema', 'db_pool_min', 'db_pool_max', 'db_sslmode'].filter(key => key in payload.values).map(key => <div key={key}><dt>{key}</dt><dd>{String(payload.values[key] ?? '—')}</dd></div>)}
+              <dt>{t('settings_pending_fields')}</dt><dd>{payload.pending_fields?.join(', ') || t('settings_none')}</dd>
+            </dl>
+            <details><summary>{t('settings_locked_summary', { count: payload.locked_fields.length })}</summary>
+              <ul className="settings-lock-list">{payload.locked_fields.map(key => <li key={key}><code>{key}</code><span>{t('settings_source_env')}</span></li>)}</ul>
+            </details>
+          </section>
+          <TableLayoutEditor key={layoutReset} value={payload.values.table_layouts} revision={payload.revision}
+            onDirtyChange={setLayoutDirty} onAuthRequired={handleError} onSaved={setPayload} />
+        </>}
+        {!advanced && <Link className="panel settings-advanced-link" to="/settings/advanced"><div><strong>{t('settings_advanced_page')}</strong><p className="settings-copy">{t('settings_advanced_page_desc')}</p></div><span aria-hidden="true">→</span></Link>}
       </div>
     </div>
+    </>
   )
 }

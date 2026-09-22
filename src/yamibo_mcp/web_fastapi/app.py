@@ -45,25 +45,15 @@ def create_app(settings) -> FastAPI:
     else:
         raise ValueError("chat.backend must be hermes or embedded")
 
+    from yamibo_mcp.web_fastapi.settings_session import install_settings_sessions
+    install_settings_sessions(app, settings)
+
     @app.middleware("http")
-    async def protect_embedded_chat(request: Request, call_next):
-        if getattr(settings, "chat_backend", "hermes") == "embedded" and (request.url.path.startswith("/api/chat/") or request.url.path.startswith("/api/settings")):
-            import hmac
+    async def protect_chat_origin(request: Request, call_next):
+        if request.url.path.startswith("/api/chat/"):
             origin = request.headers.get("origin")
-            # A TLS-terminating proxy may forward the same host over HTTP.
-            # Permit that scheme change only with token protection still enforced below.
-            allowed_origins = {f"{request.url.scheme}://{request.url.netloc}"}
-            if settings.chat_access_token and request.url.scheme == "http":
-                allowed_origins.add(f"https://{request.url.netloc}")
-            if origin and origin not in allowed_origins:
+            if origin and origin not in {f"{request.url.scheme}://{request.url.netloc}", f"https://{request.url.netloc}"}:
                 return JSONResponse(status_code=403, content={"error": {"code": "CHAT_ORIGIN_DENIED", "message": "跨站请求被拒绝"}})
-            token = settings.chat_access_token
-            if token:
-                supplied = request.headers.get("Authorization", "").removeprefix("Bearer ")
-                if not hmac.compare_digest(supplied, token):
-                    return JSONResponse(status_code=401, content={"error": {"code": "CHAT_AUTH_REQUIRED", "message": "需要对话访问令牌"}})
-            elif not request.client or request.client.host not in {"127.0.0.1", "::1", "testclient"}:
-                return JSONResponse(status_code=403, content={"error": {"code": "CHAT_AUTH_REQUIRED", "message": "远程对话请配置 YAMIBO_CHAT_ACCESS_TOKEN"}})
         return await call_next(request)
 
     @app.on_event("startup")

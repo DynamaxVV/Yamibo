@@ -1,12 +1,8 @@
 const BASE = '/api'
-export function chatHeaders(): Record<string, string> {
-  const token = sessionStorage.getItem('yamibo.chat.access-token')
-  return token ? { Authorization: `Bearer ${token}` } : {}
-}
-
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...((path.startsWith('/chat/') || path.startsWith('/settings')) ? chatHeaders() : {}) },
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
     ...init,
   })
   if (!res.ok) {
@@ -19,7 +15,8 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
 async function postJson<T>(path: string, body: Record<string, unknown>): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...((path.startsWith('/chat/') || path.startsWith('/settings')) ? chatHeaders() : {}) },
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
   if (!res.ok) {
@@ -466,6 +463,11 @@ export interface RagOverview {
 }
 
 export interface SettingsResponse {
+  active_values?: Record<string, unknown>
+  pending_fields?: string[]
+  readonly_fields?: string[]
+  chunker_version?: string
+  revision?: string
   config_path: string
   values: Record<string, unknown>
   stored: Record<string, unknown>
@@ -779,8 +781,14 @@ export const api = {
   },
   ragOverview: () => fetchJson<RagOverview>('/rag/overview'),
   settings: () => fetchJson<SettingsResponse>('/settings'),
-  settingsModels: () => fetchJson<SettingsModelsResponse>('/settings/models'),
-  updateSettings: (values: Record<string, unknown>) => postJson<SettingsUpdateResponse>('/settings', { values }),
+  settingsLayouts: () => fetchJson<{ table_layouts: TableLayouts }>('/settings-layouts'),
+  settingsSession: () => fetchJson<{ required: boolean; authenticated: boolean; available?: boolean }>('/settings/session'),
+  loginSettings: (token: string) => postJson<{ authenticated: boolean }>('/settings/session', { token }),
+  logoutSettings: () => fetchJson<{ authenticated: boolean }>('/settings/session', { method: 'DELETE' }),
+  settingsModels: (draft?: { base_url: string; api_key: string }) => draft
+    ? postJson<SettingsModelsResponse>('/settings/models', draft)
+    : fetchJson<SettingsModelsResponse>('/settings/models'),
+  updateSettings: (values: Record<string, unknown>, revision?: string) => postJson<SettingsUpdateResponse>('/settings', { values, ...(revision ? { revision } : {}) }),
   testHermesConnection: () => postJson<{ connected: boolean; endpoint: string; label: string; status: number; stdout: string; stderr: string; request?: unknown }>('/settings/hermes-test', {}),
   ragThreads: (params?: { q?: string; forum_id?: number | 'all'; index_state?: string; rag_status?: string; page?: number; page_size?: number }) => {
     const qs = new URLSearchParams()
@@ -862,7 +870,7 @@ export const api = {
   stopChatRun: (id: string) => postJson<{ status: 'stopping' }>(`/chat/runs/${encodeURIComponent(id)}/stop`, {}),
   approveChatRun: (id: string, choice: import('../types/chat').ApprovalChoice, resolve_all = false, approval_id?: string, plan_hash?: string) => postJson<{ status: string }>(`/chat/runs/${encodeURIComponent(id)}/approval`, { choice, resolve_all, approval_id, plan_hash }),
   openChatRunEvents: async (id: string, lastEventId?: string, signal?: AbortSignal) => {
-    const headers: HeadersInit = { Accept: 'text/event-stream', ...chatHeaders() }
+    const headers: HeadersInit = { Accept: 'text/event-stream' }
     if (lastEventId) headers['Last-Event-ID'] = lastEventId
     const res = await fetch(`${BASE}/chat/runs/${encodeURIComponent(id)}/events`, { headers, signal })
     if (!res.ok || !res.body) { const payload = await res.json().catch(() => null); throw toApiError(payload, res.status, res.statusText) }

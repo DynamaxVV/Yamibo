@@ -11,6 +11,8 @@ if TYPE_CHECKING:
 
 from yamibo_mcp.storage.atomic import atomic_write_text
 
+RAG_CHUNKER_VERSION = "anime-chunker-1.2"
+
 def _project_root() -> Path:
     env_root = os.environ.get("YAMIBO_PROJECT_ROOT")
     if env_root:
@@ -117,6 +119,9 @@ class Settings:
     chat_max_parallel: int = 2
     chat_batch_limit: int = 20
     chat_access_token: str | None = None
+    settings_access_token: str | None = None
+    auto_signin_enabled: bool = True
+    title_parse_mode: str | None = None
 
 
 def _read_local_config(path: Path) -> dict[str, object]:
@@ -288,6 +293,15 @@ def load_settings() -> Settings:
         if _cfg_value(config, "llm", "api_key", None) in {None, ""}
         else str(_cfg_value(config, "llm", "api_key", None))
     )
+    title_parse_mode = os.environ.get("YAMIBO_TITLE_PARSE_MODE")
+    if not title_parse_mode and "YAMIBO_TITLE_PARSE_USE_LLM" in os.environ:
+        title_parse_mode = (
+            "always"
+            if str(os.environ["YAMIBO_TITLE_PARSE_USE_LLM"]).lower() in {"1", "true", "yes", "on"}
+            else "rules_only"
+        )
+    if not title_parse_mode:
+        title_parse_mode = _cfg_value(config, "title", "parse_mode", None)
     return Settings(
         project_root=root,
         config_path=config_path,
@@ -401,6 +415,10 @@ def load_settings() -> Settings:
         chat_max_parallel=int(os.environ.get("YAMIBO_CHAT_MAX_PARALLEL", _cfg_value(config, "chat", "max_parallel", 2))),
         chat_batch_limit=int(os.environ.get("YAMIBO_CHAT_BATCH_LIMIT", _cfg_value(config, "chat", "batch_limit", 20))),
         chat_access_token=os.environ.get("YAMIBO_CHAT_ACCESS_TOKEN") or _cfg_value(config, "chat", "access_token", None),
+        settings_access_token=(os.environ.get("YAMIBO_SETTINGS_ACCESS_TOKEN") or os.environ.get("YAMIBO_CHAT_ACCESS_TOKEN")
+                               or _cfg_value(config, "security", "access_token", None) or _cfg_value(config, "chat", "access_token", None)),
+        auto_signin_enabled=str(os.environ.get("YAMIBO_AUTO_SIGNIN_ENABLED", _cfg_value(config, "worker", "auto_signin_enabled", True))).lower() in {"1", "true", "yes", "on"},
+        title_parse_mode=title_parse_mode,
         llm_base_url=llm_base_url,
         llm_api_key=llm_api_key,
         llm_model=str(
@@ -474,12 +492,7 @@ def load_settings() -> Settings:
                 str(_cfg_value(config, "rag", "embedding_dimensions", 512)),
             )
         ),
-        rag_chunker_version=str(
-            os.environ.get(
-                "YAMIBO_RAG_CHUNKER_VERSION",
-                str(_cfg_value(config, "rag", "chunker_version", "rag-chunker-v1")),
-            )
-        ),
+        rag_chunker_version=RAG_CHUNKER_VERSION,
         rag_min_chunk_chars=int(
             os.environ.get(
                 "YAMIBO_RAG_MIN_CHUNK_CHARS",

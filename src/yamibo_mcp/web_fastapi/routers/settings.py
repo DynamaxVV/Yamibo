@@ -2,16 +2,21 @@ from __future__ import annotations
 
 import json
 import os
+import math
+import hashlib
+from threading import RLock
+from urllib.parse import urlsplit
 import urllib.request
 from copy import deepcopy
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from yamibo_mcp.config import Settings, load_settings, read_local_config, write_local_config
+from yamibo_mcp.config import RAG_CHUNKER_VERSION, Settings, load_settings, read_local_config, write_local_config
 from yamibo_mcp.web_fastapi.deps import get_chat_service, get_settings
 from yamibo_mcp.services.web_chat import ChatService
 
 router = APIRouter(prefix="/api", tags=["settings"])
+_CONFIG_LOCK = RLock()
 
 TABLE_LAYOUT_DEFAULTS = {
     "threads": [
@@ -39,7 +44,17 @@ TABLE_LAYOUT_DEFAULTS = {
 
 SETTINGS_FIELD_SPECS = {
     "chat_backend": {"section": "chat", "key": "backend", "type": "string", "default": "hermes", "env": "YAMIBO_CHAT_BACKEND", "effect": "restart_web"},
-    "chat_access_token": {"section": "chat", "key": "access_token", "type": "string", "default": None, "env": "YAMIBO_CHAT_ACCESS_TOKEN", "sensitive": True, "effect": "restart_web"},
+    "settings_access_token": {"section": "security", "key": "access_token", "type": "string", "default": None, "env": "YAMIBO_SETTINGS_ACCESS_TOKEN", "sensitive": True, "effect": "restart_web", "readonly": True},
+    "chat_max_parallel": {"section": "chat", "key": "max_parallel", "type": "int", "default": 2, "env": "YAMIBO_CHAT_MAX_PARALLEL", "effect": "restart_web"},
+    "chat_batch_limit": {"section": "chat", "key": "batch_limit", "type": "int", "default": 20, "env": "YAMIBO_CHAT_BATCH_LIMIT", "effect": "restart_web"},
+    "auto_signin_enabled": {"section": "worker", "key": "auto_signin_enabled", "type": "bool", "default": True, "env": "YAMIBO_AUTO_SIGNIN_ENABLED", "effect": "immediate"},
+    "cookie_refresh_interval_hours": {"section": "yamibo", "key": "cookie_refresh_interval_hours", "type": "float", "default": 12, "env": "YAMIBO_COOKIE_REFRESH_INTERVAL_HOURS", "effect": "restart_daemon"},
+    "image_backfill_enabled": {"section": "yamibo", "key": "image_backfill_enabled", "type": "bool", "default": True, "env": "YAMIBO_IMAGE_BACKFILL_ENABLED", "effect": "immediate"},
+    "image_backfill_dry_run": {"section": "yamibo", "key": "image_backfill_dry_run", "type": "bool", "default": True, "env": "YAMIBO_IMAGE_BACKFILL_DRY_RUN", "effect": "immediate"},
+    "image_backfill_forum_id": {"section": "yamibo", "key": "image_backfill_forum_id", "type": "int", "default": 5, "env": "YAMIBO_IMAGE_BACKFILL_FORUM_ID", "effect": "immediate"},
+    "image_backfill_daily_limit": {"section": "yamibo", "key": "image_backfill_daily_limit", "type": "int", "default": 100, "env": "YAMIBO_IMAGE_BACKFILL_DAILY_LIMIT", "effect": "immediate"},
+    "image_backfill_auto_interval_seconds": {"section": "yamibo", "key": "image_backfill_auto_interval_seconds", "type": "float", "default": 60, "env": "YAMIBO_IMAGE_BACKFILL_AUTO_INTERVAL_SECONDS", "effect": "immediate"},
+    "image_backfill_max_pages": {"section": "yamibo", "key": "image_backfill_max_pages", "type": "int", "default": 1, "env": "YAMIBO_IMAGE_BACKFILL_MAX_PAGES", "effect": "immediate"},
     "chat_max_requests": {"section": "chat", "key": "max_requests", "type": "int", "default": 20, "env": "YAMIBO_CHAT_MAX_REQUESTS", "effect": "restart_web"},
     "chat_max_tools": {"section": "chat", "key": "max_tools", "type": "int", "default": 50, "env": "YAMIBO_CHAT_MAX_TOOLS", "effect": "restart_web"},
     "chat_timeout": {"section": "chat", "key": "timeout", "type": "int", "default": 900, "env": "YAMIBO_CHAT_TIMEOUT", "effect": "restart_web"},
@@ -75,13 +90,10 @@ SETTINGS_FIELD_SPECS = {
     "rag_api_key": {"section": "rag", "key": "api_key", "type": "string", "default": None, "env": "YAMIBO_RAG_API_KEY", "inherit": "llm_api_key", "sensitive": True, "effect": "restart_daemon_web"},
     "rag_embedding_model": {"section": "rag", "key": "embedding_model", "type": "string", "default": "text-embedding-3-small", "env": "YAMIBO_RAG_EMBEDDING_MODEL", "effect": "restart_daemon_web"},
     "rag_embedding_dimensions": {"section": "rag", "key": "embedding_dimensions", "type": "int", "default": 512, "env": "YAMIBO_RAG_EMBEDDING_DIMENSIONS", "effect": "restart_daemon_web"},
-    "rag_chunker_version": {"section": "rag", "key": "chunker_version", "type": "string", "default": "rag-chunker-v1", "env": "YAMIBO_RAG_CHUNKER_VERSION", "effect": "restart_daemon"},
-    "rag_min_chunk_chars": {"section": "rag", "key": "min_chunk_chars", "type": "int", "default": 20, "env": "YAMIBO_RAG_MIN_CHUNK_CHARS", "effect": "restart_daemon"},
-    "rag_max_chunk_chars": {"section": "rag", "key": "max_chunk_chars", "type": "int", "default": 900, "env": "YAMIBO_RAG_MAX_CHUNK_CHARS", "effect": "restart_daemon"},
     "rag_hybrid_fts_candidates": {"section": "rag", "key": "hybrid_fts_candidates", "type": "int", "default": 50, "env": "YAMIBO_RAG_HYBRID_FTS_CANDIDATES", "effect": "immediate"},
     "rag_hybrid_vector_candidates": {"section": "rag", "key": "hybrid_vector_candidates", "type": "int", "default": 50, "env": "YAMIBO_RAG_HYBRID_VECTOR_CANDIDATES", "effect": "immediate"},
     "rag_debug_indexing": {"section": "rag", "key": "debug_indexing", "type": "bool", "default": False, "env": "YAMIBO_RAG_DEBUG_INDEXING", "effect": "restart_daemon"},
-    "title_parse_use_llm": {"section": "title", "key": "use_llm", "type": "bool", "default": True, "env": "YAMIBO_TITLE_PARSE_USE_LLM", "effect": "restart_daemon"},
+    "title_parse_mode": {"section": "title", "key": "parse_mode", "type": "string", "default": "always", "env": "YAMIBO_TITLE_PARSE_MODE", "effect": "restart_daemon"},
     "common_scanlation_groups": {"section": "title", "key": "common_scanlation_groups", "type": "list", "default": [], "env": None, "effect": "restart_daemon"},
     "common_authors": {"section": "title", "key": "common_authors", "type": "list", "default": [], "env": None, "effect": "restart_daemon"},
     "export_default_strategy": {"section": "export", "key": "default_strategy", "type": "string", "default": "cache_only", "env": "YAMIBO_EXPORT_DEFAULT_STRATEGY", "effect": "restart_daemon_web"},
@@ -113,7 +125,7 @@ def _setting_value_from_raw(raw_config: dict, spec: dict):
     value = section.get(spec["key"])
     if spec["type"] == "json":
         return deepcopy(value) if isinstance(value, (dict, list)) else None
-    if value in {"", None}:
+    if value is None or value == "":
         return None
     if spec["type"] == "list":
         if isinstance(value, list):
@@ -136,6 +148,8 @@ def _setting_value_from_raw(raw_config: dict, spec: dict):
 
 def _setting_effective_value(settings: Settings, name: str):
     value = getattr(settings, name, SETTINGS_FIELD_SPECS[name].get("default"))
+    if name == "title_parse_mode" and value is None:
+        return "always" if getattr(settings, "title_parse_use_llm", True) else "rules_only"
     if isinstance(value, tuple):
         return list(value)
     return value
@@ -148,8 +162,14 @@ def _settings_payload(settings: Settings) -> dict:
     sources: dict = {}
     locked_fields: list[str] = []
     configured: dict[str, bool] = {}
+    active_values: dict = {}
+    pending_fields: list[str] = []
     for name, spec in SETTINGS_FIELD_SPECS.items():
         env_name = spec.get("env")
+        if name == "settings_access_token" and not os.environ.get(env_name):
+            env_name = "YAMIBO_CHAT_ACCESS_TOKEN"
+        if name == "title_parse_mode" and not os.environ.get(env_name) and "YAMIBO_TITLE_PARSE_USE_LLM" in os.environ:
+            env_name = "YAMIBO_TITLE_PARSE_USE_LLM"
         if env_name and os.environ.get(env_name) not in {None, ""}:
             sources[name] = "env"
             locked_fields.append(name)
@@ -160,6 +180,10 @@ def _settings_payload(settings: Settings) -> dict:
         else:
             sources[name] = "default"
         stored_value = _setting_value_from_raw(raw_config, spec)
+        if name == "settings_access_token" and stored_value is None:
+            stored_value = raw_config.get("chat", {}).get("access_token")
+            if stored_value and sources[name] == "default":
+                sources[name] = "file"
         effective_value = _setting_effective_value(settings, name)
         if spec.get("sensitive"):
             configured[name] = effective_value not in {None, ""} or stored_value not in {None, ""} or (env_name and os.environ.get(env_name) not in {None, ""}) or bool(spec.get("inherit") and configured.get(spec["inherit"]))
@@ -167,7 +191,10 @@ def _settings_payload(settings: Settings) -> dict:
             values[name] = None
         else:
             stored[name] = stored_value
-            values[name] = stored[name] if spec.get("ui_only") and stored[name] is not None else (stored[name] if spec["type"] == "json" and stored[name] is not None else effective_value)
+            values[name] = stored_value if sources[name] == "file" and stored_value is not None else effective_value
+        active_values[name] = None if spec.get("sensitive") else effective_value
+        if not spec.get("sensitive") and values[name] != active_values[name]:
+            pending_fields.append(name)
 
     try:
         from yamibo_mcp.services.title_hints import load_title_hints
@@ -182,22 +209,42 @@ def _settings_payload(settings: Settings) -> dict:
         pass
 
     return {
+        "revision": hashlib.sha256(json.dumps({"config": raw_config, "authors": values.get("common_authors"), "groups": values.get("common_scanlation_groups")}, sort_keys=True).encode()).hexdigest(),
         "config_path": str(settings.config_path),
         "values": values,
         "stored": stored,
         "sources": sources,
         "locked_fields": locked_fields,
         "configured": configured,
+        "active_values": active_values,
+        "pending_fields": pending_fields,
+        "readonly_fields": [name for name, spec in SETTINGS_FIELD_SPECS.items() if spec.get("readonly") or spec["section"] == "database"],
+        "chunker_version": RAG_CHUNKER_VERSION,
         "effects": {name: spec["effect"] for name, spec in SETTINGS_FIELD_SPECS.items()},
     }
 
 
 def _normalize_setting_input(name: str, value):
-    if name == "chat_backend" and value not in {"hermes", "embedded"}:
+    if name == "export_default_strategy" and value not in ("cache_only", "sync_if_stale", "force_resync"):
+        raise ValueError("export_default_strategy must be cache_only, sync_if_stale or force_resync")
+    if name == "title_parse_mode" and value not in ("rules_only", "fallback", "always"):
+        raise ValueError("title_parse_mode must be rules_only, fallback or always")
+    if name == "chat_backend" and value not in ("hermes", "embedded"):
         raise ValueError("chat_backend must be hermes or embedded")
-    if name in {"chat_max_requests", "chat_max_tools", "chat_timeout"} and int(value) < 1:
-        raise ValueError("chat limits must be positive")
     spec = SETTINGS_FIELD_SPECS[name]
+    if spec["type"] in {"int", "float"}:
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise ValueError(f"{name} must be a finite number")
+        if spec["type"] == "int" and not isinstance(value, int):
+            raise ValueError(f"{name} must be an integer")
+        minimum = 0 if name in {"request_interval_seconds", "request_interval_jitter_seconds", "image_download_retries", "novel_author_only_page_delay_seconds"} else (0.01 if spec["type"] == "float" else 1)
+        maximum = 65535 if name == "hermes_port" else (64 if name in {"worker_parallelism", "chat_max_parallel"} else 1000000)
+        if not minimum <= value <= maximum:
+            raise ValueError(f"{name} must be between {minimum} and {maximum}")
+    if name.endswith("base_url") and value:
+        parsed = urlsplit(value) if isinstance(value, str) else None
+        if not parsed or parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError(f"{name} must be an HTTP(S) URL without credentials")
     if spec["type"] == "json":
         if not isinstance(value, dict):
             raise ValueError(f"{name} must be an object")
@@ -226,19 +273,25 @@ def _normalize_setting_input(name: str, value):
         if value is None:
             return []
         if isinstance(value, list):
-            return [str(item).strip() for item in value if str(item).strip()]
+            if not all(isinstance(item, str) for item in value):
+                raise ValueError(f"{name} items must be text")
+            return list(dict.fromkeys(item.strip() for item in value if item.strip()))
         if isinstance(value, str):
             return [line.strip() for line in value.splitlines() if line.strip()]
-        return []
+        raise ValueError(f"{name} must be a list or text")
     if spec["type"] == "bool":
-        return bool(value)
+        if not isinstance(value, bool):
+            raise ValueError(f"{name} must be a boolean")
+        return value
     if spec["type"] == "int":
         return int(value)
     if spec["type"] == "float":
         return float(value)
     if value is None:
         return None
-    return str(value).strip()
+    if not isinstance(value, str):
+        raise ValueError(f"{name} must be text")
+    return value.strip()
 
 
 def _apply_setting_patch(raw_config: dict, name: str, value) -> None:
@@ -258,7 +311,7 @@ def _apply_setting_patch(raw_config: dict, name: str, value) -> None:
     if spec["type"] == "json":
         section[spec["key"]] = _normalize_setting_input(name, value)
         return
-    if value in {None, ""}:
+    if value is None or value == "":
         if spec.get("inherit") or spec["type"] == "string":
             section.pop(spec["key"], None)
             if not section:
@@ -294,8 +347,23 @@ def settings_get(settings: Settings = Depends(get_settings)):
     return _settings_payload(settings)
 
 
+@router.get("/settings-layouts")
+def settings_layouts_get(settings: Settings = Depends(get_settings)):
+    """Return the non-sensitive display preference used by ordinary list pages."""
+    raw = read_local_config(settings.config_path)
+    stored = _setting_value_from_raw(raw, SETTINGS_FIELD_SPECS["table_layouts"])
+    return {"table_layouts": stored or deepcopy(TABLE_LAYOUT_DEFAULTS)}
+
+
 @router.post("/settings")
 def settings_update(body: dict, settings: Settings = Depends(get_settings)):
+    with _CONFIG_LOCK:
+        return _settings_update(body, settings)
+
+
+def _settings_update(body: dict, settings: Settings):
+    if body.get("revision") is not None and body["revision"] != _settings_payload(settings)["revision"]:
+        raise HTTPException(409, detail="设置已被其他会话修改，请重新加载后再保存")
     values = body.get("values")
     if not isinstance(values, dict):
         raise HTTPException(status_code=400, detail="values required")
@@ -308,11 +376,16 @@ def settings_update(body: dict, settings: Settings = Depends(get_settings)):
     hints_updates: dict[str, list[str]] = {}
     for name in list(values.keys()):
         if name in HINTS_FIELDS:
-            hints_updates[name] = _normalize_setting_input(name, values.pop(name))
+            try:
+                hints_updates[name] = _normalize_setting_input(name, values.pop(name))
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(400, detail=str(exc))
 
     for name, value in values.items():
         if name not in SETTINGS_FIELD_SPECS:
-            continue
+            raise HTTPException(status_code=400, detail=f"Unknown setting: {name}")
+        if SETTINGS_FIELD_SPECS[name].get("readonly") or SETTINGS_FIELD_SPECS[name]["section"] == "database":
+            raise HTTPException(status_code=400, detail=f"{name} is read-only")
         if name in locked_fields:
             raise HTTPException(status_code=400, detail=f"{name} is overridden by environment variable")
         before = _setting_value_from_raw(raw_config, SETTINGS_FIELD_SPECS[name])
@@ -323,6 +396,10 @@ def settings_update(body: dict, settings: Settings = Depends(get_settings)):
         after = _setting_value_from_raw(next_raw_config, SETTINGS_FIELD_SPECS[name])
         if before != after and name not in changed_fields:
             changed_fields.append(name)
+    effective = dict(_settings_payload(settings)["values"])
+    effective.update({name: _setting_value_from_raw(next_raw_config, SETTINGS_FIELD_SPECS[name]) for name in values})
+    if effective["worker_heartbeat_seconds"] >= effective["worker_lease_seconds"]:
+        raise HTTPException(400, detail="worker_heartbeat_seconds must be less than worker_lease_seconds")
     write_local_config(settings.config_path, next_raw_config)
 
     if hints_updates:
@@ -336,8 +413,7 @@ def settings_update(body: dict, settings: Settings = Depends(get_settings)):
         })
         changed_fields.extend(hints_updates.keys())
 
-    refreshed = load_settings()
-    payload = _settings_payload(refreshed)
+    payload = _settings_payload(settings)
     # UI-only JSON settings are intentionally not part of the runtime Settings dataclass.
     # Return the just-written value even when this endpoint is using an injected test/runtime config.
     if "table_layouts" in next_raw_config.get("ui", {}):
@@ -352,19 +428,44 @@ def settings_update(body: dict, settings: Settings = Depends(get_settings)):
 
 @router.get("/settings/models")
 def settings_models_get(settings: Settings = Depends(get_settings)):
+    payload = _settings_payload(settings)
+    raw = read_local_config(settings.config_path)
+    api_key = settings.llm_api_key if os.environ.get("YAMIBO_LLM_API_KEY") else raw.get("llm", {}).get("api_key", settings.llm_api_key)
+    return _fetch_models(payload["values"]["llm_base_url"], api_key)
+
+
+@router.post("/settings/models")
+def settings_models_test(body: dict, settings: Settings = Depends(get_settings)):
+    base_url = body.get("base_url", _settings_payload(settings)["values"]["llm_base_url"])
+    try:
+        if not isinstance(base_url, str) or not base_url.strip():
+            raise ValueError("base_url is required")
+        _normalize_setting_input("llm_base_url", base_url)
+        key = body.get("api_key")
+        if key is not None:
+            _normalize_setting_input("llm_api_key", key)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, detail=str(exc))
+    raw = read_local_config(settings.config_path)
+    if not key:
+        key = settings.llm_api_key if os.environ.get("YAMIBO_LLM_API_KEY") else raw.get("llm", {}).get("api_key", settings.llm_api_key)
+    return _fetch_models(base_url, key)
+
+
+def _fetch_models(base_url: str, api_key: str | None):
     request = urllib.request.Request(
-        settings.llm_base_url.rstrip("/") + "/models",
+        base_url.rstrip("/") + "/models",
         headers={
             "Content-Type": "application/json",
-            **({"Authorization": f"Bearer {settings.llm_api_key}"} if settings.llm_api_key else {}),
+            **({"Authorization": f"Bearer {api_key}"} if api_key else {}),
         },
         method="GET",
     )
     try:
         with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=30) as response:
             data = json.loads(response.read().decode("utf-8"))
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
+    except Exception:
+        raise HTTPException(status_code=502, detail="无法连接模型服务，请检查地址和凭据")
     models: list[str] = []
     if isinstance(data, dict):
         items = data.get("data")

@@ -349,7 +349,7 @@ def test_file_delete_is_soft_and_denied_plan_cannot_replay(service, settings):
     assert not (service.files.root / "workspace" / "delete.md").exists()
 
 
-def test_chat_auth_request_validation_and_replay(settings):
+def test_chat_is_tokenless_while_settings_still_require_auth(settings):
     from fastapi.testclient import TestClient
 
     from yamibo_mcp.web_fastapi.app import create_app
@@ -358,20 +358,15 @@ def test_chat_auth_request_validation_and_replay(settings):
     app = create_app(settings)
     try:
         client = TestClient(app)
-        assert client.get("/api/chat/context").status_code == 401
-        headers = {"Authorization": "Bearer test-access"}
-        assert (
-            client.get("/api/chat/context", headers=headers).json()["mode"]
-            == "embedded"
-        )
-        proxy_headers = {**headers, "Origin": "https://testserver"}
+        assert client.get("/api/chat/context").json()["mode"] == "embedded"
+        proxy_headers = {"Origin": "https://testserver"}
         assert client.post("/api/chat/sessions", headers=proxy_headers, json={}).status_code == 201
         assert client.get("/api/settings", headers={"Origin": "https://testserver"}).status_code == 401
-        assert client.post("/api/chat/sessions", headers={**headers, "Origin": "https://evil.example"}, json={}).status_code == 403
-        s = client.post("/api/chat/sessions", headers=headers, json={}).json()["id"]
+        assert client.post("/api/chat/sessions", headers={"Origin": "https://evil.example"}, json={}).status_code == 403
+        s = client.post("/api/chat/sessions", json={}).json()["id"]
         assert (
             client.post(
-                f"/api/chat/sessions/{s}/runs", headers=headers, json={"input": "hi"}
+                f"/api/chat/sessions/{s}/runs", json={"input": "hi"}
             ).status_code
             == 400
         )
