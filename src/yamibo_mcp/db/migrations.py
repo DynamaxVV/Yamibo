@@ -148,6 +148,7 @@ CREATE TABLE IF NOT EXISTS assets (
 );
 
 CREATE INDEX IF NOT EXISTS idx_assets_tid ON assets(tid);
+CREATE INDEX IF NOT EXISTS idx_assets_tid_pid_type ON assets(tid, pid, asset_type);
 
 CREATE TABLE IF NOT EXISTS job_events (
   event_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -315,6 +316,10 @@ def migrate(conn: Any, *, schema: str | None = None) -> None:
     _ensure_column(conn, "title_parse", "chapter_title", "TEXT")
     _ensure_column(conn, "title_parse", "chapter_index_end", "REAL")
     _ensure_column(conn, "threads", "forum_id", "INTEGER")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_threads_forum_tid "
+        "ON threads(forum_id, tid) WHERE archive_status IN ('complete', 'partial')"
+    )
     _ensure_column(conn, "threads", "content_kind", "TEXT")
     _ensure_column(conn, "threads", "primary_media_type", "TEXT")
     _ensure_column(conn, "threads", "category", "TEXT")

@@ -17,6 +17,7 @@ from yamibo_mcp.maintenance.sign_in_cache import (
     update_sign_in_cache_account,
 )
 from yamibo_mcp.web_fastapi.deps import get_conn, get_settings
+from yamibo_mcp.web_fastapi.archive_counts import get_archive_counts
 from yamibo_mcp.web_fastapi.models.requests import SignInRequest
 from yamibo_mcp.yamibo.account_pool import borrow_yamibo_client, get_account_identities
 from yamibo_mcp.yamibo.client import parse_daily_checkin_profile
@@ -86,7 +87,10 @@ def list_forums(conn: DatabaseConnection = Depends(get_conn), settings=Depends(g
     size_map = cache_forums if isinstance(cache_forums, dict) else {}
     forums_repo = ForumsRepository(conn)
     threads_repo = ThreadsRepository(conn)
-    thread_counts = {int(row["forum_id"]): int(row["cnt"]) for row in threads_repo.count_threads_by_forum()}
+    thread_counts = get_archive_counts(
+        threads_repo,
+        database_scope=str(settings.db_url or settings.db_path),
+    )["forum_counts"]
     rows = forums_repo.list_forums()
     return [
         {

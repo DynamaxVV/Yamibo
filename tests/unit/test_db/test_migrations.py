@@ -64,6 +64,15 @@ class TestMigrationAddsThreadColumns:
         columns = {row[1] for row in db.execute("PRAGMA table_info(threads)").fetchall()}
         assert "primary_media_type" in columns
 
+    def test_threads_has_forum_tid_scan_index(self, db):
+        indexes = db.execute("PRAGMA index_list(threads)").fetchall()
+        forum_tid_index = next(row for row in indexes if row[1] == "idx_threads_forum_tid")
+        assert forum_tid_index[4] == 1
+
+    def test_assets_has_floor_image_match_index(self, db):
+        indexes = {row[1] for row in db.execute("PRAGMA index_list(assets)").fetchall()}
+        assert "idx_assets_tid_pid_type" in indexes
+
 
 class TestMigrationBackfill:
     def test_removed_superseded_jobs_are_cleaned(self, db):

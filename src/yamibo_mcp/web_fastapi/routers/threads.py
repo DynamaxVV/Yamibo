@@ -22,6 +22,7 @@ from yamibo_mcp.web_fastapi.converters import (
 )
 from yamibo_mcp.web_fastapi.deps import get_conn, get_settings
 from yamibo_mcp.web_fastapi.helpers import jsonish_loads
+from yamibo_mcp.web_fastapi.archive_counts import get_thread_list_count
 from yamibo_mcp.yamibo.urls import remote_image_identity, thread_url_from_tid, thread_author_url_from_tid
 
 router = APIRouter(prefix="/api", tags=["threads"])
@@ -60,20 +61,31 @@ def list_threads(
     forum_id: int | None = Query(default=None),
     days: int | None = Query(default=None),
     archive_status: str | None = Query(default=None),
-    sort_key: str = Query(default="sync_time"),
+    sort_key: str = Query(default="remote_last_reply_at"),
     sort_dir: str = Query(default="desc"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
     conn: DatabaseConnection = Depends(get_conn),
+    settings: Settings = Depends(get_settings),
 ):
     repo = ThreadsRepository(conn)
     if archive_status == "all":
         archive_status = None
+    normalized_q = q or None
+    cached_count = get_thread_list_count(
+        repo,
+        q=normalized_q,
+        forum_id=forum_id,
+        days=days,
+        archive_status=archive_status or None,
+        database_scope=str(settings.db_url or settings.db_path),
+    )
     page_result = repo.list_threads_page(
         page=page, page_size=page_size,
-        q=q or None, forum_id=forum_id, days=days,
+        q=normalized_q, forum_id=forum_id, days=days,
         archive_status=archive_status or None,
         sort_key=sort_key, sort_dir=sort_dir,
+        total_count=cached_count,
     )
     return {
         "page": page_result["page"], "page_size": page_result["page_size"],

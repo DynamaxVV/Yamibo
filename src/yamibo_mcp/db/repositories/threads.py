@@ -120,7 +120,14 @@ class ThreadsRepository:
                 f"CASE WHEN {floor_count_expr} > 0 THEN {floor_count_expr} - 1 ELSE 0 END"
                 ")"
             ),
-            "remote_last_reply_at": "COALESCE(t.remote_last_reply_at, TIMESTAMPTZ 'epoch')" if backend in {"postgres", "postgresql"} else "COALESCE(t.remote_last_reply_at, '')",
+            "remote_last_reply_at": (
+                "COALESCE(t.remote_last_reply_at, "
+                "(SELECT f.pub_time FROM floors f WHERE f.tid = t.tid ORDER BY f.floor_no DESC, f.pid DESC LIMIT 1), "
+                "TIMESTAMPTZ 'epoch')"
+                if backend in {"postgres", "postgresql"}
+                else "COALESCE(t.remote_last_reply_at, "
+                "(SELECT f.pub_time FROM floors f WHERE f.tid = t.tid ORDER BY f.floor_no DESC, f.pid DESC LIMIT 1), '')"
+            ),
         }[sort_key]
         return f"{order_expr} {sort_dir.upper()}, t.tid {sort_dir.upper()}"
 
@@ -747,17 +754,20 @@ class ThreadsRepository:
         forum_id: int | None = None,
         days: int | None = None,
         archive_status: str | None = None,
-        sort_key: str = "sync_time",
+        sort_key: str = "remote_last_reply_at",
         sort_dir: str = "desc",
+        total_count: int | None = None,
     ) -> dict[str, object]:
         page_size = min(max(page_size, 1), 200)
         where_clause, args = self._thread_list_filters(q=q, forum_id=forum_id, days=days, archive_status=archive_status)
         from_clause = self._thread_list_from_clause(q=q)
-        total_count_row = self.conn.execute(
-            f"SELECT COUNT(*) AS total_count {from_clause} {where_clause}",
-            args,
-        ).fetchone()
-        total_count = int(total_count_row["total_count"] or 0)
+        if total_count is None:
+            total_count = self.count_threads_filtered(
+                q=q,
+                forum_id=forum_id,
+                days=days,
+                archive_status=archive_status,
+            )
         total_pages = max(1, (total_count + page_size - 1) // page_size)
         page = min(max(page, 1), total_pages)
         offset = (page - 1) * page_size
@@ -779,6 +789,29 @@ class ThreadsRepository:
             "total_pages": total_pages,
             "items": rows,
         }
+
+    def count_threads_filtered(
+        self,
+        *,
+        q: str | None = None,
+        forum_id: int | None = None,
+        days: int | None = None,
+        archive_status: str | None = None,
+    ) -> int:
+        where_clause, args = self._thread_list_filters(
+            q=q,
+            forum_id=forum_id,
+            days=days,
+            archive_status=archive_status,
+        )
+        # The title_parse join is needed for searching and selecting rows, but
+        # adds no value to an unsearched count over the threads table.
+        from_clause = self._thread_list_from_clause(q=q) if q else "FROM threads t"
+        row = self.conn.execute(
+            f"SELECT COUNT(*) AS total_count {from_clause} {where_clause}",
+            args,
+        ).fetchone()
+        return int(row["total_count"] or 0)
 
     def count_threads(self) -> int:
         row = self.conn.execute("SELECT COUNT(*) AS c FROM threads").fetchone()

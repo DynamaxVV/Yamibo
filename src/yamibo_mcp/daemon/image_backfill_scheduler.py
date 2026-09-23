@@ -51,13 +51,13 @@ _BLOCKING_STATUSES = (
 
 
 def maybe_enqueue_image_backfill_dry_run(repo: JobsRepository, settings: Settings) -> bool:
-    """Run at most one bounded automatic image-backfill scan."""
+    """Consume a persisted candidate before scanning another bounded batch."""
     # This guard must remain before opening a transaction/query.  Operators use
     # the setting as the immediate production stop switch.
     if not settings.image_backfill_enabled:
         return False
     if not _SCHEDULER_LOCK.acquire(blocking=False):
-        LOG.info("image_backfill scheduler skipped lock_acquired=false reason=local_lock_busy")
+        LOG.debug("image_backfill scheduler skipped lock_acquired=false reason=local_lock_busy")
         return False
 
     try:
@@ -66,7 +66,7 @@ def maybe_enqueue_image_backfill_dry_run(repo: JobsRepository, settings: Setting
         repo.conn.commit()
         with repo.conn.begin():
             if not _try_postgres_advisory_lock(repo):
-                LOG.info("image_backfill scheduler skipped lock_acquired=false reason=advisory_lock_busy")
+                LOG.debug("image_backfill scheduler skipped lock_acquired=false reason=advisory_lock_busy")
                 return False
 
             state_repo = SystemStateRepository(repo.conn)
@@ -74,22 +74,57 @@ def maybe_enqueue_image_backfill_dry_run(repo: JobsRepository, settings: Setting
             if not _within_budget(state, settings):
                 return False
             if _has_foreground_work(repo):
-                _save_state(state_repo, state, enqueued=False, reason="foreground_work", cursor_tid=_state_cursor(state), wrap_count=int(state.get("scan_wrap_count") or 0))
+                _save_state(
+                    state_repo,
+                    state,
+                    enqueued=False,
+                    reason="foreground_work",
+                    cursor_tid=_state_cursor(state),
+                    wrap_count=int(state.get("scan_wrap_count") or 0),
+                )
                 return False
 
             dry_run = settings.image_backfill_dry_run
-            cursor_before = _state_cursor(state)
-            scan = _select_candidate_batch(
-                repo,
-                settings,
-                dry_run=dry_run,
-                cursor_tid=cursor_before,
-                campaign=_CAMPAIGN,
+            scan_forum_id = state.get("scan_forum_id")
+            scan_config_changed = scan_forum_id is not None and int(scan_forum_id) != settings.image_backfill_forum_id
+            cursor_before = 0 if scan_config_changed else _state_cursor(state)
+            cursor_after = cursor_before
+            wrap_count = 0 if scan_config_changed else int(state.get("scan_wrap_count") or 0)
+            pending_candidates = _pending_candidates(state)
+            pending_config_matches = (
+                state.get("pending_forum_id") == settings.image_backfill_forum_id
+                and state.get("pending_dry_run") is dry_run
             )
-            candidate = scan["candidate"]
-            cursor_after = int(scan["cursor_after"])
-            wrap_count = int(scan["wrap_count"])
-            if candidate is None:
+            if not pending_config_matches:
+                pending_candidates = []
+            if _has_live_automatic_job(repo, campaign=_CAMPAIGN, fingerprint="pending_batch"):
+                _save_state(
+                    state_repo,
+                    state,
+                    enqueued=False,
+                    reason="auto_backfill_active",
+                    cursor_tid=cursor_after,
+                    wrap_count=wrap_count,
+                    pending_candidates=pending_candidates,
+                    pending_forum_id=settings.image_backfill_forum_id,
+                    pending_dry_run=dry_run,
+                )
+                return False
+
+            scan = None
+            if not pending_candidates:
+                scan = _select_candidate_batch(
+                    repo,
+                    settings,
+                    dry_run=dry_run,
+                    cursor_tid=cursor_before,
+                    campaign=_CAMPAIGN,
+                )
+                cursor_after = int(scan["cursor_after"])
+                wrap_count = int(scan["wrap_count"])
+                pending_candidates = _scan_candidates(scan)
+
+            if not pending_candidates:
                 _save_state(
                     state_repo,
                     state,
@@ -97,15 +132,39 @@ def maybe_enqueue_image_backfill_dry_run(repo: JobsRepository, settings: Setting
                     reason="scanned_no_candidate",
                     cursor_tid=cursor_after,
                     wrap_count=wrap_count,
+                    pending_candidates=[],
+                    pending_forum_id=settings.image_backfill_forum_id,
+                    pending_dry_run=dry_run,
                 )
-                _log_scan(scan, cursor_before=cursor_before, cursor_after=cursor_after, wrap_count=wrap_count)
+                if scan is not None:
+                    _log_scan(scan, cursor_before=cursor_before, cursor_after=cursor_after, wrap_count=wrap_count)
+                return False
+
+            # A batch may wait while other work is active. Revalidate candidates
+            # before enqueueing, then discard stale entries without rescanning.
+            while pending_candidates:
+                candidate = pending_candidates.pop(0)
+                tid = int(candidate["tid"])
+                if not _has_auto_repairable_site_image(settings, tid):
+                    continue
+                if tid in _blocking_backfill_tids(repo, [tid], dry_run=dry_run, campaign=_CAMPAIGN):
+                    continue
+                break
+            else:
+                _save_state(
+                    state_repo,
+                    state,
+                    enqueued=False,
+                    reason="stale_candidates",
+                    cursor_tid=cursor_after,
+                    wrap_count=wrap_count,
+                    pending_candidates=[],
+                    pending_forum_id=settings.image_backfill_forum_id,
+                    pending_dry_run=dry_run,
+                )
                 return False
 
             fingerprint = f"{int(candidate['tid'])}:{candidate['reason']}"
-            if _has_live_automatic_job(repo, campaign=_CAMPAIGN, fingerprint=fingerprint):
-                _save_state(state_repo, state, enqueued=False, reason="live_duplicate", cursor_tid=cursor_after, wrap_count=wrap_count)
-                return False
-
             payload = {
                 "tid": int(candidate["tid"]),
                 "forum_id": settings.image_backfill_forum_id,
@@ -134,8 +193,12 @@ def maybe_enqueue_image_backfill_dry_run(repo: JobsRepository, settings: Setting
                 reason="created",
                 cursor_tid=cursor_after,
                 wrap_count=wrap_count,
+                pending_candidates=pending_candidates,
+                pending_forum_id=settings.image_backfill_forum_id,
+                pending_dry_run=dry_run,
             )
-            _log_scan(scan, cursor_before=cursor_before, cursor_after=cursor_after, wrap_count=wrap_count)
+            if scan is not None:
+                _log_scan(scan, cursor_before=cursor_before, cursor_after=cursor_after, wrap_count=wrap_count)
             LOG.info(
                 "Enqueued automatic image_backfill %s job_id=%s tid=%s reason=%s",
                 "dry-run" if dry_run else "apply",
@@ -189,6 +252,31 @@ def _state_cursor(state: dict[str, Any]) -> int:
         return 0
 
 
+def _scan_candidates(scan: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates = scan.get("candidates")
+    if isinstance(candidates, list):
+        raw_candidates = candidates
+    else:
+        candidate = scan.get("candidate")
+        raw_candidates = [candidate] if isinstance(candidate, dict) else []
+    return [
+        {
+            "tid": int(candidate["tid"]),
+            "sync_time": _serialize_sync_time(candidate.get("sync_time")),
+            "reason": str(candidate["reason"]),
+        }
+        for candidate in raw_candidates
+        if isinstance(candidate, dict)
+        and candidate.get("tid") is not None
+        and candidate.get("reason")
+    ]
+
+
+def _pending_candidates(state: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates = state.get("pending_candidates")
+    return _scan_candidates({"candidates": candidates}) if isinstance(candidates, list) else []
+
+
 def _save_state(
     state_repo: SystemStateRepository,
     state: dict[str, Any],
@@ -197,6 +285,9 @@ def _save_state(
     reason: str,
     cursor_tid: int,
     wrap_count: int,
+    pending_candidates: list[dict[str, Any]] | None = None,
+    pending_forum_id: int | None = None,
+    pending_dry_run: bool | None = None,
 ) -> None:
     """Persist scheduler JSON without committing the caller's transaction."""
     today = datetime.now(timezone.utc).date().isoformat()
@@ -216,6 +307,11 @@ def _save_state(
             "scan_wrap_count": max(int(wrap_count), 0),
         }
     )
+    if pending_candidates is not None:
+        state["pending_candidates"] = pending_candidates
+        state["pending_forum_id"] = pending_forum_id
+        state["pending_dry_run"] = pending_dry_run
+    state["scan_forum_id"] = pending_forum_id if pending_forum_id is not None else state.get("scan_forum_id")
     state_repo.conn.execute(
         """
         INSERT INTO system_state (key, value_json, updated_at)
@@ -234,33 +330,11 @@ def _select_candidate_batch(
     cursor_tid: int,
     campaign: str | None = None,
 ) -> dict[str, Any]:
-    """Scan one bounded TID batch and return its first unblocked candidate."""
+    """Scan one bounded TID batch and return all unblocked candidates."""
     started = time.perf_counter()
     forum_id = settings.image_backfill_forum_id
     state = SystemStateRepository(repo.conn).get_json(_STATE_KEY) or {}
     previous_wrap_count = int(state.get("scan_wrap_count") or 0)
-    batch_rows = repo.conn.execute(
-        """
-        SELECT t.tid
-        FROM threads t
-        WHERE t.forum_id = ?
-          AND t.archive_status IN ('complete', 'partial')
-          AND t.tid > ?
-        ORDER BY t.tid ASC
-        LIMIT ?
-        """,
-        (forum_id, max(int(cursor_tid), 0), _SCAN_BATCH_SIZE),
-    ).fetchall()
-    if batch_rows:
-        batch_tids = [int(row["tid"]) for row in batch_rows]
-        cursor_after = batch_tids[-1]
-        wrap_count = previous_wrap_count
-    else:
-        batch_tids = []
-        cursor_after = 0
-        # A wrap is persisted without immediately scanning a second batch.
-        wrap_count = previous_wrap_count + 1 if cursor_tid > 0 else previous_wrap_count
-
     rows = repo.conn.execute(
         """
         WITH batch AS (
@@ -272,25 +346,31 @@ def _select_candidate_batch(
           ORDER BY t.tid ASC
           LIMIT ?
         ), asset_counts AS (
-          SELECT a.tid, COUNT(*) FILTER (WHERE a.asset_type IN ('image', 'attachment')) AS image_assets
+          SELECT
+            a.tid,
+            COUNT(*) AS image_assets,
+            COUNT(*) FILTER (
+              WHERE a.local_path IS NULL
+                OR a.local_path = ''
+                OR COALESCE(a.status, '') IN ('missing', 'pending')
+            ) AS missing_asset_rows
           FROM assets a
           JOIN batch b ON b.tid = a.tid
+          WHERE a.asset_type IN ('image', 'attachment')
           GROUP BY a.tid
         ), non_first AS (
           SELECT f.tid, COUNT(*) AS floors_without_assets
           FROM floors f
           JOIN batch b ON b.tid = f.tid
-          LEFT JOIN assets a ON a.tid = f.tid AND a.pid = f.pid AND a.asset_type IN ('image', 'attachment')
           WHERE f.has_images = ?
-            AND a.asset_id IS NULL
+            AND NOT EXISTS (
+              SELECT 1
+              FROM assets a
+              WHERE a.tid = f.tid
+                AND a.pid = f.pid
+                AND a.asset_type IN ('image', 'attachment')
+            )
           GROUP BY f.tid
-        ), missing_assets AS (
-          SELECT a.tid, COUNT(*) AS missing_asset_rows
-          FROM assets a
-          JOIN batch b ON b.tid = a.tid
-          WHERE a.asset_type IN ('image', 'attachment')
-            AND (a.local_path IS NULL OR a.local_path = '' OR COALESCE(a.status, '') IN ('missing', 'pending'))
-          GROUP BY a.tid
         ), candidates AS (
           SELECT
             b.tid,
@@ -304,41 +384,51 @@ def _select_candidate_batch(
           FROM batch b
           LEFT JOIN asset_counts ac ON ac.tid = b.tid
           LEFT JOIN non_first nf ON nf.tid = b.tid
-          LEFT JOIN missing_assets ma ON ma.tid = b.tid
           WHERE (
               COALESCE(nf.floors_without_assets, 0) > 0
               OR b.image_count > COALESCE(ac.image_assets, 0)
-              OR COALESCE(ma.missing_asset_rows, 0) > 0
+              OR COALESCE(ac.missing_asset_rows, 0) > 0
               OR COALESCE(CAST(b.missing_images_json AS TEXT), '') NOT IN ('', '[]', '{}')
           )
+        ), batch_stats AS (
+          SELECT COUNT(*) AS batch_size, COALESCE(MAX(tid), 0) AS cursor_after
+          FROM batch
         )
-        SELECT tid, sync_time, reason
-        FROM candidates
-        ORDER BY tid ASC
-        LIMIT ?
+        SELECT c.tid, c.sync_time, c.reason, s.batch_size, s.cursor_after
+        FROM batch_stats s
+        LEFT JOIN candidates c ON TRUE
+        ORDER BY c.tid ASC
         """,
-        (forum_id, max(int(cursor_tid), 0), _SCAN_BATCH_SIZE, True, _SCAN_BATCH_SIZE),
+        (forum_id, max(int(cursor_tid), 0), _SCAN_BATCH_SIZE, True),
     ).fetchall()
 
+    first_row = rows[0] if rows else None
+    batch_size = int(first_row["batch_size"] or 0) if first_row is not None else 0
+    cursor_after = int(first_row["cursor_after"] or 0) if first_row is not None else 0
+    # A wrap is persisted without immediately scanning a second batch.
+    wrap_count = (
+        previous_wrap_count + 1
+        if batch_size == 0 and cursor_tid > 0
+        else previous_wrap_count
+    )
+    candidate_rows = [row for row in rows if row["tid"] is not None]
     eligible_rows = [
-        row for row in rows
+        row for row in candidate_rows
         if _has_auto_repairable_site_image(settings, int(row["tid"]))
     ]
     tids = [int(row["tid"]) for row in eligible_rows]
     blocked_tids = _blocking_backfill_tids(repo, tids, dry_run=dry_run, campaign=campaign)
-    candidate = next(
-        (
-            {"tid": int(row["tid"]), "sync_time": row["sync_time"], "reason": row["reason"]}
-            for row in eligible_rows
-            if int(row["tid"]) not in blocked_tids
-        ),
-        None,
-    )
+    candidates = [
+        {"tid": int(row["tid"]), "sync_time": row["sync_time"], "reason": row["reason"]}
+        for row in eligible_rows
+        if int(row["tid"]) not in blocked_tids
+    ]
     return {
-        "candidate": candidate,
-        "batch_size": len(batch_tids),
+        "candidate": candidates[0] if candidates else None,
+        "candidates": candidates,
+        "batch_size": batch_size,
         "candidate_count": len(eligible_rows),
-        "non_site_candidate_count": len(rows) - len(eligible_rows),
+        "non_site_candidate_count": len(candidate_rows) - len(eligible_rows),
         "blocking_count": len(blocked_tids),
         "cursor_after": cursor_after,
         "wrap_count": wrap_count,

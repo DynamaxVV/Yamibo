@@ -426,7 +426,10 @@ class TestListThreadsPage:
 
         page1 = repo.list_threads_page(page=1, page_size=2, forum_id=55, sort_key="sync_time", sort_dir="desc")
         page2 = repo.list_threads_page(page=2, page_size=2, forum_id=55, sort_key="sync_time", sort_dir="desc")
-        complete_only = repo.list_threads_page(page=1, page_size=10, forum_id=55, archive_status="complete")
+        complete_only = repo.list_threads_page(
+            page=1, page_size=10, forum_id=55, archive_status="complete",
+            sort_key="sync_time", sort_dir="desc",
+        )
 
         assert page1["total_count"] == 4
         assert page1["total_pages"] == 2
@@ -465,6 +468,32 @@ class TestListThreadsPage:
         assert page["items"][0]["remote_reply_count"] == 6
         assert page["items"][0]["local_reply_count"] == 5
         assert page["items"][0]["floor_count"] == 1
+
+    def test_list_threads_page_defaults_to_latest_reply_time_with_floor_fallback(self, db):
+        repo = ThreadsRepository(db)
+        repo.upsert_snapshot(_make_snapshot(
+            tid=6111,
+            floors=[_make_floor(pid=61111, tid=6111, pub_time="2026-07-08T10:00:00+00:00")],
+        ))
+        for tid in (6112, 6113):
+            repo.upsert_snapshot(_make_snapshot(tid=tid))
+        db.execute(
+            "UPDATE threads SET forum_id = ?, remote_last_reply_at = ? WHERE tid = ?",
+            (55, None, 6111),
+        )
+        db.execute(
+            "UPDATE threads SET forum_id = ?, remote_last_reply_at = ? WHERE tid = ?",
+            (55, "2026-07-09T10:00:00+00:00", 6112),
+        )
+        db.execute(
+            "UPDATE threads SET forum_id = ?, remote_last_reply_at = ? WHERE tid = ?",
+            (55, "2026-07-07T10:00:00+00:00", 6113),
+        )
+        db.commit()
+
+        page = repo.list_threads_page(page=1, page_size=10, forum_id=55)
+
+        assert [row["tid"] for row in page["items"]] == [6112, 6111, 6113]
 
     def test_list_threads_page_sorts_by_reply_count_with_fallback_counts(self, db):
         repo = ThreadsRepository(db)

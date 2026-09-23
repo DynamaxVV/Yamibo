@@ -636,8 +636,13 @@ def test_auto_scheduler_persists_cursor_and_wraps_without_second_scan(db):
     assert state["scan_cursor_tid"] == 3001
     assert state["last_checked_at"]
 
-    # The next bounded cycle reaches the end and only wraps; it does not scan
-    # the beginning again in the same invocation.
+    # An active automatic job suppresses further candidate scans. Once it is
+    # complete, the next bounded cycle reaches the end and only wraps.
+    active_job = db.execute(
+        "SELECT job_id FROM jobs WHERE job_type = 'image_backfill' ORDER BY created_at DESC LIMIT 1"
+    ).fetchone()
+    assert maybe_enqueue_image_backfill_dry_run(repo, settings) is False
+    repo.succeed(active_job["job_id"])
     assert maybe_enqueue_image_backfill_dry_run(repo, settings) is False
     state = SystemStateRepository(db).get_json("image_backfill_auto_scheduler")
     assert state["scan_cursor_tid"] == 0
@@ -659,6 +664,105 @@ def test_auto_scheduler_batch_is_bounded_and_cursor_uses_batch_end(db, monkeypat
     assert job["tid"] == 3101
     state = SystemStateRepository(db).get_json("image_backfill_auto_scheduler")
     assert state["scan_cursor_tid"] == 3102
+
+
+def test_auto_scheduler_consumes_persisted_candidates_without_rescanning(db, monkeypatch):
+    from yamibo_mcp.daemon import image_backfill_scheduler as scheduler
+
+    for tid in (3151, 3152, 3153):
+        _insert_gap_thread(db, tid)
+    monkeypatch.setattr(scheduler, "_SCAN_BATCH_SIZE", 3)
+    scan_calls = []
+    original_scan = scheduler._select_candidate_batch
+
+    def count_scans(*args, **kwargs):
+        scan_calls.append(True)
+        return original_scan(*args, **kwargs)
+
+    monkeypatch.setattr(scheduler, "_select_candidate_batch", count_scans)
+    repo = JobsRepository(db)
+    settings = _scheduler_settings()
+
+    assert maybe_enqueue_image_backfill_dry_run(repo, settings) is True
+    first_job = db.execute(
+        "SELECT job_id, tid FROM jobs WHERE job_type = 'image_backfill' ORDER BY created_at LIMIT 1"
+    ).fetchone()
+    assert first_job["tid"] == 3151
+    state = SystemStateRepository(db).get_json("image_backfill_auto_scheduler")
+    assert [candidate["tid"] for candidate in state["pending_candidates"]] == [3152, 3153]
+    repo.succeed(first_job["job_id"])
+
+    assert maybe_enqueue_image_backfill_dry_run(repo, settings) is True
+    jobs = db.execute(
+        "SELECT tid FROM jobs WHERE job_type = 'image_backfill' ORDER BY tid"
+    ).fetchall()
+    assert [job["tid"] for job in jobs] == [3151, 3152]
+    state = SystemStateRepository(db).get_json("image_backfill_auto_scheduler")
+    assert [candidate["tid"] for candidate in state["pending_candidates"]] == [3153]
+    assert len(scan_calls) == 1
+
+
+def test_auto_scheduler_does_not_scan_while_automatic_backfill_is_active(db, monkeypatch):
+    repo = JobsRepository(db)
+    repo.create("image_backfill", tid=3160, payload={"internal_auto": True})
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.image_backfill_scheduler._select_candidate_batch",
+        lambda *args, **kwargs: pytest.fail("active backfill must prevent a candidate rescan"),
+    )
+
+    assert maybe_enqueue_image_backfill_dry_run(repo, _scheduler_settings()) is False
+    state = SystemStateRepository(db).get_json("image_backfill_auto_scheduler")
+    assert state["last_reason"] == "auto_backfill_active"
+    assert state["pending_candidates"] == []
+
+
+def test_auto_scheduler_discards_batch_when_scan_settings_change(db, monkeypatch):
+    from yamibo_mcp.daemon import image_backfill_scheduler as scheduler
+
+    db.execute(
+        """
+        INSERT INTO system_state (key, value_json, updated_at)
+        VALUES (?, ?, ?)
+        """,
+        (
+            "image_backfill_auto_scheduler",
+            json.dumps({
+                "scan_cursor_tid": 5000,
+                "scan_wrap_count": 2,
+                "scan_forum_id": 1,
+                "pending_forum_id": 1,
+                "pending_dry_run": True,
+                "pending_candidates": [{"tid": 5001, "reason": "old_batch"}],
+            }),
+            "2026-09-23T00:00:00+00:00",
+        ),
+    )
+    db.commit()
+    settings = _scheduler_settings()
+    settings.image_backfill_forum_id = 2
+    scanned_cursors = []
+
+    def no_candidates(*args, **kwargs):
+        scanned_cursors.append(kwargs["cursor_tid"])
+        return {
+            "candidate": None,
+            "candidates": [],
+            "cursor_after": 0,
+            "wrap_count": 0,
+            "batch_size": 0,
+            "candidate_count": 0,
+            "non_site_candidate_count": 0,
+            "blocking_count": 0,
+            "elapsed_ms": 0.0,
+        }
+
+    monkeypatch.setattr(scheduler, "_select_candidate_batch", no_candidates)
+    assert maybe_enqueue_image_backfill_dry_run(JobsRepository(db), settings) is False
+
+    state = SystemStateRepository(db).get_json("image_backfill_auto_scheduler")
+    assert scanned_cursors == [0]
+    assert state["pending_candidates"] == []
+    assert state["scan_forum_id"] == 2
 
 
 def test_auto_scheduler_interval_throttles_no_candidate_scan(db, monkeypatch):
@@ -833,7 +937,11 @@ def test_auto_scheduler_two_threads_enter_candidate_scan_once(monkeypatch):
             return FakeTransaction()
 
         def execute(self, *args, **kwargs):
-            return None
+            class Result:
+                def fetchall(self):
+                    return []
+
+            return Result()
 
     class FakeStateRepository:
         def __init__(self, conn):

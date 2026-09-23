@@ -4,10 +4,31 @@ import sqlite3
 from threading import Event
 from types import SimpleNamespace
 
+from yamibo_mcp.daemon import runner as runner_module
 from yamibo_mcp.daemon.runner import DaemonRunner
 from yamibo_mcp.db.migrations import migrate
 from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.errors import RemoteFetchError, ThreadPermissionRequiredError, UnexpectedPageError
+
+
+def test_daily_sign_in_scheduler_checks_at_most_once_per_hour(monkeypatch):
+    calls = []
+    now = {"value": 100.0}
+    monkeypatch.setattr(runner_module, "_last_daily_sign_in_check", None)
+    monkeypatch.setattr(runner_module.time, "monotonic", lambda: now["value"])
+    monkeypatch.setattr(
+        runner_module,
+        "maybe_enqueue_daily_sign_ins",
+        lambda repo, settings: calls.append((repo, settings)),
+    )
+
+    runner_module._maybe_schedule_daily_sign_ins("repo", "settings")
+    now["value"] = 3699.9
+    runner_module._maybe_schedule_daily_sign_ins("repo", "settings")
+    now["value"] = 3700.0
+    runner_module._maybe_schedule_daily_sign_ins("repo", "settings")
+
+    assert calls == [("repo", "settings"), ("repo", "settings")]
 
 
 def test_worker_loop_logs_and_recovers_from_outer_exception(monkeypatch, caplog):

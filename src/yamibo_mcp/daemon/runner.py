@@ -4,7 +4,7 @@ import logging
 import random
 import time
 from dataclasses import dataclass
-from threading import Event, Thread
+from threading import Event, Lock, Thread
 from uuid import uuid4
 
 from yamibo_mcp.config import Settings, load_settings
@@ -48,6 +48,27 @@ from yamibo_mcp.daemon.remote_attempt import outcome_for_error, sanitize_remote_
 from yamibo_mcp.time_utils import utc_now_iso
 
 LOG = logging.getLogger(__name__)
+_DAILY_SIGN_IN_CHECK_INTERVAL_SECONDS = 60.0 * 60.0
+_DAILY_SIGN_IN_SCHEDULER_LOCK = Lock()
+_last_daily_sign_in_check: float | None = None
+
+
+def _maybe_schedule_daily_sign_ins(repo: JobsRepository, settings: Settings) -> None:
+    """Throttle the local-account check independently from worker job polling."""
+    global _last_daily_sign_in_check
+    if not _DAILY_SIGN_IN_SCHEDULER_LOCK.acquire(blocking=False):
+        return
+    try:
+        now = time.monotonic()
+        if (
+            _last_daily_sign_in_check is not None
+            and now - _last_daily_sign_in_check < _DAILY_SIGN_IN_CHECK_INTERVAL_SECONDS
+        ):
+            return
+        maybe_enqueue_daily_sign_ins(repo, settings)
+        _last_daily_sign_in_check = now
+    finally:
+        _DAILY_SIGN_IN_SCHEDULER_LOCK.release()
 
 
 def _is_soft_block_error(exc: RemoteFetchError) -> bool:
@@ -185,7 +206,7 @@ class DaemonRunner:
             recover_expired_jobs(repo)
             _restore_444_events(conn)
             try:
-                maybe_enqueue_daily_sign_ins(repo, settings)
+                _maybe_schedule_daily_sign_ins(repo, settings)
             except Exception:
                 LOG.exception("Daily sign-in scheduler failed")
 

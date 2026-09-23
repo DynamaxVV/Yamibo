@@ -42,7 +42,7 @@ def maybe_enqueue_daily_sign_ins(
         cache_entry = sign_in_cache.get(identity.account_id) or {}
         cached_day = last_sign_in_day(cache_entry)
         if cached_day == local_day:
-            LOG.info("Skipping daily sign-in for already checked account_id=%s local_day=%s", identity.account_id, local_day)
+            LOG.debug("Skipping daily sign-in for already checked account_id=%s local_day=%s", identity.account_id, local_day)
             continue
         scheduled_at = scheduled_sign_in_time(local_day=local_day, account_id=identity.account_id)
         if current < scheduled_at:
