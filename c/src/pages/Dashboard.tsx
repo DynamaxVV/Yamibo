@@ -5,7 +5,16 @@ import { api, type DashboardData, type ThreadSummary } from '../api/client'
 import packageInfo from '../../package.json'
 import { useI18n } from '../context/I18nContext'
 import { formatThreadListTitle } from '../utils/threadTitle'
+import { formatDateTime } from '../utils/time'
 import '../styles/dashboard-editorial.css'
+
+function formatDateTimeStacked(value: string | null) {
+  const formatted = formatDateTime(value)
+  if (formatted === '-') return <span className="archive-home__datetime">—</span>
+  const [datePart, timePart, ...rest] = formatted.split(' ')
+  if (!datePart || !timePart || rest.length > 0) return <span className="archive-home__datetime">{formatted}</span>
+  return <span className="archive-home__datetime"><span>{datePart}</span><span>{timePart}</span></span>
+}
 
 export function Dashboard() {
   const { lang, tx } = useI18n()
@@ -15,6 +24,7 @@ export function Dashboard() {
   const [data, setData] = useState<DashboardData | null>(null)
   const [threads, setThreads] = useState<ThreadSummary[]>([])
   const [forumNames, setForumNames] = useState<Record<number, string>>({})
+  const [canonicalForumNames, setCanonicalForumNames] = useState<Record<number, string>>({})
   const [forum, setForum] = useState('all')
   const [page, setPage] = useState(1)
   const [error, setError] = useState(false)
@@ -23,7 +33,10 @@ export function Dashboard() {
   const forumSamplesRef = useRef(new Map<number, ThreadSummary[]>())
 
   useEffect(() => {
-    api.forums().then(items => setForumNames(Object.fromEntries(items.map(item => [item.forum_id, lang === 'en' ? item.name_en || item.name : item.name])))).catch(() => {})
+    api.forums().then(items => {
+      setForumNames(Object.fromEntries(items.map(item => [item.forum_id, lang === 'en' ? item.name_en || item.name : item.name])))
+      setCanonicalForumNames(Object.fromEntries(items.map(item => [item.forum_id, item.name.trim()])))
+    }).catch(() => {})
   }, [lang])
 
   useEffect(() => {
@@ -77,10 +90,20 @@ export function Dashboard() {
     { label: tx('作品系列', 'Series'), value: data?.series_count, to: '/series', icon: Library },
     { label: tx('导出档案', 'Exports'), value: data?.export_count, to: '/exports', icon: Download },
   ]
+  const primaryForumNames = new Set(['海域区', '动漫区', '漫画区', '文学区', '管理版', '轻小说区'])
   const forumCounts = Object.entries(data?.forum_counts ?? {})
-    .map(([id, count]) => ({ id: Number(id), count }))
+    .map(([id, count]) => ({ id: Number(id), count, name: canonicalForumNames[Number(id)] }))
     .filter(({ count }) => count > 0)
-    .sort((a, b) => b.count - a.count)
+  const namedForumCounts = forumCounts
+    .filter(({ name }) => name && primaryForumNames.has(name))
+    .map(({ id, count }) => ({ id, count, other: false }))
+  const otherForumCount = forumCounts
+    .filter(({ name }) => !name || !primaryForumNames.has(name))
+    .reduce((total, { count }) => total + count, 0)
+  const groupedForumCounts = [
+    ...namedForumCounts,
+    ...(otherForumCount > 0 ? [{ id: null, count: otherForumCount, other: true }] : []),
+  ].sort((a, b) => b.count - a.count)
 
   return <div className="archive-home">
     <header className="archive-home__masthead">
@@ -96,13 +119,15 @@ export function Dashboard() {
         <Icon aria-hidden="true" /><span><strong>{value == null ? '—' : value.toLocaleString()}</strong><small>{label}</small></span>
       </Link>)}
       <Link to="/jobs" className="archive-home__stat archive-home__stat--jobs">
-        <ListTodo aria-hidden="true" /><span><strong>{data?.job_control.running == null ? '—' : data.job_control.running.toLocaleString()}</strong><small>{data ? `${data.job_control.jobs_enabled ? tx('运行任务', 'Running tasks') : tx('队列已暂停', 'Queue paused')} · ${data.job_control.paused} ${tx('个暂停', 'paused')}` : tx('运行任务', 'Running tasks')}</small></span>
+        <ListTodo aria-hidden="true" /><span><strong>{data?.job_control.running == null ? '—' : data.job_control.running.toLocaleString()}</strong><small>{data ? `${data.job_control.jobs_enabled ? tx('运行任务', 'Running tasks') : tx('队列已暂停', 'Queue paused')} · ${data.job_control.queued} ${tx('个排队中', 'queued')}` : tx('运行任务', 'Running tasks')}</small></span>
       </Link>
     </div>
     {forumCounts.length > 0 && <nav className="archive-home__forum-counts" aria-label={tx('各分区归档帖子数', 'Archived threads by forum')}>
       <strong>{tx('分区收录', 'By forum')}</strong>
-      {forumCounts.map(({ id, count }) => <Link key={id} to={`/threads?forum_id=${id}`} title={tx(`查看${forumNames[id] || `版块 #${id}`}的归档帖子`, `View archived threads in ${forumNames[id] || `forum #${id}`}`)}>
-        <span>{forumNames[id] || tx(`版块 #${id}`, `Forum #${id}`)}</span><b>{count.toLocaleString()}</b>
+      {groupedForumCounts.map(({ id, count, other }) => other ? <span key="other" title={tx('其他分区的归档帖子总数', 'Total archived threads in other forums')}>
+        <span>{tx('其他', 'Other')}</span><b>{count.toLocaleString()}</b>
+      </span> : <Link key={id} to={`/threads?forum_id=${id}`} title={tx(`查看${forumNames[id!] || `版块 #${id}`}的归档帖子`, `View archived threads in ${forumNames[id!] || `forum #${id}`}`)}>
+        <span>{forumNames[id!] || tx(`版块 #${id}`, `Forum #${id}`)}</span><b>{count.toLocaleString()}</b>
       </Link>)}
     </nav>}
     {data && (data.job_control.interrupted > 0 || data.job_control.paused > 0) && <Link to="/jobs" className="archive-home__notice"><strong>{tx('待处理任务', 'Tasks needing attention')}</strong><span>{data.job_control.interrupted} {tx('个中断', 'interrupted')}，{data.job_control.paused} {tx('个暂停', 'paused')}</span><ArrowRight aria-hidden="true" /></Link>}
@@ -112,12 +137,19 @@ export function Dashboard() {
         <label>{tx('版块', 'Forum')} <select value={forum} onChange={event => void selectForum(event.target.value)}><option value="all">{tx('全部版块', 'All forums')}</option>{Object.entries(forumNames).map(([id, name]) => <option key={id} value={id}>{name} · {(data?.forum_counts[Number(id)] ?? 0).toLocaleString()}</option>)}</select></label>
       </div>
       <div className="archive-home__list">
-        <div className="archive-home__list-head" aria-hidden="true"><span>{tx('帖子标题', 'Thread title')}</span><span>{tx('版块', 'Forum')}</span><span>{tx('回复', 'Replies')}</span><span>{tx('收录日期', 'Archived')}</span></div>
+        <div className="archive-home__list-head" aria-hidden="true">
+          <span>{tx('帖子标题', 'Thread title')}</span>
+          <span>{tx('版块', 'Forum')}</span>
+          <span>{tx('回复', 'Replies')}</span>
+          <span>{tx('发布日期', 'Published')}</span>
+          <span>{tx('最后回复日期', 'Last reply')}</span>
+        </div>
         {sampleLoading ? <p className="archive-home__empty">{tx('正在读取所选版块…', 'Loading this forum…')}</p> : visible.length ? visible.map(item => <Link key={item.tid} to={`/threads/${item.tid}`} className="archive-home__thread" title={formatThreadListTitle(item)}>
           <span className="archive-home__thread-main"><span className="archive-home__thread-title">{formatThreadListTitle(item)}</span><span className="archive-home__thread-id">#{item.tid}</span></span>
           <span className="archive-home__thread-forum">{forumNames[item.forum_id ?? -1] || tx('未分类', 'Uncategorized')}</span>
           <span className="archive-home__thread-replies">{item.reply_count ?? '—'}</span>
-          <span className="archive-home__thread-date">{item.sync_time?.slice(0, 10) || tx('时间未知', 'Unknown date')}</span>
+          <span className="archive-home__thread-date"><small>{tx('发布日期', 'Published')}</small>{formatDateTimeStacked(item.pub_time)}</span>
+          <span className="archive-home__thread-date"><small>{tx('最后回复日期', 'Last reply')}</small>{formatDateTimeStacked(item.remote_last_reply_at)}</span>
         </Link>) : <p className="archive-home__empty">{data ? tx('当前筛选下没有最近归档。', 'No recent archives match this filter.') : tx('正在读取最近归档…', 'Loading recent archives…')}</p>}
       </div>
       <div className="archive-home__footer"><Link to="/threads" className="archive-home__all-link">{tx('查看全部归档', 'View all archives')} <ArrowRight aria-hidden="true" /></Link><div className="archive-home__pagination"><button disabled={page <= 1} onClick={() => setPage(page - 1)}>{tx('上一页', 'Previous')}</button><span>{page} / {pages}</span><button disabled={page >= pages} onClick={() => setPage(page + 1)}>{tx('下一页', 'Next')}</button></div></div>

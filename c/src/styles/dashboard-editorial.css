@@ -18,6 +18,7 @@
 .archive-home__forum-counts { display: flex; align-items: center; flex-wrap: wrap; gap: .3rem 1.15rem; margin-top: .6rem; border-block: 1px solid var(--border); padding: .42rem .2rem; font-size: .76rem; }
 .archive-home__forum-counts > strong { flex: none; color: var(--primary); font-weight: 800; }
 .archive-home__forum-counts a { display: inline-flex; align-items: baseline; gap: .35rem; color: var(--muted-foreground); }
+.archive-home__forum-counts > span { display: inline-flex; align-items: baseline; gap: .35rem; color: var(--muted-foreground); }
 .archive-home__forum-counts a:hover { color: var(--primary); text-decoration: underline; text-underline-offset: .2em; }
 .archive-home__forum-counts b { color: var(--foreground); font: 700 .8rem var(--font-mono); }
 .archive-home__notice { display: flex; align-items: center; gap: .65rem; margin-top: .75rem; border-block: 1px solid var(--border); padding: .55rem .2rem; font-size: .82rem; }
@@ -31,18 +32,24 @@
 .archive-home__section-heading > div > span { color: var(--muted-foreground); font-size: .72rem; }
 .archive-home__section-heading label { flex: none; display: flex; align-items: center; gap: .35rem; font-size: .76rem; }
 .archive-home__section-heading select { max-width: 8rem; border: 1px solid var(--border); border-radius: 0; padding: .36rem .5rem; background: var(--card); color: var(--foreground); font-size: .76rem; }
-.archive-home__list { border-top: 1px solid #b9956a; }
-.archive-home__list-head, .archive-home__thread { display: grid; grid-template-columns: minmax(0, 1fr) 6rem 3rem 7rem; align-items: center; gap: 1rem; }
+.archive-home__list { border-top: 1px solid #b9956a; container-type: inline-size; }
+.archive-home__list-head, .archive-home__thread { display: grid; grid-template-columns: minmax(0, 1fr) 5rem 2.5rem repeat(2, 6.25rem); align-items: center; gap: .55rem; }
 .archive-home__list-head { border-bottom: 1px solid #dec9a6; padding: .5rem .7rem; background: linear-gradient(90deg, #fff3d5, #fff7e6); color: #574533; font-size: .68rem; font-weight: 700; letter-spacing: .05em; }
-.archive-home__list-head span { text-align: center; }
+.archive-home__list-head span { overflow: hidden; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
 .archive-home__thread-forum, .archive-home__thread-replies, .archive-home__thread-date { text-align: center; }
 .archive-home__thread { min-width: 0; border-bottom: 1px solid var(--border-subtle); padding: .5rem .7rem; transition: background-color .15s ease; }
 .archive-home__thread:hover { background: color-mix(in srgb, var(--muted) 40%, transparent); }
 .archive-home__thread-main { display: flex; align-items: baseline; gap: .6rem; min-width: 0; }
 .archive-home__thread-title { display: -webkit-box; min-width: 0; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow-wrap: anywhere; color: var(--foreground); font: 300 .92rem/1.35 var(--font-sans); }
 .archive-home__thread-id { flex: none; color: var(--muted-foreground); font: .65rem var(--font-mono); }
-.archive-home__thread-forum, .archive-home__thread-replies, .archive-home__thread-date { color: var(--muted-foreground); font-size: .73rem; }
+.archive-home__thread-forum, .archive-home__thread-replies, .archive-home__thread-date { min-width: 0; color: var(--muted-foreground); font-size: .73rem; }
 .archive-home__thread-forum { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.archive-home__thread-date { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.archive-home__thread-date small { display: none; }
+.archive-home__datetime { display: flex; flex-direction: column; align-items: center; overflow: hidden; font: .65rem/1.2 var(--font-mono); }
+.archive-home__datetime > span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.archive-home__datetime > span:first-child { color: var(--foreground); }
+.archive-home__datetime > span + span { color: var(--muted-foreground); }
 .archive-home__empty { padding: 1rem .7rem; color: var(--muted-foreground); font-size: .85rem; }
 .archive-home__footer { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-top: .7rem; }
 .archive-home__pagination { display: flex; align-items: center; gap: .45rem; color: var(--muted-foreground); font-size: .7rem; }
@@ -70,10 +77,27 @@
   .archive-home__section-heading h2 { font-size: 1.3rem; }
   .archive-home__section-heading > div > span { display: none; }
   .archive-home__list-head { display: none; }
-  .archive-home__thread { grid-template-columns: minmax(0, 1fr) auto auto; gap: .2rem .6rem; padding: .65rem .3rem; }
+  .archive-home__thread { grid-template-columns: minmax(0, 1fr) 2.7rem repeat(2, minmax(0, 1fr)); gap: .35rem; padding: .65rem .3rem; }
   .archive-home__thread-main { grid-column: 1 / -1; }
   .archive-home__thread-title { font-size: .88rem; }
-  .archive-home__thread-forum, .archive-home__thread-replies, .archive-home__thread-date { font-size: .68rem; }
+  .archive-home__thread-forum, .archive-home__thread-replies, .archive-home__thread-date { font-size: .62rem; }
+  .archive-home__thread-date small { display: block; margin-bottom: .12rem; font-size: .55rem; }
+  .archive-home__datetime { font-size: .56rem; }
   .archive-home__thread-replies::after { content: ' 回复'; }
   .archive-home__footer { align-items: flex-start; flex-wrap: wrap; }
+}
+
+@container (min-width: 641px) and (max-width: 760px) {
+  .archive-home__list-head, .archive-home__thread { grid-template-columns: minmax(0, 1fr) 4.5rem 2.2rem repeat(2, 5.5rem); gap: .35rem; }
+  .archive-home__list-head { font-size: .62rem; }
+  .archive-home__thread-forum, .archive-home__thread-replies, .archive-home__thread-date { font-size: .66rem; }
+}
+
+@container (max-width: 640px) {
+  .archive-home__list-head { display: none; }
+  .archive-home__thread { grid-template-columns: minmax(0, 1fr) 2.7rem repeat(2, minmax(0, 1fr)); gap: .35rem; padding: .65rem .3rem; }
+  .archive-home__thread-main { grid-column: 1 / -1; }
+  .archive-home__thread-forum, .archive-home__thread-replies, .archive-home__thread-date { font-size: .62rem; }
+  .archive-home__thread-date small { display: block; margin-bottom: .12rem; font-size: .55rem; }
+  .archive-home__datetime { font-size: .56rem; }
 }

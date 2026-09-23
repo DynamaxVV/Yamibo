@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import {
   BookOpen,
@@ -15,14 +15,12 @@ import {
   PanelLeft,
   Sun,
   Moon,
-  Circle,
   Terminal,
   Menu,
   X,
 } from 'lucide-react'
 import { useTheme } from '../context/ThemeContext'
 import { useI18n } from '../context/I18nContext'
-import { useTaskStatus } from '../context/TaskStatusContext'
 import { cn } from '../lib/utils'
 
 interface NavItem {
@@ -32,13 +30,12 @@ interface NavItem {
   labelEn: string
   icon: typeof BookOpen
   exact?: boolean
-  badge?: 'jobs'
 }
 
 const NAV_ITEMS: NavItem[] = [
   { to: '/', key: 'dashboard', labelZh: '控制台', labelEn: 'DASHBOARD', icon: LayoutDashboard, exact: true },
   { to: '/threads', key: 'threads', labelZh: '帖子归档', labelEn: 'ARCHIVE', icon: BookOpen },
-  { to: '/jobs', key: 'jobs', labelZh: '任务中心', labelEn: 'TASKS', icon: Activity, badge: 'jobs' },
+  { to: '/jobs', key: 'jobs', labelZh: '任务中心', labelEn: 'TASKS', icon: Activity },
   { to: '/rag', key: 'rag', labelZh: '知识检索', labelEn: 'KNOWLEDGE', icon: FileText },
   { to: '/series', key: 'series', labelZh: '作品系列', labelEn: 'SERIES', icon: Library },
   { to: '/forum', key: 'remoteForum', labelZh: '论坛漫游', labelEn: 'FORUM', icon: Globe },
@@ -53,7 +50,6 @@ export function Layout() {
   const location = useLocation()
   const { dark, toggleDark } = useTheme()
   const { lang, setLang, tx } = useI18n()
-  const { taskStatus } = useTaskStatus()
   const [mobileOpen, setMobileOpen] = useState(false)
   const menuButton = useRef<HTMLButtonElement>(null)
   const mobileNavigation = useRef<HTMLElement>(null)
@@ -116,11 +112,6 @@ export function Layout() {
     mobileNavigation.current?.querySelector<HTMLElement>('a')?.focus()
     return () => { document.body.style.overflow = previous }
   }, [mobileOpen])
-
-  const runningJobsCount = useMemo(() => {
-    if (!taskStatus) return 0
-    return taskStatus.job_counts?.running ?? 0
-  }, [taskStatus])
 
   return (
     <div className="min-h-screen flex bg-background text-foreground selection:bg-yamibo-burgundy selection:text-white transition-colors duration-200">
@@ -193,21 +184,6 @@ export function Layout() {
                       </span>
                     )}
 
-                    {/* Live Jobs indicator */}
-                    {item.badge === 'jobs' && runningJobsCount > 0 && (
-                      <span
-                        className={cn(
-                          'flex items-center gap-1 font-mono text-[10px] px-1.5 py-0.2 rounded-full font-bold',
-                          isActive
-                            ? 'bg-white/20 text-white'
-                            : 'bg-yamibo-burgundy/15 text-yamibo-burgundy',
-                          collapsed && 'md:absolute md:top-1 md:right-1'
-                        )}
-                      >
-                        <Circle className="w-1.5 h-1.5 fill-current animate-pulse" />
-                        {(!collapsed || mobileOpen) && runningJobsCount}
-                      </span>
-                    )}
                   </>
                 )}
               </NavLink>

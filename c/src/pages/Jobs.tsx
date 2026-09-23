@@ -16,7 +16,7 @@ import { PaginationControls } from '../components/PaginationControls'
 import { useI18n } from '../context/I18nContext'
 import { formatDateTime } from '../utils/time'
 import { formatJobFailureKind, getJobFailureKind, type JobFailureKind } from '../utils/jobMessages'
-import { useTableLayout } from '../components/TableLayoutEditor'
+import { useResponsiveTableWidths, useTableLayout } from '../components/TableLayoutEditor'
 import { cn } from '../lib/utils'
 import '../styles/tools.css'
 
@@ -87,7 +87,13 @@ export function Jobs() {
     }
   })
   const tableLayout = useTableLayout('jobs')
+  const [tableContainer, setTableContainer] = useState<HTMLDivElement | null>(null)
+  const { widths: responsiveWidths, tableWidth } = useResponsiveTableWidths(tableLayout, tableContainer, 'description')
   const column = (key: string) => tableLayout.find(item => item.key === key)
+  const columnWidth = (key: string) => {
+    const width = responsiveWidths[key] ?? column(key)?.width
+    return width == null ? undefined : { width }
+  }
   const [totalPages, setTotalPages] = useState(1)
   const [totalCount, setTotalCount] = useState(0)
   const [failureKindCounts, setFailureKindCounts] = useState<Record<string, number>>({})
@@ -781,7 +787,7 @@ export function Jobs() {
           <div className="flex items-start gap-2">
             <input type="checkbox" checked={selectedIds.has(j.job_id)} onChange={() => toggleSelect(j.job_id)} aria-label={`${tx('选择任务', 'Select task')} ${j.job_id}`} className="mt-1 h-5 w-5 shrink-0" />
             <div className="min-w-0 flex-1">
-              <Link to={`/jobs/${j.job_id}`} className="block break-words font-display text-sm font-semibold leading-5 text-foreground hover:text-primary">{j.job_type === 'image_backfill' && j.tid ? tx(`为 #${j.tid} 补全图片`, `Recover images for #${j.tid}`) : desc(j)}</Link>
+              <Link to={`/jobs/${j.job_id}`} className="block break-words font-display text-sm font-medium leading-5 text-foreground hover:text-primary">{j.job_type === 'image_backfill' && j.tid ? tx(`为 #${j.tid} 补全图片`, `Recover images for #${j.tid}`) : desc(j)}</Link>
               <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground"><Badge status={j.archive_status || j.status} />{j.tid && <span>#{j.tid}</span>}<span>{j.progress_current}/{j.progress_total ?? '?'}</span><span>{formatDateTime(j.created_at).slice(0, 16)}</span></div>
             </div>
           </div>
@@ -792,8 +798,8 @@ export function Jobs() {
           </div>
         </article>)}
       </div>
-      <div className="relative hidden overflow-x-auto rounded-md border border-border bg-card shadow-2xs md:block">
-        <table className="list-table w-full text-left text-[13px] divide-y divide-border">
+      <div ref={setTableContainer} className="relative hidden overflow-x-auto rounded-md border border-border bg-card shadow-2xs md:block">
+        <table className="list-table text-left text-[13px] divide-y divide-border" style={{ tableLayout: 'fixed', width: tableWidth }}>
           <thead className="bg-muted/50 text-[11px] font-mono text-muted-foreground uppercase tracking-wider">
             <tr>
               <th className="px-3 py-2.5 w-10">
@@ -804,19 +810,19 @@ export function Jobs() {
                   className="rounded-xs border-border text-yamibo-burgundy focus:ring-yamibo-burgundy"
                 />
               </th>
-              {column('tid')?.visible && <th className="px-3 py-2.5 w-20">{t('tid')}</th>}
-              {column('description')?.visible && <th className="min-w-80 px-3 py-2.5">{t('description')}</th>}
-              {column('status')?.visible && <th className="px-3 py-2.5 w-36 text-center">{t('status')}</th>}
+              {column('tid')?.visible && <th style={columnWidth('tid')} className="column-layout-cell px-3 py-2.5 w-20">{t('tid')}</th>}
+              {column('description')?.visible && <th style={columnWidth('description')} className="column-layout-cell min-w-80 px-3 py-2.5">{t('description')}</th>}
+              {column('status')?.visible && <th style={columnWidth('status')} className="column-layout-cell px-3 py-2.5 w-36 text-center">{t('status')}</th>}
               {column('stage')?.visible && (
-                <th className="px-3 py-2.5 w-28 hidden md:table-cell">{t('stage')}</th>
+                <th style={columnWidth('stage')} className="column-layout-cell px-3 py-2.5 w-28 hidden md:table-cell">{t('stage')}</th>
               )}
               {column('progress')?.visible && (
-                <th className="px-3 py-2.5 w-24 hidden md:table-cell">{t('progress')}</th>
+                <th style={columnWidth('progress')} className="column-layout-cell px-3 py-2.5 w-24 hidden md:table-cell">{t('progress')}</th>
               )}
               {column('created_at')?.visible && (
-                <th className="px-3 py-2.5 w-32 hidden sm:table-cell">{t('created_at')}</th>
+                <th style={columnWidth('created_at')} className="column-layout-cell px-3 py-2.5 w-32 hidden sm:table-cell">{t('created_at')}</th>
               )}
-              <th className="px-3 py-2.5 w-28">{t('action')}</th>
+              <th style={columnWidth('action')} className="column-layout-cell px-2 py-2.5 w-28 whitespace-nowrap">{t('action')}</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-border/60">
@@ -861,7 +867,7 @@ export function Jobs() {
                       />
                     </td>
                     {column('tid')?.visible && (
-                      <td className="px-3 py-2 font-mono text-xs text-muted-foreground whitespace-nowrap">
+                      <td style={columnWidth('tid')} className="px-3 py-2 font-mono text-xs text-muted-foreground whitespace-nowrap">
                         {j.tid ? (
                           <Link
                             to={`/threads/${j.tid}`}
@@ -875,7 +881,7 @@ export function Jobs() {
                       </td>
                     )}
                     {column('description')?.visible && (
-                      <td className="table-cell-long min-w-80 px-3 py-2 font-display font-semibold text-foreground">
+                      <td style={columnWidth('description')} className="table-cell-long min-w-80 px-3 py-2 font-display font-medium text-foreground">
                         <Link
                           to={`/jobs/${j.job_id}`}
                           className="hover:text-yamibo-burgundy dark:hover:text-yamibo-coral line-clamp-2 break-words leading-5 transition-colors"
@@ -886,7 +892,7 @@ export function Jobs() {
                       </td>
                     )}
                     {column('status')?.visible && (
-                      <td className="px-3 py-2 text-center">
+                      <td style={columnWidth('status')} className="px-3 py-2 text-center">
                         <div className="flex flex-col gap-1 items-center">
                           <Badge status={j.archive_status || j.status} />
                           {kind && (
@@ -903,12 +909,12 @@ export function Jobs() {
                       </td>
                     )}
                     {column('stage')?.visible && (
-                      <td className="w-28 max-w-28 px-3 py-2 text-xs font-mono text-muted-foreground hidden md:table-cell">
-                        <span className="block max-w-28 truncate" title={j.stage || '-'}>{j.stage || '-'}</span>
+                      <td style={columnWidth('stage')} className="px-3 py-2 text-xs font-mono text-muted-foreground hidden md:table-cell">
+                        <span className="block truncate" title={j.stage || '-'}>{j.stage || '-'}</span>
                       </td>
                     )}
                     {column('progress')?.visible && (
-                      <td className="px-3 py-2 align-middle text-center text-xs font-mono text-muted-foreground whitespace-nowrap hidden md:table-cell">
+                      <td style={columnWidth('progress')} className="px-3 py-2 align-middle text-center text-xs font-mono text-muted-foreground whitespace-nowrap hidden md:table-cell">
                         <div
                           className="jobs-progress-meter"
                           role="progressbar"
@@ -926,11 +932,11 @@ export function Jobs() {
                       </td>
                     )}
                     {column('created_at')?.visible && (
-                      <td className="px-3 py-2 text-xs font-mono text-muted-foreground whitespace-nowrap hidden sm:table-cell">
+                      <td style={columnWidth('created_at')} className="px-3 py-2 text-xs font-mono text-muted-foreground whitespace-nowrap hidden sm:table-cell">
                         {formatDateTime(j.created_at)}
                       </td>
                     )}
-                    <td className="px-3 py-2">
+                    <td style={columnWidth('action')} className="px-2 py-2 whitespace-nowrap">
                       <div className="flex items-center justify-end gap-1.5">
                         {(j.status === 'partial' ||
                           j.status === 'failed' ||

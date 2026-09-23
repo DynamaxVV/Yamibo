@@ -15,7 +15,7 @@ import { PaginationControls } from '../components/PaginationControls'
 import { useI18n } from '../context/I18nContext'
 import { formatDateTime } from '../utils/time'
 import { formatThreadListTitle } from '../utils/threadTitle'
-import { useTableLayout } from '../components/TableLayoutEditor'
+import { useResponsiveTableWidths, useTableLayout } from '../components/TableLayoutEditor'
 import { cn } from '../lib/utils'
 
 type SortKey = 'pub_time' | 'sync_time' | 'reply_count' | 'remote_last_reply_at'
@@ -57,14 +57,15 @@ function SortHeader({
   return (
     <th
       className={cn(
-        'px-3 py-2.5 cursor-pointer hover:bg-muted/70 transition-colors select-none group',
+        'sort-header column-layout-cell px-3 py-2.5 cursor-pointer hover:bg-muted/70 transition-colors select-none group',
         className
       )}
       style={width ? { width } : undefined}
       onClick={() => onSort(sortKey)}
     >
-      <div className="flex items-center justify-center gap-1">
-        <span>{label}</span>
+      <div className="relative flex items-center justify-center">
+        <span className="thread-sort-label">{label}</span>
+        <span className="thread-sort-indicator">
         {active ? (
           currentDir === 'asc' ? (
             <ArrowUp className="w-3 h-3 text-yamibo-burgundy dark:text-yamibo-coral" />
@@ -74,6 +75,7 @@ function SortHeader({
         ) : (
           <ArrowUpDown className="w-3 h-3 opacity-0 group-hover:opacity-40 transition-opacity" />
         )}
+        </span>
       </div>
     </th>
   )
@@ -113,7 +115,13 @@ export function Threads() {
     }
   })
   const tableLayout = useTableLayout('threads')
+  const [tableContainer, setTableContainer] = useState<HTMLDivElement | null>(null)
+  const { widths: responsiveWidths, tableWidth } = useResponsiveTableWidths(tableLayout, tableContainer, 'title')
   const column = (key: string) => tableLayout.find(item => item.key === key)
+  const columnWidth = (key: string) => {
+    const width = responsiveWidths[key] ?? column(key)?.width
+    return width == null ? undefined : { width }
+  }
   const [selectedTids, setSelectedTids] = useState<Set<number>>(new Set())
   const [confirmDeleteTids, setConfirmDeleteTids] = useState<number[] | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
@@ -442,8 +450,8 @@ export function Threads() {
           </article>
         })}
       </div>
-      <div className="relative hidden overflow-x-auto rounded-md border border-border bg-card shadow-2xs md:block">
-        <table className="list-table w-full text-left text-[13px] divide-y divide-border">
+      <div ref={setTableContainer} className="relative hidden overflow-x-auto rounded-md border border-border bg-card shadow-2xs md:block">
+        <table className="list-table text-left text-[13px] divide-y divide-border" style={{ tableLayout: 'fixed', width: tableWidth }}>
           <thead className="bg-muted/50 text-[11px] font-mono text-muted-foreground uppercase tracking-wider">
             <tr>
               <th className="px-3 py-2.5 w-10">
@@ -454,13 +462,13 @@ export function Threads() {
                   className="rounded-xs border-border text-yamibo-burgundy focus:ring-yamibo-burgundy"
                 />
               </th>
-              {column('title')?.visible && <th className="min-w-80 px-3 py-2.5">{t('title')}</th>}
-              {column('forum')?.visible && <th className="px-3 py-2.5 w-28">{t('forum')}</th>}
+              {column('title')?.visible && <th style={columnWidth('title')} className="column-layout-cell min-w-80 px-3 py-2.5">{t('title')}</th>}
+              {column('forum')?.visible && <th style={columnWidth('forum')} className="column-layout-cell px-3 py-2.5 w-28">{t('forum')}</th>}
               {column('category')?.visible && (
-                <th className="px-3 py-2.5 w-24 hidden md:table-cell">{t('category')}</th>
+                <th style={columnWidth('category')} className="column-layout-cell px-3 py-2.5 w-24 hidden md:table-cell">{t('category')}</th>
               )}
               {column('archive')?.visible && (
-                <th className="px-3 py-2.5 w-24 hidden md:table-cell">{t('archive')}</th>
+                <th style={columnWidth('archive')} className="column-layout-cell px-3 py-2.5 w-24 whitespace-nowrap hidden md:table-cell">{t('archive')}</th>
               )}
               {column('reply_count')?.visible && (
                 <SortHeader
@@ -504,7 +512,7 @@ export function Threads() {
                   className="hidden md:table-cell"
                 />
               )}
-              <th className="px-3 py-2.5 w-20">{t('action')}</th>
+              <th style={columnWidth('action')} className="column-layout-cell px-2 py-2.5 w-20 whitespace-nowrap">{t('action')}</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-border/60">
@@ -542,7 +550,7 @@ export function Threads() {
                       />
                     </td>
                     {column('title')?.visible && (
-                      <td className="table-cell-long min-w-80 px-3 py-2">
+                      <td style={columnWidth('title')} className="table-cell-long min-w-80 px-3 py-2">
                         <div className="flex items-center gap-2">
                           <Link
                             to={`/threads/${t_.tid}`}
@@ -555,42 +563,42 @@ export function Threads() {
                       </td>
                     )}
                     {column('forum')?.visible && (
-                      <td className="px-3 py-2 text-xs text-muted-foreground whitespace-nowrap font-sans">
+                      <td style={columnWidth('forum')} className="px-3 py-2 text-xs text-muted-foreground whitespace-nowrap font-sans">
                         {forumName}
                       </td>
                     )}
                     {column('category')?.visible && (
-                      <td className="px-3 py-2 text-xs text-muted-foreground whitespace-nowrap hidden md:table-cell">
+                      <td style={columnWidth('category')} className="px-3 py-2 text-xs text-muted-foreground whitespace-nowrap hidden md:table-cell">
                         {t_.category || '-'}
                       </td>
                     )}
                     {column('archive')?.visible && (
-                      <td className="px-3 py-2 hidden md:table-cell">
+                      <td style={columnWidth('archive')} className="px-3 py-2 whitespace-nowrap hidden md:table-cell">
                         <ContentBadge kind={t_.content_kind} />
                       </td>
                     )}
                     {column('reply_count')?.visible && (
-                      <td className="px-3 py-2 text-center font-mono text-xs text-muted-foreground">
+                      <td style={columnWidth('reply_count')} className="px-3 py-2 text-center font-mono text-xs text-muted-foreground">
                         {t_.reply_count ?? '-'}
                       </td>
                     )}
                     {column('pub_time')?.visible && (
-                      <td className="px-3 py-2 whitespace-nowrap text-center">{formatDateTimeStacked(t_.pub_time)}</td>
+                      <td style={columnWidth('pub_time')} className="px-3 py-2 whitespace-nowrap text-center">{formatDateTimeStacked(t_.pub_time)}</td>
                     )}
                     {column('last_reply_time')?.visible && (
-                      <td className="px-3 py-2 whitespace-nowrap text-center hidden md:table-cell">
+                      <td style={columnWidth('last_reply_time')} className="px-3 py-2 whitespace-nowrap text-center hidden md:table-cell">
                         {formatDateTimeStacked(t_.remote_last_reply_at)}
                       </td>
                     )}
                     {column('sync_time')?.visible && (
-                      <td className="px-3 py-2 whitespace-nowrap hidden md:table-cell">
+                      <td style={columnWidth('sync_time')} className="px-3 py-2 whitespace-nowrap hidden md:table-cell">
                         {formatDateTimeStacked(t_.sync_time)}
                       </td>
                     )}
-                    <td className="px-3 py-2">
+                    <td style={columnWidth('action')} className="px-2 py-2 whitespace-nowrap">
                       <button
                         onClick={() => setConfirmDeleteTids([t_.tid])}
-                        className="p-1 rounded-sm border border-border bg-card hover:bg-rose-50 dark:hover:bg-rose-950/40 text-muted-foreground hover:text-rose-600 transition-colors press-feedback"
+                        className="mx-auto flex h-8 w-8 items-center justify-center rounded-sm border border-border bg-card hover:bg-rose-50 dark:hover:bg-rose-950/40 text-muted-foreground hover:text-rose-600 transition-colors press-feedback"
                         title={t('delete')}
                       >
                         <Trash2 className="w-3.5 h-3.5" />

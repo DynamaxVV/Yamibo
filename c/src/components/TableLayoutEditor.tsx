@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useState } from 'react'
 import { api, type TableLayout, type TableLayouts, type SettingsUpdateResponse } from '../api/client'
 import { useI18n } from '../context/I18nContext'
 
@@ -70,6 +70,39 @@ export function useTableLayout(table: TableName) {
     }).catch(() => {})
   }, [table])
   return layouts
+}
+
+export function useResponsiveTableWidths(layout: TableLayout[], container: HTMLElement | null, flexibleColumnKey: string) {
+  const [containerWidth, setContainerWidth] = useState(0)
+
+  useLayoutEffect(() => {
+    if (!container) return
+    const updateWidth = () => {
+      const nextWidth = container.clientWidth
+      setContainerWidth(current => current === nextWidth ? current : nextWidth)
+    }
+    updateWidth()
+    const observer = new ResizeObserver(updateWidth)
+    observer.observe(container)
+    return () => observer.disconnect()
+  }, [container])
+
+  const visibleColumns = layout.filter(item => item.visible)
+  const preferredColumnsWidth = visibleColumns.reduce((total, item) => total + item.width, 0)
+  const flexibleColumn = visibleColumns.find(item => item.key === flexibleColumnKey)
+  const preferredFlexibleWidth = flexibleColumn?.width ?? 0
+  const fixedWidth = 40 + preferredColumnsWidth - preferredFlexibleWidth
+  const minimumFlexibleWidth = flexibleColumn ? Math.min(preferredFlexibleWidth, 320) : 0
+  const flexibleWidth = flexibleColumn && containerWidth > 0
+    ? Math.max(minimumFlexibleWidth, Math.min(preferredFlexibleWidth, containerWidth - fixedWidth))
+    : preferredFlexibleWidth
+  const tableWidth = Math.max(containerWidth, fixedWidth + flexibleWidth)
+  const widths = Object.fromEntries(layout.map(item => [
+    item.key,
+    item.key === flexibleColumnKey && item.visible ? flexibleWidth : item.width,
+  ])) as Record<string, number>
+
+  return { tableWidth, widths }
 }
 
 export function TableLayoutEditor({ value, revision, onSaved, onDirtyChange, onAuthRequired }: {
