@@ -736,15 +736,22 @@ class ThreadsRepository:
             "title_parse": None if after_title is None else dict(after_title),
         }
 
-    def list_threads(self, *, limit: int = 100, forum_id: int | None = None) -> list[sqlite3.Row]:
+    def list_threads(
+        self,
+        *,
+        limit: int = 100,
+        forum_id: int | None = None,
+        sort_key: str = "sync_time",
+        sort_dir: str = "desc",
+    ) -> list[sqlite3.Row]:
         base_select = f"""{self._thread_list_select()} {self._thread_list_from_clause()}"""
         if forum_id is not None:
             return self.conn.execute(
-                f"{base_select} WHERE t.forum_id = ? ORDER BY {self._thread_list_order_clause('sync_time', 'desc')} LIMIT ?",
+                f"{base_select} WHERE t.forum_id = ? ORDER BY {self._thread_list_order_clause(sort_key, sort_dir)} LIMIT ?",
                 (forum_id, limit),
             ).fetchall()
         return self.conn.execute(
-            f"{base_select} ORDER BY {self._thread_list_order_clause('sync_time', 'desc')} LIMIT ?",
+            f"{base_select} ORDER BY {self._thread_list_order_clause(sort_key, sort_dir)} LIMIT ?",
             (limit,),
         ).fetchall()
 

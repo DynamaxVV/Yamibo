@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Badge } from '../components/Badge'
+import { LoadingIndicator } from '../components/LoadingIndicator'
 import { api, type SettingsResponse, type SettingsUpdateResponse } from '../api/client'
 import { useI18n } from '../context/I18nContext'
 import { TableLayoutEditor } from '../components/TableLayoutEditor'
@@ -609,7 +610,7 @@ export function Settings({ advanced = false }: { advanced?: boolean }) {
     try { await api.logoutSettings(); setPayload(null); setFormValues({}); setAuthRequired(true); setError(null) }
     catch (e) { handleError(e) }
   }
-  if (loading) return <div className="panel" role="status">{t('loading')}</div>
+  if (loading) return <LoadingIndicator label={t('loading')} />
   const authView = (
     <div className="settings-auth-shell">
       <section className="panel settings-auth">

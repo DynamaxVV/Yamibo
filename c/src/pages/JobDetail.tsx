@@ -14,6 +14,7 @@ import {
 } from 'lucide-react'
 import { api, type JobSummary, type JobEvent } from '../api/client'
 import { Badge } from '../components/Badge'
+import { LoadingIndicator } from '../components/LoadingIndicator'
 import { useI18n } from '../context/I18nContext'
 import { formatDateTime } from '../utils/time'
 import { getArchiveBreakdown, getPartialArchiveReason, hasPartialArchiveBreakdown } from '../utils/archiveSummary'
@@ -104,9 +105,7 @@ export function JobDetail() {
 
   if (!job) {
     return (
-      <div className="p-8 text-center text-sm font-mono text-muted-foreground animate-pulse">
-        {t('loading')}
-      </div>
+      <LoadingIndicator label={t('loading')} className="min-h-24" />
     )
   }
 

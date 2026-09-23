@@ -1,6 +1,7 @@
 import '../styles/tools.css'
 import { useEffect, useState, useRef, useCallback, useMemo } from 'react'
 import { api, type LogEntry } from '../api/client'
+import { LoadingSpinner } from '../components/LoadingIndicator'
 import { useI18n } from '../context/I18nContext'
 
 const LEVEL_COLORS: Record<string, string> = {
@@ -161,7 +162,7 @@ export function Logs() {
 
       <div className="log-view" style={{ maxHeight: 'calc(100vh - 280px)' }}>
         {filtered.length === 0 ? (
-          <div className="log-empty" role="status">{fetching ? t('loading') : fetchError ? tx('暂时无法读取日志，请刷新重试。', 'Logs are temporarily unavailable. Refresh and try again.') : entries.length ? tx('当前筛选没有匹配日志，请调整筛选条件。', 'No logs match these filters. Adjust your search.') : t('no_logs')}</div>
+          <div className="log-empty" role="status">{fetching ? <span className="inline-flex items-center gap-2"><LoadingSpinner />{t('loading')}</span> : fetchError ? tx('暂时无法读取日志，请刷新重试。', 'Logs are temporarily unavailable. Refresh and try again.') : entries.length ? tx('当前筛选没有匹配日志，请调整筛选条件。', 'No logs match these filters. Adjust your search.') : t('no_logs')}</div>
         ) : filtered.map((e, i) => {
           const isExpanded = expandedIdx === i
           const cat = eventCategory(e.event_type)

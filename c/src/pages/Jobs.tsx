@@ -43,6 +43,19 @@ const FAILURE_KINDS: Array<JobFailureKind | null> = [
   'cancelled',
   'other',
 ]
+
+function formatDateTimeStacked(value: string | null) {
+  const formatted = formatDateTime(value)
+  if (formatted === '-') return formatted
+  const [datePart, timePart, ...rest] = formatted.split(' ')
+  if (!datePart || !timePart || rest.length > 0) return formatted
+  return (
+    <span className="flex flex-col items-center text-center leading-tight">
+      <span className="text-foreground">{datePart}</span>
+      <span className="text-muted-foreground/80">{timePart}</span>
+    </span>
+  )
+}
 const PAGE_SIZE_OPTIONS = [25, 50, 100] as const
 const STORAGE_KEY = 'yamibo_jobs_status'
 const FAILURE_STORAGE_KEY = 'yamibo_jobs_failure_kind'
@@ -110,7 +123,6 @@ export function Jobs() {
   const [pendingAction, setPendingAction] = useState(false)
   const [showIdleTasks, setShowIdleTasks] = useState(false)
   const [backfillStatus, setBackfillStatus] = useState<BackfillStatus | null>(null)
-  const [idleJobs, setIdleJobs] = useState<JobSummary[]>([])
   const jobsRef = useRef<JobSummary[]>([])
   const countsRef = useRef<Record<string, number>>({})
   const refreshTokenRef = useRef(0)
@@ -214,65 +226,59 @@ export function Jobs() {
   )
 
   useEffect(() => {
-    if (!showIdleTasks) void refreshJobs(true)
-  }, [refreshJobs, showIdleTasks])
+    void refreshJobs(true)
+  }, [refreshJobs])
 
   useEffect(() => {
     let active = true
     const poll = window.setInterval(async () => {
       try {
-        const [backfillStat, allJobs] = await Promise.all([
-          api.backfillStatus(),
-          api.jobs({ page_size: 50 }),
-        ])
+        const backfillStat = await api.backfillStatus()
         if (!active) return
         setBackfillStatus(backfillStat)
-        setIdleJobs(allJobs.items.filter(j => j.job_type === 'image_backfill'))
       } catch {}
-      if (!showIdleTasks) {
-        try {
-          const jobsRequest = api.jobs({
-            status: status || undefined,
-            failure_kind: status === 'failed' ? failureKind || undefined : undefined,
-            page,
-            page_size: pageSize,
-          })
-          const failureCountsRequest =
-            status === 'failed'
-              ? api.jobFailureCounts('failed')
-              : Promise.resolve<Record<string, number>>({})
-          const [nextJobs, nextCounts, nextFailureCounts] = await Promise.all([
-            jobsRequest,
-            api.jobCounts(),
-            failureCountsRequest,
-          ])
-          if (!active) return
-          const prevJobsKey = JSON.stringify(
-            jobsRef.current.map(j => [j.job_id, j.status, j.stage, j.updated_at])
-          )
-          const nextJobsKey = JSON.stringify(
-            nextJobs.items.map(j => [j.job_id, j.status, j.stage, j.updated_at])
-          )
-          const prevCountsKey = JSON.stringify(countsRef.current)
-          const nextCountsKey = JSON.stringify(nextCounts)
-          const prevFailureCountsKey = JSON.stringify(failureKindCounts)
-          const nextFailureCountsKey = JSON.stringify(nextFailureCounts)
-          if (
-            prevJobsKey !== nextJobsKey ||
-            prevCountsKey !== nextCountsKey ||
-            prevFailureCountsKey !== nextFailureCountsKey
-          ) {
-            setJobs(nextJobs.items)
-            setTotalPages(nextJobs.total_pages)
-            setTotalCount(nextJobs.total_count)
-            setStatusCounts(nextCounts)
-            setFailureKindCounts(nextFailureCounts)
-            setFailureKindCountsLoaded(status === 'failed')
-            jobsRef.current = nextJobs.items
-            countsRef.current = nextCounts
-          }
-        } catch {}
-      }
+      try {
+        const jobsRequest = api.jobs({
+          status: status || undefined,
+          failure_kind: status === 'failed' ? failureKind || undefined : undefined,
+          page,
+          page_size: pageSize,
+        })
+        const failureCountsRequest =
+          status === 'failed'
+            ? api.jobFailureCounts('failed')
+            : Promise.resolve<Record<string, number>>({})
+        const [nextJobs, nextCounts, nextFailureCounts] = await Promise.all([
+          jobsRequest,
+          api.jobCounts(),
+          failureCountsRequest,
+        ])
+        if (!active) return
+        const prevJobsKey = JSON.stringify(
+          jobsRef.current.map(j => [j.job_id, j.status, j.stage, j.updated_at])
+        )
+        const nextJobsKey = JSON.stringify(
+          nextJobs.items.map(j => [j.job_id, j.status, j.stage, j.updated_at])
+        )
+        const prevCountsKey = JSON.stringify(countsRef.current)
+        const nextCountsKey = JSON.stringify(nextCounts)
+        const prevFailureCountsKey = JSON.stringify(failureKindCounts)
+        const nextFailureCountsKey = JSON.stringify(nextFailureCounts)
+        if (
+          prevJobsKey !== nextJobsKey ||
+          prevCountsKey !== nextCountsKey ||
+          prevFailureCountsKey !== nextFailureCountsKey
+        ) {
+          setJobs(nextJobs.items)
+          setTotalPages(nextJobs.total_pages)
+          setTotalCount(nextJobs.total_count)
+          setStatusCounts(nextCounts)
+          setFailureKindCounts(nextFailureCounts)
+          setFailureKindCountsLoaded(status === 'failed')
+          jobsRef.current = nextJobs.items
+          countsRef.current = nextCounts
+        }
+      } catch {}
     }, 5000)
 
     api
@@ -281,18 +287,11 @@ export function Jobs() {
         if (active) setBackfillStatus(s)
       })
       .catch(() => {})
-    api
-      .jobs({ page_size: 50 })
-      .then(r => {
-        if (active) setIdleJobs(r.items.filter(j => j.job_type === 'image_backfill'))
-      })
-      .catch(() => {})
-
     return () => {
       active = false
       window.clearInterval(poll)
     }
-  }, [failureKind, failureKindCounts, page, pageSize, status, showIdleTasks])
+  }, [failureKind, failureKindCounts, page, pageSize, status])
 
   const setStatusAndRemember = (s: string | null) => {
     setStatus(s)
@@ -329,7 +328,7 @@ export function Jobs() {
   }
 
   const toggleSelectAll = () => {
-    const pagedIds = (showIdleTasks ? idleJobs : jobs).map(j => j.job_id)
+    const pagedIds = jobs.map(j => j.job_id)
     if (pagedIds.length === 0) return
     const allSelected = pagedIds.every(id => selectedIds.has(id))
     setSelectedIds(prev => {
@@ -343,8 +342,8 @@ export function Jobs() {
   }
 
   const selectedJobs = useMemo(
-    () => (showIdleTasks ? idleJobs : jobs).filter(job => selectedIds.has(job.job_id)),
-    [idleJobs, jobs, selectedIds, showIdleTasks]
+    () => jobs.filter(job => selectedIds.has(job.job_id)),
+    [jobs, selectedIds]
   )
 
   const handlePauseResume = async (j: JobSummary) => {
@@ -513,7 +512,7 @@ export function Jobs() {
     status === 'partial'
       ? status
       : null
-  const displayJobs = showIdleTasks ? idleJobs : jobs
+  const displayJobs = jobs
   const pagedIds = displayJobs.map(j => j.job_id)
   const allPagedSelected = pagedIds.length > 0 && pagedIds.every(id => selectedIds.has(id))
   const canRetrySelected = selectedJobs.some(
@@ -932,8 +931,8 @@ export function Jobs() {
                       </td>
                     )}
                     {column('created_at')?.visible && (
-                      <td style={columnWidth('created_at')} className="px-3 py-2 text-xs font-mono text-muted-foreground whitespace-nowrap hidden sm:table-cell">
-                        {formatDateTime(j.created_at)}
+                      <td style={columnWidth('created_at')} className="px-3 py-2 text-center text-xs font-mono text-muted-foreground whitespace-nowrap hidden sm:table-cell">
+                        {formatDateTimeStacked(j.created_at)}
                       </td>
                     )}
                     <td style={columnWidth('action')} className="px-2 py-2 whitespace-nowrap">

@@ -3,6 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { api, type RemoteForum as RemoteForumType, type RemoteForumListResponse } from '../api/client'
 import { Badge } from '../components/Badge'
 import { PaginationControls } from '../components/PaginationControls'
+import { LoadingIndicator } from '../components/LoadingIndicator'
 import { useI18n } from '../context/I18nContext'
 import { formatThreadListTitle } from '../utils/threadTitle'
 import '../styles/catalog-lists.css'
@@ -172,7 +173,7 @@ export function RemoteForum() {
 
       {actionMessage && <div className="panel catalog-feedback" role="status">{actionMessage} {actionJobId && <Link to={`/jobs/${actionJobId}`}>{lang === 'en' ? 'View task' : '查看任务'}</Link>}</div>}
       {error && <div className="panel" style={{ color: 'var(--status-error)' }}>{error}</div>}
-      {loading && <div className="panel" style={{ color: 'var(--text-tertiary)' }}>{t('loading')}</div>}
+      {loading && <LoadingIndicator label={t('loading')} />}
       {refreshing && <div className="loading-bar" />}
 
       {data && !loading && (

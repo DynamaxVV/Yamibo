@@ -3,6 +3,7 @@ import '../styles/review.css'
 import { useEffect, useState, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import { api, type ThreadSummary, type SeriesSummary } from '../api/client'
+import { LoadingIndicator } from '../components/LoadingIndicator'
 import { useI18n } from '../context/I18nContext'
 import { formatThreadListTitle } from '../utils/threadTitle'
 
@@ -208,7 +209,7 @@ export function Review() {
       <header className="tool-page-header"><div><h1>{tx('审核工作', 'Review queue')}</h1><p>{fetching ? tx('正在读取待复核项目…', 'Loading items for review…') : tx(`待复核 ${titles.length + series.length} 项 · 系列 ${series.length} · 帖子标题 ${titles.length}`, `${titles.length + series.length} items to review · ${series.length} series · ${titles.length} thread titles`)}</p></div><button className="btn-subtle" disabled={fetching} onClick={refresh}>{t('refresh')}</button></header>
       {fetchError && <div className="panel tool-error" role="alert">{tx('加载审核列表失败：', 'Unable to load review items: ')}{fetchError}{tx('。请重试。', '. Please try again.')}</div>}
       {!fetching && !fetchError && titles.length + series.length === 0 && <div className="panel" role="status">{tx('当前没有待复核项目。', 'There are no items to review right now.')} <Link to="/threads">{tx('查看归档帖子 →', 'Browse archived threads →')}</Link></div>}
-      {fetching && <div className="panel" role="status">{t('loading')}</div>}
+      {fetching && <LoadingIndicator label={t('loading')} />}
       {!fetching && !fetchError && <>
       <section className="review-section" aria-labelledby="review-series-heading">
         <div className="review-section__heading">

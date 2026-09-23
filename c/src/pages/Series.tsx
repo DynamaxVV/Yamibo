@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, type SeriesSummary } from '../api/client'
+import { LoadingIndicator } from '../components/LoadingIndicator'
 import { Badge } from '../components/Badge'
 import { PaginationControls } from '../components/PaginationControls'
 import { useI18n } from '../context/I18nContext'
@@ -59,7 +60,7 @@ export function Series() {
 
       <div id="series-pagination-top" />
       <p className="catalog-result-count">{lang === 'en' ? `${filtered.length} series` : `共 ${filtered.length} 个系列`}</p>
-      {error ? <div className="panel" role="alert">{error}</div> : loading ? <div className="panel" role="status">{t('loading')}</div> : <div className="catalog-list">
+      {error ? <div className="panel" role="alert">{error}</div> : loading ? <LoadingIndicator label={t('loading')} /> : <div className="catalog-list">
         {paged.length === 0 ? <div className="panel">{t('no_match')}</div> : paged.map(s => {
           const title = s.canonical_title || (lang === 'en' ? 'Untitled series' : '未命名系列')
           return <article className="catalog-row" key={s.series_id}>

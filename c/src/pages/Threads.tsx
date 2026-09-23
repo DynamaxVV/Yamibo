@@ -12,6 +12,7 @@ import {
 import { api, type ThreadSummary, type Forum } from '../api/client'
 import { ContentBadge } from '../components/Badge'
 import { PaginationControls } from '../components/PaginationControls'
+import { LoadingIndicator } from '../components/LoadingIndicator'
 import { useI18n } from '../context/I18nContext'
 import { formatDateTime } from '../utils/time'
 import { formatThreadListTitle } from '../utils/threadTitle'
@@ -65,16 +66,16 @@ function SortHeader({
     >
       <div className="relative flex items-center justify-center">
         <span className="thread-sort-label">{label}</span>
-        <span className="thread-sort-indicator">
-        {active ? (
-          currentDir === 'asc' ? (
-            <ArrowUp className="w-3 h-3 text-yamibo-burgundy dark:text-yamibo-coral" />
+        <span className="thread-sort-indicator" aria-hidden="true">
+          {active ? (
+            currentDir === 'asc' ? (
+              <ArrowUp className="w-3 h-3 text-yamibo-burgundy dark:text-yamibo-coral" />
+            ) : (
+              <ArrowDown className="w-3 h-3 text-yamibo-burgundy dark:text-yamibo-coral" />
+            )
           ) : (
-            <ArrowDown className="w-3 h-3 text-yamibo-burgundy dark:text-yamibo-coral" />
-          )
-        ) : (
-          <ArrowUpDown className="w-3 h-3 opacity-0 group-hover:opacity-40 transition-opacity" />
-        )}
+            <ArrowUpDown className="w-3 h-3 opacity-0 group-hover:opacity-40 transition-opacity" />
+          )}
         </span>
       </div>
     </th>
@@ -106,6 +107,7 @@ export function Threads() {
     () => (sessionStorage.getItem('threads_sortDir') as SortDir) || 'desc'
   )
   const [page, setPage] = useState(1)
+  const [isLoading, setIsLoading] = useState(true)
   const [pageSize, setPageSize] = useState<number>(() => {
     try {
       const saved = Number(sessionStorage.getItem(PAGE_SIZE_STORAGE_KEY) || 25)
@@ -166,12 +168,13 @@ export function Threads() {
 
   useEffect(() => {
     let active = true
+    setIsLoading(true)
     setThreads([])
     void loadThreads().catch(() => {
       if (!active) return
       setThreads([])
       setTotalPages(1)
-    })
+    }).finally(() => { if (active) setIsLoading(false) })
     return () => {
       active = false
     }
@@ -440,6 +443,7 @@ export function Threads() {
           </div>
         )}
       </div>
+      {isLoading && <LoadingIndicator label={t('loading')} />}
       <div className="space-y-2 md:hidden">
         {paged.length === 0 && <p className="rounded border border-border bg-card p-5 text-sm text-muted-foreground">{t('no_data')}</p>}
         {paged.map(item => {

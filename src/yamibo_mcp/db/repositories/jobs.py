@@ -87,16 +87,8 @@ def _merge_artifacts(current: dict[str, Any], update: dict[str, Any] | None) -> 
 
 
 def _job_list_order_clause() -> str:
-    # 任务列表按“进行中 -> 排队中 -> 其他完成态”分组，同组内按创建时间升序，保证启动较早的任务靠前。
-    return """
-    CASE
-        WHEN status IN ('running', 'retrying', 'cancel_requested', 'paused') THEN 0
-        WHEN status = 'queued' THEN 1
-        ELSE 2
-    END ASC,
-    created_at ASC,
-    job_id ASC
-    """
+    # 状态发生变化时 updated_at 会刷新，最近变更的任务排在最前。
+    return "updated_at DESC, created_at DESC, job_id DESC"
 
 
 def _loads(value: Any) -> dict[str, Any]:

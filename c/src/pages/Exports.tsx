@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { api, type ThreadSummary, type SeriesSummary } from '../api/client'
 import { Badge } from '../components/Badge'
+import { LoadingIndicator } from '../components/LoadingIndicator'
 import { useI18n } from '../context/I18nContext'
 import { formatThreadListTitle } from '../utils/threadTitle'
 
@@ -26,7 +27,7 @@ export function Exports() {
     <div>
       <header className="mb-4 border-b border-border pb-3"><h1 className="text-3xl">{tx('导出中心', 'Exports')}</h1><p className="mt-1 text-sm text-muted-foreground">{tx('查看已生成的档案及其保存位置。', 'Browse generated archives and their storage locations.')}</p></header>
       {error && <p role="alert" className="panel">{tx('导出列表加载失败，请刷新后重试。', 'Unable to load exports. Refresh and try again.')}</p>}
-      {!error && !visible.length && <p className="panel text-sm text-muted-foreground">{loaded ? tx('还没有导出档案。可从帖子详情创建导出任务。', 'No exports yet. Create an export task from a thread page.') : tx('正在读取导出档案…', 'Loading exports…')}</p>}
+      {!error && !visible.length && (loaded ? <p className="panel text-sm text-muted-foreground">{tx('还没有导出档案。可从帖子详情创建导出任务。', 'No exports yet. Create an export task from a thread page.')}</p> : <LoadingIndicator label={tx('正在读取导出档案…', 'Loading exports…')} />)}
       <div className="space-y-2 md:hidden">
         {visible.map(item => <article key={item.tid} className="rounded border border-border bg-card p-4">
           <Link to={`/threads/${item.tid}`} className="block break-words text-sm font-light leading-6">{formatThreadListTitle(item)}</Link>
@@ -219,7 +220,7 @@ export function SeriesDetail() {
   }
 
   if (error) return <div className="panel" style={{ color: 'var(--status-error)' }}>{error}</div>
-  if (!data) return <div className="panel" style={{ color: 'var(--text-tertiary)' }}>{t('loading')}</div>
+  if (!data) return <LoadingIndicator label={t('loading')} />
 
   const isEmpty = data.threads.length === 0
 

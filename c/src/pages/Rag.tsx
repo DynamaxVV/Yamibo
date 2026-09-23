@@ -2,6 +2,7 @@ import '../styles/tools.css'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { PaginationControls } from '../components/PaginationControls'
+import { LoadingIndicator } from '../components/LoadingIndicator'
 import { api, type Forum, type RagOverview, type RagSearchItem, type RagThreadListResponse, type RagThreadRow } from '../api/client'
 import { Badge, ContentBadge } from '../components/Badge'
 import { useI18n } from '../context/I18nContext'
@@ -309,7 +310,7 @@ export function Rag() {
     } finally { setSearching(false) }
   }
 
-  if (loading) return <div className="panel" role="status">{t('loading')}</div>
+  if (loading) return <LoadingIndicator label={t('loading')} />
   if (!overview) return <div className="panel tool-error" role="alert"><h1>{tx('知识检索', 'Knowledge search')}</h1><p>{indexMessage || t('error')}</p><button className="btn-subtle" onClick={() => setOverviewRetry(value => value + 1)}>{tx('重新加载', 'Reload')}</button></div>
 
   return (

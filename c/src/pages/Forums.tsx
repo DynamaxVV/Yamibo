@@ -2,13 +2,14 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, type Forum, type ProxyPoolHealth, type SignInAccountStats, type SignInStats } from '../api/client'
 import { Badge, ContentBadge } from '../components/Badge'
+import { LoadingIndicator, LoadingSpinner } from '../components/LoadingIndicator'
 import { useI18n } from '../context/I18nContext'
 import { formatBytes } from '../utils/bytes'
 import '../styles/catalog-lists.css'
 
 function SignInStatus({ status, error, loading, onSignIn, signing }: { status: SignInAccountStats['today_status']; error: string | null; loading?: boolean; onSignIn?: () => void; signing?: boolean }) {
   const { t } = useI18n()
-  if (loading) return <span className="threads-inline-message">{t('loading')}</span>
+  if (loading) return <span className="threads-inline-message inline-flex items-center gap-1.5"><LoadingSpinner className="h-2.5 w-2.5" />{t('loading')}</span>
   if (error || status === 'unavailable') return <Badge status="error">{t('sign_in_unavailable')}</Badge>
   if (status === 'checked') return <Badge status="ok">{t('sign_in_checked')}</Badge>
   return <button className="btn-subtle sign-in-inline-action" onClick={onSignIn} disabled={signing}>{signing ? t('running') : t('sign_in_now')}</button>
@@ -17,6 +18,7 @@ function SignInStatus({ status, error, loading, onSignIn, signing }: { status: S
 export function Forums() {
   const { t, lang, tx } = useI18n()
   const [forums, setForums] = useState<Forum[]>([])
+  const [forumsLoading, setForumsLoading] = useState(true)
   const [signInStats, setSignInStats] = useState<SignInStats | null>(null)
   const [signInStatsError, setSignInStatsError] = useState<string | null>(null)
   const [signingAccount, setSigningAccount] = useState<string | null>(null)
@@ -26,7 +28,7 @@ export function Forums() {
   const [proxyRefreshing, setProxyRefreshing] = useState(false)
   const [signInLoadingIds, setSignInLoadingIds] = useState<Set<string>>(new Set())
   useEffect(() => {
-    void api.forums().then(setForums).catch((error: Error) => setMessage(error.message))
+    void api.forums().then(setForums).catch((error: Error) => setMessage(error.message)).finally(() => setForumsLoading(false))
     let signInActive = true
     void api.signInAccounts()
       .then(roster => {
@@ -166,6 +168,7 @@ export function Forums() {
         <div className="table-wrap"><table>
           <thead><tr><th>{t('id')}</th><th>{t('name')}</th><th>{t('content_kind')}</th><th>{t('thread_count')}</th><th>{t('forum_data_size')}</th><th>{t('enabled')}</th><th>{t('action')}</th></tr></thead>
           <tbody>
+            {forumsLoading && forums.length === 0 && <tr><td colSpan={7}><span className="inline-flex items-center gap-2"><LoadingSpinner />{t('loading')}</span></td></tr>}
             {forums.map(f => (
               <tr key={f.forum_id}>
                 <td data-label={t('id')} className="mono">{f.forum_id}</td>
@@ -200,7 +203,7 @@ export function Forums() {
               <td data-label={t('sign_in_level')}>{account.level || '-'}</td>
               <td data-label={t('today_status')}><SignInStatus status={account.today_status} error={account.error} loading={signInLoadingIds.has(account.account_id)} onSignIn={() => void signIn(account.account_id)} signing={signingAccount === account.account_id} /></td>
             </tr>)}
-            {!signInStats && <tr><td colSpan={7}>{signInStatsError ? t('sign_in_unavailable') : t('loading')}</td></tr>}
+            {!signInStats && <tr><td colSpan={7}>{signInStatsError ? t('sign_in_unavailable') : <span className="inline-flex items-center gap-2"><LoadingSpinner />{t('loading')}</span>}</td></tr>}
           </tbody>
         </table></div>
       </section>
@@ -213,7 +216,7 @@ export function Forums() {
           </button>
         </div>
         {!proxyHealth ? (
-          <div className="panel proxy-pool-message">{t('loading')}</div>
+          <LoadingIndicator label={t('loading')} className="proxy-pool-message" />
         ) : proxyHealth.nodes.length === 0 ? (
           <div className="panel proxy-pool-message">{proxyHealth.error || t('proxy_pool_no_nodes')}</div>
         ) : (

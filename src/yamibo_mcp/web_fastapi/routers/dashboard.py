@@ -59,7 +59,10 @@ def get_dashboard(
         for row in jobs_repo.list_worker_heartbeats()
     ]
     audits = [audit_to_dict(r, conn) for r in AuditEventsRepository(conn).list_recent(limit=8)]
-    recent_threads = [thread_summary_dict(r) for r in threads_repo.list_threads(limit=limit)]
+    recent_threads = [
+        thread_summary_dict(r)
+        for r in threads_repo.list_threads(limit=limit, sort_key="remote_last_reply_at", sort_dir="desc")
+    ]
     remote_access_pause = get_remote_access_pause_state(conn)
     # Reload config so jobs_enabled reflects in-flight writes by /api/jobs/control.
     # The cached settings on app.state is frozen at startup.

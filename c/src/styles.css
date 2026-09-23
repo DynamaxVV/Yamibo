@@ -333,7 +333,7 @@ th.sortable:hover { color: var(--accent); }
 .sort-arrow { font-size: 10px; margin-left: 2px; }
 th[style*="width"]:not(.column-layout-cell), .list-table th.sort-header { font-weight: 600; font-size: 12px; color: var(--text-header, #8b949e); text-transform: none; letter-spacing: 0; }
 .thread-sort-label { white-space: nowrap; text-align: center; }
-.thread-sort-indicator { position: absolute; right: -8px; display: flex; width: 12px; justify-content: center; }
+.thread-sort-indicator { position: absolute; top: 50%; right: 0; display: flex; width: 12px; justify-content: center; transform: translateY(-50%); pointer-events: none; }
 
 /* ─── Badges ─── */
 .badge {

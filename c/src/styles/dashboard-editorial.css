@@ -52,9 +52,6 @@
 .archive-home__datetime > span + span { color: var(--muted-foreground); }
 .archive-home__empty { padding: 1rem .7rem; color: var(--muted-foreground); font-size: .85rem; }
 .archive-home__footer { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-top: .7rem; }
-.archive-home__pagination { display: flex; align-items: center; gap: .45rem; color: var(--muted-foreground); font-size: .7rem; }
-.archive-home__pagination button { border: 1px solid var(--border); padding: .3rem .55rem; color: var(--foreground); }
-.archive-home__pagination button:disabled { opacity: .45; }
 .archive-home__all-link { display: inline-flex; align-items: center; gap: .35rem; border-bottom: 1px solid var(--primary); color: var(--primary); font-size: .82rem; font-weight: 700; }
 .archive-home__all-link svg { width: .9rem; height: .9rem; }
 .dark .archive-home__masthead, .dark .archive-home__list, .dark .archive-home__meta { border-color: #614534; }

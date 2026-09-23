@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { api, type RemoteThreadDetail as RemoteThreadDetailType, type RemoteForum } from '../api/client'
 import { Badge } from '../components/Badge'
+import { LoadingIndicator } from '../components/LoadingIndicator'
 import { ThreadReader } from '../components/ThreadReader'
 import { useI18n } from '../context/I18nContext'
 
@@ -71,7 +72,7 @@ export function RemoteThreadDetail() {
     return f ? (lang === 'en' ? (f.name_en || f.name) : f.name) : String(fid)
   }
 
-  if (loading) return <div className="panel" style={{ color: 'var(--text-tertiary)' }}>{t('loading')}</div>
+  if (loading) return <LoadingIndicator label={t('loading')} />
   if (error) return <div className="panel" style={{ color: 'var(--status-error)' }}>{error}</div>
   if (!data) return <div className="panel" style={{ color: 'var(--text-tertiary)' }}>{t('no_data')}</div>
 

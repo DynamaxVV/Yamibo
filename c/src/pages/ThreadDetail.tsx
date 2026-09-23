@@ -3,6 +3,7 @@ import { Link, useNavigate, useLocation, useSearchParams } from 'react-router-do
 import { ArrowLeft, RotateCcw, Cpu, Download, Trash2, Edit3 } from 'lucide-react'
 import { api, type ThreadDetail as ThreadDetailType, type ContentBlock, type ThreadImage, type JobSummary } from '../api/client'
 import { Badge, ContentBadge } from '../components/Badge'
+import { LoadingIndicator, LoadingSpinner } from '../components/LoadingIndicator'
 import { ThreadReader } from '../components/ThreadReader'
 import { useI18n } from '../context/I18nContext'
 import { formatDateTime } from '../utils/time'
@@ -153,7 +154,7 @@ function JobProgressDialog({ jobId, title, onClose }: { jobId: string; title: st
             <div className="job-progress-panel-title">{t('job_timeline')}</div>
             <div className="job-event-list">
               {events.length === 0 ? (
-                <div className="job-event-empty">{t('loading')}</div>
+                <div className="job-event-empty inline-flex items-center gap-2"><LoadingSpinner />{t('loading')}</div>
               ) : events.map(ev => (
                 <div key={ev.event_id} className="job-event-item">
                   <div className="job-event-head">
@@ -365,7 +366,7 @@ export function ThreadDetail() {
   const floorSource = thread?.floors || []
 
   if (error) return <div className="panel" style={{ color: 'var(--status-error)' }}>{error}</div>
-  if (!thread) return <div className="panel" style={{ color: 'var(--text-tertiary)' }}>{t('loading')}</div>
+  if (!thread) return <LoadingIndicator label={t('loading')} />
 
   const forumName = FORUM_NAMES[thread.forum_id ?? 0] || String(thread.forum_id ?? '-')
   const isExportable = thread.forum_id === 30 || thread.forum_id === 55

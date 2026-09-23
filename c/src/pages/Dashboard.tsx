@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ArrowRight, BookOpen, Download, Library, ListTodo } from 'lucide-react'
 import { api, type DashboardData, type ThreadSummary } from '../api/client'
+import { LoadingIndicator } from '../components/LoadingIndicator'
 import packageInfo from '../../package.json'
 import { useI18n } from '../context/I18nContext'
 import { formatThreadListTitle } from '../utils/threadTitle'
@@ -26,8 +27,8 @@ export function Dashboard() {
   const [forumNames, setForumNames] = useState<Record<number, string>>({})
   const [canonicalForumNames, setCanonicalForumNames] = useState<Record<number, string>>({})
   const [forum, setForum] = useState('all')
-  const [page, setPage] = useState(1)
   const [error, setError] = useState(false)
+  const [isLoading, setIsLoading] = useState(true)
   const [sampleLoading, setSampleLoading] = useState(false)
   const filterRequestRef = useRef(0)
   const forumSamplesRef = useRef(new Map<number, ThreadSummary[]>())
@@ -41,7 +42,7 @@ export function Dashboard() {
 
   useEffect(() => {
     let active = true
-    api.dashboard(50)
+    api.dashboard(10)
       .then(summary => {
         if (!active) return
         setData(summary)
@@ -50,15 +51,13 @@ export function Dashboard() {
         setError(false)
       })
       .catch(() => { if (active) setError(true) })
+      .finally(() => { if (active) setIsLoading(false) })
     return () => { active = false }
   }, [])
 
   const filtered = useMemo(() => forum === 'all' ? threads : threads.filter(item => item.forum_id === Number(forum)), [threads, forum])
-  const visible = filtered.slice((page - 1) * 10, page * 10)
-  const pages = Math.max(1, Math.ceil(filtered.length / 10))
   const selectForum = async (nextForum: string) => {
     setForum(nextForum)
-    setPage(1)
     setError(false)
     const requestId = ++filterRequestRef.current
     if (nextForum === 'all') {
@@ -75,7 +74,7 @@ export function Dashboard() {
     }
     setSampleLoading(true)
     try {
-      const result = await api.threads({ forum_id: forumId, sort_key: 'sync_time', sort_dir: 'desc', page_size: 50 })
+      const result = await api.threads({ forum_id: forumId, sort_key: 'sync_time', sort_dir: 'desc', page_size: 10 })
       if (filterRequestRef.current !== requestId) return
       forumSamplesRef.current.set(forumId, result.items)
       setThreads(result.items)
@@ -144,15 +143,15 @@ export function Dashboard() {
           <span>{tx('发布日期', 'Published')}</span>
           <span>{tx('最后回复日期', 'Last reply')}</span>
         </div>
-        {sampleLoading ? <p className="archive-home__empty">{tx('正在读取所选版块…', 'Loading this forum…')}</p> : visible.length ? visible.map(item => <Link key={item.tid} to={`/threads/${item.tid}`} className="archive-home__thread" title={formatThreadListTitle(item)}>
+        {sampleLoading ? <LoadingIndicator className="archive-home__loading" label={tx('正在读取所选版块…', 'Loading this forum…')} /> : isLoading ? <LoadingIndicator className="archive-home__loading" label={tx('正在读取最近归档…', 'Loading recent archives…')} /> : filtered.length ? filtered.map(item => <Link key={item.tid} to={`/threads/${item.tid}`} className="archive-home__thread" title={formatThreadListTitle(item)}>
           <span className="archive-home__thread-main"><span className="archive-home__thread-title">{formatThreadListTitle(item)}</span><span className="archive-home__thread-id">#{item.tid}</span></span>
           <span className="archive-home__thread-forum">{forumNames[item.forum_id ?? -1] || tx('未分类', 'Uncategorized')}</span>
           <span className="archive-home__thread-replies">{item.reply_count ?? '—'}</span>
           <span className="archive-home__thread-date"><small>{tx('发布日期', 'Published')}</small>{formatDateTimeStacked(item.pub_time)}</span>
           <span className="archive-home__thread-date"><small>{tx('最后回复日期', 'Last reply')}</small>{formatDateTimeStacked(item.remote_last_reply_at)}</span>
-        </Link>) : <p className="archive-home__empty">{data ? tx('当前筛选下没有最近归档。', 'No recent archives match this filter.') : tx('正在读取最近归档…', 'Loading recent archives…')}</p>}
+        </Link>) : <p className="archive-home__empty">{data ? tx('当前筛选下没有最近归档。', 'No recent archives match this filter.') : tx('首页数据暂不可用。', 'Dashboard data is unavailable.')}</p>}
       </div>
-      <div className="archive-home__footer"><Link to="/threads" className="archive-home__all-link">{tx('查看全部归档', 'View all archives')} <ArrowRight aria-hidden="true" /></Link><div className="archive-home__pagination"><button disabled={page <= 1} onClick={() => setPage(page - 1)}>{tx('上一页', 'Previous')}</button><span>{page} / {pages}</span><button disabled={page >= pages} onClick={() => setPage(page + 1)}>{tx('下一页', 'Next')}</button></div></div>
+      <div className="archive-home__footer"><Link to="/threads" className="archive-home__all-link">{tx('查看全部归档', 'View all archives')} <ArrowRight aria-hidden="true" /></Link></div>
     </section>
   </div>
 }
