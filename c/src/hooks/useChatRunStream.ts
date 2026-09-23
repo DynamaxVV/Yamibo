@@ -30,7 +30,7 @@ const emptyState=():ChatState=>({status:'unknown',lastSeq:0,assistant:'',events:
 function readStore():Record<string,{run_id:string;last_seq:number}>{try{const raw=localStorage.getItem(key);const parsed=raw?JSON.parse(raw):{};return parsed&&typeof parsed==='object'?parsed:{} }catch{return {}}}
 function persist(sessionId:string,runId:string,seq:number){const all=readStore();all[sessionId]={run_id:runId,last_seq:seq};try{localStorage.setItem(key,JSON.stringify(all))}catch{/* optional */}}
 const activeStatus=(status:ChatRunStatus)=>['preparing','submitting','queued','running','waiting_jobs','waiting_for_approval','stopping','reconciling'].includes(status)
-export function useChatRunStream(sessionId:string,refreshMessages:(id?:string)=>Promise<void>){const [views,setViews]=useState<Record<string,RunView>>({});const [now,setNow]=useState(()=>Date.now());const controllersRef=useRef<Record<string,AbortController>>({});const recoveredSessionsRef=useRef<Record<string,boolean>>({});const selectedRef=useRef(sessionId);const viewsRef=useRef(views);useEffect(()=>{selectedRef.current=sessionId;viewsRef.current=views},[sessionId,views]);useEffect(()=>{if(!Object.values(views).some(view=>activeStatus(view.state.status)))return;const timer=window.setInterval(()=>setNow(Date.now()),1000);return()=>window.clearInterval(timer)},[views])
+export function useChatRunStream(sessionId:string,refreshMessages:(id?:string)=>Promise<void>,lang:'zh'|'en'){const [views,setViews]=useState<Record<string,RunView>>({});const [now,setNow]=useState(()=>Date.now());const controllersRef=useRef<Record<string,AbortController>>({});const recoveredSessionsRef=useRef<Record<string,boolean>>({});const selectedRef=useRef(sessionId);const viewsRef=useRef(views);useEffect(()=>{selectedRef.current=sessionId;viewsRef.current=views},[sessionId,views]);useEffect(()=>{if(!Object.values(views).some(view=>activeStatus(view.state.status)))return;const timer=window.setInterval(()=>setNow(Date.now()),1000);return()=>window.clearInterval(timer)},[views])
   const update=(id:string,fn:(view:RunView)=>RunView)=>setViews(prev=>{const old=prev[id]||{runId:null,state:emptyState(),error:null};return {...prev,[id]:fn(old)}})
   const consume = useCallback(async (session: string, runId: string, initialSeq: number) => {
     let after = initialSeq
@@ -39,7 +39,7 @@ export function useChatRunStream(sessionId:string,refreshMessages:(id?:string)=>
         update(session, view => ({
           ...view,
           runId,
-          error: '实时连接已丢失，已校准当前消息',
+          error: lang === 'en' ? 'The live connection was lost. Messages are now up to date.' : '实时连接已丢失，已校准当前消息',
           state: { ...view.state, status: 'unknown', terminal: true, connected: false },
         }))
     }
@@ -74,7 +74,7 @@ export function useChatRunStream(sessionId:string,refreshMessages:(id?:string)=>
               update(session, view => ({ ...view, state: { ...view.state, assistant: '', connected: false } }))
             }
           } catch {
-            update(session, view => ({ ...view, error: '无法解析流事件' }))
+            update(session, view => ({ ...view, error: lang === 'en' ? 'Unable to parse a stream event.' : '无法解析流事件' }))
           }
         }
         while (true) {
@@ -111,7 +111,7 @@ export function useChatRunStream(sessionId:string,refreshMessages:(id?:string)=>
       }
     }
     await finalizeLostConnection()
-  }, [refreshMessages])
+  }, [refreshMessages, lang])
   const followRun = useCallback((runId: string, status: import('../types/chat').ChatRun['status']) => {
     const view = viewsRef.current[sessionId]
     if (view?.runId === runId || (view?.runId && activeStatus(view.state.status))) return
@@ -122,11 +122,11 @@ export function useChatRunStream(sessionId:string,refreshMessages:(id?:string)=>
   }, [consume, sessionId])
   const requestRef=useRef<{session:string;input:string;id:string}|null>(null)
   const sendingRef=useRef(false)
-  const start=useCallback(async(input:string)=>{if(sendingRef.current)throw new Error('正在提交');sendingRef.current=true;
+  const start=useCallback(async(input:string)=>{if(sendingRef.current)throw new Error(lang === 'en' ? 'A message is already being submitted.' : '正在提交');sendingRef.current=true;
     if(!requestRef.current){try{requestRef.current=JSON.parse(sessionStorage.getItem('yamibo.chat.pending.'+sessionId)||'null')}catch{}}
     if(!requestRef.current||requestRef.current.session!==sessionId||requestRef.current.input!==input)requestRef.current={session:sessionId,input,id:crypto.randomUUID()};
     sessionStorage.setItem('yamibo.chat.pending.'+sessionId,JSON.stringify(requestRef.current));
-    try { const old=controllersRef.current[sessionId];old?.abort();const run=await api.startChatRun(sessionId,input,requestRef.current.id);requestRef.current=null;sessionStorage.removeItem('yamibo.chat.pending.'+sessionId);persist(sessionId,run.run_id,0);update(sessionId,()=>({runId:run.run_id,state:{...emptyState(),status:run.status,startedAt:Date.now()},error:null}));void consume(sessionId,run.run_id,0);return run} finally {sendingRef.current=false}},[consume,sessionId])
+    try { const old=controllersRef.current[sessionId];old?.abort();const run=await api.startChatRun(sessionId,input,requestRef.current.id);requestRef.current=null;sessionStorage.removeItem('yamibo.chat.pending.'+sessionId);persist(sessionId,run.run_id,0);update(sessionId,()=>({runId:run.run_id,state:{...emptyState(),status:run.status,startedAt:Date.now()},error:null}));void consume(sessionId,run.run_id,0);return run} finally {sendingRef.current=false}},[consume,sessionId,lang])
   const stop=useCallback(async()=>{const view=viewsRef.current[sessionId];if(view?.runId){await api.stopChatRun(view.runId);update(sessionId,v=>({...v,state:{...v.state,status:'stopping'}}))}},[sessionId])
   const reconnect=useCallback(async(session:string,force=false)=>{
     const view=viewsRef.current[session]

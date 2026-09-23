@@ -55,10 +55,10 @@ export function Chat() {
     return () => { observer.disconnect(); window.removeEventListener('resize', resize); window.visualViewport?.removeEventListener('resize', resize) }
   }, [])
   const { dark, toggleDark } = useTheme()
-  const { t } = useI18n()
+  const { t, lang, tx } = useI18n()
   const sessions = useChatSessions()
   const selectedRef = useRef(sessions.selected); selectedRef.current = sessions.selected
-  const run = useChatRunStream(sessions.selected, sessions.refreshMessages)
+  const run = useChatRunStream(sessions.selected, sessions.refreshMessages, lang)
   const [panelOpen, setPanelOpen] = useState(false)
   const [sessionsOpen, setSessionsOpen] = useState(false)
   const [localRuns, setLocalRuns] = useState<WorkspaceRun[]>([])
@@ -118,23 +118,27 @@ export function Chat() {
     try { if (activeLocalRun) await api.stopChatRun(activeLocalRun.run_id); else await run.stop() }
     catch (e) { setSendError((e as Error).message) }
   }
+  const emptyConversation = sessions.messages.length === 0 && !pendingUser && !active
+  const unavailableReason = [...new Set([sessions.context?.error?.message, sessions.error].filter(Boolean))].join(' · ')
+  const unavailableDetails = unavailableReason ? <details className="chat-unavailable-details"><summary>{tx('查看连接详情', 'Connection details')}</summary><p>{unavailableReason}</p></details> : null
   const statusText = liveStatus(run, streamingEnabled, t)
   const activity = liveActivity(run, streamingEnabled, t)
   return <main ref={pageRef} className={`chat-page ${panelOpen && embedded ? 'with-panel' : ''} ${sessionsOpen ? 'sessions-open' : ''}`}>
-    <button className="chat-mobile-back" aria-label="返回对话" onClick={() => setSessionsOpen(false)}>返回对话</button>
+    <button className="chat-mobile-back" aria-label={tx('返回对话', 'Back to chat')} onClick={() => setSessionsOpen(false)}>{tx('返回对话', 'Back to chat')}</button>
     <ChatSessionList
       sessions={sessions.sessions}
       selected={sessions.selected}
       onSelect={id => { void sessions.select(id); setSessionsOpen(false) }}
-      onCreate={() => { void sessions.create().then(() => setSessionsOpen(false)).catch(() => {}) }}
+      onCreate={() => { if (!ready) return; void sessions.create().then(() => setSessionsOpen(false)).catch(() => {}) }}
       onLoadMore={sessions.loadMore}
       hasMore={sessions.hasMore}
       loading={sessions.loading}
+      createDisabled={!ready}
       busy={!!sessions.operation}
     />
     <section className="chat-workspace">
       <header>
-        <button className="button chat-mobile-sessions" aria-label="打开会话列表" onClick={() => setSessionsOpen(true)}>会话</button>
+        <button className="button chat-mobile-sessions" aria-label={tx('打开会话列表', 'Open session list')} onClick={() => setSessionsOpen(true)}>{t('chat_sessions')}</button>
         <div className="chat-title-block">
           <span className="eyebrow">{t('chat_eyebrow')}</span>
           {editingTitle ? <div className="chat-title-edit">
@@ -145,8 +149,8 @@ export function Chat() {
           {selectedSession && !editingTitle && <span className="chat-title-meta">{t('chat_messages_count', { count: selectedMessageCount })}</span>}
         </div>
         <div className="chat-header-tools">
-          <button className="chat-session-menu-trigger" aria-label={dark ? '切换浅色主题' : '切换深色主题'} onClick={toggleDark}>{dark ? '☀' : '☾'}</button>
-          {embedded && <button className="button chat-panel-toggle" aria-expanded={panelOpen} onClick={() => setPanelOpen(!panelOpen)} aria-label={panelOpen ? '关闭工作面板' : '打开工作面板'}>面板{localRuns.filter(r => !isTerminalStatus(r.status)).length > 0 && <span className="chat-count">{localRuns.filter(r => !isTerminalStatus(r.status)).length}</span>}</button>}
+          <button className="chat-session-menu-trigger" aria-label={dark ? tx('切换浅色主题', 'Switch to light theme') : tx('切换深色主题', 'Switch to dark theme')} onClick={toggleDark}>{dark ? '☀' : '☾'}</button>
+          {embedded && <button className="button chat-panel-toggle" aria-expanded={panelOpen} onClick={() => setPanelOpen(!panelOpen)} aria-label={panelOpen ? tx('关闭工作面板', 'Close workspace panel') : tx('打开工作面板', 'Open workspace panel')}>{tx('面板', 'Panel')}{localRuns.filter(r => !isTerminalStatus(r.status)).length > 0 && <span className="chat-count">{localRuns.filter(r => !isTerminalStatus(r.status)).length}</span>}</button>}
           <div className={`chat-status-pill ${ready ? 'ready' : ''} ${degraded ? 'degraded' : ''}`}><span className="chat-status-dot" aria-hidden="true" />{ready ? degraded ? t('chat_degraded') : t('chat_ready') : t('chat_not_configured')}</div>
           {selectedSession && !editingTitle && <div className="chat-session-menu">
             <button type="button" className="chat-session-menu-trigger" aria-label={t('chat_session_actions')} title={t('chat_session_actions')} aria-haspopup="menu" aria-expanded={sessionMenuOpen} onClick={() => setSessionMenuOpen(value => !value)}>⚙</button>
@@ -157,16 +161,16 @@ export function Chat() {
           </div>}
         </div>
       </header>
-      {!ready && <div className="chat-notice chat-notice-compact"><span>{t('chat_unavailable_notice')}</span> <a href="/settings">{t('chat_configure_settings')}</a></div>}
+      {!ready && !emptyConversation && <div className="chat-notice chat-notice-compact" role="status"><span>{sessions.loading ? tx('正在连接服务…', 'Connecting to service…') : tx('服务暂不可用，已有消息可继续查看。', 'The service is unavailable. Existing messages remain available.')}</span> <a href="/settings">{tx('检查配置', 'Check settings')}</a>{unavailableDetails}</div>}
       {ready && degraded && <div className="chat-notice">{t('chat_degraded_notice')}</div>}
-      {sessions.error && <div className="chat-error">{sessions.error}</div>}
+      {ready && sessions.error && <div className="chat-error">{sessions.error}</div>}
       {sessions.operationError && <div className="chat-error">{sessions.operationError}</div>}
       {sendError && <div className="chat-error" role="alert">{sendError}</div>}
       {run.error && <div className="chat-error">{run.error}</div>}
       {statusText && <div className={`chat-live-status ${run.connected ? 'connected' : ''}`} role="status" aria-live="polite"><span className="chat-live-dot" aria-hidden="true" /><span className="chat-live-message">{statusText}</span><span className="chat-live-meta">{run.connected ? t('chat_live_connected') : t('chat_status_reconnecting')} · {t('chat_live_event_count', { count: run.state.events.length })} · {t('chat_live_elapsed', { seconds: run.elapsedSeconds })}</span></div>}
-      {sessions.messages.length === 0 && !pendingUser && !active ? <div className="chat-welcome"><span className="chat-welcome-mark" aria-hidden="true">Y</span><span className="eyebrow">YAMIBO ASSISTANT</span><h2>从一条线索，开始整理。</h2><p>查找论坛内容、归档帖子、查看任务进度。</p>{sessions.selected ? <div className="chat-starters">{[['查找内容', '搜索论坛中关于星灵感应的帖子'], ['整理资料', '整理已归档内容中的相关资料'], ['查看进展', '查看最近创建的归档任务进度']].map(([title, prompt]) => <button key={title} onClick={() => sessions.setDraft(prompt)}><strong>{title}</strong><span>{prompt}</span><b aria-hidden="true">↗</b></button>)}</div> : <button className="button button-primary" disabled={!!sessions.operation || !ready} onClick={() => void sessions.create().catch(() => {})}>开始新会话</button>}</div> : <ChatTranscript messages={sessions.messages} pendingUser={pendingUser} events={run.state.events} assistant={run.state.assistant} streamingEnabled={streamingEnabled} streaming={run.active && streamingEnabled} activity={activity} />}
+      {emptyConversation ? <div className="chat-welcome"><span className="chat-welcome-mark" aria-hidden="true">Y</span><span className="eyebrow">YAMIBO ASSISTANT</span><h2>{ready ? tx('从一条线索，开始整理。', 'Start organizing from a single clue.') : (sessions.loading ? tx('正在连接对话服务…', 'Connecting to chat…') : tx('对话服务暂不可用', 'Chat is unavailable'))}</h2><p>{ready ? tx('查找论坛内容、归档帖子、查看任务进度。', 'Search forum content, archive threads, and track tasks.') : tx('请检查服务配置；已有会话仍可查看。', 'Check the service settings. Existing sessions remain available.')}</p>{!ready ? <><a className="button" href="/settings">{tx('前往配置中心', 'Open settings')}</a>{unavailableDetails}</> : sessions.selected ? <div className="chat-starters">{[[tx('查找内容', 'Find content'), tx('搜索论坛中关于星灵感应的帖子', 'Find forum threads about Astral Feelings')], [tx('整理资料', 'Organize research'), tx('整理已归档内容中的相关资料', 'Organize relevant information from archived content')], [tx('查看进展', 'Check progress'), tx('查看最近创建的归档任务进度', 'Check the progress of recent archive tasks')]].map(([title, prompt]) => <button key={title} onClick={() => sessions.setDraft(prompt)}><strong>{title}</strong><span>{prompt}</span><b aria-hidden="true">↗</b></button>)}</div> : <button className="button button-primary" disabled={!!sessions.operation || !ready} onClick={() => void sessions.create().catch(() => {})}>{tx('开始新会话', 'Start a session')}</button>}</div> : <ChatTranscript messages={sessions.messages} pendingUser={pendingUser} events={run.state.events} assistant={run.state.assistant} streamingEnabled={streamingEnabled} streaming={run.active && streamingEnabled} activity={activity} />}
       {run.status === 'waiting_for_approval' && <ChatApprovalDialog events={run.state.events} onChoose={run.approve} error={run.error} />}
-      <ChatComposer value={sessions.currentDraft} onChange={sessions.setDraft} onSend={() => void send()} onStop={() => void stop()} disabled={!ready || !sessions.selected} active={active} queueEnabled={embedded} sending={sending} />
+      {!ready && !active ? <div className="chat-input-unavailable" role="status">{tx('输入已停用 · 服务恢复后可继续对话', 'Input is disabled · Chat will resume when the service is available')}</div> : <ChatComposer value={sessions.currentDraft} onChange={sessions.setDraft} onSend={() => void send()} onStop={() => void stop()} disabled={!ready || !sessions.selected} active={active} queueEnabled={embedded} sending={sending} />}
     </section>
     {embedded && sessions.selected && <ChatLocalPanel key={sessions.selected} sessionId={sessions.selected} visible={panelOpen} onClose={() => setPanelOpen(false)} onRuns={setLocalRuns} onFinished={() => void sessions.refreshMessages()} />}
   </main>

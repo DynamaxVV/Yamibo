@@ -6,29 +6,55 @@ import { useI18n } from '../context/I18nContext'
 import { formatThreadListTitle } from '../utils/threadTitle'
 
 export function Exports() {
-  const { t } = useI18n()
+  const { t, tx } = useI18n()
   const [exports, setExports] = useState<ThreadSummary[]>([])
-  useEffect(() => { api.exports().then(setExports) }, [])
+  const [error, setError] = useState(false)
+  const [loaded, setLoaded] = useState(false)
+  const [copiedTid, setCopiedTid] = useState<number | null>(null)
+  const [page, setPage] = useState(1)
+  const pageSize = 25
+  const visible = exports.slice((page - 1) * pageSize, page * pageSize)
+  const totalPages = Math.max(1, Math.ceil(exports.length / pageSize))
+  useEffect(() => { api.exports().then(setExports).catch(() => setError(true)).finally(() => setLoaded(true)) }, [])
+  const copyPath = async (item: ThreadSummary) => {
+    if (!item.export_path) return
+    try { await navigator.clipboard.writeText(item.export_path); setCopiedTid(item.tid) }
+    catch { setCopiedTid(null) }
+  }
 
   return (
-    <div className="table-wrap"><table>
+    <div>
+      <header className="mb-4 border-b border-border pb-3"><h1 className="text-3xl">{tx('导出中心', 'Exports')}</h1><p className="mt-1 text-sm text-muted-foreground">{tx('查看已生成的档案及其保存位置。', 'Browse generated archives and their storage locations.')}</p></header>
+      {error && <p role="alert" className="panel">{tx('导出列表加载失败，请刷新后重试。', 'Unable to load exports. Refresh and try again.')}</p>}
+      {!error && !visible.length && <p className="panel text-sm text-muted-foreground">{loaded ? tx('还没有导出档案。可从帖子详情创建导出任务。', 'No exports yet. Create an export task from a thread page.') : tx('正在读取导出档案…', 'Loading exports…')}</p>}
+      <div className="space-y-2 md:hidden">
+        {visible.map(item => <article key={item.tid} className="rounded border border-border bg-card p-4">
+          <Link to={`/threads/${item.tid}`} className="block break-words text-sm font-light leading-6">{formatThreadListTitle(item)}</Link>
+          <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground"><span>#{item.tid}</span><Badge status={item.archive_status} /></div>
+          <div className="mt-2 break-all text-xs text-muted-foreground">{item.export_path?.split(/[\\/]/).pop() || tx('路径不可用', 'Path unavailable')}</div>
+          {item.export_path && <details className="mt-2 text-xs"><summary className="cursor-pointer text-primary">{tx('查看完整路径', 'Show full path')}</summary><code className="mt-1 block break-all">{item.export_path}</code><button type="button" onClick={() => void copyPath(item)} className="mt-2 min-h-11 rounded border border-border px-3">{copiedTid === item.tid ? tx('已复制', 'Copied') : tx('复制路径', 'Copy path')}</button></details>}
+        </article>)}
+      </div>
+      <div className="table-wrap hidden md:block"><table className="min-w-[780px]">
       <thead><tr><th>{t('tid')}</th><th>{t('title')}</th><th>{t('archive_status')}</th><th>{t('export_path')}</th></tr></thead>
       <tbody>
-        {exports.map(t_ => (
+        {visible.map(t_ => (
           (() => {
             const titleText = formatThreadListTitle(t_)
             return (
           <tr key={t_.tid}>
             <td className="mono"><Link to={`/threads/${t_.tid}`}>{t_.tid}</Link></td>
-            <td className="truncate" title={titleText}><Link to={`/threads/${t_.tid}`}>{titleText}</Link></td>
+            <td className="table-cell-long min-w-80"><Link className="line-clamp-2 break-words leading-5" to={`/threads/${t_.tid}`}>{titleText}</Link></td>
             <td><Badge status={t_.archive_status} /></td>
-            <td className="truncate" title={t_.export_path || ''}>{t_.export_path || '-'}</td>
+            <td className="table-cell-long"><details><summary className="cursor-pointer break-all">{t_.export_path?.split(/[\\/]/).pop() || tx('路径不可用', 'Path unavailable')}</summary><code className="block max-w-80 break-all pt-2 text-xs">{t_.export_path || '-'}</code>{t_.export_path && <button type="button" onClick={() => void copyPath(t_)} className="mt-2 block rounded border border-border px-2 py-1 text-xs">{copiedTid === t_.tid ? tx('已复制', 'Copied') : tx('复制路径', 'Copy path')}</button>}</details></td>
           </tr>
             )
           })()
         ))}
       </tbody>
     </table></div>
+      <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-muted-foreground"><span>{tx(`共 ${exports.length} 个档案`, `${exports.length} exports`)}</span><div className="flex items-center gap-2"><button type="button" disabled={page <= 1} onClick={() => setPage(page - 1)} className="rounded border border-border px-3 py-2 disabled:opacity-50">{tx('上一页', 'Previous')}</button><span>{page} / {totalPages}</span><button type="button" disabled={page >= totalPages} onClick={() => setPage(page + 1)} className="rounded border border-border px-3 py-2 disabled:opacity-50">{tx('下一页', 'Next')}</button></div></div>
+    </div>
   )
 }
 
@@ -77,8 +103,8 @@ export function Series() {
           ) : filtered.map(s => (
             <tr key={s.series_id}>
               <td className="mono"><Link to={`/series/${s.series_id}`}>{s.series_id}</Link></td>
-              <td className="truncate" style={{ textAlign: 'center' }} title={s.canonical_title || s.series_key || ''}><Link to={`/series/${s.series_id}`}>{s.canonical_title || s.series_key}</Link></td>
-              <td>{s.author_guess || '-'}</td>
+              <td className="table-cell-long truncate" title={s.canonical_title || s.series_key || ''}><Link to={`/series/${s.series_id}`}>{s.canonical_title || s.series_key}</Link></td>
+              <td className="table-cell-long">{s.author_guess || '-'}</td>
               <td className="mono">{s.series_key || '-'}</td>
               <td>{s.thread_count}</td>
               <td><Badge status={s.needs_review ? 'warn' : 'ok'}>{s.needs_review ? t('needs_review') : t('confirmed')}</Badge></td>
@@ -91,7 +117,7 @@ export function Series() {
 }
 
 export function SeriesDetail() {
-  const { t } = useI18n()
+  const { t, lang, tx } = useI18n()
   const id = parseInt(window.location.pathname.split('/').pop() || '0')
   const navigate = useNavigate()
   const [data, setData] = useState<{ series: SeriesSummary; threads: ThreadSummary[] } | null>(null)
@@ -131,11 +157,11 @@ export function SeriesDetail() {
     }
     const targetId = parseInt(mergeTargetId, 10)
     if (isNaN(targetId)) {
-      setActionError(`${t('target_id')} invalid`)
+      setActionError(tx(`${t('target_id')} 无效`, `${t('target_id')} is invalid`))
       return
     }
     if (targetId === id) {
-      setActionError('source and target series must differ')
+      setActionError(tx('源系列和目标系列必须不同', 'The source and target series must be different.'))
       return
     }
     setLoading('merge')
@@ -155,7 +181,7 @@ export function SeriesDetail() {
     setActionError(null)
     const targetId = parseInt(mergeTargetId, 10)
     if (isNaN(targetId)) {
-      setActionError(`${t('target_id')} invalid`)
+      setActionError(tx(`${t('target_id')} 无效`, `${t('target_id')} is invalid`))
       return
     }
     setLoading('merge')
@@ -199,36 +225,15 @@ export function SeriesDetail() {
 
   return (
     <>
-      <div className="panel">
-        <div className="row-actions">
-          <Link to="/series" className="btn-subtle">← {t('series_list')}</Link>
-          <div className="input-btn-group">
-            <input placeholder={t('merge_target_id')} value={mergeTargetId}
-              onChange={e => setMergeTargetId(e.target.value)} />
-            <button className="btn-subtle" disabled={loading === 'merge' || !mergeTargetId.trim()} onClick={handleMerge}>{t('merge_action')}</button>
-          </div>
-          {confirmDelete ? (
-            <>
-              <button className="btn-danger" disabled={loading === 'delete' || !isEmpty} onClick={handleDelete}>
-                {isEmpty ? t('confirm_delete') : t('cannot_delete_nonempty')}
-              </button>
-              <button className="btn-subtle" onClick={() => setConfirmDelete(false)}>{t('cancel')}</button>
-            </>
-          ) : (
-            <button className="btn-danger-outline" disabled={!isEmpty} onClick={() => setConfirmDelete(true)}>
-              {t('delete_series')}
-            </button>
-          )}
-          {!isEmpty && <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{t('only_empty_deletable')}</span>}
-        </div>
-        {actionError && <div className="inline-edit-error" style={{ marginTop: 10 }}>{actionError}</div>}
-      </div>
+      <Link to="/series" className="btn-subtle mb-2">← {t('series_list')}</Link>
+      <header className="mb-3 space-y-1"><h1 className="text-2xl break-words">{data.series.canonical_title || (lang === 'en' ? 'Unnamed series' : '未命名系列')}</h1><p className="text-sm text-muted-foreground">{data.series.author_guess || (lang === 'en' ? 'Author unknown' : '作者待补充')} · {data.threads.length} {lang === 'en' ? 'threads' : '篇帖子'} · #{data.series.series_id}</p><Badge status={data.series.needs_review ? 'warn' : 'ok'}>{data.series.needs_review ? t('needs_review') : t('confirmed')}</Badge></header>
 
+      <details className="panel"><summary className="cursor-pointer font-medium">{t('series_info')}</summary>
       <h2 style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         {t('series_info')}
         {!editing && (
-          <button onClick={handleEdit} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontSize: 11, lineHeight: 1 }} title={t('edit')}>
-            🛠️
+          <button onClick={handleEdit} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontSize: 13, lineHeight: 1 }} title={t('edit')}>
+            {t('edit')}
           </button>
         )}
       </h2>
@@ -254,25 +259,40 @@ export function SeriesDetail() {
         </div>
       )}
 
+      </details>
       <h2>{t('threads')}</h2>
-      <div className="table-wrap"><table>
-        <thead><tr><th>{t('tid')}</th><th>{t('title')}</th><th>{t('chapter')}</th><th>{t('archive')}</th></tr></thead>
-        <tbody>
-          {data.threads.map(t_ => (
-            (() => {
-              const titleText = formatThreadListTitle(t_)
-              return (
-            <tr key={t_.tid}>
-              <td className="mono"><Link to={`/threads/${t_.tid}`} state={{ from: 'series', seriesId: id }}>{t_.tid}</Link></td>
-              <td className="truncate" title={titleText}><Link to={`/threads/${t_.tid}`} state={{ from: 'series', seriesId: id }}>{titleText}</Link></td>
-              <td>{t_.chapter_name || '-'}</td>
-              <td><Badge status={t_.archive_status} /></td>
-            </tr>
-              )
-            })()
-          ))}
-        </tbody>
-      </table></div>
+      <ol className="space-y-1.5">
+        {data.threads.map(thread => <li key={thread.tid} className="px-3 py-2 bg-card border border-border rounded-sm">
+          <Link className="block font-sans text-[15px] font-light leading-5 break-words hover:underline" to={`/threads/${thread.tid}`} state={{ from: 'series', seriesId: id }}>{formatThreadListTitle(thread)}</Link>
+          <div className="flex flex-wrap items-center gap-2 mt-1 text-xs text-muted-foreground"><span>#{thread.tid}</span><Badge status={thread.archive_status} /></div>
+        </li>)}
+      </ol>
+      {data.threads.length === 0 && <p className="panel text-sm text-muted-foreground">{lang === 'en' ? 'No threads in this series yet.' : '此系列暂时没有帖子。'}</p>}
+
+      <details className="panel mt-5"><summary className="cursor-pointer font-medium">{tx('系列管理 · 合并与删除', 'Series management · Merge or delete')}</summary>
+        <div className="row-actions mt-4">
+          <Link to="/series" className="btn-subtle">← {t('series_list')}</Link>
+          <div className="input-btn-group">
+            <input aria-label={tx('合并到系列 ID', 'Target series ID')} placeholder={tx('合并到系列 ID', 'Target series ID')} value={mergeTargetId}
+              onChange={e => setMergeTargetId(e.target.value)} />
+            <button className="btn-subtle" disabled={loading === 'merge' || !mergeTargetId.trim()} onClick={handleMerge}>{t('merge_action')}</button>
+          </div>
+          {confirmDelete ? (
+            <>
+              <button className="btn-danger" disabled={loading === 'delete' || !isEmpty} onClick={handleDelete}>
+                {isEmpty ? t('confirm_delete') : t('cannot_delete_nonempty')}
+              </button>
+              <button className="btn-subtle" onClick={() => setConfirmDelete(false)}>{t('cancel')}</button>
+            </>
+          ) : (
+            <button className="btn-danger-outline" disabled={!isEmpty} onClick={() => setConfirmDelete(true)}>
+              {t('delete_series')}
+            </button>
+          )}
+          {!isEmpty && <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{t('only_empty_deletable')}</span>}
+        </div>
+        {actionError && <div className="inline-edit-error" style={{ marginTop: 10 }}>{actionError}</div>}
+      </details>
 
       {confirmMerge && (
         <div className="confirm-overlay" onClick={() => setConfirmMerge(false)}>

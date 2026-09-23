@@ -3,6 +3,7 @@ import { formatContent, visibleStreamingAssistant, type ChatEvent, type ChatMess
 import { ChatActivityIndicator, type ChatActivityKind } from './ChatActivityIndicator'
 import { ChatMessageView } from './ChatMessageView'
 import { ChatReasoning } from './ChatReasoning'
+import { useI18n } from '../../context/I18nContext'
 
 type Props = { messages: ChatMessage[]; events: ChatEvent[]; assistant: string; pendingUser?: string; streamingEnabled?: boolean; streaming?: boolean }
 type Activity = { kind: ChatActivityKind; label: string; detail?: string }
@@ -67,6 +68,7 @@ function lastAssistant(group: AssistantGroup, visible: Set<ChatMessage>): ChatMe
 }
 
 export function ChatTranscript({ messages, events, assistant, pendingUser, streamingEnabled = true, streaming = false, activity }: Props & { activity?: Activity }) {
+  const { tx } = useI18n()
   const ref = useRef<HTMLDivElement>(null)
   const previousMessages = useRef(messages)
   const [follow, setFollow] = useState(true)
@@ -117,7 +119,7 @@ export function ChatTranscript({ messages, events, assistant, pendingUser, strea
   const showActivity = Boolean(activity) && (!visibleAssistant || activity?.kind !== 'reply')
   const hasContent = visibleMessages.length > 0 || historicalPanelVisible || livePanelVisible || showActivity || Boolean(pendingUser && !pendingAlreadyPersisted) || Boolean(visibleAssistant) || visibleEvents.length > 0
   return <div className="chat-transcript" ref={ref} onScroll={e => { const el = e.currentTarget; setFollow(el.scrollHeight - el.scrollTop - el.clientHeight <= 80) }}>
-    {!hasContent && <div className="chat-transcript-empty">暂无消息，发送内容开始对话</div>}
+    {!hasContent && <div className="chat-transcript-empty">{tx('暂无消息，发送内容开始对话', 'No messages yet. Send one to start the conversation.')}</div>}
     {visibleMessages.map((message, index) => {
       const group = groupByMessage.get(message)
       const groupLastAssistant = group ? lastAssistant(group, visibleSet) : undefined

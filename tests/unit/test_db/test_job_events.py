@@ -22,6 +22,26 @@ class TestCreateAppendsEvent:
         assert events[0].job_id == job.job_id
 
 
+def test_list_latest_events_and_descending_cursor(db):
+    job = JobsRepository(db).create("noop")
+    repo = JobEventsRepository(db)
+    for index in range(4):
+        repo.append(job_id=job.job_id, event_type=f"sample.{index}")
+
+    oldest = repo.list(job_id=job.job_id, limit=2)
+    latest = repo.list(job_id=job.job_id, limit=2, order="desc")
+    previous = repo.list(
+        job_id=job.job_id,
+        since_event_id=latest[-1].event_id,
+        limit=2,
+        order="desc",
+    )
+
+    assert [event.event_id for event in oldest] == sorted(event.event_id for event in oldest)
+    assert [event.event_type for event in latest] == ["sample.3", "sample.2"]
+    assert [event.event_type for event in previous] == ["sample.1", "sample.0"]
+
+
 def test_event_from_row_accepts_postgres_jsonb_dict():
     event = _event_from_row(
         {
@@ -190,6 +210,8 @@ class TestInterruptedAppendsEvent:
         interrupted = [e for e in events if e.event_type == "job.interrupted"]
         assert len(interrupted) == 1
         assert interrupted[0].status == JobStatus.INTERRUPTED.value
+        assert interrupted[0].payload["error_code"] == "LEASE_LOST"
+        assert interrupted[0].payload["retry_count"] == 1
 
 
 class TestEventAppendFailureDoesNotRollback:

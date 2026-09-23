@@ -233,6 +233,25 @@ def test_job_events_support_incremental_cursor_headers(client, test_settings):
     assert all(event["event_id"] > int(cursor) for event in later.json())
 
 
+def test_job_events_can_return_latest_first(client, test_settings):
+    from yamibo_mcp.db.connection import connect
+    from yamibo_mcp.db.repositories.jobs import JobsRepository
+
+    conn = connect(test_settings.db_path)
+    try:
+        repo = JobsRepository(conn)
+        job = repo.create("sync_thread", tid=42)
+        for index in range(4):
+            repo.update_stage(job.job_id, f"step-{index}")
+    finally:
+        conn.close()
+
+    response = client.get(f"/api/jobs/{job.job_id}/events", params={"order": "desc", "limit": 2})
+    assert response.status_code == 200
+    assert [event["stage"] for event in response.json()] == ["step-3", "step-2"]
+    assert response.headers["X-Has-More"] == "true"
+
+
 def test_job_not_found_returns_404(client):
     resp = client.get("/api/jobs/nonexistent")
     assert resp.status_code == 404

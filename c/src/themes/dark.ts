@@ -37,6 +37,21 @@ export interface DarkColors {
 }
 
 export const DARK_VARIANTS: Record<string, DarkColors> = {
+  editorial: {
+    bgPage: '#120e0c', bgSurface: '#1a1412', bgMuted: '#241c17', bgHeader: '#221a16',
+    border: '#4b3629', borderLight: '#34271f',
+    textPrimary: '#f5efeb', textSecondary: '#c6b8aa', textTertiary: '#ae9e90', textHeader: '#e5d5c4',
+    accent: '#d7775b', accentLight: '#38241c', accentText: '#f0b093',
+    badgeOkBg: '#173025', badgeOkText: '#9be1b6',
+    badgeWarnBg: '#352710', badgeWarnText: '#f6c571',
+    badgeErrorBg: '#3b1b19', badgeErrorText: '#ffaaa5',
+    badgeMutedBg: '#2a211b', badgeMutedText: '#c6b8aa',
+    badgeAccentBg: '#38241c', badgeAccentText: '#f0b093',
+    badgeComicBg: '#1d2d32', badgeComicText: '#b2d9e5',
+    badgeNovelBg: '#322333', badgeNovelText: '#e0badf',
+    badgeDiscussionBg: '#352710', badgeDiscussionText: '#f6c571',
+    badgeMixedBg: '#302538', badgeMixedText: '#d9bee9',
+  },
   minimalist: {
     bgPage: '#0d1117', bgSurface: '#161b22', bgMuted: '#21262d', bgHeader: '#161b22',
     border: '#30363d', borderLight: '#21262d',

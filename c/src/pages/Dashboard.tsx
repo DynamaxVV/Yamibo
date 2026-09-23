@@ -1,275 +1,93 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { ArrowRight, BookOpen, Download, Library, ListTodo } from 'lucide-react'
 import { api, type DashboardData, type ThreadSummary } from '../api/client'
-import { Badge } from '../components/Badge'
+import packageInfo from '../../package.json'
 import { useI18n } from '../context/I18nContext'
-import { formatDateTime } from '../utils/time'
 import { formatThreadListTitle } from '../utils/threadTitle'
-
-function formatDateTimeStacked(value: string | null) {
-  const formatted = formatDateTime(value)
-  if (formatted === '-') return formatted
-  const [datePart, timePart, ...rest] = formatted.split(' ')
-  if (!datePart || !timePart || rest.length > 0) return formatted
-  return (
-    <span className="rag-date-time">
-      <span>{datePart}</span>
-      <span>{timePart}</span>
-    </span>
-  )
-}
-
-function RecentTable({ threads, forumNames, t, liveStatuses }: { threads: ThreadSummary[]; forumNames: Record<number, string>; t: (k: string) => string; liveStatuses: Record<number, string> }) {
-  if (threads.length === 0) return <div className="panel" style={{ color: 'var(--text-tertiary)', padding: '8px 12px', fontSize: 12 }}>{t('no_data')}</div>
-  return (
-      <div className="table-wrap"><table className="dashboard-recent-table">
-        <thead><tr><th className="col-tid">{t('tid')}</th><th className="col-title">{t('title')}</th><th className="col-forum">{t('forum')}</th><th className="col-status">{t('archive_status')}</th><th className="col-replies">{t('reply_count')}</th><th className="col-pub-time">{t('pub_time')}</th><th className="col-last-reply-time">{t('last_reply_time')}</th></tr></thead>
-        <tbody>
-          {threads.map(t_ => (
-            (() => {
-              const liveStatus = liveStatuses[t_.tid]
-              const status = liveStatus || t_.archive_status
-              const titleText = formatThreadListTitle(t_)
-              return (
-            <tr key={t_.tid}>
-              <td className="mono col-tid"><Link to={`/threads/${t_.tid}`}>{t_.tid}</Link></td>
-              <td className="truncate col-title" title={titleText}><Link to={`/threads/${t_.tid}`}>{titleText}</Link></td>
-              <td className="col-forum">{forumNames[t_.forum_id ?? 0] || '-'}</td>
-              <td className="col-status"><Badge status={status} /></td>
-              <td className="col-replies">{t_.reply_count ?? '-'}</td>
-              <td className="dashboard-time col-pub-time">{formatDateTimeStacked(t_.pub_time)}</td>
-              <td className="dashboard-time col-last-reply-time">{formatDateTimeStacked(t_.remote_last_reply_at)}</td>
-            </tr>
-              )
-            })()
-          ))}
-        </tbody>
-      </table></div>
-  )
-}
-
-function LimitSelect({ value, onChange, t }: { value: number; onChange: (n: number) => void; t: (k: string, p?: Record<string, string | number>) => string }) {
-  return (
-    <select value={value} onChange={e => onChange(Number(e.target.value))}
-      style={{ fontSize: 11, padding: '1px 4px', border: '1px solid var(--border-light)', borderRadius: 'var(--radius-sm)', background: 'var(--bg-card)', color: 'var(--text-primary)' }}>
-      <option value={10}>{t('recent_n', { n: 10 })}</option>
-      <option value={25}>{t('recent_n', { n: 25 })}</option>
-      <option value={50}>{t('recent_n', { n: 50 })}</option>
-    </select>
-  )
-}
-
-function SectionHeader({ title, limit, onLimitChange, t }: { title: string; limit: number; onLimitChange: (n: number) => void; t: (k: string, p?: Record<string, string | number>) => string }) {
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', margin: '16px 0 6px' }}>
-      <h3 style={{ margin: 0, fontSize: 13, color: 'var(--text-secondary)' }}>{title}</h3>
-      <LimitSelect value={limit} onChange={onLimitChange} t={t} />
-    </div>
-  )
-}
+import '../styles/dashboard-editorial.css'
 
 export function Dashboard() {
-  const { t, lang } = useI18n()
-  const desc = (j: { description: string; description_en: string }) => lang === 'en' ? j.description_en : j.description
-  const auditDesc = (a: { description: string; description_en: string }) => lang === 'en' ? a.description_en : a.description
+  const { lang, tx } = useI18n()
+  const currentDate = new Intl.DateTimeFormat(lang === 'en' ? 'en-US' : 'zh-CN', {
+    year: 'numeric', month: 'short', day: '2-digit',
+  }).format(new Date())
   const [data, setData] = useState<DashboardData | null>(null)
-  const [primaryThreads, setPrimaryThreads] = useState<ThreadSummary[]>([])
-  const [otherThreads, setOtherThreads] = useState<ThreadSummary[]>([])
-  const [error, setError] = useState<string | null>(null)
+  const [threads, setThreads] = useState<ThreadSummary[]>([])
   const [forumNames, setForumNames] = useState<Record<number, string>>({})
-  const [primaryLimit, setPrimaryLimit] = useState(10)
-  const [otherLimit, setOtherLimit] = useState(10)
-  const [dashboardTick, setDashboardTick] = useState(0)
-  const [resumeBusy, setResumeBusy] = useState(false)
-  const [jobControlBusy, setJobControlBusy] = useState(false)
+  const [forum, setForum] = useState('all')
+  const [page, setPage] = useState(1)
+  const [error, setError] = useState(false)
 
   useEffect(() => {
-    api.forums().then(fs => {
-      const m: Record<number, string> = {}
-      fs.forEach(f => { m[f.forum_id] = lang === 'en' ? (f.name_en || f.name) : f.name })
-      setForumNames(m)
-    }).catch(() => {})
+    api.forums().then(items => setForumNames(Object.fromEntries(items.map(item => [item.forum_id, lang === 'en' ? item.name_en || item.name : item.name])))).catch(() => {})
   }, [lang])
 
   useEffect(() => {
     let active = true
-    Promise.all([
-      api.dashboard(Math.max(primaryLimit, otherLimit)),
-      api.threads({ forum_id: 30, page_size: primaryLimit }).then(res => res.items),
-      api.threads({ forum_id: 55, page_size: primaryLimit }).then(res => res.items),
-      api.threads({ forum_id: 33, page_size: otherLimit }).then(res => res.items),
-      api.threads({ forum_id: 5, page_size: otherLimit }).then(res => res.items),
-    ]).then(([d, comic, novel, sea, anime]) => {
-      if (!active) return
-      setData(d)
-      setPrimaryThreads([...comic, ...novel].sort((a, b) => (b.sync_time || '').localeCompare(a.sync_time || '')).slice(0, primaryLimit))
-      setOtherThreads([...sea, ...anime].sort((a, b) => (b.sync_time || '').localeCompare(a.sync_time || '')).slice(0, otherLimit))
-    }).catch(e => setError(e.message))
-    const timer = window.setInterval(() => setDashboardTick(t => t + 1), 5000)
-    return () => {
-      active = false
-      window.clearInterval(timer)
-    }
-  }, [primaryLimit, otherLimit])
-
-  useEffect(() => {
-    let active = true
-    api.dashboard(Math.max(primaryLimit, otherLimit)).then(d => {
-      if (active) setData(d)
-    }).catch(e => setError(e.message))
-    return () => { active = false }
-  }, [primaryLimit, otherLimit, dashboardTick])
-
-  const liveStatuses = data?.live_thread_statuses ?? {}
-  const jobControl = data?.job_control ?? { jobs_enabled: true, queued: 0, running: 0, retrying: 0, interrupted: 0, paused: 0 }
-  const daemonRunning = jobControl.jobs_enabled
-  const jobControlAction = daemonRunning ? 'pause' : 'resume'
-  const jobControlLabel = daemonRunning ? t('job_control_running') : t('job_control_paused')
-  const runJobControl = () => {
-    setJobControlBusy(true)
-    api.controlJobs(jobControlAction)
-      .then(result => {
-        setError(null)
-        setData(prev => prev ? { ...prev, job_control: result.job_control } : prev)
-        setDashboardTick(tick => tick + 1)
+    Promise.all([api.dashboard(50), ...[30, 55, 33, 5].map(forum_id => api.threads({ forum_id, page_size: 20 }))])
+      .then(([summary, ...results]) => {
+        if (!active) return
+        setData(summary)
+        setThreads(results.flatMap(result => result.items).sort((a, b) => (b.sync_time || '').localeCompare(a.sync_time || '')))
+        setError(false)
       })
-      .catch(e => setError(e.message))
-      .finally(() => setJobControlBusy(false))
-  }
+      .catch(() => { if (active) setError(true) })
+    return () => { active = false }
+  }, [])
 
-  if (error) return <div className="panel" style={{ color: 'var(--status-error)' }}>{error}</div>
-  if (!data) return <div className="panel" style={{ color: 'var(--text-tertiary)' }}>{t('loading')}</div>
+  const filtered = useMemo(() => forum === 'all' ? threads : threads.filter(item => item.forum_id === Number(forum)), [threads, forum])
+  const visible = filtered.slice((page - 1) * 10, page * 10)
+  const pages = Math.max(1, Math.ceil(filtered.length / 10))
+  const stats = [
+    { label: tx('归档帖子', 'Archived threads'), value: data?.thread_count, to: '/threads', icon: BookOpen },
+    { label: tx('作品系列', 'Series'), value: data?.series_count, to: '/series', icon: Library },
+    { label: tx('导出档案', 'Exports'), value: data?.export_count, to: '/exports', icon: Download },
+  ]
+  const forumCounts = Object.entries(data?.forum_counts ?? {})
+    .map(([id, count]) => ({ id: Number(id), count }))
+    .filter(({ count }) => count > 0)
+    .sort((a, b) => b.count - a.count)
 
-  const forumCountEntries = new Map<string, number>()
-  Object.entries(data.forum_counts).forEach(([fid, count]) => {
-    const name = forumNames[Number(fid)] || t('unknown_forum')
-    forumCountEntries.set(name, (forumCountEntries.get(name) ?? 0) + count)
-  })
-
-  return (
-    <>
-      {data.remote_access_pause?.active && (
-        <div className="alert-banner" role="alert">
-          <div className="alert-banner-copy">
-            <strong>{t('remote_access_paused_title')}</strong>
-            <p>{t('remote_access_paused_desc')}</p>
-            <p className="alert-banner-meta">
-              {t('remote_access_paused_meta', {
-                time: formatDateTime(data.remote_access_pause.triggered_at),
-                source: data.remote_access_pause.source,
-                count: data.remote_access_pause.paused_job_count,
-              })}
-            </p>
-          </div>
-          <button
-            className="btn-danger"
-            disabled={resumeBusy}
-            onClick={() => {
-              setResumeBusy(true)
-              api.resumeRemoteAccess()
-                .then(() => {
-                  setError(null)
-                  setDashboardTick(tick => tick + 1)
-                })
-                .catch(e => setError(e.message))
-                .finally(() => setResumeBusy(false))
-            }}
-          >
-            {t('remote_access_resume')}
-          </button>
-        </div>
-      )}
-      <div className="stat-row">
-        <div className="stat-cell" style={{ flex: 1.6 }}>
-          <div className="label">{t('thread_count')}</div>
-          <div className="stat-body">
-            <div className="value">{data.thread_count}</div>
-            <div className="stat-forum-counts">
-              {Array.from(forumCountEntries, ([name, count]) => (
-                <span key={name}>
-                  {name} <b>{count}</b>
-                </span>
-              ))}
-            </div>
-          </div>
-        </div>
-        <div className="stat-cell"><div className="label">{t('series_count')}</div><div className="value">{data.series_count}</div></div>
-        <div className="stat-cell"><div className="label">{t('export_count')}</div><div className="value">{data.export_count}</div></div>
-        <div className="stat-cell">
-          <div className="label">{t('job_control')}</div>
-          <div className="job-control-cell">
-            <div className="job-control-counts">
-              <span>{t('queued')} <b>{jobControl.queued}</b></span>
-              <span>{t('running')} <b>{jobControl.running + jobControl.retrying}</b></span>
-              <span>{t('paused')} <b>{jobControl.paused}</b></span>
-            </div>
-            <button
-              className={daemonRunning ? 'btn-subtle' : 'btn-warning'}
-              disabled={jobControlBusy}
-              onClick={runJobControl}
-            >
-              {jobControlBusy ? t('loading') : jobControlLabel}
-            </button>
-          </div>
-        </div>
+  return <div className="archive-home">
+    <header className="archive-home__masthead">
+      <div><h1>{lang === 'en' ? 'Archive console' : <><span>归档</span>控制台</>}</h1></div>
+      <div className="archive-home__meta" aria-label={tx('归档控制台信息', 'Archive console details')}>
+        <div><span>{tx('今天', 'Today')}</span><time>{currentDate}</time></div>
+        <div><span>{tx('当前版本', 'Version')}</span><strong>v{packageInfo.version}</strong></div>
       </div>
-
-      <h2 style={{ margin: '16px 0 8px' }}>{t('recent_threads')}</h2>
-
-      <SectionHeader title={t('comic_novel')} limit={primaryLimit} onLimitChange={setPrimaryLimit} t={t} />
-      <RecentTable threads={primaryThreads} forumNames={forumNames} t={t} liveStatuses={liveStatuses} />
-
-      <SectionHeader title={t('other_forums')} limit={otherLimit} onLimitChange={setOtherLimit} t={t} />
-      <RecentTable threads={otherThreads} forumNames={forumNames} t={t} liveStatuses={liveStatuses} />
-
-      <h2>{t('recent_jobs')}</h2>
-      <div className="table-wrap"><table>
-        <thead><tr><th style={{ width: 75 }}>{t('tid')}</th><th>{t('description')}</th><th>{t('status')}</th><th style={{ width: 65 }}>{t('progress')}</th><th>{t('updated')}</th></tr></thead>
-        <tbody>
-          {data.recent_jobs.map(j => (
-            <tr key={j.job_id}>
-              <td>{j.tid ? <Link to={`/threads/${j.tid}`}>{j.tid}</Link> : '-'}</td>
-              <td className="truncate" title={desc(j)}><Link to={`/jobs/${j.job_id}`}>{desc(j)}</Link></td>
-              <td><Badge status={j.status} /></td>
-              <td className="nowrap">{j.progress_current}/{j.progress_total ?? '?'}</td>
-              <td className="nowrap">{formatDateTime(j.updated_at)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table></div>
-
-      {data.workers.length > 0 && (
-        <>
-          <h2>{t('worker_heartbeats')}</h2>
-          <div className="table-wrap"><table>
-            <thead><tr><th>{t('worker')}</th><th>{t('running_jobs')}</th><th>{t('seen_jobs')}</th><th>{t('last_heartbeat')}</th></tr></thead>
-            <tbody>
-              {data.workers.map(w => (
-                <tr key={w.worker_id}>
-                  <td className="mono">{w.worker_id}</td>
-                  <td>{w.running_jobs}</td>
-                  <td>{w.seen_jobs}</td>
-                  <td className="nowrap">{formatDateTime(w.latest_heartbeat_at)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table></div>
-        </>
-      )}
-
-      <h2>{t('audit_events')}</h2>
-      <div className="table-wrap"><table>
-        <thead><tr><th>{t('description')}</th><th>{t('actor')}</th><th>{t('time')}</th></tr></thead>
-        <tbody>
-          {data.recent_audits.map(a => (
-            <tr key={a.event_id}>
-              <td title={auditDesc(a)}>{auditDesc(a)}</td>
-              <td>{a.actor}</td>
-              <td className="nowrap">{formatDateTime(a.created_at)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table></div>
-    </>
-  )
+    </header>
+    {error && <div role="alert" className="archive-home__error">{tx('数据加载失败，请刷新页面后重试。', 'Unable to load dashboard data. Refresh the page and try again.')}</div>}
+    <div className="archive-home__stats">
+      {stats.map(({ label, value, to, icon: Icon }) => <Link key={label} to={to} className="archive-home__stat">
+        <Icon aria-hidden="true" /><span><strong>{value == null ? '—' : value.toLocaleString()}</strong><small>{label}</small></span>
+      </Link>)}
+      <Link to="/jobs" className="archive-home__stat archive-home__stat--jobs">
+        <ListTodo aria-hidden="true" /><span><strong>{data?.job_control.running == null ? '—' : data.job_control.running.toLocaleString()}</strong><small>{data ? `${data.job_control.jobs_enabled ? tx('运行任务', 'Running tasks') : tx('队列已暂停', 'Queue paused')} · ${data.job_control.paused} ${tx('个暂停', 'paused')}` : tx('运行任务', 'Running tasks')}</small></span>
+      </Link>
+    </div>
+    {forumCounts.length > 0 && <nav className="archive-home__forum-counts" aria-label={tx('各分区归档帖子数', 'Archived threads by forum')}>
+      <strong>{tx('分区收录', 'By forum')}</strong>
+      {forumCounts.map(({ id, count }) => <Link key={id} to={`/threads?forum_id=${id}`} title={tx(`查看${forumNames[id] || `版块 #${id}`}的归档帖子`, `View archived threads in ${forumNames[id] || `forum #${id}`}`)}>
+        <span>{forumNames[id] || tx(`版块 #${id}`, `Forum #${id}`)}</span><b>{count.toLocaleString()}</b>
+      </Link>)}
+    </nav>}
+    {data && (data.job_control.interrupted > 0 || data.job_control.paused > 0) && <Link to="/jobs" className="archive-home__notice"><strong>{tx('待处理任务', 'Tasks needing attention')}</strong><span>{data.job_control.interrupted} {tx('个中断', 'interrupted')}，{data.job_control.paused} {tx('个暂停', 'paused')}</span><ArrowRight aria-hidden="true" /></Link>}
+    <section className="archive-home__recent" aria-labelledby="recent-threads-title">
+      <div className="archive-home__section-heading">
+        <div><h2 id="recent-threads-title">{tx('最近归档', 'Recently archived')}</h2><span>{filtered.length} {tx('条抽样结果', 'threads sampled')}</span></div>
+        <label>{tx('版块', 'Forum')} <select value={forum} onChange={event => { setForum(event.target.value); setPage(1) }}><option value="all">{tx('全部版块', 'All forums')}</option>{Object.entries(forumNames).map(([id, name]) => <option key={id} value={id}>{name} · {(data?.forum_counts[Number(id)] ?? 0).toLocaleString()}</option>)}</select></label>
+      </div>
+      <div className="archive-home__list">
+        <div className="archive-home__list-head" aria-hidden="true"><span>{tx('帖子标题', 'Thread title')}</span><span>{tx('版块', 'Forum')}</span><span>{tx('回复', 'Replies')}</span><span>{tx('收录日期', 'Archived')}</span></div>
+        {visible.length ? visible.map(item => <Link key={item.tid} to={`/threads/${item.tid}`} className="archive-home__thread" title={formatThreadListTitle(item)}>
+          <span className="archive-home__thread-main"><span className="archive-home__thread-title">{formatThreadListTitle(item)}</span><span className="archive-home__thread-id">#{item.tid}</span></span>
+          <span className="archive-home__thread-forum">{forumNames[item.forum_id ?? -1] || tx('未分类', 'Uncategorized')}</span>
+          <span className="archive-home__thread-replies">{item.reply_count ?? '—'}</span>
+          <span className="archive-home__thread-date">{item.sync_time?.slice(0, 10) || tx('时间未知', 'Unknown date')}</span>
+        </Link>) : <p className="archive-home__empty">{data ? tx('当前筛选下没有最近归档。', 'No recent archives match this filter.') : tx('正在读取最近归档…', 'Loading recent archives…')}</p>}
+      </div>
+      <div className="archive-home__footer"><Link to="/threads" className="archive-home__all-link">{tx('查看全部归档', 'View all archives')} <ArrowRight aria-hidden="true" /></Link><div className="archive-home__pagination"><button disabled={page <= 1} onClick={() => setPage(page - 1)}>{tx('上一页', 'Previous')}</button><span>{page} / {pages}</span><button disabled={page >= pages} onClick={() => setPage(page + 1)}>{tx('下一页', 'Next')}</button></div></div>
+    </section>
+  </div>
 }

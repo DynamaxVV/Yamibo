@@ -212,7 +212,7 @@ const TRANSLATIONS: Record<Lang, Record<string, string>> = {
     retry_image_failed: '补图失败',
     indexing: '索引中',
     stale: '过期',
-    loading: 'Loading...',
+    loading: '正在加载…',
     search: '搜索',
     order: '排序',
     forum: '版块',
@@ -263,6 +263,9 @@ const TRANSLATIONS: Record<Lang, Record<string, string>> = {
     series_detail: '系列详情',
     thread_list: '贴子列表',
     confirm_delete: '确认删除？',
+    confirm_batch_delete: '确认批量删除',
+    confirm_batch_delete_desc: '确定删除所有状态为 {status} 的任务吗？此操作不可撤销。',
+    source: '源系列',
     delete_running_job_warning: '该任务正在运行中，删除可能导致数据不完整。确定继续？',
     delete_job_confirm: '确定删除该任务？',
     delete_selected: '删除所选',
@@ -908,6 +911,9 @@ const TRANSLATIONS: Record<Lang, Record<string, string>> = {
     series_detail: 'Series Detail',
     thread_list: 'Thread List',
     confirm_delete: 'Confirm delete?',
+    confirm_batch_delete: 'Confirm batch deletion',
+    confirm_batch_delete_desc: 'Delete all {status} tasks? This action cannot be undone.',
+    source: 'Source series',
     delete_running_job_warning: 'This job is currently running. Deleting it may cause data inconsistency. Continue?',
     delete_job_confirm: 'Delete this job?',
     delete_selected: 'Delete Selected',
@@ -1299,12 +1305,14 @@ interface I18nContextValue {
   lang: Lang
   setLang: (lang: Lang) => void
   t: (key: string, params?: Record<string, string | number>) => string
+  tx: (zh: string, en: string) => string
 }
 
 const I18nContext = createContext<I18nContextValue>({
   lang: 'zh',
   setLang: () => {},
   t: (key) => key,
+  tx: (zh) => zh,
 })
 
 export function I18nProvider({ children }: { children: ReactNode }) {
@@ -1330,8 +1338,10 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     return value
   }
 
+  const tx = (zh: string, en: string) => lang === 'en' ? en : zh
+
   return (
-    <I18nContext.Provider value={{ lang, setLang, t }}>
+    <I18nContext.Provider value={{ lang, setLang, t, tx }}>
       {children}
     </I18nContext.Provider>
   )

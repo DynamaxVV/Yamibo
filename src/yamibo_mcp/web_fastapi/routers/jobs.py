@@ -198,12 +198,14 @@ def job_events(
     job_id: str,
     since_event_id: int | None = Query(default=None, ge=0),
     limit: int = Query(default=200, ge=1, le=500),
+    order: str = Query(default="asc", pattern="^(asc|desc)$"),
     conn: DatabaseConnection = Depends(get_conn),
 ):
     events = JobEventsRepository(conn).list(
         job_id=job_id,
         since_event_id=since_event_id,
         limit=limit + 1,
+        order=order,
     )
     has_more = len(events) > limit
     events = events[:limit]

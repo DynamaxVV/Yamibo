@@ -1,7 +1,7 @@
 /* ─── Settings ─── */
-.settings-page { display: flex; flex-direction: column; gap: 16px; }
+.settings-page { display: flex; flex-direction: column; gap: 10px; }
 .settings-page { max-width: 1120px; margin: 0 auto; width: 100%; }
-.settings-page-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; padding: 16px 0 4px; }
+.settings-page-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 6px 0 2px; }
 .settings-page-header h1, .settings-auth h1 { margin: 8px 0; font-size: clamp(24px, 3vw, 30px); letter-spacing: -.025em; }
 .settings-eyebrow { color: var(--text-tertiary); font-size: 11px; font-weight: 600; letter-spacing: .09em; }
 .settings-session-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
@@ -29,7 +29,7 @@
 .settings-lock-list li { display: flex; gap: 12px; flex-wrap: wrap; padding: 8px 0; border-bottom: 1px solid var(--border-light); }
 .settings-section > .settings-note { margin-bottom: 16px; }
 .settings-select-wrap input { min-width: 0; flex: 1; }
-.settings-section { padding: 20px; }
+.settings-section { padding: 14px; }
 @media (max-width: 640px) {
   .settings-page-header { flex-direction: column; gap: 12px; }
   .settings-auth { padding: 24px 20px; }
@@ -307,4 +307,24 @@
   font-family: var(--font-mono, monospace);
   font-size: 11px;
   color: var(--text-secondary);
+}
+
+/* Field guidance is part of the form, not decorative small print. */
+.settings-page { --accent: var(--primary); --accent-light: var(--secondary); --accent-text: var(--primary); min-width: 0; }
+.settings-copy,.settings-help,.settings-source,.settings-footer-copy,.settings-check { font-size: 13px; color: var(--muted-foreground); line-height: 1.65; overflow-wrap: anywhere; }
+.settings-section-title { font-size: 18px; color: var(--foreground); }
+.settings-field-label { font-size: 14px; }
+.settings-field,.settings-section { min-width: 0; }
+.settings-section { scroll-margin-top: 90px; }
+.settings-note { font-size: 13px; line-height: 1.65; overflow-wrap: anywhere; }
+.settings-note-error { color: var(--foreground); background: color-mix(in srgb,var(--destructive) 10%,var(--card)); border: 1px solid var(--destructive); }
+.settings-pending-links { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 8px; }
+.settings-pending-links a { color: var(--primary); text-decoration: underline; }
+.settings-page .tag-chip { max-width: 100%; white-space: normal; overflow-wrap: anywhere; font-size: 12px; }
+.settings-page .table-layout-preview { overflow-x: auto; }
+@media(max-width:640px) {
+ .settings-section-head { flex-wrap: wrap; }
+ .settings-page-nav { flex-wrap: wrap; }
+ .settings-select-wrap { flex-wrap: wrap; }
+ .settings-section-save,.settings-page-nav a { min-height: 44px; }
 }

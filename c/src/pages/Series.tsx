@@ -4,16 +4,19 @@ import { api, type SeriesSummary } from '../api/client'
 import { Badge } from '../components/Badge'
 import { PaginationControls } from '../components/PaginationControls'
 import { useI18n } from '../context/I18nContext'
+import '../styles/catalog-lists.css'
 
 export function Series() {
-  const { t } = useI18n()
+  const { t, lang } = useI18n()
   const [allSeries, setAllSeries] = useState<SeriesSummary[]>([])
   const [q, setQ] = useState(() => sessionStorage.getItem('series_q') || '')
   const [reviewFilter, setReviewFilter] = useState<'all' | 'review' | 'confirmed'>(() => (sessionStorage.getItem('series_reviewFilter') as 'all' | 'review' | 'confirmed') || 'all')
   const [page, setPage] = useState(1)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const PAGE_SIZE = 50
 
-  useEffect(() => { api.series().then(setAllSeries).catch(() => {}) }, [])
+  useEffect(() => { api.series().then(setAllSeries).catch(e => setError(e.message)).finally(() => setLoading(false)) }, [])
 
   useEffect(() => {
     sessionStorage.setItem('series_q', q)
@@ -35,16 +38,18 @@ export function Series() {
   const paged = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
 
   return (
-    <>
+    <div className="catalog-page">
+      <header className="catalog-heading"><h1>{lang === 'en' ? 'Series' : '作品系列'}</h1><p>{lang === 'en' ? 'Browse collected works and review their grouping.' : '按作品浏览归档内容，检查系列归属与待复核项目。'}</p></header>
       <div className="filter-bar">
         <input
           className="filter-search"
+          aria-label={t('search_series_placeholder')}
           value={q}
           onChange={e => { setQ(e.target.value); setPage(1) }}
           placeholder={t('search_series_placeholder')}
         />
         <div className="filter-group">
-          <select value={reviewFilter} onChange={e => { setReviewFilter(e.target.value as typeof reviewFilter); setPage(1) }}>
+          <select aria-label={t('review')} value={reviewFilter} onChange={e => { setReviewFilter(e.target.value as typeof reviewFilter); setPage(1) }}>
             <option value="all">{t('all')}</option>
             <option value="review">{t('pending_review')}</option>
             <option value="confirmed">{t('confirmed')}</option>
@@ -53,25 +58,22 @@ export function Series() {
       </div>
 
       <div id="series-pagination-top" />
-      <div className="table-wrap"><table>
-        <thead><tr><th>{t('id')}</th><th>{t('title')}</th><th>{t('author')}</th><th>{t('series_key')}</th><th>{t('thread_count')}</th><th>{t('review')}</th></tr></thead>
-        <tbody>
-          {paged.length === 0 ? (
-            <tr><td colSpan={6} style={{ textAlign: 'center', color: 'var(--text-tertiary)', padding: 24 }}>{t('no_match')}</td></tr>
-          ) : paged.map(s => (
-            <tr key={s.series_id}>
-              <td className="mono"><Link to={`/series/${s.series_id}`}>{s.series_id}</Link></td>
-              <td className="truncate" style={{ textAlign: 'center' }} title={s.canonical_title || s.series_key || ''}><Link to={`/series/${s.series_id}`}>{s.canonical_title || s.series_key}</Link></td>
-              <td>{s.author_guess || '-'}</td>
-              <td className="mono">{s.series_key || '-'}</td>
-              <td>{s.thread_count}</td>
-              <td><Badge status={s.needs_review ? 'warn' : 'ok'}>{s.needs_review ? t('needs_review') : t('confirmed')}</Badge></td>
-            </tr>
-          ))}
-        </tbody>
-      </table></div>
+      <p className="catalog-result-count">{lang === 'en' ? `${filtered.length} series` : `共 ${filtered.length} 个系列`}</p>
+      {error ? <div className="panel" role="alert">{error}</div> : loading ? <div className="panel" role="status">{t('loading')}</div> : <div className="catalog-list">
+        {paged.length === 0 ? <div className="panel">{t('no_match')}</div> : paged.map(s => {
+          const title = s.canonical_title || (lang === 'en' ? 'Untitled series' : '未命名系列')
+          return <article className="catalog-row" key={s.series_id}>
+            <div className="catalog-main">
+              <Link className="catalog-title" to={`/series/${s.series_id}`}>{title}</Link>
+              <details className="catalog-title-details"><summary>{lang === 'en' ? 'Full title and series key' : '完整标题与系列键'}</summary><p>{title}</p><p className="mono">{s.series_key || '—'}</p></details>
+              <div className="catalog-meta"><span className="mono">#{s.series_id}</span><span>{t('author')}: {s.author_guess || '—'}</span><span>{t('thread_count')}: {s.thread_count}</span></div>
+            </div>
+            <div className="catalog-row-actions"><Badge status={s.needs_review ? 'warn' : 'ok'}>{s.needs_review ? t('needs_review') : t('confirmed')}</Badge><Link className="btn-subtle" to={`/series/${s.series_id}`}>{lang === 'en' ? 'View series' : '查看系列'}</Link></div>
+          </article>
+        })}
+      </div>}
 
       <PaginationControls page={page} totalPages={totalPages} onPageChange={setPage} scrollTargetId="series-pagination-top" />
-    </>
+    </div>
   )
 }

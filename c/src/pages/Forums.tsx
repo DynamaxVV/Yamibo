@@ -4,6 +4,7 @@ import { api, type Forum, type ProxyPoolHealth, type SignInAccountStats, type Si
 import { Badge, ContentBadge } from '../components/Badge'
 import { useI18n } from '../context/I18nContext'
 import { formatBytes } from '../utils/bytes'
+import '../styles/catalog-lists.css'
 
 function SignInStatus({ status, error, loading, onSignIn, signing }: { status: SignInAccountStats['today_status']; error: string | null; loading?: boolean; onSignIn?: () => void; signing?: boolean }) {
   const { t } = useI18n()
@@ -147,7 +148,8 @@ export function Forums() {
   })
 
   return (
-    <>
+    <div className="catalog-page forum-status-page">
+      <header className="catalog-heading"><h1>{lang === 'en' ? 'Forum status' : '版块与连接状态'}</h1><p>{lang === 'en' ? 'Check archive sizes, account sign-in and proxy availability.' : '查看版块归档容量、账号签到和代理连接情况。'}</p><Link to="/forum">{lang === 'en' ? 'Browse forum' : '返回论坛漫游'}</Link></header>
       <div className="threads-filter-row" style={{ marginBottom: 12 }}>
         <h2 style={{ margin: 0 }}>{t('forum_stats')}</h2>
         <div className="threads-filter-actions">
@@ -162,13 +164,13 @@ export function Forums() {
         <tbody>
           {forums.map(f => (
             <tr key={f.forum_id}>
-              <td className="mono">{f.forum_id}</td>
-              <td>{lang === 'en' ? (f.name_en || f.name) : f.name}</td>
-              <td className="nowrap"><ContentBadge kind={f.content_kind} /></td>
-              <td>{f.thread_count}</td>
-              <td className="mono">{formatBytes(f.archive_size_bytes ?? null)}</td>
-              <td><Badge status={f.enabled ? 'ok' : 'muted'}>{f.enabled ? t('yes') : t('no_label')}</Badge></td>
-              <td>
+              <td data-label={t('id')} className="mono">{f.forum_id}</td>
+              <td data-label={t('name')} className="table-cell-long">{lang === 'en' ? (f.name_en || f.name) : f.name}</td>
+              <td data-label={t('content_kind')} className="nowrap"><ContentBadge kind={f.content_kind} /></td>
+              <td data-label={t('thread_count')}>{f.thread_count}</td>
+              <td data-label={t('forum_data_size')} className="mono">{formatBytes(f.archive_size_bytes ?? null)}</td>
+              <td data-label={t('enabled')}><Badge status={f.enabled ? 'ok' : 'muted'}>{f.enabled ? t('yes') : t('no_label')}</Badge></td>
+              <td data-label={t('action')}>
                 <Link to={`/threads?forum_id=${f.forum_id}`} className="btn-subtle" style={{ textDecoration: 'none' }}>
                   {t('view_threads')}
                 </Link>
@@ -183,13 +185,13 @@ export function Forums() {
         <thead><tr><th>{t('account')}</th><th>{t('sign_in_recent_checkin')}</th><th>{t('sign_in_month_days')}</th><th>{t('sign_in_consecutive_days')}</th><th>{t('sign_in_total_days')}</th><th>{t('sign_in_level')}</th><th>{t('today_status')}</th></tr></thead>
         <tbody>
           {(signInStats?.accounts ?? []).map(account => <tr key={account.account_id}>
-            <td className="mono sign-in-account">{account.account_id}</td>
-            <td className="nowrap">{account.recent_checkin || '-'}</td>
-            <td>{account.month_days ?? '-'}</td>
-            <td>{account.consecutive_days ?? '-'}</td>
-            <td>{account.total_days ?? '-'}</td>
-            <td>{account.level || '-'}</td>
-            <td><SignInStatus status={account.today_status} error={account.error} loading={signInLoadingIds.has(account.account_id)} onSignIn={() => void signIn(account.account_id)} signing={signingAccount === account.account_id} /></td>
+            <td data-label={t('account')} className="mono sign-in-account">{account.account_id}</td>
+            <td data-label={t('sign_in_recent_checkin')} className="nowrap">{account.recent_checkin || '-'}</td>
+            <td data-label={t('sign_in_month_days')}>{account.month_days ?? '-'}</td>
+            <td data-label={t('sign_in_consecutive_days')}>{account.consecutive_days ?? '-'}</td>
+            <td data-label={t('sign_in_total_days')}>{account.total_days ?? '-'}</td>
+            <td data-label={t('sign_in_level')}>{account.level || '-'}</td>
+            <td data-label={t('today_status')}><SignInStatus status={account.today_status} error={account.error} loading={signInLoadingIds.has(account.account_id)} onSignIn={() => void signIn(account.account_id)} signing={signingAccount === account.account_id} /></td>
           </tr>)}
           {!signInStats && <tr><td colSpan={7}>{signInStatsError ? t('sign_in_unavailable') : t('loading')}</td></tr>}
         </tbody>
@@ -213,14 +215,14 @@ export function Forums() {
           <thead><tr><th>{t('node')}</th><th>{t('proxy_pool_status')}</th><th>{t('proxy_pool_delay')}</th><th>{t('current_node')}</th></tr></thead>
           <tbody>{proxyNodes.map(node => (
             <tr key={node.name}>
-              <td className="mono truncate" title={node.name}>{node.display_name || node.name}</td>
-              <td><span className={`proxy-pool-status proxy-pool-status-${node.status}`}>{t(`proxy_pool_status_${node.status}`)}</span></td>
-              <td>{node.delay_ms == null ? '-' : `${node.delay_ms} ms`}</td>
-              <td>{proxyHealth.selector_group?.current_node === node.name ? '✓' : ''}</td>
+              <td data-label={t('node')} className="table-cell-long mono" title={node.name}>{node.display_name || node.name}</td>
+              <td data-label={t('proxy_pool_status')}><span className={`proxy-pool-status proxy-pool-status-${node.status}`}>{t(`proxy_pool_status_${node.status}`)}</span></td>
+              <td data-label={t('proxy_pool_delay')}>{node.delay_ms == null ? '-' : `${node.delay_ms} ms`}</td>
+              <td data-label={t('current_node')}>{proxyHealth.selector_group?.current_node === node.name ? '✓' : ''}</td>
             </tr>
           ))}</tbody>
         </table></div>
       )}
-    </>
+    </div>
   )
 }

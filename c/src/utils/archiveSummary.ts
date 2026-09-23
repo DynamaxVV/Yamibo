@@ -36,10 +36,15 @@ export function hasPartialArchiveBreakdown(breakdown: ArchiveBreakdown | null | 
   )
 }
 
-export function getPartialArchiveReason(breakdown: ArchiveBreakdown | null | undefined): string {
-  if (!breakdown) return '未知'
+export function getPartialArchiveReason(breakdown: ArchiveBreakdown | null | undefined, lang: 'zh' | 'en' = 'zh'): string {
+  if (!breakdown) return lang === 'en' ? 'Unknown' : '未知'
   const reasons: string[] = []
-  if (breakdown.missing_image_urls?.length) reasons.push(`正文图片缺失 ${breakdown.missing_image_urls.length} 张`)
-  if (breakdown.missing_shared_image_urls?.length) reasons.push(`共享资源缺失 ${breakdown.missing_shared_image_urls.length} 个`)
-  return reasons.length > 0 ? reasons.join('，') : '无'
+  if (breakdown.missing_image_urls?.length) {
+    reasons.push(lang === 'en' ? `Missing ${breakdown.missing_image_urls.length} body images` : `正文图片缺失 ${breakdown.missing_image_urls.length} 张`)
+  }
+  if (breakdown.missing_shared_image_urls?.length) {
+    reasons.push(lang === 'en' ? `Missing ${breakdown.missing_shared_image_urls.length} shared assets` : `共享资源缺失 ${breakdown.missing_shared_image_urls.length} 个`)
+  }
+  if (reasons.length === 0) return lang === 'en' ? 'None' : '无'
+  return reasons.join(lang === 'en' ? ', ' : '，')
 }

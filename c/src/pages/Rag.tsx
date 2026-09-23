@@ -1,3 +1,4 @@
+import '../styles/tools.css'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { PaginationControls } from '../components/PaginationControls'
@@ -32,7 +33,11 @@ function formatDateTimeStacked(value: string | null) {
 }
 
 export function Rag() {
-  const { t, lang } = useI18n()
+  const { t, lang, tx } = useI18n()
+  const [failedOnly, setFailedOnly] = useState(false)
+  const [view, setView] = useState<'search' | 'index'>('search')
+  const [searching, setSearching] = useState(false)
+  const [overviewRetry, setOverviewRetry] = useState(0)
   const [overview, setOverview] = useState<RagOverview | null>(null)
   const [forums, setForums] = useState<Forum[]>([])
   const [unindexedList, setUnindexedList] = useState<RagThreadListResponse | null>(null)
@@ -58,11 +63,12 @@ export function Rag() {
   const [searchError, setSearchError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [reloadToken, setReloadToken] = useState(0)
-  const filterKey = `${threadQuery}::${forumId}::${threadPageSize}`
+  const filterKey = `${threadQuery}::${forumId}::${threadPageSize}::${failedOnly}`
   const lastFilterKeyRef = useRef(filterKey)
 
   useEffect(() => {
     let active = true
+    setLoading(true)
     Promise.all([api.ragOverview(), api.forums()]).then(([nextOverview, nextForums]) => {
       if (!active) return
       setOverview(nextOverview)
@@ -74,7 +80,7 @@ export function Rag() {
       setLoading(false)
     })
     return () => { active = false }
-  }, [])
+  }, [overviewRetry])
 
   useEffect(() => {
     let active = true
@@ -91,6 +97,7 @@ export function Rag() {
         q: threadQuery || undefined,
         forum_id: forumId === 'all' ? 'all' : Number(forumId),
         index_state: 'unindexed',
+        rag_status: failedOnly ? 'failed' : 'all',
         page: unindexedPage,
         page_size: threadPageSize,
       }),
@@ -98,6 +105,7 @@ export function Rag() {
         q: threadQuery || undefined,
         forum_id: forumId === 'all' ? 'all' : Number(forumId),
         index_state: 'indexed',
+        rag_status: failedOnly ? 'failed' : 'all',
         page: indexedPage,
         page_size: threadPageSize,
       }),
@@ -109,7 +117,7 @@ export function Rag() {
       if (active) setIndexMessage(e.message)
     })
     return () => { active = false }
-  }, [filterKey, threadQuery, forumId, threadPageSize, unindexedPage, indexedPage, reloadToken])
+  }, [failedOnly, filterKey, threadQuery, forumId, threadPageSize, unindexedPage, indexedPage, reloadToken])
 
   const forumMap = useMemo(() => {
     const map: Record<number, string> = {}
@@ -279,6 +287,7 @@ export function Rag() {
       return
     }
     setSearchError(null)
+    setSearching(true)
     try {
       const result = await api.ragSearch({
         query: searchQuery.trim(),
@@ -297,35 +306,38 @@ export function Rag() {
       setSearchMeta({ mode: result.data.mode, count: result.data.count })
     } catch (e: any) {
       setSearchError(e.message || String(e))
-    }
+    } finally { setSearching(false) }
   }
 
-  if (loading) return <div className="panel">{t('loading')}</div>
-  if (!overview) return <div className="panel">{indexMessage || t('error')}</div>
+  if (loading) return <div className="panel" role="status">{t('loading')}</div>
+  if (!overview) return <div className="panel tool-error" role="alert"><h1>{tx('知识检索', 'Knowledge search')}</h1><p>{indexMessage || t('error')}</p><button className="btn-subtle" onClick={() => setOverviewRetry(value => value + 1)}>{tx('重新加载', 'Reload')}</button></div>
 
   return (
-    <>
-      <div className="stat-row">
+    <div className={`tool-page rag-page rag-view-${view}`}>
+      <header className="tool-page-header"><div><h1>{tx('知识检索', 'Knowledge search')}</h1><p>{tx('搜索归档内容并查看原文引用，或管理检索索引。', 'Search archived content and inspect source excerpts, or manage the search index.')}</p></div></header>
+      <nav className="tool-tabs" aria-label={tx('知识检索功能', 'Knowledge search sections')}><button aria-pressed={view === "search"} onClick={() => setView("search")}>{tx('搜索归档', 'Search archive')}</button><button aria-pressed={view === "index"} onClick={() => setView("index")}>{tx('索引管理', 'Index management')}</button></nav>
+      {!overview.enabled && <div className="panel tool-state" role="status">{tx('RAG 尚未启用，请先在', 'RAG is not enabled. Check the search service settings in')} <Link to="/settings">{t('settings')}</Link> {tx('检查检索服务配置。', 'before continuing.')}</div>}
+      <div className="stat-row rag-index-only">
         <div className="stat-cell"><div className="label">{t('rag_unindexed_threads')}</div><div className="value">{overview.counts.unindexed_threads}</div></div>
         <div className="stat-cell"><div className="label">{t('rag_indexed_threads')}</div><div className="value">{overview.counts.indexed_threads}</div></div>
         <div className="stat-cell"><div className="label">{t('rag_total_chunks')}</div><div className="value">{overview.counts.total_chunks}</div></div>
         <div className="stat-cell"><div className="label">{t('rag_indexed_chunks')}</div><div className="value">{overview.counts.indexed_chunks}</div></div>
-        <div className="stat-cell"><div className="label">{t('rag_failed_chunks')}</div><div className="value">{overview.counts.failed_chunks}</div></div>
+        <div className="stat-cell"><div className="label">{t('rag_failed_chunks')}</div><button className="value rag-failed-filter" aria-pressed={failedOnly} onClick={() => setFailedOnly(value => !value)}>{overview.counts.failed_chunks}<span>{failedOnly ? tx('显示全部', 'Show all') : tx('查看失败项', 'View failed')}</span></button></div>
       </div>
 
       <div className="rag-layout">
-        <section className="panel" style={{ gridColumn: '1 / -1' }}>
+        <section className="panel rag-search-only" style={{ gridColumn: '1 / -1' }}>
           <div className="rag-panel-head">
             <div>
-              <h2 className="rag-section-title">{t('rag_search_debug')}</h2>
+              <h2 className="rag-section-title">{tx('搜索归档内容', 'Search archived content')}</h2>
               <p className="rag-panel-copy">{t('rag_search_debug_desc')}</p>
             </div>
           </div>
           <div className="rag-search-form">
             <input className="filter-search" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder={t('rag_query_placeholder')} />
             <label className="rag-field">
-              <span>{t('rag_topk_label')}</span>
-              <input type="number" value={searchTopK} onChange={e => setSearchTopK(Number(e.target.value) || 8)} min={1} max={50} style={{ width: 96 }} />
+              <span>{tx('结果数量（Top K）', 'Result count (Top K)')}</span>
+              <input type="number" value={searchTopK} onChange={e => setSearchTopK(Math.min(50, Math.max(1, Number(e.target.value) || 8)))} min={1} max={50} style={{ width: 96 }} />
             </label>
             <label className="rag-field rag-field-wide">
               <span>{t('rag_search_tid_label')}</span>
@@ -338,10 +350,10 @@ export function Rag() {
             <select value={searchMode} onChange={e => setSearchMode(e.target.value)}>
               {SEARCH_MODES.map(mode => <option key={mode} value={mode}>{t(`rag_mode_${mode}`)}</option>)}
             </select>
-            <button className="btn-primary" onClick={() => void handleSearch()}>{t('search')}</button>
+            <button className="btn-primary" disabled={searching || !searchQuery.trim() || !overview.enabled} onClick={() => void handleSearch()}>{searching ? tx('正在检索…', 'Searching…') : t('search')}</button>
           </div>
           <div className="rag-helper-text">{t('rag_search_scope_hint')}</div>
-          {searchError && <div className="rag-helper-text rag-helper-error">{searchError}</div>}
+          {searchError && <div className="rag-helper-text rag-helper-error" role="alert">{searchError}</div>}
           {searchMeta && (
             <div className="rag-result-meta">
               <span>{t('rag_mode_label')}: <strong>{t(`rag_mode_${searchMeta.mode}`)}</strong></span>
@@ -389,11 +401,11 @@ export function Rag() {
                 </div>
               </article>
             ))}
-            {searchMeta && searchResults.length === 0 && <div className="panel" style={{ marginTop: 12 }}>{t('no_data')}</div>}
+            {searchMeta && searchResults.length === 0 && <div className="panel" role="status" style={{ marginTop: 12 }}>{tx('没有找到匹配内容。请缩短关键词、扩大版块范围，或检查索引覆盖情况。', 'No matching content was found. Try shorter keywords, a wider forum scope, or check index coverage.')}</div>}
           </div>
         </section>
 
-        <section className="panel rag-panel">
+        <section className="panel rag-panel rag-index-only">
           <div className="rag-panel-head">
             <div>
               <h2 className="rag-section-title">{t('rag_config_title')}</h2>
@@ -420,14 +432,14 @@ export function Rag() {
                 {Object.entries(overview.index_meta).length === 0 ? (
                   <tr><td colSpan={4}>{t('no_data')}</td></tr>
                 ) : Object.entries(overview.index_meta).map(([key, value]) => (
-                  <tr key={key}><td className="mono">{key}</td><td>{value}</td></tr>
+                  <tr key={key}><td className="mono">{key}</td><td className="table-cell-long">{value}</td></tr>
                 ))}
               </tbody>
             </table>
           </div>
         </section>
 
-        <section className="panel rag-panel">
+        <section className="panel rag-panel rag-index-only">
           <div className="rag-panel-head">
             <div>
               <h2 className="rag-section-title">{t('rag_create_index')}</h2>
@@ -446,7 +458,7 @@ export function Rag() {
               <input type="checkbox" checked={indexForce} onChange={e => setIndexForce(e.target.checked)} />
               <span>{t('rag_force_reindex')}</span>
             </label>
-            <button className="btn-primary" onClick={() => void handleCreateIndex()} disabled={indexSubmitting}>
+            <button className="btn-primary" onClick={() => void handleCreateIndex()} disabled={indexSubmitting || !overview.enabled}>
               {indexSubmitting ? t('running') : t('rag_create_index')}
             </button>
           </div>
@@ -457,7 +469,7 @@ export function Rag() {
               <tbody>
                 {overview.forum_breakdown.map(row => (
                   <tr key={row.forum_id}>
-                    <td>{lang === 'en' ? (row.name_en || row.name) : row.name}</td>
+                    <td className="table-cell-long">{lang === 'en' ? (row.name_en || row.name) : row.name}</td>
                     <td>{row.thread_count}</td>
                     <td>{row.indexed_thread_count}</td>
                     <td>{row.chunk_count}</td>
@@ -469,7 +481,8 @@ export function Rag() {
         </section>
       </div>
 
-      <section className="panel">
+      <section className="panel rag-index-only">
+        {failedOnly && <p className="tool-state">{tx('正在显示含失败向量的帖子。', 'Showing threads with failed vectors.')} <button className="btn-subtle" onClick={() => setFailedOnly(false)}>{tx('清除失败筛选', 'Clear failed filter')}</button></p>}
         <div className="rag-panel-head">
           <div>
             <h2 className="rag-section-title">{t('rag_thread_management')}</h2>
@@ -504,7 +517,7 @@ export function Rag() {
             </div>
             <div className="toolbar rag-batch-toolbar" style={{ marginBottom: 12 }}>
               <div className="rag-batch-actions">
-                <button className="btn-subtle" disabled={indexSubmitting || selectedTids.size === 0} onClick={() => void requestBatchIndex('selected')}>
+                <button className="btn-subtle" disabled={indexSubmitting || !overview.enabled || selectedTids.size === 0} onClick={() => void requestBatchIndex('selected')}>
                   {t('rag_index_selected')} ({selectedTids.size})
                 </button>
               </div>
@@ -515,7 +528,8 @@ export function Rag() {
                 </select>
               </label>
             </div>
-            <div className="table-wrap">
+            <p className="rag-panel-copy">{tx('Chunk 指用于检索的文本片段；宽表可横向滚动查看全部字段。', 'A chunk is a text segment used for retrieval. Scroll the wide table horizontally to view all fields.')}</p>
+            <div className="table-wrap" tabIndex={0} aria-label={tx('索引帖子列表，可横向滚动', 'Indexed threads table; scroll horizontally')}>
               <table style={{ tableLayout: 'fixed', width: '100%' }}>
                 <thead><tr>
                   <th style={{ width: 34 }}>
@@ -536,7 +550,7 @@ export function Rag() {
                     />
                   </th>
                   <th style={{ width: 72 }}>{t('tid')}</th>
-                  <th>{t('title')}</th>
+                  <th style={{ minWidth: 320, width: 360 }}>{t('title')}</th>
                   <th style={{ width: 92 }}>{t('forum')}</th>
                   <th style={{ width: 92 }}>{t('content_kind')}</th>
                   <th style={{ width: 84 }}>{t('rag_index_state')}</th>
@@ -567,7 +581,7 @@ export function Rag() {
                             />
                           </td>
                           <td className="mono"><Link to={`/threads/${row.tid}`}>{row.tid}</Link></td>
-                          <td className="truncate" title={titleText}>{titleText}</td>
+                          <td className="table-cell-long truncate"><Link to={`/threads/${row.tid}`}>{titleText}</Link></td>
                           <td>{row.forum_id ? (forumMap[row.forum_id] || row.forum_id) : '-'}</td>
                           <td><ContentBadge kind={row.content_kind} /></td>
                           <td><Badge status={row.rag_index_state}>{t(`rag_index_state_${row.rag_index_state}`)}</Badge></td>
@@ -577,7 +591,7 @@ export function Rag() {
                           <td><Badge status={row.rag_failed_chunk_count > 0 ? 'failed' : 'muted'}>{row.rag_failed_chunk_count}</Badge></td>
                           <td className="col-time">{formatDateTimeStacked(row.rag_last_indexed_at || row.sync_time)}</td>
                           <td>
-                            <button className="btn-subtle" onClick={() => void requestCreateIndex(row)}>
+                            <button className="btn-subtle" disabled={indexSubmitting || !overview.enabled} onClick={() => void requestCreateIndex(row)}>
                               {row.rag_index_state === 'unindexed' ? t('rag_index_now') : t('rag_reindex_now')}
                             </button>
                           </td>
@@ -603,11 +617,12 @@ export function Rag() {
               </div>
               <Badge status="ok">{indexedList?.total_count ?? 0}</Badge>
             </div>
-            <div className="table-wrap">
+            <p className="rag-panel-copy">{tx('Chunk 指用于检索的文本片段；宽表可横向滚动查看全部字段。', 'A chunk is a text segment used for retrieval. Scroll the wide table horizontally to view all fields.')}</p>
+            <div className="table-wrap" tabIndex={0} aria-label={tx('索引帖子列表，可横向滚动', 'Indexed threads table; scroll horizontally')}>
               <table style={{ tableLayout: 'fixed', width: '100%' }}>
                 <thead><tr>
                   <th style={{ width: 72 }}>{t('tid')}</th>
-                  <th>{t('title')}</th>
+                  <th style={{ minWidth: 320, width: 360 }}>{t('title')}</th>
                   <th style={{ width: 92 }}>{t('forum')}</th>
                   <th style={{ width: 92 }}>{t('content_kind')}</th>
                   <th style={{ width: 84 }}>{t('rag_index_state')}</th>
@@ -625,7 +640,7 @@ export function Rag() {
                       return (
                         <tr key={row.tid}>
                           <td className="mono"><Link to={`/threads/${row.tid}`}>{row.tid}</Link></td>
-                          <td className="truncate" title={titleText}>{titleText}</td>
+                          <td className="table-cell-long truncate"><Link to={`/threads/${row.tid}`}>{titleText}</Link></td>
                           <td>{row.forum_id ? (forumMap[row.forum_id] || row.forum_id) : '-'}</td>
                           <td><ContentBadge kind={row.content_kind} /></td>
                           <td><Badge status={row.rag_index_state}>{t(`rag_index_state_${row.rag_index_state}`)}</Badge></td>
@@ -635,7 +650,7 @@ export function Rag() {
                           <td><Badge status={row.rag_failed_chunk_count > 0 ? 'failed' : 'muted'}>{row.rag_failed_chunk_count}</Badge></td>
                           <td className="col-time">{formatDateTimeStacked(row.rag_last_indexed_at || row.sync_time)}</td>
                           <td>
-                            <button className="btn-subtle" onClick={() => void requestCreateIndex(row)}>
+                            <button className="btn-subtle" disabled={indexSubmitting || !overview.enabled} onClick={() => void requestCreateIndex(row)}>
                               {row.rag_index_state === 'unindexed' ? t('rag_index_now') : t('rag_reindex_now')}
                             </button>
                           </td>
@@ -655,7 +670,7 @@ export function Rag() {
         </div>
       </section>
 
-      <section className="panel">
+      <section className="panel rag-index-only">
         <div className="rag-panel-head">
           <div>
             <h2 className="rag-section-title">{t('recent_jobs')}</h2>
@@ -666,10 +681,11 @@ export function Rag() {
           <table>
             <thead><tr><th>{t('tid')}</th><th>{t('description')}</th><th>{t('status')}</th><th>{t('stage')}</th><th>{t('updated')}</th></tr></thead>
             <tbody>
+              {overview.recent_jobs.length === 0 && <tr><td colSpan={5}>{tx('暂无索引任务。可在上方选择帖子创建索引。', 'No index tasks yet. Select threads above to create one.')}</td></tr>}
               {overview.recent_jobs.map(job => (
                 <tr key={job.job_id}>
                   <td>{job.tid ? <Link to={`/threads/${job.tid}`}>{job.tid}</Link> : '-'}</td>
-                  <td className="truncate"><Link to={`/jobs/${job.job_id}`}>{lang === 'en' ? job.description_en : job.description}</Link></td>
+                  <td className="table-cell-long truncate"><Link to={`/jobs/${job.job_id}`}>{lang === 'en' ? job.description_en : job.description}</Link></td>
                   <td><Badge status={job.status} /></td>
                   <td>{job.stage || '-'}</td>
                   <td className="nowrap col-time">{formatDateTime(job.updated_at)}</td>
@@ -709,13 +725,13 @@ export function Rag() {
             </div>
             <div className="confirm-actions">
               <button className="btn-subtle" onClick={() => setPendingIndexAction(null)}>{t('cancel')}</button>
-              <button className="btn-primary" onClick={() => void confirmPendingIndexAction()} disabled={indexSubmitting}>
+              <button className="btn-primary" onClick={() => void confirmPendingIndexAction()} disabled={indexSubmitting || !overview.enabled}>
                 {t('rag_index_confirm_submit')}
               </button>
             </div>
           </div>
         </div>
       )}
-    </>
+    </div>
   )
 }

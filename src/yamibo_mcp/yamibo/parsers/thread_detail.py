@@ -273,6 +273,14 @@ class _ThreadSubjectParser(TextCaptureParser):
         classes = set(data.get("class", "").split())
         if "quote" in classes and tag in {"div", "blockquote"}:
             return "<blockquote>", "</blockquote>"
+        if tag == "blockquote":
+            # Discuz wraps quote content in both div.quote and blockquote.
+            # Render the quote wrapper once instead of producing nested quote panels.
+            for source_tag, close_tag in reversed(self._rich_tag_stack):
+                if source_tag == "blockquote":
+                    break
+                if source_tag == "div" and close_tag == "</blockquote>":
+                    return None, None
         if tag in {"html", "body", "tbody", "thead", "tfoot", "tr", "td", "th"}:
             return None, None
         if tag == "br":

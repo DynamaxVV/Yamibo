@@ -225,6 +225,7 @@
   border-radius: var(--radius-sm);
   overflow: hidden;
 }
+.reading-view[hidden] { display: none; }
 .floor-row {
   display: flex; border-bottom: var(--border-width, 1px) solid color-mix(in srgb, var(--reading-text, var(--border-light)) 10%, var(--border-light));
   background: var(--reading-bg, var(--bg-surface));
@@ -361,6 +362,15 @@
   word-break: break-word;
   border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
 }
+.floor-rich-body blockquote blockquote {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
 .floor-rich-body img {
   max-width: 100%;
   height: auto;
@@ -401,16 +411,15 @@
   display: block; line-height: 0;
 }
 .floor-image-link img {
-  display: block; width: var(--img-pct, 75%); height: auto; background: var(--bg-muted);
+  display: block; width: var(--img-pct, 75%); max-width: 100%; height: auto; background: var(--bg-muted);
 }
 .lazy-image-placeholder {
   display: inline-flex; align-items: center; justify-content: center;
   background: var(--bg-muted);
-  animation: image-loading-pulse 1.5s ease-in-out infinite;
   position: relative; overflow: hidden;
 }
 .lazy-image-label {
-  font-size: 11px; color: var(--text-tertiary);
+  font-size: 13px; color: var(--text-secondary);
   text-align: center; word-break: break-all; line-height: 1.3;
   padding: 4px;
 }
@@ -424,10 +433,6 @@
   display: inline-flex; align-items: center; justify-content: center;
   color: var(--text-tertiary); font-size: 12px;
   animation: none; background: color-mix(in srgb, var(--bg-muted) 80%, var(--status-error));
-}
-@keyframes image-loading-pulse {
-  0%, 100% { opacity: 0.4; }
-  50% { opacity: 0.7; }
 }
 .missing-image-url-card {
   width: min(var(--img-pct, 75%), 100%);
@@ -498,3 +503,155 @@
   }
 }
 
+/* Immersive reading adapts the canvas and controls to the content type. */
+.reading-zen {
+  position: fixed;
+  inset: 0;
+  box-sizing: border-box;
+  height: 100vh;
+  height: 100dvh;
+  overscroll-behavior: contain;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+.reading-zen__toolbar {
+  width: min(94vw, 62rem);
+  box-sizing: border-box;
+  border-radius: 1.25rem;
+  justify-content: space-between;
+  gap: .5rem .75rem;
+  transition: opacity 160ms ease;
+}
+.reading-zen--comic .reading-zen__toolbar--auto-hidden,
+.reading-zen--novel .reading-zen__toolbar--auto-hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+.reading-zen--comic .reading-zen__toolbar--auto-hidden:focus-within,
+.reading-zen--novel .reading-zen__toolbar--auto-hidden:focus-within {
+  opacity: .95;
+  pointer-events: auto;
+}
+.reading-zen__image-width,
+.reading-zen__page-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: .25rem;
+  color: var(--text-tertiary);
+  font: 500 11px/1.2 var(--font-sans, sans-serif);
+}
+.reading-zen__image-width > span { margin-right: .2rem; }
+.reading-zen__image-width button,
+.reading-zen__page-controls button {
+  min-width: 2rem;
+  min-height: 1.8rem;
+  padding: .2rem .45rem;
+  border: 1px solid var(--border-color);
+  border-radius: .55rem;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font: 600 11px/1 var(--font-sans, sans-serif);
+  cursor: pointer;
+}
+.reading-zen__image-width button.active,
+.reading-zen__page-controls button:not(:disabled):hover {
+  border-color: var(--accent);
+  background: var(--accent-light);
+  color: var(--accent-text);
+}
+.reading-zen__page-controls button { font-size: 17px; }
+.reading-zen__page-controls button:disabled { opacity: .4; cursor: default; }
+.reading-zen__page-controls > span { min-width: 5.5rem; text-align: center; }
+.reading-zen__floor-jump select { max-width: 11rem; }
+.reading-zen__canvas {
+  box-sizing: border-box;
+  width: min(100%, 48rem);
+  margin-inline: auto;
+  padding: 1.5rem 1.25rem 9rem;
+}
+.reading-zen__floor { margin: 0 0 2.25rem; }
+.reading-zen__floor-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: .75rem;
+  margin-bottom: .75rem;
+  padding-bottom: .45rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 65%, transparent);
+  color: var(--text-tertiary);
+  font: 500 11px/1.4 var(--font-mono, monospace);
+}
+.reading-zen__floor-no { color: var(--accent); font-weight: 650; }
+.reading-zen__publisher { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reading-zen__time { flex: none; }
+.reading-zen__floor-body {
+  color: var(--reading-text, var(--text-primary));
+  font-size: calc(1rem * var(--reading-font-scale, 1));
+  line-height: var(--reading-line-height, 1.7);
+  overflow-wrap: anywhere;
+}
+.reading-zen__floor-body--novel { font-family: var(--reading-font-family, Georgia, serif); }
+.reading-zen__floor-body--novel .floor-rich-body { line-height: inherit; }
+.reading-zen__floor-body--novel .floor-rich-body > * { max-width: 100%; }
+.reading-zen__images { padding-top: .9rem; }
+.reading-zen--novel .reading-zen__canvas {
+  width: min(100%, 72ch);
+  padding: clamp(1.75rem, 5vh, 3.5rem) 1.25rem 7rem;
+}
+.reading-zen--novel .reading-zen__floor { margin-bottom: 2.75rem; }
+.reading-zen--novel .reading-zen__floor-meta { margin-bottom: 1.15rem; }
+.reading-zen--novel .reading-zen__floor-body {
+  line-height: calc(var(--reading-line-height, 1.7) * 1.08);
+}
+.reading-zen--novel .reading-zen__quote { font-size: .88em; }
+.reading-zen--comic .reading-zen__canvas {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+}
+.reading-zen--comic .reading-zen__floor { margin: 0; border-bottom: 1px solid color-mix(in srgb, var(--border-color) 48%, transparent); }
+.reading-zen--comic .reading-zen__floor-meta {
+  min-height: 1.35rem;
+  margin: 0;
+  padding: .1rem .75rem;
+  border: 0;
+  justify-content: flex-start;
+}
+.reading-zen--comic .reading-zen__floor-no { font-weight: 550; }
+.reading-zen--comic .reading-zen__floor-body {
+  font-family: var(--font-sans, sans-serif);
+  font-size: 1rem;
+  line-height: 1.45;
+}
+.reading-zen--comic .reading-zen__images {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+  padding-top: 0;
+}
+.reading-zen--comic .reading-zen__images > .floor-image-link,
+.reading-zen--comic .reading-zen__images > div > .floor-image-link {
+  width: min(100%, var(--img-pct, 100%));
+  max-width: 100%;
+}
+.reading-zen--comic .reading-zen__images .floor-image-link img { width: 100%; max-width: 100%; }
+.reading-zen--comic .reading-zen__images .lazy-image-placeholder:not(.small-img) { width: 100%; }
+.reading-zen--comic .reading-zen__images > div { width: 100%; display: flex; flex-direction: column; align-items: center; }
+.reading-zen--comic .reading-zen__images > div > p { display: none; }
+.reading-zen--comic .floor-small-images { justify-content: center; padding: .5rem; }
+.reading-zen--general .reading-zen__canvas { width: min(100%, 48rem); }
+
+@media (max-width: 640px) {
+  .reading-zen__toolbar { width: calc(100vw - 1rem); padding: .5rem .65rem; gap: .4rem; }
+  .reading-zen__toolbar > div:first-child { flex-wrap: wrap; }
+  .reading-zen__floor-jump { gap: .35rem; }
+  .reading-zen__floor-jump select { max-width: 7rem; }
+  .reading-zen--novel .reading-zen__canvas { padding-inline: 1rem; }
+  .reading-zen--comic .reading-zen__canvas { padding-inline: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reading-zen__toolbar { transition: none; }
+}

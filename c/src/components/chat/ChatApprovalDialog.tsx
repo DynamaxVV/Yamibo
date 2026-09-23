@@ -1,5 +1,47 @@
-import { operationSummary } from './operationSummary'
 import { useState } from 'react'
 import { useI18n } from '../../context/I18nContext'
 import type { ApprovalChoice, ChatEvent } from '../../types/chat'
-export function ChatApprovalDialog({events,onChoose,error}:{events:ChatEvent[];onChoose:(choice:ApprovalChoice)=>Promise<void>;error:string|null}){const { t } = useI18n(); const request=[...events].reverse().find((event):event is Extract<ChatEvent,{type:'approval.request'}>=>event.type==='approval.request');const [busy,setBusy]=useState(false);const [actionError,setActionError]=useState<string|null>(null);const choices=request?.choices||[];const labels:Record<string,string>={once:t('chat_approval_once'),session:t('chat_approval_session'),always:t('chat_approval_always'),deny:t('chat_approval_deny')};const choose=async(choice:ApprovalChoice)=>{if(choice==='always'&&!window.confirm(t('chat_approval_always_confirm')))return;setBusy(true);setActionError(null);try{await onChoose(choice)}catch(e){setActionError((e as Error).message)}finally{setBusy(false)}};if(!request)return <div className="chat-approval chat-error">{t('chat_approval_unavailable')}</div>;return <section className="chat-approval" aria-live="polite"><strong>{t('chat_approval_required')}</strong><p>{operationSummary(request.tool, request.summary)}</p>{request.summary!==undefined&&<details><summary>查看操作范围与内容</summary><pre>{typeof request.summary==='string'?request.summary:JSON.stringify(request.summary,null,2)}</pre></details>}{request.tool!==undefined&&<p>{t('chat_tool')}: <code>{typeof request.tool==='string'?request.tool:JSON.stringify(request.tool)}</code></p>}<div>{choices.map(choice=><button key={choice} className={choice==='always'?'danger':''} autoFocus={choice==='once'} disabled={busy} onClick={()=>void choose(choice)}>{labels[choice] || choice}</button>)}</div>{choices.length===0&&<p className="chat-error">{t('chat_no_choices')}</p>}{(error||actionError)&&<p className="chat-error">{error||actionError}</p>}</section>}
+import { operationSummary } from './operationSummary'
+
+export function ChatApprovalDialog({ events, onChoose, error }: {
+  events: ChatEvent[]
+  onChoose: (choice: ApprovalChoice) => Promise<void>
+  error: string | null
+}) {
+  const { t, lang, tx } = useI18n()
+  const request = [...events].reverse().find((event): event is Extract<ChatEvent, { type: 'approval.request' }> => event.type === 'approval.request')
+  const [busy, setBusy] = useState(false)
+  const [actionError, setActionError] = useState<string | null>(null)
+  const choices = request?.choices || []
+  const labels: Record<string, string> = {
+    once: t('chat_approval_once'),
+    session: t('chat_approval_session'),
+    always: t('chat_approval_always'),
+    deny: t('chat_approval_deny'),
+  }
+
+  const choose = async (choice: ApprovalChoice) => {
+    if (choice === 'always' && !window.confirm(t('chat_approval_always_confirm'))) return
+    setBusy(true)
+    setActionError(null)
+    try {
+      await onChoose(choice)
+    } catch (e) {
+      setActionError((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (!request) return <div className="chat-approval chat-error">{t('chat_approval_unavailable')}</div>
+
+  return <section className="chat-approval" aria-live="polite">
+    <strong>{t('chat_approval_required')}</strong>
+    <p>{operationSummary(request.tool, request.summary, lang)}</p>
+    {request.summary !== undefined && <details><summary>{tx('查看操作范围与内容', 'Review operation scope and details')}</summary><pre>{typeof request.summary === 'string' ? request.summary : JSON.stringify(request.summary, null, 2)}</pre></details>}
+    {request.tool !== undefined && <p>{t('chat_tool')}: <code>{typeof request.tool === 'string' ? request.tool : JSON.stringify(request.tool)}</code></p>}
+    <div>{choices.map(choice => <button key={choice} className={choice === 'always' ? 'danger' : ''} autoFocus={choice === 'once'} disabled={busy} onClick={() => void choose(choice)}>{labels[choice] || choice}</button>)}</div>
+    {choices.length === 0 && <p className="chat-error">{t('chat_no_choices')}</p>}
+    {(error || actionError) && <p className="chat-error">{error || actionError}</p>}
+  </section>
+}

@@ -1,10 +1,11 @@
+import '../styles/tools.css'
 import { useEffect, useState, useRef, useCallback, useMemo } from 'react'
 import { api, type LogEntry } from '../api/client'
 import { useI18n } from '../context/I18nContext'
 
 const LEVEL_COLORS: Record<string, string> = {
   DEBUG: 'var(--text-tertiary)',
-  INFO: 'var(--accent-blue)',
+  INFO: 'var(--primary)',
   WARNING: 'var(--status-warn)',
   ERROR: 'var(--status-error)',
   CRITICAL: 'var(--status-error)',
@@ -39,16 +40,18 @@ function eventLabel(type: string): string {
 }
 
 const CAT_COLORS: Record<string, string> = {
-  job: 'var(--accent-blue)',
-  daemon: 'var(--accent-purple)',
-  query: 'var(--accent-cyan)',
-  trend: 'var(--accent-green)',
+  job: 'var(--primary)',
+  daemon: 'var(--text-secondary)',
+  query: 'var(--text-secondary)',
+  trend: 'var(--status-success)',
   remote: 'var(--status-warn)',
   maintenance: 'var(--text-secondary)',
 }
 
 export function Logs() {
-  const { t } = useI18n()
+  const { t, tx } = useI18n()
+  const [fetchError, setFetchError] = useState('')
+  const [fetching, setFetching] = useState(true)
   const [entries, setEntries] = useState<LogEntry[]>([])
   const [autoScroll, setAutoScroll] = useState(true)
   const [paused, setPaused] = useState(false)
@@ -62,10 +65,11 @@ export function Logs() {
   const tailRef = useRef<HTMLDivElement>(null)
   const lastTsRef = useRef<string | undefined>(undefined)
 
-  const fetchLogs = useCallback(async () => {
-    if (paused) return
+  const fetchLogs = useCallback(async (manual = false) => {
+    if (paused && !manual) return
     try {
       const data = await api.logs({ limit: 500, since: lastTsRef.current })
+      setFetchError('')
       if (data.entries.length > 0) {
         setEntries(prev => {
           const seen = new Set(prev.map(e => e.ts + e.event_type + e.message))
@@ -76,7 +80,8 @@ export function Logs() {
         })
         lastTsRef.current = data.entries[data.entries.length - 1].ts
       }
-    } catch { /* ignore */ }
+    } catch (e) { setFetchError(e instanceof Error ? e.message : String(e)) }
+    finally { setFetching(false) }
   }, [paused])
 
   useEffect(() => {
@@ -87,7 +92,7 @@ export function Logs() {
 
   useEffect(() => {
     if (autoScroll && tailRef.current) {
-      tailRef.current.scrollIntoView({ behavior: 'smooth' })
+      tailRef.current.scrollIntoView({ behavior: 'auto', block: 'nearest' })
     }
   }, [entries, autoScroll])
 
@@ -117,40 +122,46 @@ export function Logs() {
   }, [entries])
 
   return (
-    <>
+    <div className="tool-page logs-page">
+      <header className="tool-page-header"><div><h1>{tx('系统日志', 'System logs')}</h1><p>{tx('按级别、模块和关键字定位问题；点击日志查看完整消息。', 'Filter by level, module, or keyword. Select a log entry to inspect its full message.')}</p></div><button className="btn-subtle" onClick={clearLogs}>{tx('清空当前显示', 'Clear visible logs')}</button></header>
+      {fetchError && <div className="panel tool-error" role="alert">{tx('日志更新失败：', 'Unable to refresh logs: ')}{fetchError}{tx('。已保留当前记录。', '. Existing entries are kept.')}</div>}
+      {(paused || !autoScroll) && <p className="tool-state" role="status">{paused ? tx('已暂停接收新日志。', 'Receiving new logs is paused.') : tx('正在查看历史，自动滚动已关闭。', 'Viewing history; auto-scroll is off.')}</p>}
       <div className="log-toolbar">
-        <button className="btn-subtle" onClick={fetchLogs}>{t('refresh')}</button>
+        <div className="log-controls">
+        <button className="btn-subtle" onClick={() => void fetchLogs(true)}>{t('refresh')}</button>
         <button className="btn-subtle" onClick={() => setPaused(p => !p)}>
           {paused ? `▶ ${t('resume')}` : `⏸ ${t('pause')}`}
         </button>
-        <button className="btn-subtle" onClick={clearLogs}>{t('clear')}</button>
-        <span className="log-toolbar-sep" />
-        <select value={minLevel} onChange={e => setMinLevel(e.target.value as LevelFilter)} className="log-toolbar-select">
+        </div>
+        <div className="log-filters">
+        <select aria-label={tx('最低日志级别', 'Minimum log level')} value={minLevel} onChange={e => setMinLevel(e.target.value as LevelFilter)} className="log-toolbar-select">
           {LEVEL_ORDER.map(l => <option key={l} value={l}>{l}</option>)}
         </select>
-        <select value={filterCat} onChange={e => setFilterCat(e.target.value)} className="log-toolbar-select">
-          <option value="">all</option>
+        <select aria-label={tx('日志模块', 'Log module')} value={filterCat} onChange={e => setFilterCat(e.target.value)} className="log-toolbar-select">
+          <option value="">{tx('全部模块', 'All modules')}</option>
           {categories.map(c => <option key={c} value={c}>{c}</option>)}
         </select>
-        <input type="text" placeholder="job_id…" value={filterJob}
+        <input type="text" aria-label={tx('任务 ID', 'Task ID')} placeholder={`${tx('任务 ID', 'Task ID')}…`} value={filterJob}
           onChange={e => setFilterJob(e.target.value)} className="log-toolbar-input" />
-        <input type="text" placeholder="tid…" value={filterTid}
+        <input type="text" aria-label={tx('帖子 TID', 'Thread ID')} placeholder={`${tx('帖子 TID', 'Thread ID')}…`} value={filterTid}
           onChange={e => setFilterTid(e.target.value)} className="log-toolbar-input" />
-        <input type="text" placeholder="event_type…" value={filterEvent}
+        <input type="text" aria-label={tx('事件类型', 'Event type')} placeholder={`${tx('事件类型', 'Event type')}…`} value={filterEvent}
           onChange={e => setFilterEvent(e.target.value)} className="log-toolbar-input" />
-        <input type="text" placeholder="message / payload…" value={filterText}
+        <input type="text" aria-label={tx('消息或数据关键词', 'Message or data keyword')} placeholder={`${tx('消息 / 数据关键词', 'Message or data keyword')}…`} value={filterText}
           onChange={e => setFilterText(e.target.value)} className="log-toolbar-input" />
-        <span className="log-toolbar-sep" />
+        </div>
+        <div className="log-toolbar-summary">
         <label className="log-toolbar-check">
           <input type="checkbox" checked={autoScroll} onChange={e => setAutoScroll(e.target.checked)} />
           {t('auto_scroll')}
         </label>
-        <span className="log-toolbar-count">{filtered.length} lines</span>
+        <span className="log-toolbar-count">{filtered.length} {tx('条日志', 'entries')}</span>
+        </div>
       </div>
 
       <div className="log-view" style={{ maxHeight: 'calc(100vh - 280px)' }}>
         {filtered.length === 0 ? (
-          <div className="log-empty">{t('no_logs')}</div>
+          <div className="log-empty" role="status">{fetching ? t('loading') : fetchError ? tx('暂时无法读取日志，请刷新重试。', 'Logs are temporarily unavailable. Refresh and try again.') : entries.length ? tx('当前筛选没有匹配日志，请调整筛选条件。', 'No logs match these filters. Adjust your search.') : t('no_logs')}</div>
         ) : filtered.map((e, i) => {
           const isExpanded = expandedIdx === i
           const cat = eventCategory(e.event_type)
@@ -159,7 +170,9 @@ export function Logs() {
           const hasDetail = true
           return (
             <div key={i} className={`log-row${e.level === 'ERROR' || e.level === 'CRITICAL' ? ' log-row-err' : ''}`}
-              onClick={() => setExpandedIdx(isExpanded ? null : i)}>
+              role="button" tabIndex={0} aria-expanded={isExpanded}
+              onKeyDown={event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setExpandedIdx(isExpanded ? null : i); setAutoScroll(false) } }}
+              onClick={() => { setExpandedIdx(isExpanded ? null : i); setAutoScroll(false) }}>
               <div className="log-row-main">
                 <span className="log-col-lvl" style={{ color: LEVEL_COLORS[e.level] || 'var(--text-secondary)' }}>
                   {LEVEL_LABEL[e.level] || e.level}
@@ -178,7 +191,7 @@ export function Logs() {
         })}
         <div ref={tailRef} />
       </div>
-    </>
+    </div>
   )
 }
 

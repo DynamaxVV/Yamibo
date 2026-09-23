@@ -20,8 +20,8 @@ const DEFINITIONS: Record<TableName, ColumnDefinition[]> = {
 }
 
 const DEFAULTS: TableLayouts = {
-  threads: DEFINITIONS.threads.map((_, i) => ({ key: DEFINITIONS.threads[i].key, visible: true, width: [60, 480, 80, 110, 60, 55, 105, 105, 105, 84][i] })),
-  jobs: DEFINITIONS.jobs.map((_, i) => ({ key: DEFINITIONS.jobs[i].key, visible: true, width: [65, 420, 80, 120, 80, 110, 110][i] })),
+  threads: DEFINITIONS.threads.map((_, i) => ({ key: DEFINITIONS.threads[i].key, visible: !['category', 'last_reply_time', 'sync_time'].includes(DEFINITIONS.threads[i].key), width: [60, 480, 100, 110, 80, 65, 105, 105, 105, 84][i] })),
+  jobs: DEFINITIONS.jobs.map((_, i) => ({ key: DEFINITIONS.jobs[i].key, visible: DEFINITIONS.jobs[i].key !== 'stage', width: [65, 420, 80, 120, 80, 110, 110][i] })),
 }
 
 const TABLE_LAYOUT_STORAGE_KEY = 'yamibo_table_layouts'
@@ -48,7 +48,11 @@ function normalizeLayouts(value: unknown): TableLayouts {
   return (['threads', 'jobs'] as TableName[]).reduce((result, table) => {
     const entries = Array.isArray(raw?.[table]) ? raw[table] : []
     const byKey = new Map(entries.map(item => [item.key, item]))
-    result[table] = DEFINITIONS[table].map(def => ({ ...DEFAULTS[table].find(item => item.key === def.key)!, ...byKey.get(def.key), key: def.key, visible: def.required || Boolean(byKey.get(def.key)?.visible ?? true) }))
+    result[table] = DEFINITIONS[table].map(def => {
+      const recommended = DEFAULTS[table].find(item => item.key === def.key)!
+      const saved = byKey.get(def.key)
+      return { ...recommended, ...saved, key: def.key, visible: def.required || Boolean(saved?.visible ?? recommended.visible) }
+    })
     return result
   }, {} as TableLayouts)
 }
@@ -75,7 +79,7 @@ export function TableLayoutEditor({ value, revision, onSaved, onDirtyChange, onA
   onDirtyChange?: (dirty: boolean) => void
   onAuthRequired?: (error: Error) => void
 }) {
-  const { t } = useI18n()
+  const { t, tx } = useI18n()
   const [layouts, setLayouts] = useState<TableLayouts>(() => normalizeLayouts(value))
   const [table, setTable] = useState<TableName>('threads')
   const [saving, setSaving] = useState(false)
@@ -122,13 +126,14 @@ export function TableLayoutEditor({ value, revision, onSaved, onDirtyChange, onA
         <button type="button" className={table === 'threads' ? 'active' : ''} onClick={() => setTable('threads')}>{t('settings_table_threads')}</button>
         <button type="button" className={table === 'jobs' ? 'active' : ''} onClick={() => setTable('jobs')}>{t('settings_table_jobs')}</button>
       </div>
+      <button type="button" className="btn-secondary" onClick={() => updateTable(DEFAULTS[table].map(item => ({ ...item })))}>{tx('恢复推荐布局', 'Restore recommended layout')}</button>
       <div className="table-layout-editor">
         <div className="table-layout-list">
           {ordered.map(def => {
             const item = current.find(entry => entry.key === def.key)!
             return <div key={def.key} className="table-layout-row">
               <label className="table-layout-visible"><input type="checkbox" checked={def.required || item.visible} disabled={def.required} onChange={e => updateTable(current.map(entry => entry.key === def.key ? { ...entry, visible: e.target.checked } : entry))} />{t(def.labelKey)}</label>
-              <label className="table-layout-width"><span>{t('settings_table_width')}</span><input type="number" min="32" max="800" step="1" value={item.width} onChange={e => updateTable(current.map(entry => entry.key === def.key ? { ...entry, width: Math.max(32, Number(e.target.value) || 32) } : entry))} /><span>px</span></label>
+              <label className="table-layout-width"><span>{t('settings_table_width')}</span><input type="number" min={def.key === 'title' || def.key === 'description' ? 320 : 32} max="800" step="1" value={item.width} onChange={e => updateTable(current.map(entry => entry.key === def.key ? { ...entry, width: Math.max(def.key === 'title' || def.key === 'description' ? 320 : 32, Number(e.target.value) || 32) } : entry))} /><span>px</span></label>
             </div>
           })}
         </div>

@@ -6,7 +6,7 @@ import { ThreadReader } from '../components/ThreadReader'
 import { useI18n } from '../context/I18nContext'
 
 export function RemoteThreadDetail() {
-  const { t, lang } = useI18n()
+  const { t, lang, tx } = useI18n()
   const { tid: tidParam } = useParams<{ tid: string }>()
   const tid = parseInt(tidParam || '0', 10)
   const [searchParams, setSearchParams] = useSearchParams()
@@ -17,6 +17,8 @@ export function RemoteThreadDetail() {
   const [data, setData] = useState<RemoteThreadDetailType | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [actionError, setActionError] = useState<string | null>(null)
+  const [createdJobId, setCreatedJobId] = useState<string | null>(null)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
 
   useEffect(() => {
@@ -42,18 +44,24 @@ export function RemoteThreadDetail() {
   }
 
   const handleArchive = async () => {
+    setActionError(null)
+    setCreatedJobId(null)
     setActionLoading('archive')
     try {
-      await api.createThreadArchiveBatch({ tids: [tid], forum_id: data?.forum_id ?? undefined })
-    } catch { /* ignore */ }
+      const result = await api.createThreadArchiveBatch({ tids: [tid], forum_id: data?.forum_id ?? undefined })
+      setCreatedJobId(result.created_job_ids[0] || result.reused_job_ids[0] || null)
+    } catch (e) { setActionError(e instanceof Error ? e.message : String(e)) }
     setActionLoading(null)
   }
 
   const handleResync = async () => {
+    setActionError(null)
+    setCreatedJobId(null)
     setActionLoading('resync')
     try {
-      await api.resyncThread(tid, data?.forum_id ?? undefined)
-    } catch { /* ignore */ }
+      const result = await api.resyncThread(tid, data?.forum_id ?? undefined)
+      setCreatedJobId(result.job_id)
+    } catch (e) { setActionError(e instanceof Error ? e.message : String(e)) }
     setActionLoading(null)
   }
 
@@ -85,39 +93,33 @@ export function RemoteThreadDetail() {
         </div>
       </div>
 
-      <h2>{t('thread_detail')}</h2>
-      <div className="table-wrap"><table>
-        <tbody>
-          {[
-            ['TID', <span className="mono">{data.tid}</span>],
-            [t('raw_title'), data.raw_title],
-            [t('title'), data.display_title],
-            [t('publisher'), data.publisher || '-'],
-            [t('forum'), forumName(data.forum_id)],
-            [t('pub_time'), data.pub_time || '-'],
-            [t('content_kind'), data.content_kind || '-'],
-            [t('original_url'), data.url ? <a href={data.url} target="_blank" rel="noreferrer">{data.url}</a> : '-'],
-            [t('archive_status'), isArchived ? (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <Badge status={data.archive_status || 'complete'} />
-                <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>{lang === 'en' ? 'Archived locally' : '已归档'}</span>
-              </div>
-            ) : <Badge status="none" />],
-          ].map(([k, v], i) => <tr key={i}><th style={{ width: 120 }}>{k}</th><td style={{ textAlign: 'left' }}>{v}</td></tr>)}
-        </tbody>
-      </table></div>
-
+      <header className="space-y-3 my-5">
+        <h1 className="text-2xl font-semibold break-words">{data.display_title || data.raw_title}</h1>
+        <div className="flex flex-wrap gap-3 text-sm text-muted-foreground"><span>#{data.tid}</span><span>{forumName(data.forum_id)}</span><span>{data.publisher || '—'}</span><span>{data.pub_time || '—'}</span><Badge status={isArchived ? (data.archive_status || 'complete') : 'none'} /></div>
+        <p className="text-sm text-muted-foreground">{lang === 'en' ? 'Archive and resync create background tasks. Open the task to follow progress.' : '归档和重新同步会创建后台任务，可进入任务详情查看进度。'}</p>
+        {actionError && <p role="alert" className="text-sm text-rose-800 dark:text-rose-300 break-words">{actionError}</p>}
+        {createdJobId && <p role="status" className="text-sm break-all">{tx('任务已提交：', 'Task queued: ')}<Link className="underline" to={`/jobs/${createdJobId}`}>{createdJobId}</Link></p>}
+      </header>
       {data.floors.length > 0 && (
         <ThreadReader
           tid={tid}
           source="remote"
           contentKind={data.content_kind}
+          forumId={data.forum_id}
           floors={data.floors}
           page={data.page}
           totalPages={data.total_pages}
           onPageChange={setPage}
         />
-      )}
+      )}      {data.floors.length === 0 && <div className="panel">{tx('当前未返回可阅读的楼层。', 'No readable floors were returned.')}</div>}
+      <details className="panel mt-6"><summary className="cursor-pointer font-medium">{tx('原帖信息', 'Source information')}</summary>
+        <dl className="space-y-3 mt-4 text-sm break-words">
+          {data.raw_title !== data.display_title && <div><dt className="text-muted-foreground">{t('raw_title')}</dt><dd>{data.raw_title}</dd></div>}
+          <div><dt className="text-muted-foreground">{t('content_kind')}</dt><dd>{data.content_kind || '—'}</dd></div>
+          {data.url && <div><dt className="text-muted-foreground">{t('original_url')}</dt><dd className="break-all"><a href={data.url} target="_blank" rel="noreferrer">{data.url}</a></dd></div>}
+        </dl>
+      </details>
+
     </>
   )
 }

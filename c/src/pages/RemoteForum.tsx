@@ -5,6 +5,7 @@ import { Badge } from '../components/Badge'
 import { PaginationControls } from '../components/PaginationControls'
 import { useI18n } from '../context/I18nContext'
 import { formatThreadListTitle } from '../utils/threadTitle'
+import '../styles/catalog-lists.css'
 
 const DEFAULT_FORUM_ID = 30
 const LIST_CACHE_KEY = 'yamibo.remote-forum-cache.v1'
@@ -64,6 +65,8 @@ export function RemoteForum() {
   const [loading, setLoading] = useState(!data)
   const [refreshing, setRefreshing] = useState(false)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
+  const [actionMessage, setActionMessage] = useState<string | null>(null)
+  const [actionJobId, setActionJobId] = useState<string | null>(null)
 
   useEffect(() => {
     api.remoteForums().then(fs => {
@@ -80,14 +83,15 @@ export function RemoteForum() {
     setError(null)
     if (_isCacheFresh(cacheKey)) {
       // Back navigation — cache is fresh, skip fetch.
-      if (refreshing) setRefreshing(false)
+      setData(_readCache(cacheKey))
+      setLoading(false)
+      setRefreshing(false)
       return
     }
-    if (data) {
-      setRefreshing(true)
-    } else {
-      setLoading(true)
-    }
+    const cached = _readCache(cacheKey)
+    setData(cached)
+    setRefreshing(!!cached)
+    setLoading(!cached)
     api.remoteForum({ forum_id: forumId, page, order })
       .then(d => {
         if (!active) return
@@ -107,16 +111,22 @@ export function RemoteForum() {
     setSearchParams(next, { replace: true })
   }
 
-  const handleArchive = async (tid: number) => {
-    setActionLoading(`archive-${tid}`)
-    try { await api.createThreadArchiveBatch({ tids: [tid], forum_id: forumId }) } catch { /* ignore */ }
-    setActionLoading(null)
-  }
-
-  const handleResync = async (tid: number) => {
-    setActionLoading(`resync-${tid}`)
-    try { await api.resyncThread(tid, forumId) } catch { /* ignore */ }
-    setActionLoading(null)
+  const handleAction = async (tid: number, archived: boolean) => {
+    setActionLoading(`${archived ? 'resync' : 'archive'}-${tid}`)
+    setActionMessage(null)
+    setActionJobId(null)
+    try {
+      if (archived) {
+        const result = await api.resyncThread(tid, forumId)
+        setActionJobId(result.job_id)
+      } else {
+        const result = await api.createThreadArchiveBatch({ tids: [tid], forum_id: forumId })
+        setActionJobId(result.created_job_ids[0] || result.reused_job_ids[0] || null)
+      }
+      setActionMessage(lang === 'en' ? `Task queued for #${tid}.` : `已为 #${tid} 提交任务，等待处理。`)
+    } catch (e) {
+      setActionMessage(e instanceof Error ? e.message : String(e))
+    } finally { setActionLoading(null) }
   }
 
   const forumName = (fid: number) => {
@@ -125,14 +135,16 @@ export function RemoteForum() {
   }
 
   return (
-    <>
+    <div className="catalog-page">
+      <header className="catalog-heading"><h1>{lang === 'en' ? 'Forum browser' : '论坛漫游'}</h1><p>{lang === 'en' ? 'Browse remote threads and queue an archive task.' : '浏览远端帖子，按需创建归档任务。'}</p><Link to="/forums">{lang === 'en' ? 'Forum status' : '版块与连接状态'}</Link></header>
       <div className="panel">
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+          <div className="catalog-filter-tabs" aria-label={t('forum')}>
             {forums.filter(f => f.enabled).map(f => (
               <button
                 key={f.forum_id}
                 className={`forum-tag${f.forum_id === forumId ? ' active' : ''}`}
+                aria-pressed={f.forum_id === forumId}
                 onClick={() => setParam('forum_id', String(f.forum_id))}
               >
                 {lang === 'en' ? (f.name_en || f.name) : f.name}
@@ -145,6 +157,7 @@ export function RemoteForum() {
               <button
                 key={o}
                 className={`forum-tag${order === o ? ' active' : ''}`}
+                aria-pressed={order === o}
                 onClick={() => setParam('order', o)}
               >
                 {o === 'default' ? (lang === 'en' ? 'Default' : '默认') : (lang === 'en' ? 'Dateline' : '按发布时间')}
@@ -154,8 +167,10 @@ export function RemoteForum() {
         </div>
       </div>
 
+      <p className="catalog-result-count">{lang === 'en' ? 'Current forum' : '当前版块'}：{forumName(forumId)}</p>
       <div id="threads-pagination-top" />
 
+      {actionMessage && <div className="panel catalog-feedback" role="status">{actionMessage} {actionJobId && <Link to={`/jobs/${actionJobId}`}>{lang === 'en' ? 'View task' : '查看任务'}</Link>}</div>}
       {error && <div className="panel" style={{ color: 'var(--status-error)' }}>{error}</div>}
       {loading && <div className="panel" style={{ color: 'var(--text-tertiary)' }}>{t('loading')}</div>}
       {refreshing && <div className="loading-bar" />}
@@ -164,72 +179,35 @@ export function RemoteForum() {
         <>
           <PaginationControls page={data.page} totalPages={data.total_pages} onPageChange={p => setParam('page', p > 1 ? String(p) : '')} scrollTargetId="threads-pagination-top" />
 
-          <div className="table-wrap"><table className="remote-forum-table">
-            <thead><tr>
-              <th className="col-tid">{t('tid')}</th>
-              <th className="col-title">{t('title')}</th>
-              <th className="col-forum">{t('forum')}</th>
-              <th className="col-category hide-mobile">{t('category')}</th>
-              <th className="col-publisher">{t('publisher')}</th>
-              <th className="col-time">{t('pub_time')}</th>
-              <th className="col-replies">{t('reply_count')}</th>
-              <th className="col-status">{t('archive_status')}</th>
-              <th className="col-action">{t('action')}</th>
-            </tr></thead>
-            <tbody>
-              {data.items.length === 0 ? (
-                <tr><td colSpan={9} style={{ textAlign: 'center', color: 'var(--text-tertiary)' }}>{t('no_data')}</td></tr>
-              ) : data.items.map(item => (
-                (() => {
-                  const titleText = formatThreadListTitle({ ...item, chapter_name: null })
-                  return (
-                    <tr key={item.tid}>
-                      <td className="mono col-tid">
-                        <Link to={`/forum/${item.tid}?forum_id=${forumId}&page=1`}>{item.tid}</Link>
-                      </td>
-                      <td className="truncate col-title" title={titleText}>
-                        <Link to={`/forum/${item.tid}?forum_id=${forumId}&page=1`}>{titleText}</Link>
-                      </td>
-                      <td className="nowrap col-forum">{forumName(forumId)}</td>
-                      <td className="nowrap hide-mobile col-category">{item.category || '-'}</td>
-                      <td className="nowrap col-publisher">{item.publisher || '-'}</td>
-                      <td className="col-time">{formatDateTimeStacked(item.posted_at || null)}</td>
-                      <td className="col-replies" style={{ textAlign: 'center' }}>{item.reply_count ?? '-'}</td>
-                      <td className="col-status">
-                        {item.local_thread?.archived ? (
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: 2, alignItems: 'flex-start' }}>
-                            <Badge status={item.archive_status || 'complete'} />
-                            <Link to={`/threads/${item.tid}`} className="btn-subtle" style={{ fontSize: 11, padding: '2px 6px' }}>
-                              {lang === 'en' ? 'Local' : '本地'}
-                            </Link>
-                          </div>
-                        ) : (
-                          <Badge status="none" />
-                        )}
-                      </td>
-                      <td className="col-action" style={{ textAlign: 'center' }}>
-                        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', justifyContent: 'center' }}>
-                          {!item.local_thread?.archived ? (
-                            <button className="btn-subtle" style={{ fontSize: 11 }} disabled={actionLoading === `archive-${item.tid}`} onClick={() => handleArchive(item.tid)}>
-                              {t('archive')}
-                            </button>
-                          ) : (
-                            <button className="btn-subtle" style={{ fontSize: 11 }} disabled={actionLoading === `resync-${item.tid}`} onClick={() => handleResync(item.tid)}>
-                              {t('resync')}
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  )
-                })()
-              ))}
-            </tbody>
-          </table></div>
+          <div className="catalog-list" aria-label={lang === 'en' ? 'Remote threads' : '远端帖子'}>
+            {data.items.length === 0 ? <div className="panel">{t('no_data')}</div> : data.items.map(item => {
+              const titleText = formatThreadListTitle(item)
+              const archived = !!item.local_thread?.archived
+              const pending = actionLoading === `${archived ? 'resync' : 'archive'}-${item.tid}`
+              return <article className="catalog-row" key={item.tid}>
+                <div className="catalog-main">
+                  <Link className="catalog-title" to={`/forum/${item.tid}?forum_id=${forumId}&page=1`}>{titleText}</Link>
+                  {titleText.length > 42 && <details className="catalog-title-details"><summary>{lang === 'en' ? 'Full title' : '完整标题'}</summary><p>{titleText}</p></details>}
+                  <div className="catalog-meta">
+                    <span className="mono">#{item.tid}</span><span>{forumName(forumId)}</span>
+                    {item.category && <span>{item.category}</span>}
+                    <span>{t('publisher')}: {item.publisher || '—'}</span>
+                    <span>{t('pub_time')}: {formatDateTimeStacked(item.posted_at || null)}</span>
+                    <span>{t('reply_count')}: {item.reply_count ?? '—'}</span>
+                  </div>
+                </div>
+                <div className="catalog-row-actions">
+                  {archived ? <Badge status={item.archive_status || 'complete'} /> : <Badge status="none">{lang === 'en' ? 'Not archived' : '未归档'}</Badge>}
+                  {archived && <Link className="btn-subtle" to={`/threads/${item.tid}`}>{lang === 'en' ? 'Read local' : '本地阅读'}</Link>}
+                  <button className="btn-subtle" disabled={actionLoading !== null} onClick={() => void handleAction(item.tid, archived)}>{pending ? t('running') : archived ? t('resync') : t('archive')}</button>
+                </div>
+              </article>
+            })}
+          </div>
 
           <PaginationControls page={data.page} totalPages={data.total_pages} onPageChange={p => setParam('page', p > 1 ? String(p) : '')} scrollTargetId="threads-pagination-top" />
         </>
       )}
-    </>
+    </div>
   )
 }

@@ -707,7 +707,7 @@ export const api = {
   jobCounts: () => fetchJson<Record<string, number>>('/jobs/counts'),
   jobFailureCounts: (status?: string) => fetchJson<Record<string, number>>(`/jobs/failure-counts${status ? `?status=${status}` : ''}`),
   job: (id: string) => fetchJson<JobSummary>(`/jobs/${id}`),
-  jobEvents: (id: string) => fetchJson<JobEvent[]>(`/jobs/${id}/events`),
+  jobEvents: (id: string, options?: { order?: 'asc' | 'desc' }) => fetchJson<JobEvent[]>(`/jobs/${id}/events${options?.order ? `?order=${options.order}` : ''}`),
   resumeRemoteAccess: () => postJson<{ ok: boolean; resumed_job_ids: string[]; resumed_job_count: number }>('/remote-access/resume', {}),
   daemonStatus: () => fetchJson<DaemonStatus>('/daemon/status'),
   controlJobs: (action: 'pause' | 'resume') => postJson<{ ok: boolean; action: string; changed_job_ids: string[]; changed_count: number; job_control: DashboardData['job_control'] }>('/jobs/control', { action }),

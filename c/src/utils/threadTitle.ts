@@ -9,18 +9,34 @@ type ThreadTitleLike = {
   group_name?: string | null
 }
 
+const TITLE_PREFIX_RE = /^\s*(?:【([^】]*)】|\[([^\]]*)\]|［([^］]*)］|\(([^)]*)\)|（([^）]*)）)\s*/
+
+function stripAuthorAndGroupPrefixes(title: string, author: string, group: string): string {
+  const removable = new Set([author, group].filter(Boolean))
+  let rest = title
+  let preservedPrefixes = ''
+
+  while (true) {
+    const match = TITLE_PREFIX_RE.exec(rest)
+    if (!match) break
+    const prefix = match[0]
+    const label = match.slice(1).find(value => value !== undefined)?.trim() || ''
+    if (removable.has(label)) rest = rest.slice(prefix.length)
+    else preservedPrefixes += prefix
+    if (!removable.has(label)) rest = rest.slice(prefix.length)
+  }
+
+  return `${preservedPrefixes}${rest}`.replace(/\s+/g, ' ').trim()
+}
+
 export function formatThreadListTitle(thread: ThreadTitleLike): string {
   const fallback = (thread.display_title || thread.title || thread.raw_title || '').trim()
   if (thread.content_kind !== 'comic') {
     return fallback
   }
-  const seriesName = (thread.core_title_guess || '').trim()
-  const chapterName = (thread.chapter_name || '').trim()
   const author = (thread.author_guess || '').trim()
   const group = (thread.group_name || '').trim()
-  const middle = [seriesName, chapterName].filter(Boolean).join(' ').trim()
-  if (!middle) {
-    return fallback
-  }
-  return `${author ? `[${author}]` : ''}${middle}${group ? `【${group}】` : ''}`
+  const originalBody = stripAuthorAndGroupPrefixes(fallback, author, group)
+  if (!originalBody) return fallback
+  return `${author ? `[${author}]` : ''}${originalBody}${group ? `【${group}】` : ''}`
 }

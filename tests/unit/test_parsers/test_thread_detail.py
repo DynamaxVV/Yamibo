@@ -432,6 +432,21 @@ class TestThreadDetailParser:
         assert "color:#000000" not in first_floor.rich_body_html
         assert "『起始』" in first_floor.rich_body_html
 
+    def test_discuz_quote_wrapper_does_not_render_as_nested_quote_panels(self):
+        html = """
+        <html><body><div id="post_1"><td id="postmessage_1">
+          <div class="quote"><blockquote><font>引用者 发表于 2026-09-23<br>被引用的内容</font></blockquote></div>
+          <div>楼层回复</div>
+        </td></div></body></html>
+        """
+
+        floor = parse_thread_detail(html).floors[0]
+
+        assert floor.rich_body_html is not None
+        assert floor.rich_body_html.count("<blockquote>") == 1
+        assert "被引用的内容" in floor.quote_text
+        assert "楼层回复" in floor.reply_text
+
     def test_empty_external_video_embed_is_preserved_as_floor_content(self):
         html = """
         <html><body>

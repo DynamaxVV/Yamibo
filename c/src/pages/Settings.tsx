@@ -363,7 +363,7 @@ function SettingsSection({
   const dirtyCount = changedFieldsForSection(section, payload, formValues).length
 
   return (
-    <section className="panel settings-section">
+    <section className="panel settings-section" id={`settings-section-${section.key}`}>
       <div className="settings-section-head">
         <div>
           <div className="settings-section-title-row">
@@ -609,7 +609,7 @@ export function Settings({ advanced = false }: { advanced?: boolean }) {
     try { await api.logoutSettings(); setPayload(null); setFormValues({}); setAuthRequired(true); setError(null) }
     catch (e) { handleError(e) }
   }
-  if (loading) return <div className="panel">{t('loading')}</div>
+  if (loading) return <div className="panel" role="status">{t('loading')}</div>
   const authView = (
     <div className="settings-auth-shell">
       <section className="panel settings-auth">
@@ -669,7 +669,7 @@ export function Settings({ advanced = false }: { advanced?: boolean }) {
         }}>{t('refresh')}</button>
       </nav>
       {error && <div role="alert" className="settings-note settings-note-error">{error}</div>}
-      {(payload.pending_fields?.length || 0) > 0 && <div className="settings-note settings-note-ok">{t('settings_pending', { count: payload.pending_fields!.length })}</div>}
+      {(payload.pending_fields?.length || 0) > 0 && <div className="settings-note settings-note-ok" role="status">{t('settings_pending', { count: payload.pending_fields!.length })}<div className="settings-pending-links">{sections.filter(section => section.fields.some(field => payload.pending_fields?.includes(field.key))).map(section => <a key={section.key} href={`#settings-section-${section.key}`}>{t(section.titleKey)} ↓</a>)}</div></div>}
       <div className="settings-form">
         {sections.map(current => <div key={current.key}>
           <SettingsSection section={current} payload={payload} formValues={formValues} setFormValues={setFormValues}

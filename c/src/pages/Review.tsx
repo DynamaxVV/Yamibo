@@ -1,3 +1,5 @@
+import '../styles/tools.css'
+import '../styles/review.css'
 import { useEffect, useState, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import { api, type ThreadSummary, type SeriesSummary } from '../api/client'
@@ -13,13 +15,16 @@ interface ConfirmAction {
 }
 
 export function Review() {
-  const { t } = useI18n()
+  const { t, tx } = useI18n()
+  const [fetching, setFetching] = useState(true)
+  const [fetchError, setFetchError] = useState('')
   const [titles, setTitles] = useState<ThreadSummary[]>([])
   const [series, setSeries] = useState<SeriesSummary[]>([])
   const [mergeTarget, setMergeTarget] = useState<Record<number, string>>({})
   const [loading, setLoading] = useState<Record<string, boolean>>({})
   const [editingTitle, setEditingTitle] = useState<number | null>(null)
   const [editingSeries, setEditingSeries] = useState<number | null>(null)
+  const [mergingSeries, setMergingSeries] = useState<number | null>(null)
   const [titleForm, setTitleForm] = useState<Record<string, string>>({})
   const [seriesForm, setSeriesForm] = useState<Record<string, string>>({})
   const [confirm, setConfirm] = useState<ConfirmAction | null>(null)
@@ -27,6 +32,8 @@ export function Review() {
   const [similarMap, setSimilarMap] = useState<Record<number, SeriesSummary[]>>({})
 
   const refresh = useCallback(() => {
+    setFetching(true)
+    setFetchError('')
     api.reviewItems().then(async d => {
       setTitles(d.titles)
       setSeries(d.series)
@@ -38,7 +45,7 @@ export function Review() {
         } catch { /* ignore */ }
       }))
       setSimilarMap(sims)
-    }).catch(() => {})
+    }).catch((e: Error) => setFetchError(e.message)).finally(() => setFetching(false))
   }, [])
 
   useEffect(() => { refresh() }, [refresh])
@@ -197,130 +204,91 @@ export function Review() {
   }
 
   return (
-    <>
-      <h2>{t('series_review')}</h2>
-      {series.length === 0 ? (
-        <div className="panel" style={{ color: 'var(--text-tertiary)' }}>{t('no_pending_series')}</div>
-      ) : (
-        <div className="table-wrap"><table className="review-table" style={{ tableLayout: 'fixed', width: '100%' }}>
-          <thead><tr><th style={{ width: 45 }}>{t('id')}</th><th style={{ width: '30%' }}>{t('title')}</th><th style={{ width: 160 }}>{t('author')}</th><th style={{ width: 260 }}>{t('series_key')}</th><th style={{ width: '20%' }}>{t('action')}</th></tr></thead>
-          <tbody>
-            {series.flatMap(s => {
-              const sims = similarMap[s.series_id] || []
-              return [
-              <tr key={s.series_id}>
-                <td className="mono"><Link to={`/series/${s.series_id}`}>{s.series_id}</Link></td>
-                <td className="truncate" title={s.canonical_title || s.series_key || ''}>{s.canonical_title || s.series_key}</td>
-                <td className="truncate" title={s.author_guess || ''}>{s.author_guess || '-'}</td>
-                <td className="mono truncate" title={s.series_key || ''}>{s.series_key || '-'}</td>
-                <td>
-                  <div className="row-actions" style={{ gap: 4, flexWrap: 'wrap' }}>
-                    <button className="btn-subtle" onClick={() => startEditSeries(s)}>{editingSeries === s.series_id ? t('collapse') : t('edit')}</button>
-                    <button className="btn-subtle" onClick={() => proposeConfirmSeries(s)}>{t('confirm')}</button>
-                    <div className="input-btn-group">
-                      <input placeholder={t('merge_target_id')} value={mergeTarget[s.series_id] || ''}
-                        onChange={e => setMergeTarget(m => ({ ...m, [s.series_id]: e.target.value }))} />
-                      <button className="btn-subtle" onClick={() => proposeMerge(s)}>{t('merge_action')}</button>
-                    </div>
-                  </div>
-                </td>
-              </tr>,
-              ...(sims.length ? [
-                <tr key={`${s.series_id}-similar`} style={{ background: 'var(--bg-muted)' }}>
-                  <td colSpan={2} style={{ padding: '3px 8px', borderTop: '1px dashed var(--border-light)' }}>
-                    <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>{t('similar_label')}</span>
-                  </td>
-                  <td colSpan={3} style={{ padding: '3px 8px', borderTop: '1px dashed var(--border-light)' }}>
-                    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center' }}>
-                      {sims.map(sim => (
-                        <button
-                          key={sim.series_id}
-                          className="btn-chip"
-                          onClick={() => setMergeTarget(m => ({ ...m, [s.series_id]: String(sim.series_id) }))}
-                          title={`${sim.canonical_title || sim.series_key} (${sim.thread_count}${t('thread_link')})`}
-                        >
-                          {sim.series_id}: {(sim.canonical_title || sim.series_key || '').slice(0, 16)}
-                        </button>
-                      ))}
-                    </div>
-                  </td>
-                </tr>,
-              ] : []),
-              ...(editingSeries === s.series_id ? [
-                <tr key={`${s.series_id}-edit`}>
-                  <td colSpan={5} style={{ padding: 0 }}>
-                    <div className="inline-edit">
-                      <div className="inline-edit-grid">
-                        <label>{t('series_name')}<input value={seriesForm.canonical_title || ''} onChange={e => setSeriesForm(f => ({ ...f, canonical_title: e.target.value }))} /></label>
-                        <label>{t('series_key')}<input value={seriesForm.series_key || ''} onChange={e => setSeriesForm(f => ({ ...f, series_key: e.target.value }))} /></label>
-                        <label>{t('author')}<input value={seriesForm.author_guess || ''} onChange={e => setSeriesForm(f => ({ ...f, author_guess: e.target.value }))} /></label>
-                      </div>
-                      <div className="inline-edit-actions">
-                        <button className="btn-primary" onClick={proposeSaveSeries}>{t('save')}</button>
-                        <button className="btn-subtle" onClick={() => setEditingSeries(null)}>{t('cancel')}</button>
-                      </div>
-                    </div>
-                  </td>
-                </tr>,
-              ] : []),
-            ]})}
-          </tbody>
-        </table></div>
-      )}
+    <div className="tool-page review-page">
+      <header className="tool-page-header"><div><h1>{tx('审核工作', 'Review queue')}</h1><p>{fetching ? tx('正在读取待复核项目…', 'Loading items for review…') : tx(`待复核 ${titles.length + series.length} 项 · 系列 ${series.length} · 帖子标题 ${titles.length}`, `${titles.length + series.length} items to review · ${series.length} series · ${titles.length} thread titles`)}</p></div><button className="btn-subtle" disabled={fetching} onClick={refresh}>{t('refresh')}</button></header>
+      {fetchError && <div className="panel tool-error" role="alert">{tx('加载审核列表失败：', 'Unable to load review items: ')}{fetchError}{tx('。请重试。', '. Please try again.')}</div>}
+      {!fetching && !fetchError && titles.length + series.length === 0 && <div className="panel" role="status">{tx('当前没有待复核项目。', 'There are no items to review right now.')} <Link to="/threads">{tx('查看归档帖子 →', 'Browse archived threads →')}</Link></div>}
+      {fetching && <div className="panel" role="status">{t('loading')}</div>}
+      {!fetching && !fetchError && <>
+      <section className="review-section" aria-labelledby="review-series-heading">
+        <div className="review-section__heading">
+          <h2 id="review-series-heading">{t('series_review')} <span>{series.length}</span></h2>
+          <p>{tx('核对作品名称、作者及相似系列，再决定确认或合并。', 'Check the work title, author, and similar series before confirming or merging.')}</p>
+        </div>
+        {series.length === 0 ? <div className="review-empty">{t('no_pending_series')}</div> : <div className="review-list">
+          {series.map(s => {
+            const sims = similarMap[s.series_id] || []
+            return <article className="review-item" key={s.series_id}>
+              <div className="review-item__main">
+                <div className="review-item__eyebrow"><span>{tx('系列', 'Series')} #{s.series_id}</span><span>{s.thread_count} {t('thread_link')}</span></div>
+                <Link className="review-item__title" to={`/series/${s.series_id}`} title={s.canonical_title || s.series_key || tx('未命名系列', 'Untitled series')}>{s.canonical_title || s.series_key || tx('未命名系列', 'Untitled series')}</Link>
+                <div className="review-item__meta"><span>{t('author')}: {s.author_guess || '—'}</span><span>{t('series_key')}: <code>{s.series_key || '—'}</code></span></div>
+              </div>
+              <div className="review-item__actions">
+                <button className="btn-subtle" onClick={() => startEditSeries(s)}>{editingSeries === s.series_id ? t('collapse') : t('edit')}</button>
+                <button className="btn-subtle" aria-expanded={mergingSeries === s.series_id} onClick={() => setMergingSeries(mergingSeries === s.series_id ? null : s.series_id)}>{t('merge_action')}</button>
+                <button className="btn-primary" onClick={() => proposeConfirmSeries(s)}>{t('confirm')}</button>
+              </div>
+              {sims.length > 0 && <details className="review-item__similar">
+                <summary>{t('similar_label')} {sims.length}</summary>
+                <div className="review-item__candidates">{sims.map(sim => <button key={sim.series_id} className="review-item__candidate" onClick={() => { setMergeTarget(m => ({ ...m, [s.series_id]: String(sim.series_id) })); setMergingSeries(s.series_id) }} title={`${sim.canonical_title || sim.series_key} (${sim.thread_count}${t('thread_link')})`}>
+                  #{sim.series_id} {sim.canonical_title || sim.series_key || tx('未命名系列', 'Untitled series')}
+                </button>)}</div>
+              </details>}
+              {mergingSeries === s.series_id && <div className="review-item__merge" id={`merge-form-${s.series_id}`}>
+                <label htmlFor={`merge-${s.series_id}`}>{t('merge_target_id')}</label>
+                <input id={`merge-${s.series_id}`} inputMode="numeric" value={mergeTarget[s.series_id] || ''} onChange={e => setMergeTarget(m => ({ ...m, [s.series_id]: e.target.value }))} />
+                <button className="btn-subtle" disabled={!mergeTarget[s.series_id]?.trim()} onClick={() => void proposeMerge(s)}>{t('merge_action')}</button>
+              </div>}
+              {editingSeries === s.series_id && <div className="review-item__editor">
+                <div className="review-item__fields">
+                  <label>{t('series_name')}<input value={seriesForm.canonical_title || ''} onChange={e => setSeriesForm(f => ({ ...f, canonical_title: e.target.value }))} /></label>
+                  <label>{t('series_key')}<input value={seriesForm.series_key || ''} onChange={e => setSeriesForm(f => ({ ...f, series_key: e.target.value }))} /></label>
+                  <label>{t('author')}<input value={seriesForm.author_guess || ''} onChange={e => setSeriesForm(f => ({ ...f, author_guess: e.target.value }))} /></label>
+                </div>
+                <div className="review-item__editor-actions"><button className="btn-primary" onClick={proposeSaveSeries}>{t('save')}</button><button className="btn-subtle" onClick={() => setEditingSeries(null)}>{t('cancel')}</button></div>
+              </div>}
+            </article>
+          })}
+        </div>}
+      </section>
 
-      <h2>{t('thread_title_review')}</h2>
-      {titles.length === 0 ? (
-        <div className="panel" style={{ color: 'var(--text-tertiary)' }}>{t('no_pending_titles')}</div>
-      ) : (
-        <div className="table-wrap"><table className="review-table">
-          <thead><tr><th>{t('tid')}</th><th>{t('title')}</th><th>{t('core_title')}</th><th>{t('author')}</th><th>{t('series_key')}</th><th>{t('action')}</th></tr></thead>
-          <tbody>
-            {titles.flatMap(th => {
-              const titleText = formatThreadListTitle(th)
-              return [
-                <tr key={th.tid}>
-                  <td className="mono"><Link to={`/threads/${th.tid}`}>{th.tid}</Link></td>
-                  <td className="truncate" title={titleText}>{titleText}</td>
-                  <td>{th.core_title_guess || '-'}</td>
-                  <td>{th.publisher || '-'}</td>
-                  <td className="mono">{th.series_key || '-'}</td>
-                  <td>
-                    <div className="row-actions">
-                      <button className="btn-subtle" onClick={() => startEditTitle(th)}>
-                        {editingTitle === th.tid ? t('collapse') : t('edit')}
-                      </button>
-                      <button className="btn-subtle" onClick={() => proposeConfirmTitle(th)}>{t('confirm')}</button>
-                    </div>
-                  </td>
-                </tr>,
-                ...(editingTitle === th.tid ? [
-                <tr key={`${th.tid}-edit`}>
-                  <td colSpan={6} style={{ padding: 0 }}>
-                    <div className="inline-edit">
-                      <div className="inline-edit-grid">
-                        <label>{t('title')}<input value={titleForm.display_title || ''} onChange={e => setTitleForm(f => ({ ...f, display_title: e.target.value }))} /></label>
-                        <label>{t('author')}<input value={titleForm.author_guess || ''} onChange={e => setTitleForm(f => ({ ...f, author_guess: e.target.value }))} /></label>
-                        <label>{t('core_title')}<input value={titleForm.core_title_guess || ''} onChange={e => setTitleForm(f => ({ ...f, core_title_guess: e.target.value }))} /></label>
-                        <label>{t('series_key')}<input value={titleForm.series_key || ''} onChange={e => setTitleForm(f => ({ ...f, series_key: e.target.value }))} /></label>
-                      </div>
-                      <div className="inline-edit-actions">
-                        <button className="btn-primary" onClick={proposeSaveTitle}>{t('save_and_confirm')}</button>
-                        <button className="btn-subtle" onClick={() => setEditingTitle(null)}>{t('cancel')}</button>
-                      </div>
-                    </div>
-                  </td>
-                </tr>,
-              ] : []),
-              ]
-            })}
-          </tbody>
-        </table></div>
-      )}
-
+      <section className="review-section" aria-labelledby="review-titles-heading">
+        <div className="review-section__heading">
+          <h2 id="review-titles-heading">{t('thread_title_review')} <span>{titles.length}</span></h2>
+          <p>{tx('对照当前标题与解析线索，必要时编辑后再确认。', 'Compare each title with its parsed clues, edit if needed, then confirm.')}</p>
+        </div>
+        {titles.length === 0 ? <div className="review-empty">{t('no_pending_titles')}</div> : <div className="review-list">
+          {titles.map(th => {
+            const titleText = formatThreadListTitle(th)
+            return <article className="review-item" key={th.tid}>
+              <div className="review-item__main">
+                <div className="review-item__eyebrow"><span>{tx('帖子', 'Thread')} #{th.tid}</span></div>
+                <Link className="review-item__title" to={`/threads/${th.tid}`} title={titleText}>{titleText}</Link>
+                <div className="review-item__meta"><span>{t('core_title')}: {th.core_title_guess || '—'}</span><span>{t('author')}: {th.publisher || '—'}</span><span>{t('series_key')}: <code>{th.series_key || '—'}</code></span></div>
+              </div>
+              <div className="review-item__actions">
+                <button className="btn-subtle" onClick={() => startEditTitle(th)}>{editingTitle === th.tid ? t('collapse') : t('edit')}</button>
+                <button className="btn-primary" onClick={() => proposeConfirmTitle(th)}>{t('confirm')}</button>
+              </div>
+              {editingTitle === th.tid && <div className="review-item__editor">
+                <div className="review-item__fields">
+                  <label>{t('title')}<input value={titleForm.display_title || ''} onChange={e => setTitleForm(f => ({ ...f, display_title: e.target.value }))} /></label>
+                  <label>{t('author')}<input value={titleForm.author_guess || ''} onChange={e => setTitleForm(f => ({ ...f, author_guess: e.target.value }))} /></label>
+                  <label>{t('core_title')}<input value={titleForm.core_title_guess || ''} onChange={e => setTitleForm(f => ({ ...f, core_title_guess: e.target.value }))} /></label>
+                  <label>{t('series_key')}<input value={titleForm.series_key || ''} onChange={e => setTitleForm(f => ({ ...f, series_key: e.target.value }))} /></label>
+                </div>
+                <div className="review-item__editor-actions"><button className="btn-primary" onClick={proposeSaveTitle}>{t('save_and_confirm')}</button><button className="btn-subtle" onClick={() => setEditingTitle(null)}>{t('cancel')}</button></div>
+              </div>}
+            </article>
+          })}
+        </div>}
+      </section>
+      </>}
       {confirm && (
         <div className="confirm-overlay" onClick={() => { setConfirm(null); setConfirmError(null) }}>
           <div className="confirm-dialog" onClick={e => e.stopPropagation()}>
-            <h2 style={{ margin: '0 0 16px', fontSize: 15, color: 'var(--text-primary)', textTransform: 'none', letterSpacing: 0 }}>{confirm.label}</h2>
+            <h2>{confirm.label}</h2>
             <div className="confirm-compare">
               <div className="confirm-col">
                 <div className="confirm-col-header">{t('modify_before')}</div>
@@ -337,13 +305,13 @@ export function Review() {
               </div>
             </div>
             <div className="confirm-actions">
-              {confirmError && <div style={{ color: 'var(--status-error)', fontSize: 12, marginRight: 'auto' }}>{t('error')}: {confirmError}</div>}
+              {confirmError && <div role="alert" style={{ color: 'var(--destructive)', fontSize: 12, marginRight: 'auto' }}>{t('error')}: {confirmError}</div>}
               <button className="btn-primary" disabled={loading[confirm.type]} onClick={executeConfirm}>{t('confirm_execute')}</button>
               <button className="btn-subtle" onClick={() => { setConfirm(null); setConfirmError(null) }}>{t('cancel')}</button>
             </div>
           </div>
         </div>
       )}
-    </>
+    </div>
   )
 }

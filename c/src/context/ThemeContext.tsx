@@ -2,6 +2,7 @@ import { createContext, useContext, useState, useEffect, type ReactNode } from '
 import type { Theme } from '../themes'
 import { themeToCssVars } from '../themes'
 import { minimalist } from '../themes/minimalist'
+import { editorial } from '../themes/editorial'
 import { rational } from '../themes/rational'
 import { brutalist } from '../themes/brutalist'
 import { retro } from '../themes/retro'
@@ -28,7 +29,7 @@ import { inclusiveDesign } from '../themes/inclusive-design'
 import { DARK_VARIANTS } from '../themes/dark'
 import { THEME_FONTS } from '../themes/fonts'
 
-const THEMES: Theme[] = [minimalist, rational, brutalist, retro, flatDesign, organicBiophilic, eInkPaper, neumorphism, glassmorphism, claymorphism, neubrutalism, memphisRevival, retroFuturism, auroraUi, neonGlow, y2kRevival, vaporwave, cyberpunk, hudScifi, pixelArt, spatialUi, genZChaos, liquidGlass, inclusiveDesign]
+const THEMES: Theme[] = [editorial, minimalist, rational, brutalist, retro, flatDesign, organicBiophilic, eInkPaper, neumorphism, glassmorphism, claymorphism, neubrutalism, memphisRevival, retroFuturism, auroraUi, neonGlow, y2kRevival, vaporwave, cyberpunk, hudScifi, pixelArt, spatialUi, genZChaos, liquidGlass, inclusiveDesign]
 
 interface ThemeContextValue {
   theme: Theme
@@ -39,7 +40,7 @@ interface ThemeContextValue {
 }
 
 const ThemeContext = createContext<ThemeContextValue>({
-  theme: minimalist,
+  theme: editorial,
   themes: THEMES,
   setTheme: () => {},
   dark: false,
@@ -47,10 +48,9 @@ const ThemeContext = createContext<ThemeContextValue>({
 })
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [theme, setThemeState] = useState<Theme>(() => {
-    const saved = localStorage.getItem('yamibo-theme')
-    return THEMES.find(t => t.name === saved) || minimalist
-  })
+  // The current interface has one design language; migrate older saved themes
+  // so legacy variables cannot silently recolor individual pages.
+  const [theme, setThemeState] = useState<Theme>(editorial)
   const [dark, setDark] = useState(() => localStorage.getItem('yamibo-dark') === '1')
 
   useEffect(() => {
@@ -131,6 +131,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       extraEl.remove()
     }
 
+    root.classList.toggle('dark', dark)
     root.setAttribute('data-theme', theme.name + (dark ? '-dark' : ''))
     localStorage.setItem('yamibo-theme', theme.name)
     localStorage.setItem('yamibo-dark', dark ? '1' : '0')

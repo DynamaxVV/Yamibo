@@ -159,7 +159,29 @@ export function formatJobErrorMessage(
   const code = (errorCode || '').trim()
   const message = (errorMessage || '').trim()
   if (!code && !message) return '-'
-  if (lang !== 'zh') return [code, message].filter(Boolean).join(' ').trim() || '-'
+
+  if (lang === 'en') {
+    const promptMatch = message.match(/expected thread detail page but got prompt page for [^:]+:\s*(.+)$/i)
+    if (promptMatch?.[1]) return `Forum returned a notice: ${promptMatch[1].trim()}`
+    if (/expected thread detail page but got login_required/i.test(message)) {
+      return 'The forum requires login; the current account could not be verified.'
+    }
+    if (/expected thread detail page but got remote_maintenance/i.test(message)) {
+      return 'The forum is under maintenance. This thread is temporarily unavailable.'
+    }
+
+    const missingContentMatch = message.match(/floor\s+(\d+)\s+content is required when no images are present/i)
+    if (missingContentMatch?.[1]) return `Floor ${missingContentMatch[1]} has no text or images and cannot be archived.`
+    if (/content is required when no images are present/i.test(message)) {
+      return 'The thread has no text or images and cannot be archived.'
+    }
+    if (/remote fetch/i.test(message) || code === 'RemoteFetchError') return `Remote fetch failed: ${message}`
+    if (/unexpected page/i.test(message) || code === 'UnexpectedPageError') return `Unexpected page received: ${message}`
+    if (/login required/i.test(message) || code === 'LoginRequiredError') return `Login is required: ${message}`
+    if (/maintenance/i.test(message) || code === 'RemoteMaintenanceError') return `The forum is under maintenance: ${message}`
+    if (code && message) return `${code}: ${message}`
+    return code || message || '-'
+  }
 
   const promptMatch = message.match(/expected thread detail page but got prompt page for [^:]+:\s*(.+)$/i)
   if (promptMatch?.[1]) {

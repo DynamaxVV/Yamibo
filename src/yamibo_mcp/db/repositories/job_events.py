@@ -99,19 +99,22 @@ class JobEventsRepository:
         job_id: str | None = None,
         since_event_id: int | None = None,
         limit: int = 100,
+        order: str = "asc",
     ) -> list[JobEvent]:
+        if order not in {"asc", "desc"}:
+            raise ValueError("order must be asc or desc")
         conditions: list[str] = []
         params: list[object] = []
         if job_id is not None:
             conditions.append("job_id = ?")
             params.append(job_id)
         if since_event_id is not None:
-            conditions.append("event_id > ?")
+            conditions.append("event_id < ?" if order == "desc" else "event_id > ?")
             params.append(since_event_id)
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         params.append(limit)
         rows = self.conn.execute(
-            f"SELECT * FROM job_events {where} ORDER BY event_id ASC LIMIT ?",
+            f"SELECT * FROM job_events {where} ORDER BY event_id {order.upper()} LIMIT ?",
             params,
         ).fetchall()
         return [_event_from_row(row) for row in rows]

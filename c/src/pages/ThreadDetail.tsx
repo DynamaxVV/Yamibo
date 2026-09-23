@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useLocation, useSearchParams } from 'react-router-dom'
+import { ArrowLeft, RotateCcw, Cpu, Download, Trash2, Edit3 } from 'lucide-react'
 import { api, type ThreadDetail as ThreadDetailType, type ContentBlock, type ThreadImage, type JobSummary } from '../api/client'
 import { Badge, ContentBadge } from '../components/Badge'
 import { ThreadReader } from '../components/ThreadReader'
@@ -178,7 +179,7 @@ function JobProgressDialog({ jobId, title, onClose }: { jobId: string; title: st
 }
 
 export function ThreadDetail() {
-  const { t, lang } = useI18n()
+  const { t, lang, tx } = useI18n()
   const tid = parseInt(window.location.pathname.split('/').pop() || '0')
   const navigate = useNavigate()
   const location = useLocation()
@@ -375,67 +376,212 @@ export function ThreadDetail() {
   const showArchiveSummary = displayArchiveStatus === 'partial' || hasPartialArchiveBreakdown(archiveBreakdown)
 
   return (
-    <>
-      <div className="panel">
-        <div className="row-actions">
-          <Link to={fromSeries && seriesId ? `/series/${seriesId}` : '/threads'} className="btn-subtle">← {fromSeries ? t('series_detail') : t('thread_list')}</Link>
-          <button className="btn-subtle" disabled={actionLoading === 'resync'} onClick={handleResync}>{t('resync')}</button>
-          <button className="btn-subtle" disabled={actionLoading === 'rag-index'} onClick={handleRagIndex}>{t('rag_index_now')}</button>
-          {isExportable && <button className="btn-subtle" disabled={actionLoading === 'export'} onClick={handleExport}>{t('export_action')}</button>}
-          <button className="btn-danger-outline" onClick={() => setConfirmDelete(true)}>{t('delete')}</button>
+    <div className="space-y-6">
+      {/* ─── Action Bar ─── */}
+      <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-border">
+        <div className="flex items-start gap-3 min-w-0">
+          <Link
+            to={fromSeries && seriesId ? `/series/${seriesId}` : '/threads'}
+            className="p-1.5 rounded-md border border-border bg-card hover:bg-muted text-muted-foreground hover:text-foreground transition-colors press-feedback"
+            title={fromSeries ? t('series_detail') : t('thread_list')}
+          >
+            <ArrowLeft className="w-4 h-4" />
+          </Link>
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-mono text-xs text-muted-foreground">#{thread.tid}</span>
+              <ContentBadge kind={thread.content_kind} />
+              <Badge status={displayArchiveStatus === 'running' ? 'running' : displayArchiveStatus} />
+            </div>
+            <h1 className="text-2xl break-words font-semibold text-foreground tracking-tight mt-0.5">
+              {thread.display_title || thread.raw_title}
+            </h1>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            disabled={actionLoading === 'resync'}
+            onClick={handleResync}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-sm border border-border bg-card hover:bg-muted text-foreground text-xs font-sans font-medium transition-colors press-feedback disabled:opacity-50"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+            <span>{t('resync')}</span>
+          </button>
+          <button
+            disabled={actionLoading === 'rag-index'}
+            onClick={handleRagIndex}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-sm border border-border bg-card hover:bg-muted text-foreground text-xs font-sans font-medium transition-colors press-feedback disabled:opacity-50"
+          >
+            <Cpu className="w-3.5 h-3.5" />
+            <span>{t('rag_index_now')}</span>
+          </button>
+          {isExportable && (
+            <button
+              disabled={actionLoading === 'export'}
+              onClick={handleExport}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-sm border border-border bg-card hover:bg-muted text-foreground text-xs font-sans font-medium transition-colors press-feedback disabled:opacity-50"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>{t('export_action')}</span>
+            </button>
+          )}
+          <button
+            onClick={() => setConfirmDelete(true)}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-sm border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-800 dark:bg-rose-950/40 dark:border-rose-900/60 dark:text-rose-300 text-xs font-sans font-medium transition-colors press-feedback"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            <span>{t('delete')}</span>
+          </button>
         </div>
       </div>
 
       {seriesDeleted && (
-        <div className="panel" style={{ color: 'var(--status-warn)', borderLeft: '3px solid var(--status-warn)' }}>
+        <div className="p-3 rounded-md bg-amber-50 border border-amber-200 text-amber-900 dark:bg-amber-950/40 dark:border-amber-900/60 text-xs font-mono">
           {t('series_deleted')} (series_id={seriesDeleted})
         </div>
       )}
 
       {statusRefreshNotice && (
-        <div className="panel notice-panel">
-          <div className="notice-panel-body">
-            <span>{statusRefreshNotice}</span>
-            <div className="notice-actions">
-              <button className="btn-subtle" onClick={() => setStatusRefreshNotice(null)}>{t('dismiss')}</button>
-              <button className="btn-primary" onClick={() => void refreshThreadSnapshot()}>{t('refresh_content')}</button>
-            </div>
+        <div className="flex items-center justify-between p-3 rounded-md bg-muted/60 border border-border text-xs font-mono">
+          <span>{statusRefreshNotice}</span>
+          <div className="flex items-center gap-2">
+            <button className="text-muted-foreground hover:text-foreground" onClick={() => setStatusRefreshNotice(null)}>{t('dismiss')}</button>
+            <button className="px-2 py-0.5 rounded bg-yamibo-burgundy text-white" onClick={() => void refreshThreadSnapshot()}>{t('refresh_content')}</button>
           </div>
         </div>
       )}
 
-      <h2 style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        {t('archive_info')}
-        {(isComic || isNovel) && !editingChapter && (
-          <button onClick={handleEditChapter} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontSize: 11, lineHeight: 1 }} title={t('edit')}>🛠️</button>
-        )}
-      </h2>
-      <div className="table-wrap"><table>
-        <tbody>
-          {[
-            ['TID', <span className="mono">{thread.tid}</span>],
-            [t('original_url'), thread.url ? <a href={thread.url} target="_blank" rel="noreferrer">{thread.url}</a> : '-'],
-            [t('raw_title'), thread.raw_title],
-            [t('publisher'), thread.publisher || '-'],
-            [t('forum'), forumName],
-            [t('series'), thread.series_id ? <Link to={`/series/${thread.series_id}`}>{thread.series_title || `${t('series')} #${thread.series_id}`}</Link> : '-'],
-            ...((isComic || isNovel) ? [
-              [t('chapter_number'), thread.chapter_index != null ? String(thread.chapter_index) : '-'],
-              [t('chapter_name'), thread.chapter_name || '-'],
-            ] : []),
-            ...((isComic || isNovel) ? [
-              [t('author'), thread.author_guess || '-'],
-              [t(isComic ? 'scanlation_group' : 'translator'), thread.group_name || '-'],
-            ] : []),
-            [t('category'), thread.category || '-'],
-            [t('reply_count'), thread.reply_count != null ? String(thread.reply_count) : '-'],
-            [t('last_reply_time'), formatDateTime(thread.remote_last_reply_at)],
-            [t('content_kind'), <ContentBadge kind={thread.content_kind} />],
-            [t('archive_status'), displayArchiveStatus === 'running' ? <Badge status="running">{t('resyncing')}</Badge> : <Badge status={displayArchiveStatus} />],
-            [t('validation_status'), <Badge status={thread.validation_status} />],
-          ].map(([k, v], i) => <tr key={i}><th style={{ width: 120 }}>{k}</th><td style={{ textAlign: 'left' }}>{v}</td></tr>)}
-        </tbody>
-      </table></div>
+      {floorSource.length > 0 ? (
+        <ThreadReader
+          tid={tid}
+          source="local"
+          contentKind={contentKind}
+          forumId={thread?.forum_id ?? null}
+          floors={floorSource}
+          images={images}
+          expectedImageCount={Math.max(thread.image_count || 0, blocks.filter(block => block.block_type === 'image').length)}
+          page={previewPageParam}
+          totalPages={isNovel ? (thread?.floor_total_pages ?? null) : null}
+          onImageRecovered={refreshThreadSnapshot}
+          onPageChange={isNovel ? (p) => {
+            const next = new URLSearchParams(searchParams)
+            if (p <= 1) next.delete('preview_page')
+            else next.set('preview_page', String(p))
+            setSearchParams(next, { replace: true })
+          } : undefined}
+        />
+      ) : (
+        thread.image_count > 0 && images.length === 0 && (
+          <div className="panel" style={{ color: 'var(--text-tertiary)' }}>
+            {t('image_missing_msg', { n: thread.image_count })}
+          </div>
+        )
+      )}
+
+      {/* ─── Thread Metadata Overview Card ─── */}
+      <details className="p-5 bg-card border border-border rounded-md shadow-2xs space-y-3"><summary className="cursor-pointer font-medium">{t('archive_info')}</summary>
+        <div className="flex items-center justify-between border-b border-border pb-2.5">
+          <h2 className="text-xs font-mono uppercase tracking-wider text-muted-foreground font-semibold flex items-center gap-2">
+            <span>{t('archive_info')}</span>
+          </h2>
+          {(isComic || isNovel) && !editingChapter && (
+            <button
+              onClick={handleEditChapter}
+              className="flex items-center gap-1 text-xs font-mono text-muted-foreground hover:text-foreground transition-colors"
+              title={t('edit')}
+            >
+              <Edit3 className="w-3.5 h-3.5" />
+              <span>{t('edit')}</span>
+            </button>
+          )}
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-2 text-xs divide-y md:divide-y-0 divide-border/60">
+          <div className="flex justify-between py-1.5 border-b border-border/50">
+            <span className="text-muted-foreground font-sans">TID</span>
+            <span className="font-mono text-foreground">#{thread.tid}</span>
+          </div>
+
+          <div className="flex justify-between py-1.5 border-b border-border/50">
+            <span className="text-muted-foreground font-sans">{t('forum')}</span>
+            <span className="font-sans text-foreground">{forumName}</span>
+          </div>
+
+          <div className="flex justify-between py-1.5 border-b border-border/50">
+            <span className="text-muted-foreground font-sans">{t('publisher')}</span>
+            <span className="font-sans text-foreground">{thread.publisher || '-'}</span>
+          </div>
+
+          <div className="flex justify-between py-1.5 border-b border-border/50">
+            <span className="text-muted-foreground font-sans">{t('series')}</span>
+            <span className="font-sans text-foreground">
+              {thread.series_id ? (
+                <Link to={`/series/${thread.series_id}`} className="hover:text-yamibo-burgundy dark:hover:text-yamibo-coral">
+                  {thread.series_title || `${t('series')} #${thread.series_id}`}
+                </Link>
+              ) : (
+                '-'
+              )}
+            </span>
+          </div>
+
+          {(isComic || isNovel) && (
+            <>
+              <div className="flex justify-between py-1.5 border-b border-border/50">
+                <span className="text-muted-foreground font-sans">{t('chapter_number')}</span>
+                <span className="font-mono text-foreground">{thread.chapter_index != null ? String(thread.chapter_index) : '-'}</span>
+              </div>
+              <div className="flex justify-between py-1.5 border-b border-border/50">
+                <span className="text-muted-foreground font-sans">{t('chapter_name')}</span>
+                <span className="font-sans text-foreground">{thread.chapter_name || '-'}</span>
+              </div>
+              <div className="flex justify-between py-1.5 border-b border-border/50">
+                <span className="text-muted-foreground font-sans">{t('author')}</span>
+                <span className="font-sans text-foreground">{thread.author_guess || '-'}</span>
+              </div>
+              <div className="flex justify-between py-1.5 border-b border-border/50">
+                <span className="text-muted-foreground font-sans">{t(isComic ? 'scanlation_group' : 'translator')}</span>
+                <span className="font-sans text-foreground">{thread.group_name || '-'}</span>
+              </div>
+            </>
+          )}
+
+          <div className="flex justify-between py-1.5 border-b border-border/50">
+            <span className="text-muted-foreground font-sans">{t('category')}</span>
+            <span className="font-sans text-foreground">{thread.category || '-'}</span>
+          </div>
+
+          <div className="flex justify-between py-1.5 border-b border-border/50">
+            <span className="text-muted-foreground font-sans">{t('reply_count')}</span>
+            <span className="font-mono text-foreground">{thread.reply_count != null ? String(thread.reply_count) : '-'}</span>
+          </div>
+
+          <div className="flex justify-between py-1.5 border-b border-border/50">
+            <span className="text-muted-foreground font-sans">{t('last_reply_time')}</span>
+            <span className="font-mono text-muted-foreground">{formatDateTime(thread.remote_last_reply_at)}</span>
+          </div>
+
+          <div className="flex justify-between py-1.5 border-b border-border/50">
+            <span className="text-muted-foreground font-sans">{t('validation_status')}</span>
+            <Badge status={thread.validation_status} />
+          </div>
+
+          {thread.url && (
+            <div className="col-span-full flex items-center justify-between py-1.5 border-b border-border/50">
+              <span className="text-muted-foreground font-sans">{t('original_url')}</span>
+              <a
+                href={thread.url}
+                target="_blank"
+                rel="noreferrer"
+                className="font-mono text-xs text-yamibo-burgundy dark:text-yamibo-coral hover:underline break-all min-w-0 text-right"
+              >
+                {thread.url}
+              </a>
+            </div>
+          )}
+        </div>
+      </details>
 
       {showArchiveSummary && archiveBreakdown && (
         <details className="archive-summary-card">
@@ -456,7 +602,7 @@ export function ThreadDetail() {
             <div><span>{t('non_export')}</span><strong>{Object.values(archiveBreakdown.non_export_relpaths || {}).reduce((total, items) => total + items.length, 0)}</strong></div>
             <div><span>{t('skipped')}</span><strong>{Object.values(archiveBreakdown.skipped_relpaths || {}).reduce((total, items) => total + items.length, 0)}</strong></div>
           </div>
-          <p className="archive-summary-reason">{getPartialArchiveReason(archiveBreakdown)}</p>
+          <p className="archive-summary-reason">{getPartialArchiveReason(archiveBreakdown, lang)}</p>
           <div className="archive-summary-list-group">
             {archiveBreakdown.missing_image_urls?.length ? (
               <div className="archive-summary-list"><span>{t('missing_image_urls')}</span><ul>{archiveBreakdown.missing_image_urls.map(url => <li key={url}>{url}</li>)}</ul></div>
@@ -485,33 +631,9 @@ export function ThreadDetail() {
         </div>
       )}
 
-      {floorSource.length > 0 ? (
-        <ThreadReader
-          tid={tid}
-          source="local"
-          contentKind={contentKind}
-          floors={floorSource}
-          images={images}
-          page={previewPageParam}
-          totalPages={isNovel ? (thread?.floor_total_pages ?? null) : null}
-          onImageRecovered={refreshThreadSnapshot}
-          onPageChange={isNovel ? (p) => {
-            const next = new URLSearchParams(searchParams)
-            if (p <= 1) next.delete('preview_page')
-            else next.set('preview_page', String(p))
-            setSearchParams(next, { replace: true })
-          } : undefined}
-        />
-      ) : (
-        thread.image_count > 0 && images.length === 0 && (
-          <div className="panel" style={{ color: 'var(--text-tertiary)' }}>
-            {t('image_missing_msg', { n: thread.image_count })}
-          </div>
-        )
-      )}
 
       {isComic && blocks.length > 0 && (
-        <>
+        <details><summary className="cursor-pointer text-sm text-muted-foreground">{tx(`高级：原始内容块 (${blocks.length})`, `Advanced: raw content blocks (${blocks.length})`)}</summary>
           <h2>{t('content_blocks')} ({blocks.length})</h2>
           <div className="table-wrap"><table>
             <thead><tr><th>{t('seq')}</th><th>PID</th><th>{t('type')}</th><th>{t('content')}</th></tr></thead>
@@ -521,12 +643,12 @@ export function ThreadDetail() {
                   <td>{b.order_index}</td>
                   <td>{b.pid}</td>
                   <td className="nowrap">{b.block_type}</td>
-                  <td className="truncate">{b.text?.slice(0, 200) || '-'}</td>
+                  <td className="table-cell-long truncate">{b.text?.slice(0, 200) || '-'}</td>
                 </tr>
               ))}
             </tbody>
           </table></div>
-        </>
+        </details>
       )}
 
       {confirmDelete && (
@@ -556,6 +678,6 @@ export function ThreadDetail() {
           void refreshThreadSnapshot()
         }} />
       )}
-    </>
+    </div>
   )
 }
