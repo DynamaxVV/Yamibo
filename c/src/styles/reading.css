@@ -582,6 +582,15 @@
   font: 500 11px/1.4 var(--font-mono, monospace);
 }
 .reading-zen__floor-no { color: var(--accent); font-weight: 650; }
+.reading-zen__avatar {
+  width: 1.5rem;
+  height: 1.5rem;
+  flex: none;
+  border: 1px solid var(--border-light);
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--bg-muted);
+}
 .reading-zen__publisher { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .reading-zen__time { flex: none; }
 .reading-zen__floor-body {

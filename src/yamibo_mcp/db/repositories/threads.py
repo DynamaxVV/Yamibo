@@ -831,6 +831,33 @@ class ThreadsRepository:
             """
         ).fetchall()
 
+    def archive_count_summary(self) -> dict[str, object]:
+        """Return dashboard archive counts with one scan of the threads table."""
+        rows = self.conn.execute(
+            f"""
+            SELECT
+              forum_id,
+              COUNT(*) AS thread_count,
+              SUM(CASE WHEN {self._bool_true_clause('is_exported')} THEN 1 ELSE 0 END) AS export_count
+            FROM threads
+            GROUP BY forum_id
+            """
+        ).fetchall()
+        forum_counts: dict[int, int] = {}
+        thread_count = 0
+        export_count = 0
+        for row in rows:
+            count = int(row["thread_count"] or 0)
+            thread_count += count
+            export_count += int(row["export_count"] or 0)
+            if row["forum_id"] is not None:
+                forum_counts[int(row["forum_id"])] = count
+        return {
+            "thread_count": thread_count,
+            "export_count": export_count,
+            "forum_counts": forum_counts,
+        }
+
     def count_exported_threads(self) -> int:
         row = self.conn.execute(f"SELECT COUNT(*) AS c FROM threads WHERE {self._bool_true_clause('is_exported')}").fetchone()
         return int(row["c"]) if row is not None else 0

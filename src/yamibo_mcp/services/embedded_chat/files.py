@@ -143,11 +143,17 @@ class WorkFiles:
             ]
 
     def read(self, file_id, offset=0):
-        item = self.store.get("files", file_id)
+        try:
+            item = self.store.get("files", file_id)
+        except KeyError as exc:
+            raise ValueError("FILE_NOT_FOUND") from exc
         if item.get("deleted") or item.get("guidance") or offset < 0:
             raise ValueError("FILE_UNAVAILABLE")
         with self.directory("workspace") as fd:
-            data = self.read_bytes(fd, item["name"]).decode("utf-8")
+            try:
+                data = self.read_bytes(fd, item["name"]).decode("utf-8")
+            except FileNotFoundError as exc:
+                raise ValueError("FILE_NOT_FOUND") from exc
         return dict(
             file_id=file_id,
             revision=item["revision"],

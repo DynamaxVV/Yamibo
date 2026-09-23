@@ -808,9 +808,9 @@ export function ThreadReader({ tid, source, contentKind, forumId, floors: floorS
                 {fg.publisher_uid && (
                   <img
                     className="floor-avatar"
-                    src={`https://bbs.yamibo.com/uc_server/avatar.php?uid=${fg.publisher_uid}&size=middle`}
+                    src={`/api/avatar-proxy?uid=${encodeURIComponent(fg.publisher_uid)}&size=middle`}
                     loading="lazy"
-                    alt=""
+                    alt={fg.publisher || ''}
                     onError={event => { event.currentTarget.style.display = 'none' }}
                   />
                 )}
@@ -1002,6 +1002,15 @@ export function ThreadReader({ tid, source, contentKind, forumId, floors: floorS
                 >
                   <div className="reading-zen__floor-meta">
                     <div className="flex items-center gap-2">
+                      {fg.publisher_uid && (
+                        <img
+                          className="reading-zen__avatar"
+                          src={`/api/avatar-proxy?uid=${encodeURIComponent(fg.publisher_uid)}&size=middle`}
+                          loading="lazy"
+                          alt={fg.publisher || ''}
+                          onError={event => { event.currentTarget.style.display = 'none' }}
+                        />
+                      )}
                       <span className="reading-zen__floor-no">
                         {tx(`#${fg.floor_no} 楼`, `Floor #${fg.floor_no}`)}
                       </span>

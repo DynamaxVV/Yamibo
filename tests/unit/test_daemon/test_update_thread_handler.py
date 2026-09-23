@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -7,7 +9,8 @@ from unittest.mock import patch
 import pytest
 
 from yamibo_mcp.errors import LoginRequiredError, ThreadPermissionRequiredError
-from yamibo_mcp.daemon.handlers.update_thread import handle_update_thread
+from yamibo_mcp.daemon.handlers.update_thread import _load_local_thread_snapshot, handle_update_thread
+from yamibo_mcp.db.connection import transaction
 from yamibo_mcp.db.repositories.jobs import JobsRepository
 from yamibo_mcp.db.repositories.threads import ThreadsRepository
 from yamibo_mcp.domain.models import FloorSnapshot, ThreadSnapshot, TitleSnapshot
@@ -108,6 +111,60 @@ def _page_html(*, tid: int, page: int, content: str) -> str:
       </body>
     </html>
     """
+
+
+def test_local_snapshot_repairs_stale_metadata_floor_numbers(db, tmp_path):
+    settings = _make_settings(tmp_path)
+    tid = 540746
+    initial = _make_snapshot(tid=tid, content="楼主", rich_body_html="<div>楼主</div>")
+    reply = replace(
+        initial.floors[0],
+        pid=1002,
+        floor_no=2,
+        publisher="回复者",
+        content="回复",
+        rich_body_html="<div>回复</div>",
+    )
+    snapshot = replace(initial, floors=[initial.floors[0], reply])
+    ThreadsRepository(db).upsert_snapshot(snapshot, forum_id=55)
+    paths = StoragePaths(
+        settings.data_dir,
+        export_dir=settings.export_dir,
+        novel_txt_export_dir=settings.novel_txt_export_dir,
+    )
+    materialize_thread(paths, snapshot)
+
+    metadata = json.loads(paths.thread_metadata(tid).read_text(encoding="utf-8"))
+    metadata["floors"][1]["floor_no"] = 1
+    paths.thread_metadata(tid).write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
+
+    local = _load_local_thread_snapshot(paths, db, ThreadsRepository(db).get_thread(tid))
+
+    assert [floor.floor_no for floor in local.floors] == [1, 2]
+    assert [floor.pid for floor in local.floors] == [1001, 1002]
+    assert local.floors[1].rich_body_html == "<div>回复</div>"
+    repaired = json.loads(paths.thread_metadata(tid).read_text(encoding="utf-8"))
+    assert [floor["floor_no"] for floor in repaired["floors"]] == [1, 2]
+
+
+@pytest.mark.parametrize("forum_id", [30, 55, 13])
+def test_upsert_snapshot_defers_series_commit_to_outer_transaction(db, monkeypatch, forum_id):
+    commits: list[str] = []
+    connection_type = type(db)
+    original_commit = connection_type.commit
+
+    def tracked_commit(connection) -> None:
+        commits.append("commit")
+        original_commit(connection)
+
+    monkeypatch.setattr(connection_type, "commit", tracked_commit)
+    with transaction(db):
+        ThreadsRepository(db).upsert_snapshot(
+            _make_snapshot(tid=540800 + forum_id, content="内容"),
+            forum_id=forum_id,
+        )
+
+    assert commits == ["commit"]
 
 
 def test_handle_update_thread_appends_new_floor(db, tmp_path, monkeypatch):

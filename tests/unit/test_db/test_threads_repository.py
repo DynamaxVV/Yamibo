@@ -408,6 +408,21 @@ class TestListThreads:
 
 
 class TestListThreadsPage:
+    def test_archive_count_summary_aggregates_all_counts_in_one_result(self, db):
+        repo = ThreadsRepository(db)
+        for tid, forum_id in ((5901, 30), (5902, 30), (5903, 55), (5904, None)):
+            repo.upsert_snapshot(_make_snapshot(tid=tid), forum_id=forum_id)
+        db.execute("UPDATE threads SET forum_id = NULL WHERE tid = ?", (5904,))
+        repo.mark_exported(5901, "/tmp/5901")
+        repo.mark_exported(5903, "/tmp/5903")
+        db.commit()
+
+        assert repo.archive_count_summary() == {
+            "thread_count": 4,
+            "export_count": 2,
+            "forum_counts": {30: 2, 55: 1},
+        }
+
     def test_list_threads_page_paginates_and_sorts(self, db):
         repo = ThreadsRepository(db)
         rows = [

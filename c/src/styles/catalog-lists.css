@@ -28,11 +28,54 @@
 .forum-status-page table { table-layout: auto; width: 100%; min-width: 0; }
 .forum-status-page th, .forum-status-page td { overflow-wrap: anywhere; font-size: 13px; }
 .forum-status-page th { white-space: nowrap; }
+.forum-status-section { margin-top: 22px; }
+.forum-status-section:first-of-type { margin-top: 0; }
+.forum-status-section__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-bottom: 8px;
+  padding-bottom: 7px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.forum-status-section__heading h2 { margin: 0; font-size: 15px; line-height: 1.35; font-weight: 650; color: var(--foreground); }
+.forum-status-section__heading .btn-subtle { min-height: 32px; display: inline-flex; align-items: center; white-space: nowrap; }
+.forum-status-feedback { margin: 0 0 8px; }
+.proxy-pool-metric {
+  display: inline-flex;
+  align-items: center;
+  min-height: 23px;
+  padding: 2px 7px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  font: 600 12px/1.2 var(--font-mono, monospace);
+  white-space: nowrap;
+}
+.proxy-pool-metric--ok {
+  color: var(--status-ok);
+  background: color-mix(in srgb, var(--status-ok) 10%, var(--card));
+  border-color: color-mix(in srgb, var(--status-ok) 24%, var(--border));
+}
+.proxy-pool-metric--error {
+  color: var(--status-error);
+  background: color-mix(in srgb, var(--status-error) 9%, var(--card));
+  border-color: color-mix(in srgb, var(--status-error) 24%, var(--border));
+}
+.proxy-pool-metric--unknown {
+  color: var(--muted-foreground);
+  background: var(--muted);
+  border-color: var(--border);
+}
 @media (max-width: 1000px) {
   .catalog-row { gap: 14px; }
   .catalog-row-actions { max-width: 160px; }
 }
 @media (max-width: 767px) {
+  .forum-status-section { margin-top: 18px; }
+  .forum-status-section__heading { align-items: center; }
+  .forum-status-section__heading .btn-subtle { min-height: 40px; }
   .catalog-heading { grid-template-columns: 1fr; }
   .catalog-heading > a { grid-column: 1; grid-row: 3; }
   .catalog-row { display: flex; flex-direction: column; gap: 12px; padding: 16px; }

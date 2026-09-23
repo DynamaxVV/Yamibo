@@ -119,6 +119,7 @@ class RestrictedTools:
         except Exception as exc:
             # No raw provider, DB, HTTP or filesystem exception text crosses the boundary.
             allowed = {
+                "FILE_NOT_FOUND",
                 "FILE_NOT_AGENT_OWNED",
                 "FILE_REVISION_CONFLICT",
                 "WORKSPACE_QUOTA_EXCEEDED",

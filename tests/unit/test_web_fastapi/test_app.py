@@ -582,8 +582,8 @@ def test_thread_image_retry_matches_rotated_attachment_signature(client, test_se
     try:
         conn.execute("INSERT INTO threads (tid, raw_title, display_title) VALUES (?, ?, ?)", (tid, "raw", "display"))
         conn.execute(
-            "INSERT INTO floors (pid, tid, floor_no, content, has_images) VALUES (?, ?, 1, 'first', 1)",
-            (pid, tid),
+            "INSERT INTO floors (pid, tid, floor_no, publisher_uid, content, has_images) VALUES (?, ?, 1, ?, 'first', 1)",
+            (pid, tid, "229047"),
         )
         conn.execute(
             "INSERT INTO assets (asset_id, tid, pid, asset_type, remote_url, status) VALUES (?, ?, ?, ?, ?, ?)",
@@ -606,6 +606,7 @@ def test_thread_image_retry_matches_rotated_attachment_signature(client, test_se
 
     detail = client.get(f"/api/threads/{tid}")
     assert detail.status_code == 200
+    assert detail.json()["floors"][0]["publisher_uid"] == "229047"
     assert detail.json()["floors"][0]["image_slots"][0]["asset_id"] == asset_id
 
     retry = client.post(f"/api/threads/{tid}/images/{asset_id}/retry")

@@ -419,7 +419,7 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
     configure_logging()
-    if getattr(args, 'profile', None) == 'embedded-chat':
+    if (args.command or "stdio") == "stdio" and getattr(args, "transport", "stdio") == "stdio":
         import logging
         import sys
         for handler in logging.getLogger().handlers:

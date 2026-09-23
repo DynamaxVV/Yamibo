@@ -8,9 +8,12 @@ from yamibo_mcp.db.repositories.threads import ThreadsRepository
 from yamibo_mcp.web_fastapi.helpers import TTLCache
 
 
-_CACHE_TTL_SECONDS = 30.0
-_archive_counts_cache = TTLCache(ttl_seconds=_CACHE_TTL_SECONDS)
-_thread_counts_cache = TTLCache(ttl_seconds=_CACHE_TTL_SECONDS)
+# Archive totals change far less often than they are read. Keep them warm across
+# normal browsing so a page refresh does not repeatedly aggregate the full table.
+_ARCHIVE_COUNTS_TTL_SECONDS = 300.0
+_THREAD_COUNTS_TTL_SECONDS = 60.0
+_archive_counts_cache = TTLCache(ttl_seconds=_ARCHIVE_COUNTS_TTL_SECONDS)
+_thread_counts_cache = TTLCache(ttl_seconds=_THREAD_COUNTS_TTL_SECONDS)
 _archive_counts_lock = threading.Lock()
 _thread_counts_lock = threading.Lock()
 
@@ -29,14 +32,7 @@ def get_archive_counts(repo: ThreadsRepository, *, database_scope: str) -> dict[
         cached = _archive_counts_cache.get(key)
         if cached is not None:
             return cached  # type: ignore[return-value]
-        counts = {
-            "thread_count": repo.count_threads(),
-            "export_count": repo.count_exported_threads(),
-            "forum_counts": {
-                int(row["forum_id"]): int(row["cnt"])
-                for row in repo.count_threads_by_forum()
-            },
-        }
+        counts = repo.archive_count_summary()
         _archive_counts_cache.set(key, counts)
         return counts
 

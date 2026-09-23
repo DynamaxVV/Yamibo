@@ -112,4 +112,4 @@ def app(test_settings):
 @pytest.fixture
 def client(app):
     from fastapi.testclient import TestClient
-    return TestClient(app)
+    return TestClient(app, headers={"Origin": "http://testserver"})

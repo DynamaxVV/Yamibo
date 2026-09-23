@@ -121,4 +121,5 @@ class PostgresVectorRepository:
         typmod = int(row["atttypmod"] or -1)
         if typmod < 0:
             return None
-        return max(typmod - 4, 0)
+        # pgvector stores the dimension directly in typmod (no varlena offset).
+        return typmod

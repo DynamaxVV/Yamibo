@@ -5,19 +5,11 @@ from yamibo_mcp.web_fastapi import archive_counts
 
 class _CountsRepo:
     def __init__(self):
-        self.calls = {"threads": 0, "exports": 0, "forums": 0, "filtered": 0}
+        self.calls = {"summary": 0, "filtered": 0}
 
-    def count_threads(self):
-        self.calls["threads"] += 1
-        return 12
-
-    def count_exported_threads(self):
-        self.calls["exports"] += 1
-        return 4
-
-    def count_threads_by_forum(self):
-        self.calls["forums"] += 1
-        return [{"forum_id": 30, "cnt": 12}]
+    def archive_count_summary(self):
+        self.calls["summary"] += 1
+        return {"thread_count": 12, "export_count": 4, "forum_counts": {30: 12}}
 
     def count_threads_filtered(self, **kwargs):
         self.calls["filtered"] += 1
@@ -37,7 +29,7 @@ def test_archive_counts_are_shared_between_dashboard_and_forums():
         "forum_counts": {30: 12},
     }
     assert forum_counts["forum_counts"] == {30: 12}
-    assert repo.calls == {"threads": 1, "exports": 1, "forums": 1, "filtered": 0}
+    assert repo.calls == {"summary": 1, "filtered": 0}
 
 
 def test_unsearched_thread_counts_are_reused_by_filter():

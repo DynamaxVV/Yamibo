@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ArrowRight, BookOpen, Download, Library, ListTodo } from 'lucide-react'
 import { api, type DashboardData, type ThreadSummary } from '../api/client'
@@ -18,6 +18,9 @@ export function Dashboard() {
   const [forum, setForum] = useState('all')
   const [page, setPage] = useState(1)
   const [error, setError] = useState(false)
+  const [sampleLoading, setSampleLoading] = useState(false)
+  const filterRequestRef = useRef(0)
+  const forumSamplesRef = useRef(new Map<number, ThreadSummary[]>())
 
   useEffect(() => {
     api.forums().then(items => setForumNames(Object.fromEntries(items.map(item => [item.forum_id, lang === 'en' ? item.name_en || item.name : item.name])))).catch(() => {})
@@ -25,16 +28,12 @@ export function Dashboard() {
 
   useEffect(() => {
     let active = true
-    Promise.all([
-      api.dashboard(50),
-      ...[30, 55, 33, 5].map(forum_id => api.threads({
-        forum_id, sort_key: 'sync_time', sort_dir: 'desc', page_size: 20,
-      })),
-    ])
-      .then(([summary, ...results]) => {
+    api.dashboard(50)
+      .then(summary => {
         if (!active) return
         setData(summary)
-        setThreads(results.flatMap(result => result.items).sort((a, b) => (b.sync_time || '').localeCompare(a.sync_time || '')))
+        setThreads(summary.recent_threads)
+        forumSamplesRef.current.clear()
         setError(false)
       })
       .catch(() => { if (active) setError(true) })
@@ -44,6 +43,35 @@ export function Dashboard() {
   const filtered = useMemo(() => forum === 'all' ? threads : threads.filter(item => item.forum_id === Number(forum)), [threads, forum])
   const visible = filtered.slice((page - 1) * 10, page * 10)
   const pages = Math.max(1, Math.ceil(filtered.length / 10))
+  const selectForum = async (nextForum: string) => {
+    setForum(nextForum)
+    setPage(1)
+    setError(false)
+    const requestId = ++filterRequestRef.current
+    if (nextForum === 'all') {
+      setSampleLoading(false)
+      setThreads(data?.recent_threads ?? [])
+      return
+    }
+    const forumId = Number(nextForum)
+    const cached = forumSamplesRef.current.get(forumId)
+    if (cached) {
+      setSampleLoading(false)
+      setThreads(cached)
+      return
+    }
+    setSampleLoading(true)
+    try {
+      const result = await api.threads({ forum_id: forumId, sort_key: 'sync_time', sort_dir: 'desc', page_size: 50 })
+      if (filterRequestRef.current !== requestId) return
+      forumSamplesRef.current.set(forumId, result.items)
+      setThreads(result.items)
+    } catch {
+      if (filterRequestRef.current === requestId) setError(true)
+    } finally {
+      if (filterRequestRef.current === requestId) setSampleLoading(false)
+    }
+  }
   const stats = [
     { label: tx('归档帖子', 'Archived threads'), value: data?.thread_count, to: '/threads', icon: BookOpen },
     { label: tx('作品系列', 'Series'), value: data?.series_count, to: '/series', icon: Library },
@@ -81,11 +109,11 @@ export function Dashboard() {
     <section className="archive-home__recent" aria-labelledby="recent-threads-title">
       <div className="archive-home__section-heading">
         <div><h2 id="recent-threads-title">{tx('最近归档', 'Recently archived')}</h2><span>{filtered.length} {tx('条抽样结果', 'threads sampled')}</span></div>
-        <label>{tx('版块', 'Forum')} <select value={forum} onChange={event => { setForum(event.target.value); setPage(1) }}><option value="all">{tx('全部版块', 'All forums')}</option>{Object.entries(forumNames).map(([id, name]) => <option key={id} value={id}>{name} · {(data?.forum_counts[Number(id)] ?? 0).toLocaleString()}</option>)}</select></label>
+        <label>{tx('版块', 'Forum')} <select value={forum} onChange={event => void selectForum(event.target.value)}><option value="all">{tx('全部版块', 'All forums')}</option>{Object.entries(forumNames).map(([id, name]) => <option key={id} value={id}>{name} · {(data?.forum_counts[Number(id)] ?? 0).toLocaleString()}</option>)}</select></label>
       </div>
       <div className="archive-home__list">
         <div className="archive-home__list-head" aria-hidden="true"><span>{tx('帖子标题', 'Thread title')}</span><span>{tx('版块', 'Forum')}</span><span>{tx('回复', 'Replies')}</span><span>{tx('收录日期', 'Archived')}</span></div>
-        {visible.length ? visible.map(item => <Link key={item.tid} to={`/threads/${item.tid}`} className="archive-home__thread" title={formatThreadListTitle(item)}>
+        {sampleLoading ? <p className="archive-home__empty">{tx('正在读取所选版块…', 'Loading this forum…')}</p> : visible.length ? visible.map(item => <Link key={item.tid} to={`/threads/${item.tid}`} className="archive-home__thread" title={formatThreadListTitle(item)}>
           <span className="archive-home__thread-main"><span className="archive-home__thread-title">{formatThreadListTitle(item)}</span><span className="archive-home__thread-id">#{item.tid}</span></span>
           <span className="archive-home__thread-forum">{forumNames[item.forum_id ?? -1] || tx('未分类', 'Uncategorized')}</span>
           <span className="archive-home__thread-replies">{item.reply_count ?? '—'}</span>

@@ -26,6 +26,7 @@ from yamibo_mcp.daemon.handlers.image_backfill import (
     _resolve_selected_remote_urls,
     _selected_download_retries,
     _image_download_failure_code,
+    _needs_attachment_url_refresh,
     _should_retry_image_download,
     _snapshot_for_missing_images,
     _stable_attachment_id,
@@ -42,6 +43,7 @@ from yamibo_mcp.errors import RemoteFetchError, ThreadPermissionRequiredError
 from yamibo_mcp.storage.images import ImageDownloadResult, download_images_to_staging
 from yamibo_mcp.domain.models import AssetSnapshot, FloorSnapshot, ThreadSnapshot, TitleSnapshot
 from yamibo_mcp.storage.paths import StoragePaths
+from yamibo_mcp.storage.thread_archive import materialize_thread
 from yamibo_mcp.yamibo.urls import is_yamibo_site_image_url
 
 
@@ -238,6 +240,15 @@ def test_selected_attachment_signature_rotation_matches_stable_aid():
     snapshot = _snapshot(575090, [current])
     target = {old: {"pid": 575090 * 10 + 2, "floor_no": 2, "image_index": 1}}
     assert _resolve_selected_remote_urls(snapshot, [old], target) == {old: current}
+
+
+def test_attachment_url_refresh_only_for_stale_link_evidence():
+    attachment = "https://bbs.yamibo.com/forum.php?mod=attachment&aid=MQ%3D%3D"
+    static_image = "https://bbs.yamibo.com/data/attachment/forum/image.png"
+    assert _needs_attachment_url_refresh({attachment}, [{"url": attachment, "http_status": 404}])
+    assert not _needs_attachment_url_refresh({attachment}, [{"url": attachment, "error_type": "network_error"}])
+    assert not _needs_attachment_url_refresh({attachment}, [{"url": attachment, "http_status": 403, "error_type": "waf_response"}])
+    assert not _needs_attachment_url_refresh({static_image}, [{"url": static_image, "http_status": 404}])
 
 
 def test_selected_attachment_identity_mismatch_is_not_silently_retargeted():
@@ -1248,6 +1259,175 @@ def test_campaign_blocks_same_campaign_failed_job(db):
     assert scheduler._blocking_backfill_tids(
         repo, [777], dry_run=False, campaign="metadata_reconcile_v1"
     ) == {777}
+
+
+@pytest.mark.parametrize("automatic", [False, True])
+def test_image_backfill_uses_saved_url_without_fetching_thread(db, tmp_path, monkeypatch, automatic):
+    tid = 2401 if automatic else 2400
+    url = "https://bbs.yamibo.com/data/attachment/forum/202501/01/missing.png"
+    existing_url = "https://bbs.yamibo.com/data/attachment/forum/202501/01/existing.png"
+    snapshot = _snapshot(tid, [url, existing_url] if automatic else [url])
+    paths = StoragePaths(tmp_path)
+    materialize_thread(paths, snapshot, missing_image_urls=[url])
+    png = bytearray(b"\x89PNG\r\n\x1a\n" + b"\x00" * 108 + b"\x00\x00\x00\x00IEND\xaeB`\x82")
+    png[16:20] = (640).to_bytes(4, "big")
+    png[20:24] = (480).to_bytes(4, "big")
+    db.execute(
+        """INSERT INTO threads (tid, raw_title, display_title, sync_time, image_count, archive_status, forum_id, missing_images_json)
+           VALUES (?, 'title', 'title', '2026-07-01T00:00:00+00:00', ?, 'partial', 5, ?)""",
+        (tid, len(snapshot.floors[1].image_urls), json.dumps([url])),
+    )
+    for floor in snapshot.floors:
+        db.execute(
+            "INSERT INTO floors (pid, tid, floor_no, content, has_images) VALUES (?, ?, ?, ?, ?)",
+            (floor.pid, tid, floor.floor_no, floor.content, bool(floor.image_urls)),
+        )
+    if automatic:
+        existing_path = paths.thread_images_dir(tid) / "floor_002_02.png"
+        existing_path.parent.mkdir(parents=True, exist_ok=True)
+        existing_path.write_bytes(png)
+        db.execute(
+            """INSERT INTO assets
+               (asset_id, tid, pid, asset_type, remote_url, local_path, exportable, required, status)
+               VALUES ('already-downloaded', ?, ?, 'image', ?, 'images/floor_002_02.png', 1, 1, 'downloaded')""",
+            (tid, snapshot.floors[1].pid, existing_url),
+        )
+    else:
+        db.execute(
+            """INSERT INTO assets
+               (asset_id, tid, pid, asset_type, remote_url, local_path, exportable, required, status)
+               VALUES ('manual-missing', ?, ?, 'image', ?, NULL, 1, 1, 'missing')""",
+            (tid, snapshot.floors[1].pid, url),
+        )
+    db.commit()
+
+    image_calls = []
+
+    class _Client:
+        headers = {}
+        cookie_jar = None
+        cookie_file = None
+        use_system_proxy = False
+        proxy_url = None
+
+        def fetch_image(self, image_url, **kwargs):
+            image_calls.append(image_url)
+            return SimpleNamespace(status_code=200, final_url=image_url, headers={"Content-Type": "image/png"}, content=bytes(png))
+
+        def fetch_thread_page(self, **kwargs):
+            pytest.fail("a valid saved image URL must not fetch the thread")
+
+    @contextmanager
+    def _borrow(settings, **kwargs):
+        yield SimpleNamespace(account_id="test", permission_level=10), _Client()
+
+    monkeypatch.setattr("yamibo_mcp.daemon.handlers.image_backfill.borrow_yamibo_client", _borrow)
+    monkeypatch.setattr("yamibo_mcp.daemon.handlers.image_backfill.select_thread_proxy", lambda *args, **kwargs: None)
+    payload = {"tid": tid, "dry_run": False}
+    if automatic:
+        payload.update(mode="reconcile_missing", scope="selected", internal_auto=True)
+    else:
+        payload.update(scope="selected", target_urls=[url], target_asset_id="manual-missing")
+    repo = JobsRepository(db)
+    job = repo.create("image_backfill", tid=tid, payload=payload)
+    settings = SimpleNamespace(
+        data_dir=tmp_path, export_dir=tmp_path / "exports", novel_txt_export_dir=tmp_path / "novel_exports",
+        image_backfill_max_pages=50, image_backfill_fixed_after=None,
+        image_download_timeout_seconds=1.0, image_download_retries=0,
+    )
+
+    handle_image_backfill(repo, repo.get(job.job_id), "worker", 60, settings)
+
+    completed = repo.get(job.job_id)
+    assert completed.status == "succeeded"
+    assert completed.artifacts["pages_fetched"] == 0
+    assert completed.artifacts["remote_fetch"] is False
+    assert image_calls == [url]
+    assert paths.thread_images_dir(tid).joinpath("floor_002_01.png").exists()
+    asset = db.execute("SELECT local_path, status FROM assets WHERE tid = ? AND remote_url = ?", (tid, url)).fetchone()
+    assert asset["local_path"] == "images/floor_002_01.png"
+    assert asset["status"] == "downloaded"
+    thread = db.execute("SELECT archive_status, missing_images_json, sync_time FROM threads WHERE tid = ?", (tid,)).fetchone()
+    assert thread["archive_status"] == "complete"
+    assert json.loads(thread["missing_images_json"]) == []
+    assert str(thread["sync_time"]).startswith("2026-07-01")
+
+
+def test_image_backfill_refreshes_expired_attachment_url_after_direct_failure(db, tmp_path, monkeypatch):
+    tid = 2402
+    old_url = "https://bbs.yamibo.com/forum.php?mod=attachment&aid=MTYzODQzNHxvbGQ%3D&nothumb=yes"
+    new_url = "https://bbs.yamibo.com/forum.php?mod=attachment&aid=MTYzODQzNHxuZXc%3D&nothumb=yes"
+    local_snapshot = _snapshot(tid, [old_url])
+    paths = StoragePaths(tmp_path)
+    materialize_thread(paths, local_snapshot, missing_image_urls=[old_url])
+    db.execute(
+        """INSERT INTO threads (tid, raw_title, display_title, image_count, archive_status, forum_id, missing_images_json)
+           VALUES (?, 'title', 'title', 1, 'partial', 5, ?)""",
+        (tid, json.dumps([old_url])),
+    )
+    for floor in local_snapshot.floors:
+        db.execute(
+            "INSERT INTO floors (pid, tid, floor_no, content, has_images) VALUES (?, ?, ?, ?, ?)",
+            (floor.pid, tid, floor.floor_no, floor.content, bool(floor.image_urls)),
+        )
+    db.execute(
+        """INSERT INTO assets
+           (asset_id, tid, pid, asset_type, remote_url, local_path, exportable, required, status)
+           VALUES ('expired-attachment', ?, ?, 'attachment', ?, NULL, 1, 1, 'missing')""",
+        (tid, local_snapshot.floors[1].pid, old_url),
+    )
+    db.commit()
+    png = bytearray(b"\x89PNG\r\n\x1a\n" + b"\x00" * 108 + b"\x00\x00\x00\x00IEND\xaeB`\x82")
+    png[16:20] = (640).to_bytes(4, "big")
+    png[20:24] = (480).to_bytes(4, "big")
+    calls = []
+
+    class _Client:
+        headers = {}
+        cookie_jar = None
+        cookie_file = None
+        use_system_proxy = False
+        proxy_url = None
+
+        def fetch_image(self, url, **kwargs):
+            calls.append(("image", url))
+            return SimpleNamespace(
+                status_code=404 if url == old_url else 200,
+                final_url=url,
+                headers={"Content-Type": "image/png"},
+                content=b"missing" if url == old_url else bytes(png),
+            )
+
+        def fetch_thread_page(self, **kwargs):
+            calls.append(("thread", tid))
+            return SimpleNamespace(html="<html></html>", final_url=f"https://bbs.yamibo.com/forum.php?mod=viewthread&tid={tid}")
+
+    @contextmanager
+    def _borrow(settings, **kwargs):
+        yield SimpleNamespace(account_id="test", permission_level=10), _Client()
+
+    monkeypatch.setattr("yamibo_mcp.daemon.handlers.image_backfill.borrow_yamibo_client", _borrow)
+    monkeypatch.setattr("yamibo_mcp.daemon.handlers.image_backfill.parse_thread_snapshot", lambda *args, **kwargs: _snapshot(tid, [new_url]))
+    repo = JobsRepository(db)
+    job = repo.create("image_backfill", tid=tid, payload={
+        "tid": tid, "dry_run": False, "scope": "selected", "target_urls": [old_url],
+        "target_asset_id": "expired-attachment", "max_pages": 1,
+    })
+    settings = SimpleNamespace(
+        data_dir=tmp_path, export_dir=tmp_path / "exports", novel_txt_export_dir=tmp_path / "novel_exports",
+        image_backfill_max_pages=1, image_backfill_fixed_after=None,
+        image_download_timeout_seconds=1.0, image_download_retries=0,
+    )
+
+    handle_image_backfill(repo, repo.get(job.job_id), "worker", 60, settings)
+
+    completed = repo.get(job.job_id)
+    assert completed.status == "succeeded"
+    assert completed.artifacts["pages_fetched"] == 1
+    assert calls == [("image", old_url), ("thread", tid), ("image", new_url)]
+    asset = db.execute("SELECT remote_url, local_path FROM assets WHERE tid = ?", (tid,)).fetchone()
+    assert asset["remote_url"] == new_url
+    assert asset["local_path"] == "images/floor_002_01.png"
 
 
 def test_image_backfill_apply_downloads_and_persists_missing_images(db, tmp_path, monkeypatch):

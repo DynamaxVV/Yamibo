@@ -214,6 +214,23 @@ def test_file_ownership_versions_and_conflicts(service, settings):
     assert imported["source"] == "user"
 
 
+def test_missing_work_file_has_structured_error(service, settings):
+    r = run(service)
+    tools = RestrictedTools(settings, r["run_id"])
+
+    async def read_missing():
+        return await tools.invoke(
+            "read_work_file",
+            {"file_id": "missing-file", "offset": 0},
+            lambda: asyncio.to_thread(tools.files.read, "missing-file", 0),
+            file=True,
+        )
+
+    result = asyncio.run(read_missing())
+    assert result["ok"] is False
+    assert result["error"]["code"] == "FILE_NOT_FOUND"
+
+
 def test_paths_links_and_unknown_receipt(service, settings, tmp_path):
     r = run(service)
     tools = RestrictedTools(settings, r["run_id"])

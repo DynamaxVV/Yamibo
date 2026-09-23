@@ -97,8 +97,8 @@ export function Threads() {
   const [archiveFilter, setArchiveFilter] = useState<string>(
     () => sessionStorage.getItem('threads_archiveFilter') || ''
   )
-  const [sortKey, setSortKey] = useState<SortKey | null>(
-    () => (sessionStorage.getItem('threads_sortKey') as SortKey) || null
+  const [sortKey, setSortKey] = useState<SortKey>(
+    () => (sessionStorage.getItem('threads_sortKey') as SortKey) || 'remote_last_reply_at'
   )
   const [sortDir, setSortDir] = useState<SortDir>(
     () => (sessionStorage.getItem('threads_sortDir') as SortDir) || 'desc'
@@ -132,8 +132,8 @@ export function Threads() {
       forum_id: forumId,
       days,
       archive_status: archiveFilter || undefined,
-      sort_key: sortKey || undefined,
-      sort_dir: sortKey ? sortDir : undefined,
+      sort_key: sortKey,
+      sort_dir: sortDir,
       page,
       page_size: pageSize,
     })
@@ -438,7 +438,7 @@ export function Threads() {
           const title = formatThreadListTitle(item)
           const forumName = forums.find(f => f.forum_id === item.forum_id)?.[lang === 'en' ? 'name_en' : 'name'] || item.forum_id || '-'
           return <article key={item.tid} className="rounded border border-border bg-card p-3">
-            <div className="flex items-start gap-2"><input type="checkbox" checked={selectedTids.has(item.tid)} onChange={() => toggleSelect(item.tid)} aria-label={`${tx('选择帖子', 'Select thread')} ${item.tid}`} className="mt-2 h-5 w-5 shrink-0" /><div className="min-w-0 flex-1"><Link to={`/threads/${item.tid}`} className="block break-words font-sans text-sm font-light leading-5 text-foreground">{title}</Link><div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground"><span>#{item.tid}</span><span>{forumName}</span><span>{item.sync_time?.slice(0, 10) || '-'}</span><ContentBadge kind={item.content_kind} /></div></div><button type="button" onClick={() => setConfirmDeleteTids([item.tid])} className="flex h-11 w-11 shrink-0 items-center justify-center rounded border border-border text-destructive" aria-label={`${t('delete')} ${title}`} title={t('delete')}><Trash2 className="h-4 w-4" /></button></div>
+            <div className="flex items-start gap-2"><input type="checkbox" checked={selectedTids.has(item.tid)} onChange={() => toggleSelect(item.tid)} aria-label={`${tx('选择帖子', 'Select thread')} ${item.tid}`} className="mt-2 h-5 w-5 shrink-0" /><div className="min-w-0 flex-1"><Link to={`/threads/${item.tid}`} className="block break-words font-sans text-sm font-light leading-5 text-foreground">{title}</Link><div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground"><span>{forumName}</span><span>{item.sync_time?.slice(0, 10) || '-'}</span><ContentBadge kind={item.content_kind} /></div></div><button type="button" onClick={() => setConfirmDeleteTids([item.tid])} className="flex h-11 w-11 shrink-0 items-center justify-center rounded border border-border text-destructive" aria-label={`${t('delete')} ${title}`} title={t('delete')}><Trash2 className="h-4 w-4" /></button></div>
           </article>
         })}
       </div>
@@ -454,7 +454,6 @@ export function Threads() {
                   className="rounded-xs border-border text-yamibo-burgundy focus:ring-yamibo-burgundy"
                 />
               </th>
-              {column('tid')?.visible && <th className="px-3 py-2.5 w-20">{t('tid')}</th>}
               {column('title')?.visible && <th className="min-w-80 px-3 py-2.5">{t('title')}</th>}
               {column('forum')?.visible && <th className="px-3 py-2.5 w-28">{t('forum')}</th>}
               {column('category')?.visible && (
@@ -511,7 +510,7 @@ export function Threads() {
           <tbody className="divide-y divide-border/60">
             {paged.length === 0 ? (
               <tr>
-                <td colSpan={11} className="p-8 text-center text-xs font-mono text-muted-foreground">
+                <td colSpan={10} className="p-8 text-center text-xs font-mono text-muted-foreground">
                   {t('no_data')}
                 </td>
               </tr>
@@ -542,16 +541,6 @@ export function Threads() {
                         className="rounded-xs border-border text-yamibo-burgundy focus:ring-yamibo-burgundy"
                       />
                     </td>
-                    {column('tid')?.visible && (
-                      <td className="px-3 py-2 font-mono text-xs text-muted-foreground whitespace-nowrap">
-                        <Link
-                          to={`/threads/${t_.tid}`}
-                          className="hover:text-yamibo-burgundy dark:hover:text-yamibo-coral font-medium"
-                        >
-                          #{t_.tid}
-                        </Link>
-                      </td>
-                    )}
                     {column('title')?.visible && (
                       <td className="table-cell-long min-w-80 px-3 py-2">
                         <div className="flex items-center gap-2">

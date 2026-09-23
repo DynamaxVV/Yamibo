@@ -7,7 +7,7 @@ type ColumnDefinition = { key: string; labelKey: string; required?: boolean }
 
 const DEFINITIONS: Record<TableName, ColumnDefinition[]> = {
   threads: [
-    { key: 'tid', labelKey: 'tid' }, { key: 'title', labelKey: 'title' }, { key: 'forum', labelKey: 'forum' },
+    { key: 'title', labelKey: 'title' }, { key: 'forum', labelKey: 'forum' },
     { key: 'category', labelKey: 'category' }, { key: 'archive', labelKey: 'archive' }, { key: 'reply_count', labelKey: 'reply_count' },
     { key: 'pub_time', labelKey: 'pub_time' }, { key: 'last_reply_time', labelKey: 'last_reply_time' }, { key: 'sync_time', labelKey: 'sync_time' },
     { key: 'action', labelKey: 'action', required: true },
@@ -20,7 +20,7 @@ const DEFINITIONS: Record<TableName, ColumnDefinition[]> = {
 }
 
 const DEFAULTS: TableLayouts = {
-  threads: DEFINITIONS.threads.map((_, i) => ({ key: DEFINITIONS.threads[i].key, visible: !['category', 'last_reply_time', 'sync_time'].includes(DEFINITIONS.threads[i].key), width: [60, 480, 100, 110, 80, 65, 105, 105, 105, 84][i] })),
+  threads: DEFINITIONS.threads.map((definition, i) => ({ key: definition.key, visible: !['category', 'last_reply_time', 'sync_time'].includes(definition.key), width: [480, 100, 110, 80, 65, 105, 105, 105, 84][i] })),
   jobs: DEFINITIONS.jobs.map((_, i) => ({ key: DEFINITIONS.jobs[i].key, visible: DEFINITIONS.jobs[i].key !== 'stage', width: [65, 420, 80, 120, 80, 110, 110][i] })),
 }
 

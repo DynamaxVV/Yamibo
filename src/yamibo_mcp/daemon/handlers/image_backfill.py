@@ -52,7 +52,7 @@ from yamibo_mcp.yamibo.proxy_pool import DIRECT_NODE_NAME, activate_proxy_bindin
 from yamibo_mcp.daemon.remote_attempt import build_attempt
 from yamibo_mcp.yamibo.urls import is_yamibo_site_content_image_url as _is_yamibo_site_content_url
 from yamibo_mcp.yamibo.urls import is_yamibo_site_image_url as _is_yamibo_site_url
-from yamibo_mcp.yamibo.urls import remote_image_identity, stable_attachment_id
+from yamibo_mcp.yamibo.urls import remote_image_identity, stable_attachment_id, thread_url_from_tid
 
 
 LOG = logging.getLogger(__name__)
@@ -151,6 +151,22 @@ def _image_download_failure_code(diagnostics: list[dict[str, Any]]) -> str:
         # used HTTP 404/403 for the block.
         return "REMOTE_SOFT_BLOCK"
     return "IMAGE_TARGET_NOT_DOWNLOADED"
+
+
+def _needs_attachment_url_refresh(failed_urls: set[str], diagnostics: list[dict[str, Any]]) -> bool:
+    return any(
+        _is_site_attachment(url)
+        and any(
+            item.get("url") == url
+            and item.get("error_type") != "waf_response"
+            and (
+                item.get("http_status") in {400, 403, 404, 410}
+                or item.get("error_type") in {"html_response", "invalid_image_body"}
+            )
+            for item in diagnostics
+        )
+        for url in failed_urls
+    )
 
 
 def handle_image_backfill(
@@ -387,34 +403,115 @@ def handle_image_backfill(
                     record_attempt(job.job_id, {"account_id": selected_account_id})
                 borrowed_client = True
                 fetch_heartbeat.beat()
-                first_page = client.fetch_thread_page(tid=tid, page=1, base_url=base_url)
-                if max_pages > 1:
-                    page_results, remote_total_pages, stopped_reason = client.fetch_thread_pages(
-                        tid=tid,
-                        base_url=base_url,
-                        max_pages=max_pages,
-                        first_page=first_page,
-                        page_delay_seconds=max(float(getattr(settings, "request_interval_seconds", 1.0)), 1.0),
-                        before_each_page=fetch_heartbeat.beat,
-                    )
-                    final_url = page_results[-1].final_url
-                    pages_fetched = len(page_results)
-                    snapshot = _merge_page_snapshots(
-                        [parse_thread_snapshot(result.html, url=result.final_url, tid=tid) for result in page_results]
-                    )
-                else:
+                url_first_result = None
+                url_first_diff = None
+                url_first_map: dict[str, str] = {}
+                url_first_snapshot = local_snapshot
+                if strict_selected_scope and not dry_run:
+                    url_first_snapshot = _snapshot_with_metadata_targets(local_snapshot, paths, tid, target_urls)
+                    url_first_map = _resolve_selected_remote_urls(url_first_snapshot, target_urls, target_positions)
+                    if len(url_first_map) == len(target_urls):
+                        url_first_diff = _diff_snapshot_images(
+                            url_first_snapshot,
+                            local_assets=local_assets,
+                            paths=paths,
+                            include_shared_static=True,
+                            scope=scope,
+                            include_first_floor=include_first_floor,
+                            site_only=site_only,
+                            target_urls=set(url_first_map.values()),
+                        )
+                        if url_first_diff["missing_items_for_apply"]:
+                            repo.update_stage(job.job_id, "download_missing_images", progress_current=4, progress_total=6)
+                            direct_snapshot = _snapshot_for_missing_images(
+                                url_first_snapshot, url_first_diff["missing_items_for_apply"]
+                            )
+                            worker_cancel_check, main_control_check = _build_download_control_checks(repo, job.job_id)
+                            direct_heartbeat = HeartbeatPacer(
+                                repo=repo,
+                                job_id=job.job_id,
+                                worker_id=worker_id,
+                                lease_seconds=max(
+                                    fetch_lease_seconds,
+                                    int(max(float(getattr(settings, "image_download_timeout_seconds", 45.0)) * 3.0, 120.0)),
+                                ),
+                                min_interval_seconds=max(float(getattr(settings, "worker_heartbeat_seconds", 15)), 1.0),
+                            )
+                            direct_heartbeat.beat(force=True)
+
+                            def _direct_control() -> None:
+                                direct_heartbeat.beat()
+                                main_control_check()
+
+                            direct_result = download_images_to_staging(
+                                paths,
+                                job.job_id,
+                                direct_snapshot,
+                                timeout=settings.image_download_timeout_seconds,
+                                retries=_selected_download_retries(
+                                    target_urls=set(target_urls), configured_retries=settings.image_download_retries,
+                                ),
+                                headers=client.headers,
+                                cookie_jar=client.cookie_jar,
+                                cookie_file=getattr(client, "cookie_file", None),
+                                use_system_proxy=client.use_system_proxy,
+                                proxy_url=getattr(client, "proxy_url", None),
+                                referer=thread_url_from_tid(tid, base_url=base_url),
+                                fetcher=getattr(client, "fetch_image", None),
+                                target_urls={str(item["url"]) for item in url_first_diff["missing_items_for_apply"]},
+                                cancel_check=worker_cancel_check,
+                                control_check=_direct_control,
+                                on_progress=_direct_control,
+                                stage_deadline_seconds=float(getattr(settings, "image_download_stage_timeout_seconds", 600.0)),
+                            )
+                            attempted_urls = {str(item["url"]) for item in url_first_diff["missing_items_for_apply"]}
+                            failed_urls = attempted_urls - set(direct_result.relative_path_by_url)
+                            failed_urls.update(direct_result.missing_urls)
+                            failed_urls.update(direct_result.missing_shared_urls)
+                            if direct_result.stopped_reason:
+                                failed_urls.update(item["url"] for item in url_first_diff["missing_items_for_apply"])
+                            needs_url_refresh = _needs_attachment_url_refresh(failed_urls, direct_result.diagnostics)
+                            if not needs_url_refresh:
+                                url_first_result = direct_result
+                            else:
+                                shutil.rmtree(paths.staging_job_dir(job.job_id), ignore_errors=True)
+
+                if url_first_result is not None:
+                    snapshot = url_first_snapshot
+                    final_url = thread_url_from_tid(tid, base_url=base_url)
+                    pages_fetched = 0
                     remote_total_pages = None
-                    stopped_reason = "max_pages"
-                    final_url = first_page.final_url
-                    pages_fetched = 1
-                    snapshot = parse_thread_snapshot(first_page.html, url=first_page.final_url, tid=tid)
+                    stopped_reason = None
+                else:
+                    first_page = client.fetch_thread_page(tid=tid, page=1, base_url=base_url)
+                    if max_pages > 1:
+                        page_results, remote_total_pages, stopped_reason = client.fetch_thread_pages(
+                            tid=tid,
+                            base_url=base_url,
+                            max_pages=max_pages,
+                            first_page=first_page,
+                            page_delay_seconds=max(float(getattr(settings, "request_interval_seconds", 1.0)), 1.0),
+                            before_each_page=fetch_heartbeat.beat,
+                        )
+                        final_url = page_results[-1].final_url
+                        pages_fetched = len(page_results)
+                        snapshot = _merge_page_snapshots(
+                            [parse_thread_snapshot(result.html, url=result.final_url, tid=tid) for result in page_results]
+                        )
+                    else:
+                        remote_total_pages = None
+                        stopped_reason = "max_pages"
+                        final_url = first_page.final_url
+                        pages_fetched = 1
+                        snapshot = parse_thread_snapshot(first_page.html, url=first_page.final_url, tid=tid)
 
                 fetch_heartbeat.beat()
-                repo.update_stage(job.job_id, "diff_images", progress_current=3, progress_total=4)
+                if url_first_result is None:
+                    repo.update_stage(job.job_id, "diff_images", progress_current=3, progress_total=4)
                 selected_url_map = (
-                    _resolve_selected_remote_urls(snapshot, target_urls, target_positions)
-                    if strict_selected_scope
-                    else {}
+                    url_first_map if url_first_result is not None
+                    else _resolve_selected_remote_urls(snapshot, target_urls, target_positions)
+                    if strict_selected_scope else {}
                 )
                 selected_remote_urls = set(selected_url_map.values())
                 if strict_selected_scope and not selected_remote_urls:
@@ -425,7 +522,7 @@ def handle_image_backfill(
                         {"tid": tid, "scope": "selected", "target_urls": target_urls},
                     )
                     return
-                diff = _diff_snapshot_images(
+                diff = url_first_diff if url_first_result is not None else _diff_snapshot_images(
                     snapshot,
                     local_assets=local_assets,
                     paths=paths,
@@ -444,7 +541,8 @@ def handle_image_backfill(
                     "dry_run": dry_run,
                     "tid": tid,
                     "base_url": base_url,
-                    "remote_access_pattern": "direct_tid_thread_pages",
+                    "remote_access_pattern": "stored_image_urls" if url_first_result is not None else "direct_tid_thread_pages",
+                    "remote_fetch": url_first_result is None,
                     "remote_transport": "direct" if direct else "proxy",
                     "direct_fallback_error": direct_fallback_error,
                     "account_id": identity.account_id,
@@ -511,7 +609,7 @@ def handle_image_backfill(
                     download_heartbeat.beat()
                     main_control_check()
 
-                image_result = download_images_to_staging(
+                image_result = url_first_result or download_images_to_staging(
                     paths,
                     job.job_id,
                     missing_snapshot,
@@ -634,14 +732,20 @@ def handle_image_backfill(
                     # Do not let an expired handler mutate the archive after
                     # another worker has reclaimed this job.
                     repo.assert_lease(job.job_id, for_update=True)
-                    ThreadsRepository(repo.conn).upsert_snapshot(
-                        apply_snapshot,
-                        forum_id=thread["forum_id"] if "forum_id" in thread.keys() else None,
-                        category=thread["category"] if "category" in thread.keys() else None,
-                        context_path=str(paths.thread_context(tid).relative_to(settings.data_dir)),
-                        archive_status=archive_status,
-                        missing_image_urls=[*missing_image_urls, *missing_shared_image_urls],
-                    )
+                    if url_first_result is not None:
+                        repo.conn.execute(
+                            "UPDATE threads SET archive_status = ?, missing_images_json = ? WHERE tid = ?",
+                            (archive_status, json.dumps([*missing_image_urls, *missing_shared_image_urls], ensure_ascii=False), tid),
+                        )
+                    else:
+                        ThreadsRepository(repo.conn).upsert_snapshot(
+                            apply_snapshot,
+                            forum_id=thread["forum_id"] if "forum_id" in thread.keys() else None,
+                            category=thread["category"] if "category" in thread.keys() else None,
+                            context_path=str(paths.thread_context(tid).relative_to(settings.data_dir)),
+                            archive_status=archive_status,
+                            missing_image_urls=[*missing_image_urls, *missing_shared_image_urls],
+                        )
                     if selected_scope:
                         _update_selected_assets(
                             repo.conn,
@@ -1271,6 +1375,33 @@ def _load_local_snapshot_for_backfill(paths: StoragePaths, conn, thread_row) -> 
     )
 
 
+def _snapshot_with_metadata_targets(snapshot: ThreadSnapshot, paths: StoragePaths, tid: int, target_urls: list[str]) -> ThreadSnapshot:
+    """Restore missing URL slots omitted by DB-only asset reconstruction."""
+    metadata = _load_archive_metadata(paths, tid)
+    targets = set(target_urls)
+    floors_by_pid: dict[int, dict[str, Any]] = {}
+    for floor in metadata.get("floors") or []:
+        if not isinstance(floor, dict):
+            continue
+        try:
+            floors_by_pid[int(floor["pid"])] = floor
+        except (KeyError, TypeError, ValueError):
+            continue
+    floors = []
+    for floor in snapshot.floors:
+        saved = floors_by_pid.get(floor.pid) or {}
+        urls = [str(url) for url in (saved.get("remote_image_urls") or []) if str(url)]
+        identities = {remote_image_identity(url) for url in urls}
+        if targets.intersection(urls) and all(
+            remote_image_identity(current) in identities
+            for current in floor.image_urls
+        ):
+            floors.append(replace(floor, image_urls=urls, has_images=True))
+        else:
+            floors.append(floor)
+    return replace(snapshot, floors=floors)
+
+
 def _merge_remote_into_local(local_snapshot, remote_snapshot):
     remote_by_pid = {floor.pid: floor for floor in remote_snapshot.floors}
     merged_floors = []
@@ -1539,6 +1670,15 @@ def _update_selected_assets(
             continue
         old = _local_asset_for_url(local_assets, asset.remote_url)
         if old is None:
+            local_path = local_path_by_url.get(asset.remote_url)
+            if local_path:
+                conn.execute(
+                    """INSERT INTO assets
+                       (asset_id, tid, pid, asset_type, remote_url, local_path, exportable, required, status)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'downloaded')""",
+                    (asset.asset_id, tid, asset.pid, asset.asset_type, asset.remote_url,
+                     local_path, asset.exportable, asset.required),
+                )
             continue
         row = next((candidate for candidate in rows if str(candidate["remote_url"]) == old.remote_url), None)
         if row is None:
