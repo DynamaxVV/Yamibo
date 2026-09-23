@@ -4,6 +4,31 @@
 @import "./styles/chat.css";
 @import "./styles/settings.css";
 
+.route-loading {
+  display: flex;
+  min-height: 14rem;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted-foreground);
+}
+
+.route-loading__spinner {
+  width: 1.25rem;
+  height: 1.25rem;
+  border: 2px solid color-mix(in srgb, var(--primary) 22%, transparent);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: route-loading-spin 0.8s linear infinite;
+}
+
+@keyframes route-loading-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .route-loading__spinner { animation: none; }
+}
+
 @theme {
   /* ─── 语义颜色映射 ─── */
   --color-background: var(--background);
