@@ -20,6 +20,13 @@ def test_dashboard_returns_expected_keys(client):
     assert "workers" in data
 
 
+def test_thread_list_defaults_to_latest_reply_time_sort(client):
+    resp = client.get("/api/threads")
+
+    assert resp.status_code == 200
+    assert resp.json()["sort_key"] == "remote_last_reply_at"
+
+
 def test_proxy_pool_health_returns_non_secret_report(client):
     resp = client.get("/api/proxy-pool/health")
     assert resp.status_code == 200

@@ -2,7 +2,7 @@
 
 百合会 (yamibo.com) 论坛本地归档系统。通过 MCP 协议让 LLM 客户端浏览、搜索、归档、检查更新和导出论坛贴子；内嵌 React WebUI 控制台，支持多主题切换。
 
-> 当前版本：`1.3.1`
+> 当前版本：`1.3.2`
 
 ## 功能特性
 
@@ -133,9 +133,10 @@ docker compose up -d yamibo yamibo-mcp
 ```
 
 注意：以上 `yamibo-init-db` 是显式数据库迁移命令；当前工作区还会在 `yamibo` 启动时
-自动检查并应用待处理 schema migration，其中包含 `016_add_jobs_started_at`。仅执行
-`git push` 或 `docker compose build` 不会改库，但远端若据此启动新镜像，可能会增加
-`jobs.started_at` 列并更新 `alembic_version`。允许改库时，请先完成备份和维护窗口
+自动检查并应用待处理 schema migration，其中包括 `016_add_jobs_started_at`、
+`019_add_idle_backfill_scan_indexes` 和 `020_indexed_thread_list_sorts`。仅执行
+`git push` 或 `docker compose build` 不会改库，但远端若据此启动新镜像，会应用尚未执行的
+迁移并更新 `alembic_version`。允许改库时，请先完成备份和维护窗口
 准备，再按[已批准数据库变更后的发布流程](docs/部署运维指南.md#已批准数据库变更后的发布流程)
 执行迁移；不允许改库的发布则继续运行现有镜像，不要启动包含该 revision 的新镜像。
 

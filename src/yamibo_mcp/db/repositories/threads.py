@@ -109,6 +109,9 @@ class ThreadsRepository:
         backend = getattr(self.conn, "backend", None)
         sort_key = sort_key if sort_key in {"sync_time", "pub_time", "reply_count", "remote_last_reply_at"} else "sync_time"
         sort_dir = "asc" if sort_dir == "asc" else "desc"
+        if backend in {"postgres", "postgresql"} and sort_key in {"sync_time", "remote_last_reply_at"}:
+            null_order = "FIRST" if sort_dir == "asc" else "LAST"
+            return f"t.{sort_key} {sort_dir.upper()} NULLS {null_order}, t.tid {sort_dir.upper()}"
         floor_count_expr = "(SELECT COUNT(*) FROM floors f WHERE f.tid = t.tid)"
         order_expr = {
             "sync_time": "COALESCE(t.sync_time, TIMESTAMPTZ 'epoch')" if backend in {"postgres", "postgresql"} else "COALESCE(t.sync_time, '')",

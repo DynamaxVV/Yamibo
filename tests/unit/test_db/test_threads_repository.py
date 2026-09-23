@@ -495,6 +495,13 @@ class TestListThreadsPage:
 
         assert [row["tid"] for row in page["items"]] == [6112, 6111, 6113]
 
+    def test_postgres_list_sort_uses_indexable_timestamp_columns(self, db):
+        repo = ThreadsRepository(db)
+        repo.conn.backend = "postgres"
+
+        assert repo._thread_list_order_clause("sync_time", "desc") == "t.sync_time DESC NULLS LAST, t.tid DESC"
+        assert repo._thread_list_order_clause("remote_last_reply_at", "desc") == "t.remote_last_reply_at DESC NULLS LAST, t.tid DESC"
+
     def test_list_threads_page_sorts_by_reply_count_with_fallback_counts(self, db):
         repo = ThreadsRepository(db)
         repo.upsert_snapshot(

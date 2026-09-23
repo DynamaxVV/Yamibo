@@ -25,7 +25,12 @@ export function Dashboard() {
 
   useEffect(() => {
     let active = true
-    Promise.all([api.dashboard(50), ...[30, 55, 33, 5].map(forum_id => api.threads({ forum_id, page_size: 20 }))])
+    Promise.all([
+      api.dashboard(50),
+      ...[30, 55, 33, 5].map(forum_id => api.threads({
+        forum_id, sort_key: 'sync_time', sort_dir: 'desc', page_size: 20,
+      })),
+    ])
       .then(([summary, ...results]) => {
         if (!active) return
         setData(summary)
