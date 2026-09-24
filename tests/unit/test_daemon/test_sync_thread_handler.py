@@ -198,6 +198,49 @@ def test_sync_thread_partial_updates_forum_blocks_assets_and_events(db, tmp_path
     assert any(event.event_type == "job.partial" for event in events)
 
 
+def test_sync_thread_text_only_keeps_image_references_without_downloading(db, tmp_path, monkeypatch):
+    settings = _make_settings(tmp_path)
+    html_path = tmp_path / "thread.html"
+    html_path.write_text("<html></html>", encoding="utf-8")
+    repo = JobsRepository(db)
+    job = repo.create(
+        "sync_thread", tid=42,
+        payload={"html_path": str(html_path), "forum_id": 30, "mode": "text_only"},
+    )
+    job = repo.acquire(job.job_id, "worker-1", 300)
+    snapshot = _make_snapshot()
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.sync_thread.parse_thread_snapshot",
+        lambda html, url=None, tid=None: snapshot,
+    )
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.sync_thread.refine_title_parse_with_llm",
+        lambda settings, raw_title, parsed: (parsed, None),
+    )
+    monkeypatch.setattr("yamibo_mcp.daemon.handlers.sync_thread.write_staging_title_parse_log", lambda *a, **k: None)
+    monkeypatch.setattr("yamibo_mcp.daemon.handlers.sync_thread.write_staging_snapshot", lambda *a, **k: None)
+    monkeypatch.setattr("yamibo_mcp.daemon.handlers.sync_thread.update_title_hints", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.sync_thread.materialize_thread",
+        lambda *a, **k: (settings.data_dir / "context.md", settings.data_dir / "metadata.json"),
+    )
+
+    def forbidden_download(*args, **kwargs):
+        raise AssertionError("text-only archive must not download images")
+
+    monkeypatch.setattr("yamibo_mcp.daemon.handlers.sync_thread.download_images_to_staging", forbidden_download)
+    handle_sync_thread(repo, job, "worker-1", 300, settings)
+
+    thread = ThreadsRepository(db).get_thread(42)
+    assets = AssetsRepository(db).list_assets(42)
+    assert thread["archive_status"] == "complete"
+    assert thread["capture_mode"] == "text_only"
+    assert len(assets) == 1
+    assert assets[0]["remote_url"] == "https://img.example.com/a.jpg"
+    assert assets[0]["local_path"] is None
+    assert repo.get(job.job_id).status == "succeeded"
+
+
 def test_sync_thread_retries_permission_gate_with_next_threshold(db, tmp_path, monkeypatch):
     settings = _make_settings(tmp_path)
     repo = JobsRepository(db)
@@ -594,7 +637,7 @@ def test_sync_thread_fetches_multiple_pages_for_non_novel_threads(db, tmp_path, 
     settings = _make_settings(tmp_path)
     settings.archive_thread_max_pages = 50
     repo = JobsRepository(db)
-    job = repo.create("sync_thread", tid=42, payload={"tid": 42, "forum_id": 30})
+    job = repo.create("sync_thread", tid=42, payload={"tid": 42, "forum_id": 30, "mode": "text_only"})
     job = repo.acquire(job.job_id, "worker-1", 300)
 
     page1 = _make_snapshot()
@@ -716,13 +759,15 @@ def test_sync_thread_fetches_multiple_pages_for_non_novel_threads(db, tmp_path, 
     assert finished_job.artifacts["pages_fetched"] == 3
     assert finished_job.artifacts["stopped_reason"] == "last_page"
     assert finished_job.artifacts["archive_signature"]["floor_count"] == 3
+    assert finished_job.status == "succeeded"
+    assert thread_row["archive_status"] == "complete"
 
 
 def test_sync_thread_respects_archive_thread_max_pages_for_non_novel_threads(db, tmp_path, monkeypatch):
     settings = _make_settings(tmp_path)
     settings.archive_thread_max_pages = 2
     repo = JobsRepository(db)
-    job = repo.create("sync_thread", tid=42, payload={"tid": 42, "forum_id": 30})
+    job = repo.create("sync_thread", tid=42, payload={"tid": 42, "forum_id": 30, "mode": "text_only"})
     job = repo.acquire(job.job_id, "worker-1", 300)
 
     page1 = _make_snapshot()
@@ -813,6 +858,7 @@ def test_sync_thread_respects_archive_thread_max_pages_for_non_novel_threads(db,
     assert finished_job.artifacts["pages_fetched"] == 2
     assert finished_job.artifacts["stopped_reason"] == "max_pages"
     assert finished_job.artifacts["archive_signature"]["floor_count"] == 2
+    assert finished_job.status == "partial"
 
 
 def test_sync_thread_propagates_proxy_binding_to_client_and_images(db, tmp_path, monkeypatch):

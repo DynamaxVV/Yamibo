@@ -13,7 +13,7 @@ def search_threads_sqlite(conn: sqlite3.Connection, query: str, *, limit: int = 
             """
             SELECT
               t.tid, t.raw_title, t.display_title, t.publisher, t.pub_time, t.sync_time,
-              t.archive_status, t.validation_status, t.context_path, t.series_id, t.export_path,
+              t.archive_status, t.capture_mode, t.validation_status, t.context_path, t.series_id, t.export_path,
               t.forum_id, t.content_kind, t.category,
               tp.core_title_guess, tp.series_key, tp.chapter_name, tp.needs_review,
               (SELECT COUNT(*) FROM floors f WHERE f.tid = t.tid) AS reply_count
@@ -42,7 +42,7 @@ def search_threads_sqlite(conn: sqlite3.Connection, query: str, *, limit: int = 
             f"""
             SELECT
               t.tid, t.raw_title, t.display_title, t.publisher, t.pub_time, t.sync_time,
-              t.archive_status, t.validation_status, t.context_path, t.series_id, t.export_path,
+              t.archive_status, t.capture_mode, t.validation_status, t.context_path, t.series_id, t.export_path,
               t.forum_id, t.content_kind, t.category,
               tp.core_title_guess, tp.series_key, tp.chapter_name, tp.needs_review,
               bm25(thread_fts) AS rank,
@@ -84,7 +84,7 @@ def _search_threads_like(conn: sqlite3.Connection, keywords: list[str], *, forum
         f"""
         SELECT
           t.tid, t.raw_title, t.display_title, t.publisher, t.pub_time, t.sync_time,
-          t.archive_status, t.validation_status, t.context_path, t.series_id, t.export_path,
+          t.archive_status, t.capture_mode, t.validation_status, t.context_path, t.series_id, t.export_path,
           t.forum_id, t.content_kind, t.category,
           tp.core_title_guess, tp.series_key, tp.chapter_name, tp.needs_review,
           (SELECT COUNT(*) FROM floors f WHERE f.tid = t.tid) AS reply_count

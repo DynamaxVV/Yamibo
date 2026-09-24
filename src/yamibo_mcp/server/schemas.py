@@ -296,6 +296,7 @@ def thread_summary_payload(row, *, include_export: bool = True) -> dict[str, Any
         "series_id": row_get("series_id"),
         "series_key": row_get("series_key"),
         "archive_status": row_get("archive_status"),
+        "capture_mode": row_get("capture_mode") or "full",
         "validation_status": row_get("validation_status"),
         "sync_time": row_get("sync_time"),
         "export_path": export_path,

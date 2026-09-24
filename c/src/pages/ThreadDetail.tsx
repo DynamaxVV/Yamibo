@@ -285,6 +285,19 @@ export function ThreadDetail() {
     setActionLoading(null)
   }
 
+  const handleUpgradeImages = async () => {
+    setActionError(null)
+    setActionLoading('upgrade-images')
+    try {
+      const result = await api.createThreadArchiveBatch({ tids: [tid], forum_id: thread?.forum_id, mode: 'full' })
+      const jobId = result.created_job_ids[0] || result.reused_job_ids[0]
+      if (jobId) setActiveJob({ jobId, title: lang === 'en' ? 'Download images' : '下载图片，升级完整归档' })
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error))
+    }
+    setActionLoading(null)
+  }
+
   const handleEditChapter = () => {
     setActionError(null)
     setChapterForm({
@@ -393,6 +406,7 @@ export function ThreadDetail() {
               <span className="font-mono text-xs text-muted-foreground">#{thread.tid}</span>
               <ContentBadge kind={thread.content_kind} />
               <Badge status={displayArchiveStatus === 'running' ? 'running' : displayArchiveStatus} />
+              {thread.capture_mode === 'text_only' && <span className="text-xs text-muted-foreground">{lang === 'en' ? 'Text only · images not saved' : '仅文字 · 图片未保存'}</span>}
             </div>
             <h1 className="text-2xl break-words font-semibold text-foreground tracking-tight mt-0.5">
               {thread.display_title || thread.raw_title}
@@ -409,6 +423,15 @@ export function ThreadDetail() {
             <RotateCcw className="w-3.5 h-3.5" />
             <span>{t('resync')}</span>
           </button>
+          {thread.capture_mode === 'text_only' && thread.forum_id === 30 && (
+            <button
+              disabled={actionLoading !== null}
+              onClick={handleUpgradeImages}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-sm border border-border bg-card hover:bg-muted text-foreground text-xs font-sans font-medium transition-colors press-feedback disabled:opacity-50"
+            >
+              <span>{lang === 'en' ? 'Download images' : '下载图片，升级完整归档'}</span>
+            </button>
+          )}
           <button
             disabled={actionLoading === 'rag-index'}
             onClick={handleRagIndex}
@@ -417,7 +440,7 @@ export function ThreadDetail() {
             <Cpu className="w-3.5 h-3.5" />
             <span>{t('rag_index_now')}</span>
           </button>
-          {isExportable && (
+          {isExportable && thread.capture_mode !== 'text_only' && (
             <button
               disabled={actionLoading === 'export'}
               onClick={handleExport}

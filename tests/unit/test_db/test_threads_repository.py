@@ -675,3 +675,17 @@ class TestSearchThreads:
         results = repo.search_threads("面包屋打工 51~60")
         # Assert
         assert any(r["tid"] == 9002 for r in results)
+
+
+def test_capture_mode_defaults_and_round_trip(db):
+    repo = ThreadsRepository(db)
+    snapshot = _make_snapshot()
+    repo.upsert_snapshot(snapshot)
+    assert repo.get_thread(snapshot.tid)["capture_mode"] == "full"
+    repo.upsert_snapshot(snapshot, capture_mode="text_only")
+    assert repo.get_thread(snapshot.tid)["capture_mode"] == "text_only"
+    assert repo.probe_archive_states([snapshot.tid])[0]["capture_mode"] == "text_only"
+    repo.upsert_snapshot(snapshot, capture_mode="full")
+    assert repo.get_thread(snapshot.tid)["capture_mode"] == "full"
+    with pytest.raises(ValueError, match="capture_mode"):
+        repo.upsert_snapshot(snapshot, capture_mode="invalid")

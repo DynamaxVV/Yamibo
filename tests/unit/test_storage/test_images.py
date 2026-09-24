@@ -276,7 +276,7 @@ def test_authenticated_html_response_is_non_image_and_not_retried(tmp_path):
     assert result.diagnostics[0]["retryable"] is False
 
 
-def test_authenticated_truncated_image_body_is_retryable_and_distinct(tmp_path):
+def test_authenticated_invalid_image_without_length_is_not_called_truncated(tmp_path):
     data_dir = tmp_path / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
     paths = StoragePaths(data_dir, export_dir=tmp_path / "exports", novel_txt_export_dir=tmp_path / "novel_exports")
@@ -306,19 +306,105 @@ def test_authenticated_truncated_image_body_is_retryable_and_distinct(tmp_path):
         target_urls={url},
     )
 
-    # One bounded continuation request is attempted before the two remaining
-    # full-response retries.
-    assert calls == 4
+    assert calls == 1
     assert result.missing_urls == [url]
-    assert result.diagnostics[0]["error_type"] == "truncated_image"
-    assert result.diagnostics[0]["retryable"] is True
-    assert result.diagnostics[0]["attempts"] == 3
-    assert result.diagnostics[0]["range_attempted"] is True
+    assert result.diagnostics[0]["error_type"] == "invalid_image_body"
+    assert result.diagnostics[0]["retryable"] is False
+    assert result.diagnostics[0]["attempts"] == 1
+    assert result.diagnostics[0].get("range_attempted") is not True
     assert result.diagnostics[0]["phase"] == "validation"
-    assert len(result.diagnostics[0]["attempt_history"]) == 3
-    assert all(item["error_type"] == "truncated_image" for item in result.diagnostics[0]["attempt_history"])
+    assert len(result.diagnostics[0]["attempt_history"]) == 1
+    assert all(item["error_type"] == "invalid_image_body" for item in result.diagnostics[0]["attempt_history"])
     assert all(item["jpeg_has_soi"] is True for item in result.diagnostics[0]["attempt_history"])
     assert all(item["jpeg_eoi_offset"] is None for item in result.diagnostics[0]["attempt_history"])
+
+
+def test_authenticated_invalid_image_with_matching_length_does_not_attempt_range(tmp_path):
+    paths = StoragePaths(tmp_path)
+    url = "https://bbs.yamibo.com/data/attachment/forum/invalid.png"
+    floor = replace(_make_snapshot().floors[0], image_urls=[url])
+    snapshot = replace(_make_snapshot(), floors=[floor], image_count=1)
+    body = b"\x89PNG\r\n\x1a\n" + b"\x00" * 120
+    calls = []
+
+    def fetcher(image_url, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            status_code=200, final_url=image_url,
+            headers={"Content-Type": "image/png", "Content-Length": str(len(body))}, content=body,
+        )
+
+    result = download_images_to_staging(
+        paths, "job-matching-invalid", snapshot, timeout=1, retries=2,
+        fetcher=fetcher, target_urls={url},
+    )
+
+    assert len(calls) == 1
+    assert result.missing_urls == [url]
+    diagnostic = result.diagnostics[0]
+    assert diagnostic["bytes"] == len(body)
+    assert diagnostic["content_length_matches"] is True
+    assert diagnostic["png_iend_offset"] is None
+    assert diagnostic["error_type"] == "invalid_image_body"
+    assert diagnostic["retryable"] is False
+    assert diagnostic.get("range_attempted") is not True
+    assert not list(paths.staging_job_images_dir("job-matching-invalid").glob("*.part"))
+
+
+def test_png_probe_records_trailer_without_storing_body():
+    body = b"\x89PNG\r\n\x1a\n" + b"x" * 80 + b"\x00\x00\x00\x00IEND\xaeB`\x82" + b"PAD"
+    probe = images._image_probe_from_chunks([body[:-8], body[-8:]], content_length=len(body))
+
+    assert probe["content_length_matches"] is True
+    assert probe["png_iend_offset"] == len(body) - 15
+    assert probe["png_trailing_bytes"] == 3
+    assert "body" not in probe
+
+
+def test_non_image_body_with_length_mismatch_does_not_attempt_range(tmp_path):
+    paths = StoragePaths(tmp_path)
+    url = "https://bbs.yamibo.com/data/attachment/forum/invalid.jpg"
+    floor = replace(_make_snapshot().floors[0], image_urls=[url])
+    snapshot = replace(_make_snapshot(), floors=[floor], image_count=1)
+    calls = []
+
+    def fetcher(image_url, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            status_code=200, final_url=image_url,
+            headers={"Content-Type": "application/json", "Content-Length": "100"}, content=b'{"error":"missing"}',
+        )
+
+    result = download_images_to_staging(
+        paths, "job-non-image-short", snapshot, timeout=1, retries=2, fetcher=fetcher,
+    )
+
+    assert len(calls) == 1
+    assert result.diagnostics[0]["error_type"] == "invalid_image_body"
+
+
+def test_upstream_503_stops_bulk_download_and_preserves_retry_after(tmp_path):
+    paths = StoragePaths(tmp_path)
+    urls = [f"https://bbs.yamibo.com/data/attachment/forum/{index}.jpg" for index in range(12)]
+    floor = replace(_make_snapshot().floors[0], image_urls=urls)
+    snapshot = replace(_make_snapshot(), floors=[floor], image_count=len(urls))
+    calls = []
+
+    def fetcher(image_url, **kwargs):
+        calls.append(image_url)
+        return SimpleNamespace(
+            status_code=503, final_url=image_url,
+            headers={"Content-Type": "text/html", "Retry-After": "180"}, content=b"upstream unavailable",
+        )
+
+    result = download_images_to_staging(
+        paths, "job-upstream-503", snapshot, timeout=1, retries=2, fetcher=fetcher,
+    )
+
+    assert result.stopped_reason == "upstream_throttled"
+    assert 1 <= len(calls) <= 4
+    assert result.diagnostics[0]["attempts"] == 1
+    assert result.diagnostics[0]["response_headers"]["Retry-After"] == "180"
 
 
 def test_authenticated_success_records_jpeg_trailer_evidence(tmp_path):
@@ -379,7 +465,7 @@ def test_authenticated_truncated_image_body_recovers_with_range(tmp_path):
             return SimpleNamespace(
                 status_code=200,
                 final_url=image_url,
-                headers={"Content-Type": "image/jpeg"},
+                headers={"Content-Type": "image/jpeg", "Content-Length": str(len(full_jpeg))},
                 content=prefix,
             )
         return SimpleNamespace(

@@ -35,6 +35,7 @@ _DIAGNOSTIC_RESPONSE_HEADERS = (
     "Content-Encoding",
     "ETag",
     "Server",
+    "Retry-After",
 )
 
 _ATTEMPT_METADATA_KEYS = (
@@ -49,6 +50,8 @@ _ATTEMPT_METADATA_KEYS = (
     "jpeg_has_soi",
     "jpeg_eoi_offset",
     "jpeg_trailing_bytes",
+    "png_iend_offset",
+    "png_trailing_bytes",
     "range_attempted",
     "range_recovered",
 )
@@ -67,6 +70,8 @@ _TRANSIENT_ATTEMPT_METADATA_KEYS = (
     "jpeg_has_soi",
     "jpeg_eoi_offset",
     "jpeg_trailing_bytes",
+    "png_iend_offset",
+    "png_trailing_bytes",
     "phase",
 )
 
@@ -75,6 +80,8 @@ _DIAGNOSTIC_NULLABLE_KEYS = {
     "jpeg_has_soi",
     "jpeg_eoi_offset",
     "jpeg_trailing_bytes",
+    "png_iend_offset",
+    "png_trailing_bytes",
 }
 
 
@@ -383,14 +390,18 @@ def download_images_to_staging(
                     }
                     if fetcher is not None:
                         task_kwargs["fetcher"] = fetcher
-                    futures = {
-                        executor.submit(
-                            _download_task,
-                            task,
-                            **task_kwargs,
-                        ): task.task_index
-                        for task in tasks
-                    }
+                    futures = {}
+                    next_task_index = 0
+
+                    def submit_next() -> None:
+                        nonlocal next_task_index
+                        if next_task_index < len(tasks):
+                            task = tasks[next_task_index]
+                            futures[executor.submit(_download_task, task, **task_kwargs)] = task.task_index
+                            next_task_index += 1
+
+                    for _ in range(max_workers):
+                        submit_next()
                     future_results: list[_DownloadTaskResult | None] = [None] * len(tasks)
                     while futures:
                         _main_control_check()
@@ -402,12 +413,26 @@ def download_images_to_staging(
                         done, _ = wait(tuple(futures), timeout=0.2, return_when=FIRST_COMPLETED)
                         if not done:
                             continue
+                        upstream_throttled = False
                         for future in done:
                             task_index = futures.pop(future)
                             result = future.result()
                             future_results[task_index] = result
                             if on_progress is not None:
                                 on_progress()
+                            if result.diagnostic.get("http_status") in {429, 503}:
+                                upstream_throttled = True
+                        if upstream_throttled:
+                            stopped_reason = "upstream_throttled"
+                            for future in futures:
+                                future.cancel()
+                            break
+                        for _ in done:
+                            submit_next()
+                    if stopped_reason == "upstream_throttled":
+                        for future, task_index in futures.items():
+                            if not future.cancelled():
+                                future_results[task_index] = future.result()
 
                 for result in future_results:
                     if result is None:
@@ -537,7 +562,7 @@ def _download_with_retries(
                 started_at=attempt_started_at,
                 exc=exc,
             )
-            if exc.status_code in {429, 444} or not exc.retryable or attempt + 1 >= attempts:
+            if exc.status_code in {429, 444, 503} or not exc.retryable or attempt + 1 >= attempts:
                 raise
             time.sleep(min(0.5 * (attempt + 1), 2.0))
         except Exception as exc:  # noqa: BLE001 - 上层只关心最终是否成功
@@ -603,7 +628,7 @@ def _download_to_explicit_target_with_retries(
                 started_at=attempt_started_at,
                 exc=exc,
             )
-            if exc.status_code in {429, 444} or not exc.retryable or attempt + 1 >= attempts:
+            if exc.status_code in {429, 444, 503} or not exc.retryable or attempt + 1 >= attempts:
                 raise
             time.sleep(min(0.5 * (attempt + 1), 2.0))
         except Exception as exc:  # noqa: BLE001
@@ -619,6 +644,11 @@ def _download_to_explicit_target_with_retries(
             time.sleep(min(0.5 * (attempt + 1), 2.0))
     assert last_error is not None
     raise last_error
+
+
+def _is_image_like_response(body: bytes, content_type: str | None) -> bool:
+    normalized_type = (content_type or "").split(";", 1)[0].strip().lower()
+    return normalized_type.startswith("image/") or _suffix_from_bytes(body[:64]) is not None
 
 
 def _classify_invalid_image_body(body: bytes, *, content_type: str | None = None) -> str:
@@ -639,8 +669,10 @@ def _classify_invalid_image_body(body: bytes, *, content_type: str | None = None
     ):
         return "html_response"
 
-    if normalized_type.startswith("image/") or _suffix_from_bytes(body[:64]) is not None:
-        return "truncated_image"
+    # Image-looking bytes alone do not establish a shortened transfer.  The
+    # caller checks declared length separately before using that diagnosis.
+    if _is_image_like_response(body, content_type):
+        return "invalid_image_body"
     return "invalid_image_body"
 
 
@@ -665,7 +697,7 @@ def _raise_invalid_image_body(
     # Content classification must win over transport-length heuristics.
     if error_type in {"waf_response", "html_response"}:
         raise _ImageContentError(error_type)
-    if _content_length_mismatch(body, content_length):
+    if _content_length_mismatch(body, content_length) and _is_image_like_response(body, content_type):
         raise _ImageContentError("truncated_image")
     raise _ImageContentError(error_type)
 
@@ -727,7 +759,7 @@ def _image_probe_from_chunks(
     """Collect bounded, non-sensitive evidence about an image response.
 
     The body itself is never persisted in diagnostics.  A digest makes
-    repeated attempts comparable, while JPEG marker offsets explain why a
+    repeated attempts comparable, while image trailer offsets explain why a
     response passed or failed structural validation.  ``content_range``
     disables the ordinary Content-Length comparison because a 206 response
     describes only a byte range, not necessarily the assembled body.
@@ -737,7 +769,9 @@ def _image_probe_from_chunks(
     previous = b""
     total = 0
     eoi_offset: int | None = None
-    marker = b"\xff\xd9"
+    png_iend_offset: int | None = None
+    jpeg_marker = b"\xff\xd9"
+    png_marker = b"\x00\x00\x00\x00IEND\xaeB`\x82"
 
     for raw_chunk in chunks:
         chunk = bytes(raw_chunk)
@@ -747,11 +781,14 @@ def _image_probe_from_chunks(
         if len(first_bytes) < 64:
             first_bytes.extend(chunk[: 64 - len(first_bytes)])
         combined = previous + chunk
-        marker_index = combined.rfind(marker)
+        marker_index = combined.rfind(jpeg_marker)
         if marker_index >= 0:
             eoi_offset = total - len(previous) + marker_index
+        marker_index = combined.rfind(png_marker)
+        if marker_index >= 0:
+            png_iend_offset = total - len(previous) + marker_index
         total += len(chunk)
-        previous = chunk[-1:]
+        previous = combined[-(len(png_marker) - 1):]
 
     suffix = _suffix_from_bytes(bytes(first_bytes))
     result: dict[str, Any] = {
@@ -772,6 +809,9 @@ def _image_probe_from_chunks(
         result["jpeg_has_soi"] = bytes(first_bytes).startswith(b"\xff\xd8")
         result["jpeg_eoi_offset"] = eoi_offset
         result["jpeg_trailing_bytes"] = None if eoi_offset is None else total - eoi_offset - 2
+    if suffix == ".png":
+        result["png_iend_offset"] = png_iend_offset
+        result["png_trailing_bytes"] = None if png_iend_offset is None else total - png_iend_offset - len(png_marker)
     return result
 
 
@@ -982,25 +1022,20 @@ def _write_and_validate_authenticated_image(
     content_type = _header_value(response.headers, "Content-Type")
     content_length = _header_value(response.headers, "Content-Length")
     length_mismatch = _content_length_mismatch(response.body, content_length)
+    if length_mismatch and (
+        _classify_invalid_image_body(response.body, content_type=content_type) in {"waf_response", "html_response"}
+        or not _is_image_like_response(response.body, content_type)
+    ):
+        _raise_invalid_image_body(response.body, content_type=content_type, content_length=content_length)
     try:
         if not length_mismatch:
             _require_valid_image_file(part_target)
             return response
         # A length mismatch is only a transport signal for an image-like
         # response.  WAF/HTML classification must still take precedence.
-        if _classify_invalid_image_body(response.body, content_type=content_type) != "truncated_image":
-            _raise_invalid_image_body(
-                response.body,
-                content_type=content_type,
-                content_length=content_length,
-            )
         raise _ImageContentError("truncated_image")
     except ValueError:
-        error_type = _classify_invalid_image_body(
-            response.body,
-            content_type=content_type,
-        )
-        if error_type != "truncated_image":
+        if not length_mismatch:
             _raise_invalid_image_body(
                 response.body,
                 content_type=content_type,
@@ -1403,6 +1438,8 @@ def _diagnostic(
         "jpeg_has_soi",
         "jpeg_eoi_offset",
         "jpeg_trailing_bytes",
+        "png_iend_offset",
+        "png_trailing_bytes",
         "attempt_history",
     ):
         if key in info and (info.get(key) is not None or key in _DIAGNOSTIC_NULLABLE_KEYS):

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+
 from yamibo_mcp.server.cli import dump_json
 from yamibo_mcp.server.cli import build_parser
 
@@ -47,6 +49,30 @@ def test_cli_keeps_legacy_sync_aliases_registered():
         "create-sync-thread-job",
         "create-sync-thread-batch-jobs",
     }.issubset(registered)
+
+
+@pytest.mark.parametrize(
+    ("command", "target"),
+    [
+        ("create-sync-thread-job", "archive_thread_job"),
+        ("create-thread-archive-job", "create_thread_archive_job"),
+        ("create-sync-thread-batch-jobs", "create_thread_archive_batch_jobs"),
+        ("ensure-thread-archived", "ensure_thread_archived"),
+    ],
+)
+def test_cli_archive_mode_reaches_application(command, target, monkeypatch, capsys):
+    import sys
+    from yamibo_mcp.server import cli
+
+    received = []
+    monkeypatch.setattr(cli, target, lambda **kwargs: received.append(kwargs) or {"mode": kwargs["mode"]})
+    monkeypatch.setattr(cli, "configure_logging", lambda: None)
+    monkeypatch.setattr(sys, "argv", ["yamibo-archiver", command, "--tid", "42", "--mode", "text_only"])
+
+    cli.main()
+
+    assert received[0]["mode"] == "text_only"
+    assert '"mode": "text_only"' in capsys.readouterr().out
 
 
 def test_public_stdio_keeps_logs_out_of_protocol(monkeypatch, capsys):

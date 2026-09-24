@@ -24,6 +24,7 @@ from yamibo_mcp.web_fastapi.deps import get_conn, get_settings
 from yamibo_mcp.web_fastapi.helpers import jsonish_loads
 from yamibo_mcp.web_fastapi.archive_counts import get_thread_list_count
 from yamibo_mcp.yamibo.urls import remote_image_identity, thread_url_from_tid, thread_author_url_from_tid
+from yamibo_mcp.yamibo.anti_bot import ensure_remote_access_allowed
 
 router = APIRouter(prefix="/api", tags=["threads"])
 
@@ -303,6 +304,8 @@ def retry_thread_image(
     thread = ThreadsRepository(conn).get_thread(tid)
     if thread is None:
         raise HTTPException(status_code=404, detail="Thread not found")
+    if thread["capture_mode"] == "text_only":
+        raise HTTPException(status_code=400, detail="请先升级为完整归档，再补齐图片")
     asset = AssetsRepository(conn).get_asset(asset_id)
     if asset is None or int(asset["tid"]) != int(tid):
         raise HTTPException(status_code=404, detail="Image asset not found")
@@ -392,6 +395,8 @@ def resync_thread(body: dict, conn: DatabaseConnection = Depends(get_conn)):
     if not tid:
         raise HTTPException(status_code=400, detail="tid required")
     payload = {"tid": int(tid)}
+    current = ThreadsRepository(conn).get_thread(int(tid))
+    payload["mode"] = current["capture_mode"] if current is not None else "full"
     if body.get("forum_id") is not None:
         payload["forum_id"] = int(body["forum_id"])
     job = JobsRepository(conn).create("sync_thread", tid=int(tid), payload=payload)
@@ -403,9 +408,28 @@ def resync_threads_batch(body: dict, conn: DatabaseConnection = Depends(get_conn
     tids = body.get("tids", [])
     if not tids:
         raise HTTPException(status_code=400, detail="tids required")
+    normalized_tids = list(dict.fromkeys(int(tid) for tid in tids))
     base_url = body.get("base_url") or None
-    result = create_thread_archive_batch_jobs(tids=[int(tid) for tid in tids], base_url=base_url)
-    return {"ok": True, **(result.data or {})}
+    ensure_remote_access_allowed(conn)
+    thread_repo = ThreadsRepository(conn)
+    jobs_repo = JobsRepository(conn)
+    created_job_ids = []
+    reused_job_ids = []
+    for tid in normalized_tids:
+        current = thread_repo.get_thread(tid)
+        payload = {"tid": tid, "mode": current["capture_mode"] if current is not None else "full"}
+        if base_url:
+            payload["base_url"] = base_url
+        live = jobs_repo.find_live_job_for_thread(job_type="sync_thread", tid=tid, payload=payload)
+        if live is not None:
+            reused_job_ids.append(live.job_id)
+        else:
+            created_job_ids.append(jobs_repo.create("sync_thread", tid=tid, payload=payload).job_id)
+    return {
+        "ok": True, "job_type": "sync_thread", "target_count": len(normalized_tids),
+        "created_count": len(created_job_ids), "reused_count": len(reused_job_ids),
+        "created_job_ids": created_job_ids, "reused_job_ids": reused_job_ids, "tids": normalized_tids,
+    }
 
 
 @router.post("/threads/update")
@@ -426,6 +450,9 @@ def export_thread(body: dict, conn: DatabaseConnection = Depends(get_conn), sett
     tid = body.get("tid")
     if not tid:
         raise HTTPException(status_code=400, detail="tid required")
+    existing = ThreadsRepository(conn).get_thread(int(tid))
+    if existing is not None and existing["capture_mode"] == "text_only":
+        raise HTTPException(status_code=400, detail="请先下载图片，升级为完整归档后再导出")
     forum_id = body.get("forum_id")
     if forum_id is not None:
         forum_id = int(forum_id)
@@ -529,12 +556,16 @@ def archive_threads_batch(body: dict):
     raw_tids = body.get("tids")
     if not isinstance(raw_tids, list):
         raise HTTPException(status_code=400, detail="tids required")
-    tids = [int(value) for value in raw_tids if value not in {None, ""}]
-    result = create_thread_archive_batch_jobs(
-        tids=tids,
-        base_url=str(body.get("base_url")) if body.get("base_url") not in {None, ""} else None,
-        forum_id=int(body["forum_id"]) if body.get("forum_id") not in {None, ""} else None,
-    )
+    try:
+        tids = [int(value) for value in raw_tids if value not in {None, ""}]
+        result = create_thread_archive_batch_jobs(
+            tids=tids,
+            base_url=str(body.get("base_url")) if body.get("base_url") not in {None, ""} else None,
+            forum_id=int(body["forum_id"]) if body.get("forum_id") not in {None, ""} else None,
+            mode=body.get("mode", "full"),
+        )
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not result.ok or result.data is None:
         payload = to_wire(result)
         return payload

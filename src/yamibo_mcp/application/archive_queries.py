@@ -192,6 +192,27 @@ def read_archived_thread(
                 "export_path": str(export_path),
             }
 
+        image_counts = conn.execute(
+            """
+            SELECT COUNT(*) AS reference_count,
+                   SUM(CASE WHEN local_path IS NOT NULL AND local_path != ''
+                            AND status NOT IN ('missing', 'pending', 'failed') THEN 1 ELSE 0 END) AS local_count
+            FROM assets WHERE tid = ? AND asset_type IN ('image', 'attachment', 'shared')
+            """,
+            (tid,),
+        ).fetchone()
+        reference_count = max(int(image_counts["reference_count"] or 0), int(thread["image_count"] or 0))
+        local_count = int(image_counts["local_count"] or 0)
+        data.update({
+            "image_reference_count": reference_count,
+            "local_image_count": local_count,
+            "image_state": (
+                "not_requested" if thread["capture_mode"] == "text_only"
+                else "complete" if local_count >= reference_count else "partial"
+            ),
+            # This describes local media availability, never whether an agent has read it.
+            "image_content_available": local_count > 0,
+        })
         return AgentResult(ok=True, data=data, resources=resources)
     finally:
         conn.close()
@@ -245,6 +266,7 @@ def _plan_thread_resync_item(item: dict[str, Any], *, force: bool, include_unkno
         },
         "local_state": {
             "archive_status": item.get("archive_status"),
+            "capture_mode": item.get("capture_mode"),
             "sync_time": item.get("sync_time"),
             "local_floor_count": item.get("local_floor_count"),
             "local_reply_count": item.get("local_reply_count"),

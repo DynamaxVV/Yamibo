@@ -85,7 +85,7 @@ class ThreadsRepository:
         return """
             SELECT
               t.tid, t.raw_title, t.display_title, t.publisher, t.pub_time, t.sync_time,
-              t.archive_status, t.validation_status, t.context_path, t.series_id, t.export_path,
+              t.archive_status, t.capture_mode, t.validation_status, t.context_path, t.series_id, t.export_path,
               t.forum_id, t.content_kind, t.category,
               t.local_reply_count, t.reply_count_checked_at, t.reply_count_mismatch_reason,
               t.remote_last_reply_at_raw, t.remote_last_reply_at, t.remote_last_replier,
@@ -142,9 +142,12 @@ class ThreadsRepository:
         category: str | None = None,
         context_path: str | None = None,
         archive_status: str = "complete",
+        capture_mode: str = "full",
         missing_image_urls: list[str] | None = None,
         title_warnings: dict[str, object] | None = None,
     ) -> None:
+        if capture_mode not in {"text_only", "full"}:
+            raise ValueError("capture_mode must be text_only or full")
         floor_sequence_errors = validate_floor_sequence(snapshot.floors)
         if floor_sequence_errors:
             raise ValueError(
@@ -171,10 +174,10 @@ class ThreadsRepository:
             INSERT INTO threads (
               tid, series_id, page_type, raw_title, display_title, publisher, publisher_uid,
               pub_time, sync_time, last_pid, permission, image_count, context_path,
-              archive_status, validation_status, missing_images_json, needs_title_review, needs_series_review,
+              archive_status, capture_mode, validation_status, missing_images_json, needs_title_review, needs_series_review,
               forum_id, content_kind, primary_media_type, category, local_reply_count
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'valid', ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'valid', ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(tid) DO UPDATE SET
               series_id = excluded.series_id,
               page_type = excluded.page_type,
@@ -189,6 +192,7 @@ class ThreadsRepository:
               image_count = excluded.image_count,
               context_path = excluded.context_path,
               archive_status = excluded.archive_status,
+              capture_mode = excluded.capture_mode,
               validation_status = excluded.validation_status,
               missing_images_json = excluded.missing_images_json,
               needs_title_review = excluded.needs_title_review,
@@ -214,6 +218,7 @@ class ThreadsRepository:
                 snapshot.image_count,
                 context_path,
                 archive_status,
+                capture_mode,
                 missing_images_json,
                 self._bool_value(snapshot.title.needs_review),
                 self._bool_value(needs_series_review),
@@ -909,6 +914,7 @@ class ThreadsRepository:
             SELECT
               t.tid,
               t.archive_status,
+              t.capture_mode,
               t.sync_time,
               t.forum_id,
               t.content_kind,
@@ -942,6 +948,7 @@ class ThreadsRepository:
                         "tid": tid,
                         "archived": False,
                         "archive_status": None,
+                        "capture_mode": None,
                         "sync_time": None,
                         "forum_id": None,
                         "content_kind": None,
@@ -971,6 +978,7 @@ class ThreadsRepository:
                     "tid": int(row["tid"]),
                     "archived": True,
                     "archive_status": row["archive_status"],
+                    "capture_mode": row["capture_mode"],
                     "sync_time": row["sync_time"],
                     "forum_id": row["forum_id"],
                     "content_kind": row["content_kind"],

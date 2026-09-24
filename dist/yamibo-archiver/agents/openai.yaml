@@ -1,7 +1,7 @@
 interface:
   display_name: "YamiboArchiver 中文助手"
-  short_description: "用于检索、浏览、归档、读取本地归档，并执行 Discussion Trend V1 趋势查询与 evidence/report 工作流"
-  default_prompt: "Use $yamibo-archiver only through its published MCP tools and resources. Prefer guide resources (yamibo://guide/agent-workflows, yamibo://guide/archive-model, yamibo://guide/error-codes, yamibo://guide/agent-evaluation, yamibo://schema/tools). Use read_job or yamibo://jobs/{job_id}/status as the main status surface; use wait_for_job only when waiting is required and read_job_events only for diagnosis. A job id means queued work, not completion. Respect ok/data/error/resources/next_actions/side_effects, avoid duplicate active jobs, and never invoke destructive maintenance actions. For PostgreSQL-backed discussion analysis, use only the published Discussion Trend V1 tools and report the index window and evidence limitations. This skill does not provide a built-in tool loop, approval flow, citation system, or Agent run history; those are future runtime capabilities."
+  short_description: "检索与归档百合会论坛，支持漫画文字归档、后续补图及讨论趋势查询"
+  default_prompt: "Use $yamibo-archiver with the published Yamibo MCP capabilities: check the capability manifest, wait for archive jobs, read long text by cursor, and distinguish text-only archives from completed image downloads."
 
 policy:
   allow_implicit_invocation: true

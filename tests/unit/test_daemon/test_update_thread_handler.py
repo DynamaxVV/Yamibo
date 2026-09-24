@@ -167,10 +167,11 @@ def test_upsert_snapshot_defers_series_commit_to_outer_transaction(db, monkeypat
     assert commits == ["commit"]
 
 
-def test_handle_update_thread_appends_new_floor(db, tmp_path, monkeypatch):
+@pytest.mark.parametrize("capture_mode", ["full", "text_only"])
+def test_handle_update_thread_appends_new_floor(db, tmp_path, monkeypatch, capture_mode):
     settings = _make_settings(tmp_path)
     snapshot = _make_snapshot(tid=540745, content="旧尾章", rich_body_html="<div><strong>旧尾章</strong></div>")
-    ThreadsRepository(db).upsert_snapshot(snapshot, forum_id=55)
+    ThreadsRepository(db).upsert_snapshot(snapshot, forum_id=55, capture_mode=capture_mode)
     paths = StoragePaths(settings.data_dir, export_dir=settings.export_dir, novel_txt_export_dir=settings.novel_txt_export_dir)
     materialize_thread(paths, snapshot, archived_images={1: ["images/old.jpg"]})
 
@@ -220,7 +221,8 @@ def test_handle_update_thread_appends_new_floor(db, tmp_path, monkeypatch):
     )
     monkeypatch.setattr(
         "yamibo_mcp.daemon.handlers.update_thread.download_images_to_staging",
-        lambda *args, **kwargs: ImageDownloadResult(),
+        (lambda *args, **kwargs: ImageDownloadResult()) if capture_mode == "full"
+        else (lambda *args, **kwargs: pytest.fail("text-only update must not download images")),
     )
 
     handle_update_thread(repo, job, "worker-1", 300, settings)
@@ -231,6 +233,7 @@ def test_handle_update_thread_appends_new_floor(db, tmp_path, monkeypatch):
 
     assert thread_row is not None
     assert thread_row["sync_time"] is not None
+    assert thread_row["capture_mode"] == capture_mode
     assert len(floors) == 2
     assert "新增章节" in meta
     assert "旧尾章" in meta

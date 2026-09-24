@@ -131,6 +131,12 @@ export function JobDetail() {
   const failureContext = (job.artifacts?.failure_context as Record<string, unknown> | undefined) || null
   const remoteFetch = (failureContext?.remote_fetch as Record<string, unknown> | undefined) || null
   const failureKind = job.failure_kind || getJobFailureKind(job)
+  const imageFailureGuidance = isImageBackfill ? (
+    failureKind === 'image_http_404' ? tx('旧图片地址返回 404。系统会核对帖子当前地址；若地址仍无效，需确认源站图片状态。', 'The image URL returned 404. The system checks the current thread URL; if it still fails, verify the source image.') :
+    failureKind === 'image_upstream_throttled' ? tx('源站限流或暂不可用。等待退避后重试，避免立即重复请求。', 'The source is rate limited or temporarily unavailable. Retry after the delay.') :
+    failureKind === 'image_validation_failed' ? tx('已收到图片响应，但文件未通过校验；不能当作已归档图片。', 'An image response arrived but failed validation and was not archived.') :
+    failureKind === 'image_truncated_transfer' ? tx('收到的字节少于响应声明长度，可在稍后重试或续传。', 'Fewer bytes arrived than the response declared. Retry or resume the transfer later.') : null
+  ) : null
   const archiveBreakdown = getArchiveBreakdown(null, job.artifacts)
   const showPartialSummary =
     (job.status === 'partial' || job.artifacts?.archive_status === 'partial') &&
@@ -312,7 +318,7 @@ export function JobDetail() {
               <AlertTriangle className="w-3.5 h-3.5" />
               <span>{formatJobFailureKind(failureKind, lang) || tx('任务受阻', 'Task blocked')}</span>
             </div>
-            <p className="mb-2">{tx('发生阶段', 'Stage')}: {job.stage || '—'} · {canResync ? tx('请重新同步帖子', 'Resync the thread.') : job.status === 'paused' ? tx('任务已暂停。确认服务及远端资源恢复后，可点击上方“继续”。', 'The task is paused. Resume it above after the service and remote resources recover.') : canRerun ? tx('可通过上方重试操作创建新任务；若重复失败，请展开技术原文排查。', 'Use Retry above to create a new task. If it fails again, expand the technical details.') : tx('请查看最近事件，确认服务和远端资源状态。', 'Check recent events and verify the service and remote resource status.')}</p>
+            <p className="mb-2">{tx('发生阶段', 'Stage')}: {job.stage || '—'} · {imageFailureGuidance || (canResync ? tx('请重新同步帖子', 'Resync the thread.') : job.status === 'paused' ? tx('任务已暂停。确认服务及远端资源恢复后，可点击上方“继续”。', 'The task is paused. Resume it above after the service and remote resources recover.') : canRerun ? tx('可通过上方重试操作创建新任务；若重复失败，请展开技术原文排查。', 'Use Retry above to create a new task. If it fails again, expand the technical details.') : tx('请查看最近事件，确认服务和远端资源状态。', 'Check recent events and verify the service and remote resource status.'))}</p>
             <details><summary className="cursor-pointer font-medium">{lang === 'en' ? 'Technical details' : '技术原文'}</summary><div className="whitespace-pre-wrap break-all mt-2 font-mono text-xs">
               {job.active_error?.message || job.error_message}
             </div></details>

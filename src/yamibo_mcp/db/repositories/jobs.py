@@ -473,8 +473,10 @@ class JobsRepository:
         ).fetchone()
         return int(row["n"] or 0)
 
-    def find_live_job_for_thread(self, *, job_type: str, tid: int) -> Job | None:
-        row = self.conn.execute(
+    def find_live_job_for_thread(
+        self, *, job_type: str, tid: int, payload: dict[str, Any] | None = None,
+    ) -> Job | None:
+        rows = self.conn.execute(
             f"""
             SELECT *
             FROM jobs
@@ -482,13 +484,18 @@ class JobsRepository:
               AND tid = ?
               AND status IN ({",".join("?" for _ in _LIVE_JOB_STATUSES)})
             ORDER BY created_at DESC, job_id DESC
-            LIMIT 1
+            {"LIMIT 1" if payload is None else ""}
             """,
             (job_type, tid, *_LIVE_JOB_STATUSES),
-        ).fetchone()
-        if row is None:
-            return None
-        return _job_from_row(row)
+        ).fetchall()
+        for row in rows:
+            job = _job_from_row(row)
+            existing_payload = job.payload
+            if job_type == "sync_thread":
+                existing_payload = {"mode": "full", **existing_payload}
+            if payload is None or existing_payload == payload:
+                return job
+        return None
 
     def get_latest_job(
         self,
@@ -990,13 +997,17 @@ class JobsRepository:
         error_message: str,
         artifacts: dict[str, Any] | None = None,
         delay_seconds: int | None = None,
+        max_delay_seconds: int = 60,
     ) -> bool:
         def _retry_later() -> tuple[sqlite3.Cursor | None, dict[str, Any], bool]:
             now = utc_now_iso()
             current = self.get(job_id)
             if current.retry_count >= current.max_retries:
                 return None, {}, False
-            retry_delay = min(int(delay_seconds) if delay_seconds is not None else 5 * (2 ** current.retry_count), 60)
+            retry_delay = min(
+                int(delay_seconds) if delay_seconds is not None else 5 * (2 ** current.retry_count),
+                max(1, int(max_delay_seconds)),
+            )
             # PONETAIL: retrying jobs reuse lease_until as a not-before timestamp;
             # split it into next_retry_at only if scheduling semantics expand.
             next_retry_at = utc_after_iso(retry_delay)

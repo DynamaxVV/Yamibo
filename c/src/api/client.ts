@@ -83,6 +83,7 @@ export interface ThreadSummary {
   pub_time: string | null
   sync_time: string | null
   archive_status: string | null
+  capture_mode?: 'text_only' | 'full'
   validation_status: string | null
   context_path: string | null
   series_id: number | null
@@ -592,6 +593,7 @@ export interface ThreadBatchArchiveResult {
   created_job_ids: string[]
   reused_job_ids: string[]
   tids: number[]
+  jobs?: Array<{ tid: number; job_id: string | null; requested_mode: 'text_only' | 'full'; status: string }>
 }
 
 export interface ThreadBatchDeleteResult {
@@ -624,6 +626,7 @@ export interface RemoteForum {
 
 export interface RemoteForumThreadLocal {
   archived: boolean
+  capture_mode?: 'text_only' | 'full'
   sync_time: string | null
   series_id: number | null
   export_path: string | null
@@ -805,7 +808,7 @@ export const api = {
     postJson<AgentWireResult<{ job_id: string; tid: number | null; created: boolean; job_type: string }>>('/rag/index', data),
   createRagIndexBatch: (data: { tids?: number[]; q?: string; forum_id?: number | null; index_state?: string; rag_status?: string; force?: boolean }) =>
     postJson<RagBatchIndexResult>('/rag/index-batch', data),
-  createThreadArchiveBatch: (data: { tids: number[]; forum_id?: number | null; base_url?: string | null }) =>
+  createThreadArchiveBatch: (data: { tids: number[]; forum_id?: number | null; base_url?: string | null; mode?: 'text_only' | 'full' }) =>
     postJson<ThreadBatchArchiveResult>('/threads/archive-batch', data),
   ragSearch: (data: {
     query: string

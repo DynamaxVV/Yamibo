@@ -26,6 +26,7 @@ from yamibo_mcp.daemon.handlers.image_backfill import (
     _resolve_selected_remote_urls,
     _selected_download_retries,
     _image_download_failure_code,
+    _image_retry_delay_seconds,
     _needs_attachment_url_refresh,
     _should_retry_image_download,
     _snapshot_for_missing_images,
@@ -244,10 +245,12 @@ def test_selected_attachment_signature_rotation_matches_stable_aid():
 
 def test_attachment_url_refresh_only_for_stale_link_evidence():
     attachment = "https://bbs.yamibo.com/forum.php?mod=attachment&aid=MQ%3D%3D"
-    static_image = "https://bbs.yamibo.com/data/attachment/forum/image.png"
+    direct_attachment = "https://bbs.yamibo.com/data/attachment/forum/image.png"
+    static_image = "https://bbs.yamibo.com/static/image/smiley/default/1.gif"
     assert _needs_attachment_url_refresh({attachment}, [{"url": attachment, "http_status": 404}])
     assert not _needs_attachment_url_refresh({attachment}, [{"url": attachment, "error_type": "network_error"}])
     assert not _needs_attachment_url_refresh({attachment}, [{"url": attachment, "http_status": 403, "error_type": "waf_response"}])
+    assert _needs_attachment_url_refresh({direct_attachment}, [{"url": direct_attachment, "http_status": 404}])
     assert not _needs_attachment_url_refresh({static_image}, [{"url": static_image, "http_status": 404}])
 
 
@@ -461,6 +464,16 @@ def test_selected_image_download_retries_only_transient_failures():
     assert _image_download_failure_code(
         [{"status": "error", "error_type": "truncated_image", "retryable": True}],
     ) == "IMAGE_TARGET_NOT_DOWNLOADED"
+
+
+def test_image_retry_delay_uses_retry_after_and_bounded_backoff():
+    diagnostics = [{"http_status": 429, "response_headers": {"Retry-After": "180"}}]
+    assert _image_retry_delay_seconds(diagnostics, retry_count=0) == 180
+    assert _image_retry_delay_seconds(diagnostics, retry_count=3) == 480
+    assert _image_retry_delay_seconds([{"http_status": 503}], retry_count=0) == 60
+    assert _image_retry_delay_seconds(
+        [{"http_status": 429, "response_headers": {"Retry-After": "99999"}}], retry_count=0,
+    ) == 3600
 
 
 def test_auto_scheduler_creates_internal_image_backfill_dry_run_job(db, tmp_path):
@@ -904,6 +917,24 @@ def test_auto_scheduler_preserves_all_candidate_reason_semantics(db, monkeypatch
         "image_count_asset_gap",
         "missing_or_pending_asset",
     ]
+
+
+def test_auto_scheduler_ignores_downloaded_shared_image(db):
+    db.execute(
+        """INSERT INTO threads (tid, raw_title, display_title, sync_time, image_count, archive_status, forum_id)
+           VALUES (3435, 'raw', 'display', '2026-07-01T00:00:00+00:00', 2, 'complete', 5)"""
+    )
+    db.execute("INSERT INTO floors (pid, tid, floor_no, content, has_images) VALUES (34351, 3435, 2, 'reply', 1)")
+    db.execute(
+        """INSERT INTO assets (asset_id, tid, pid, asset_type, remote_url, local_path, status)
+           VALUES ('image-3435', 3435, 34351, 'image', 'https://example.invalid/a.webp', 'images/a.webp', 'downloaded'),
+                  ('shared-3435', 3435, 34351, 'shared', 'https://example.invalid/static/image/smile.gif', 'shared/smile.gif', 'downloaded')"""
+    )
+    db.commit()
+
+    scan = scheduler._select_candidate_batch(JobsRepository(db), _scheduler_settings(), dry_run=True, cursor_tid=0)
+    assert scan["candidate"] is None
+    assert scan["batch_size"] == 1
 
 
 def test_auto_scheduler_batch_blocking_rules_match_single_tid_rules(db):
@@ -1353,10 +1384,90 @@ def test_image_backfill_uses_saved_url_without_fetching_thread(db, tmp_path, mon
     assert str(thread["sync_time"]).startswith("2026-07-01")
 
 
-def test_image_backfill_refreshes_expired_attachment_url_after_direct_failure(db, tmp_path, monkeypatch):
+def test_text_only_upgrade_downloads_saved_images_from_first_and_later_floors(db, tmp_path, monkeypatch):
+    tid = 2490
+    first_url = "https://bbs.yamibo.com/data/attachment/forum/first.png"
+    reply_url = "https://bbs.yamibo.com/data/attachment/forum/reply.png"
+    base = _snapshot(tid, [reply_url])
+    first = replace(base.floors[0], has_images=True, image_urls=[first_url])
+    snapshot = replace(base, floors=[first, base.floors[1]], image_count=2)
+    paths = StoragePaths(tmp_path)
+    materialize_thread(paths, snapshot)
+    db.execute(
+        """INSERT INTO threads (tid, raw_title, display_title, sync_time, image_count, archive_status, capture_mode, forum_id)
+           VALUES (?, 'title', 'title', '2026-07-01T00:00:00+00:00', 2, 'complete', 'text_only', 30)""",
+        (tid,),
+    )
+    for floor in snapshot.floors:
+        db.execute(
+            "INSERT INTO floors (pid, tid, floor_no, content, has_images) VALUES (?, ?, ?, ?, 1)",
+            (floor.pid, tid, floor.floor_no, floor.content),
+        )
+        db.execute(
+            """INSERT INTO assets (asset_id, tid, pid, asset_type, remote_url, local_path, exportable, required, status)
+               VALUES (?, ?, ?, 'image', ?, NULL, 1, 1, 'pending')""",
+            (f"asset-{floor.pid}", tid, floor.pid, floor.image_urls[0]),
+        )
+    db.commit()
+
+    png = bytearray(b"\x89PNG\r\n\x1a\n" + b"\x00" * 108 + b"\x00\x00\x00\x00IEND\xaeB`\x82")
+    png[16:20] = (640).to_bytes(4, "big")
+    png[20:24] = (480).to_bytes(4, "big")
+    image_calls = []
+
+    class Client:
+        headers = {}
+        cookie_jar = None
+        cookie_file = None
+        use_system_proxy = False
+        proxy_url = None
+
+        def fetch_image(self, image_url, **kwargs):
+            image_calls.append(image_url)
+            return SimpleNamespace(status_code=200, final_url=image_url, headers={"Content-Type": "image/png"}, content=bytes(png))
+
+        def fetch_thread_page(self, **kwargs):
+            pytest.fail("upgrading saved images must not fetch the thread")
+
+    @contextmanager
+    def borrow(settings, **kwargs):
+        yield SimpleNamespace(account_id="test", permission_level=10), Client()
+
+    monkeypatch.setattr("yamibo_mcp.daemon.handlers.image_backfill.borrow_yamibo_client", borrow)
+    monkeypatch.setattr("yamibo_mcp.daemon.handlers.image_backfill.select_thread_proxy", lambda *a, **k: None)
+    repo = JobsRepository(db)
+    job = repo.create("image_backfill", tid=tid, payload={"tid": tid, "upgrade_to_full": True})
+    settings = SimpleNamespace(
+        data_dir=tmp_path, export_dir=tmp_path / "exports", novel_txt_export_dir=tmp_path / "novel_exports",
+        image_backfill_max_pages=1, image_backfill_fixed_after=None,
+        image_download_timeout_seconds=1.0, image_download_retries=0,
+    )
+
+    handle_image_backfill(repo, repo.get(job.job_id), "worker", 60, settings)
+
+    assert repo.get(job.job_id).status == "succeeded"
+    assert set(image_calls) == {first_url, reply_url}
+    row = db.execute("SELECT capture_mode, archive_status FROM threads WHERE tid = ?", (tid,)).fetchone()
+    assert (row["capture_mode"], row["archive_status"]) == ("full", "complete")
+    assets = db.execute("SELECT local_path FROM assets WHERE tid = ?", (tid,)).fetchall()
+    assert len(assets) == 2 and all(asset["local_path"] for asset in assets)
+
+
+@pytest.mark.parametrize(
+    ("old_url", "new_url"),
+    [
+        (
+            "https://bbs.yamibo.com/forum.php?mod=attachment&aid=MTYzODQzNHxvbGQ%3D&nothumb=yes",
+            "https://bbs.yamibo.com/forum.php?mod=attachment&aid=MTYzODQzNHxuZXc%3D&nothumb=yes",
+        ),
+        (
+            "https://bbs.yamibo.com/data/attachment/album/201506/12/old-thumb.jpg",
+            "https://bbs.yamibo.com/data/attachment/album/201506/12/new-image.png",
+        ),
+    ],
+)
+def test_image_backfill_refreshes_expired_attachment_url_after_direct_failure(db, tmp_path, monkeypatch, old_url, new_url):
     tid = 2402
-    old_url = "https://bbs.yamibo.com/forum.php?mod=attachment&aid=MTYzODQzNHxvbGQ%3D&nothumb=yes"
-    new_url = "https://bbs.yamibo.com/forum.php?mod=attachment&aid=MTYzODQzNHxuZXc%3D&nothumb=yes"
     local_snapshot = _snapshot(tid, [old_url])
     paths = StoragePaths(tmp_path)
     materialize_thread(paths, local_snapshot, missing_image_urls=[old_url])
@@ -1721,3 +1832,41 @@ def test_image_backfill_reborrows_with_higher_permission_after_permission_gate(d
     assert completed.artifacts["account_id"] == "high"
     assert completed.artifacts["account_permission_level"] == 50
     assert completed.artifacts["account_min_permission"] == 50
+
+
+def test_auto_scheduler_excludes_intentional_text_only_archives(db):
+    for tid, mode in ((9901, "text_only"), (9902, "full")):
+        db.execute(
+            """INSERT INTO threads (tid, raw_title, archive_status, forum_id, image_count, capture_mode)
+               VALUES (?, 'test', 'complete', 5, 1, ?)""", (tid, mode),
+        )
+        db.execute(
+            "INSERT INTO floors (pid, tid, floor_no, content, has_images) VALUES (?, ?, 2, 'reply', 1)",
+            (tid * 10, tid),
+        )
+    db.commit()
+    scan = scheduler._select_candidate_batch(
+        JobsRepository(db), _scheduler_settings(), dry_run=True, cursor_tid=0,
+    )
+    assert scan["candidate"]["tid"] == 9902
+    assert scan["candidate_count"] == 1
+
+
+def test_auto_scheduler_revalidates_mode_of_cached_candidate(db):
+    db.execute(
+        "INSERT INTO threads (tid, raw_title, capture_mode) VALUES (9911, 'test', 'text_only')"
+    )
+    db.execute(
+        "INSERT INTO system_state (key, value_json, updated_at) VALUES (?, ?, ?)",
+        ("image_backfill_auto_scheduler", json.dumps({
+            "scan_forum_id": 5,
+            "pending_forum_id": 5,
+            "pending_dry_run": True,
+            "pending_candidates": [{"tid": 9911, "reason": "old_batch"}],
+        }), "2026-09-24T00:00:00+00:00"),
+    )
+    db.commit()
+    assert maybe_enqueue_image_backfill_dry_run(JobsRepository(db), _scheduler_settings()) is False
+    assert db.execute("SELECT COUNT(*) AS c FROM jobs").fetchone()["c"] == 0
+    state = SystemStateRepository(db).get_json("image_backfill_auto_scheduler")
+    assert state["pending_candidates"] == []

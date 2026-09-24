@@ -261,12 +261,14 @@ def build_parser() -> argparse.ArgumentParser:
     sync_parser.add_argument("--url")
     sync_parser.add_argument("--base-url")
     sync_parser.add_argument("--forum-id", type=int)
+    sync_parser.add_argument("--mode", choices=["text_only", "full"], default="full")
     archive_parser = sub.add_parser("create-thread-archive-job")
     archive_parser.add_argument("--html-path")
     archive_parser.add_argument("--tid", type=int)
     archive_parser.add_argument("--url")
     archive_parser.add_argument("--base-url")
     archive_parser.add_argument("--forum-id", type=int)
+    archive_parser.add_argument("--mode", choices=["text_only", "full"], default="full")
     inspect_parser = sub.add_parser("inspect-remote-thread")
     inspect_parser.add_argument("--tid", type=int, required=True)
     inspect_parser.add_argument("--forum-id", type=int)
@@ -326,12 +328,14 @@ def build_parser() -> argparse.ArgumentParser:
     archive_batch_parser.add_argument("--tid", type=int, action="append", dest="tids", required=True)
     archive_batch_parser.add_argument("--base-url")
     archive_batch_parser.add_argument("--forum-id", type=int)
+    archive_batch_parser.add_argument("--mode", choices=["text_only", "full"], default="full")
     probe_parser = sub.add_parser("probe-archived-threads")
     probe_parser.add_argument("--tid", type=int, action="append", dest="tids", required=True)
     ensure_parser = sub.add_parser("ensure-thread-archived")
     ensure_parser.add_argument("--tid", type=int, required=True)
     ensure_parser.add_argument("--base-url")
     ensure_parser.add_argument("--forum-id", type=int)
+    ensure_parser.add_argument("--mode", choices=["text_only", "full"], default="full")
     rag_index_batch_parser = sub.add_parser("create-rag-index-batch-jobs")
     rag_index_batch_parser.add_argument("--tid", type=int, action="append", dest="tids", required=True)
     rag_index_batch_parser.add_argument("--force", action="store_true")
@@ -441,7 +445,7 @@ def main() -> None:
     elif command == "create-noop-job":
         print(create_noop_job())
     elif command == "create-sync-thread-job":
-        print(dump_json(archive_thread_job(html_path=args.html_path, tid=args.tid, url=args.url, base_url=args.base_url, forum_id=args.forum_id)))
+        print(dump_json(archive_thread_job(html_path=args.html_path, tid=args.tid, url=args.url, base_url=args.base_url, forum_id=args.forum_id, mode=args.mode)))
     elif command == "create-thread-archive-job":
         print(
             dump_json(
@@ -451,6 +455,7 @@ def main() -> None:
                     url=args.url,
                     base_url=args.base_url,
                     forum_id=args.forum_id,
+                    mode=args.mode,
                 )
             )
         )
@@ -529,6 +534,7 @@ def main() -> None:
                     tids=args.tids,
                     base_url=args.base_url,
                     forum_id=args.forum_id,
+                    mode=args.mode,
                 )
             )
         )
@@ -541,6 +547,7 @@ def main() -> None:
                     tid=args.tid,
                     base_url=args.base_url,
                     forum_id=args.forum_id,
+                    mode=args.mode,
                 )
             )
         )

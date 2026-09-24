@@ -21,7 +21,7 @@ from yamibo_mcp.domain.models import Job, ThreadSnapshot
 from yamibo_mcp.domain.thread_fingerprint import floor_content_hash
 from yamibo_mcp.domain.validation import empty_primary_floor_exclusion_reason, validate_thread_snapshot
 from yamibo_mcp.storage.paths import StoragePaths
-from yamibo_mcp.storage.images import download_images_to_staging
+from yamibo_mcp.storage.images import ImageDownloadResult, download_images_to_staging
 from yamibo_mcp.storage.staging import write_staging_failure, write_staging_snapshot, write_staging_title_parse_log
 from yamibo_mcp.storage.thread_archive import materialize_thread
 from yamibo_mcp.services.title_hints import update_title_hints
@@ -157,6 +157,9 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
     url_value = job.payload.get("url")
     base_url = job.payload.get("base_url")
     forum_id = int(job.payload["forum_id"]) if job.payload.get("forum_id") is not None else None
+    capture_mode = str(job.payload.get("mode") or "full")
+    if capture_mode not in {"full", "text_only"}:
+        raise ValueError(f"unsupported capture mode: {capture_mode}")
     tid = job.tid or extract_tid_from_input(job.payload.get("tid", ""))
     source_url: str | None = None
     snapshot = None
@@ -581,10 +584,15 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
             if validation.errors:
                 raise ValueError("; ".join(validation.errors))
 
-            # 图片下载先走 staging，失败 URL 先记录下来，后续再演进成 partial 状态。
+            # Text-only archives retain the image references but do not fetch image bytes.
             _check_cancelled(repo, job.job_id)
             _check_paused(repo, job.job_id)
-            repo.update_stage(job.job_id, "download_images", progress_current=4, progress_total=6)
+            repo.update_stage(
+                job.job_id,
+                "download_images" if capture_mode == "full" else "skip_images",
+                progress_current=4,
+                progress_total=6,
+            )
             download_lease_seconds = max(
                 lease_seconds,
                 int(max(float(getattr(settings, "image_download_timeout_seconds", 0.0)) * 3.0, 120.0)),
@@ -627,23 +635,27 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
                         download_lease_seconds,
                     )
 
-            image_result = download_images_to_staging(
-                paths,
-                job.job_id,
-                snapshot,
-                timeout=settings.image_download_timeout_seconds,
-                retries=settings.image_download_retries,
-                headers=None if client is None else client.headers,
-                cookie_jar=None if client is None else client.cookie_jar,
-                cookie_file=None if client is None else getattr(client, "cookie_file", None),
-                use_system_proxy=False if client is None else client.use_system_proxy,
-                proxy_url=None if client is None else getattr(client, "proxy_url", None),
-                referer=source_url,
-                fetcher=None if client is None else getattr(client, "fetch_image", None),
-                on_progress=_progress,
-                cancel_check=worker_cancel_check,
-                control_check=main_control_check,
-                stage_deadline_seconds=download_stage_timeout_seconds,
+            image_result = (
+                download_images_to_staging(
+                    paths,
+                    job.job_id,
+                    snapshot,
+                    timeout=settings.image_download_timeout_seconds,
+                    retries=settings.image_download_retries,
+                    headers=None if client is None else client.headers,
+                    cookie_jar=None if client is None else client.cookie_jar,
+                    cookie_file=None if client is None else getattr(client, "cookie_file", None),
+                    use_system_proxy=False if client is None else client.use_system_proxy,
+                    proxy_url=None if client is None else getattr(client, "proxy_url", None),
+                    referer=source_url,
+                    fetcher=None if client is None else getattr(client, "fetch_image", None),
+                    on_progress=_progress,
+                    cancel_check=worker_cancel_check,
+                    control_check=main_control_check,
+                    stage_deadline_seconds=download_stage_timeout_seconds,
+                )
+                if capture_mode == "full"
+                else ImageDownloadResult()
             )
             _check_paused(repo, job.job_id)
             LOG.info(
@@ -667,7 +679,14 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
             repo.update_stage(job.job_id, "db_commit", progress_current=5, progress_total=6)
             context_path = paths.thread_context(snapshot.tid)
             relative_context = str(context_path.relative_to(settings.data_dir))
-            archive_status = "partial" if (image_result.missing_urls or image_result.stopped_reason) else "complete"
+            text_incomplete = capture_mode == "text_only" and (
+                fetch_artifacts.get("stopped_reason") not in {None, "input_author_page", "last_page"}
+                or (
+                    isinstance(fetch_artifacts.get("total_pages_detected"), int)
+                    and int(fetch_artifacts.get("pages_fetched") or 0) < int(fetch_artifacts["total_pages_detected"])
+                )
+            )
+            archive_status = "partial" if (text_incomplete or image_result.missing_urls or image_result.stopped_reason) else "complete"
             content = build_content_snapshot(snapshot, forum_id=forum_id)
             local_path_by_remote_url, status_by_remote_url = _map_downloaded_asset_paths(snapshot, content.assets, image_result)
             synced_assets = [
@@ -690,6 +709,7 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
                     category=category,
                     context_path=relative_context,
                     archive_status=archive_status,
+                    capture_mode=capture_mode,
                     missing_image_urls=image_result.missing_urls,
                     title_warnings=None if title_parse_log is None else {
                         "title_parse_log": {
@@ -747,6 +767,8 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
                 "missing_image_count": len(image_result.missing_urls),
                 "missing_shared_image_count": len(image_result.missing_shared_urls),
                 "archive_status": archive_status,
+                "capture_mode": capture_mode,
+                "image_state": "not_requested" if capture_mode == "text_only" else ("partial" if archive_status == "partial" else "complete"),
                 "pages_fetched": fetch_artifacts.get("pages_fetched", 1),
                 "fetch_stopped_reason": fetch_artifacts.get("stopped_reason"),
                 "download_stopped_reason": image_result.stopped_reason,
@@ -775,7 +797,7 @@ def handle_sync_thread(repo: JobsRepository, job: Job, worker_id: str, lease_sec
                     "strategy": llm_title_meta.get("strategy"),
                     "error": llm_title_meta.get("error"),
                 }
-            if image_result.missing_urls or image_result.stopped_reason:
+            if archive_status == "partial":
                 LOG.info(
                     "Thread %s archived as partial: downloaded=%s non_export=%s shared=%s skipped=%s missing=%s missing_shared=%s stopped_reason=%s",
                     snapshot.tid,

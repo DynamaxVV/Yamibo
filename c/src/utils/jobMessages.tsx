@@ -20,6 +20,10 @@ export type JobFailureKind =
   | 'remote_fetch'
   | 'unexpected_page'
   | 'image_download_failed'
+  | 'image_http_404'
+  | 'image_upstream_throttled'
+  | 'image_validation_failed'
+  | 'image_truncated_transfer'
   | 'validation'
   | 'other'
 
@@ -42,6 +46,10 @@ const JOB_FAILURE_KIND_LABELS: Record<'zh' | 'en', Record<JobFailureKind, string
     remote_fetch: '远程抓取失败',
     unexpected_page: '页面不符合预期',
     image_download_failed: '图片下载失败',
+    image_http_404: '图片地址返回 404',
+    image_upstream_throttled: '图片源站限流或暂不可用',
+    image_validation_failed: '图片内容校验失败',
+    image_truncated_transfer: '图片传输不完整',
     validation: '校验失败',
     other: '其他失败',
   },
@@ -63,6 +71,10 @@ const JOB_FAILURE_KIND_LABELS: Record<'zh' | 'en', Record<JobFailureKind, string
     remote_fetch: 'Remote fetch failed',
     unexpected_page: 'Unexpected page',
     image_download_failed: 'Image download failed',
+    image_http_404: 'Image URL returned 404',
+    image_upstream_throttled: 'Image source rate limited or unavailable',
+    image_validation_failed: 'Image body failed validation',
+    image_truncated_transfer: 'Incomplete image transfer',
     validation: 'Validation failed',
     other: 'Other failure',
   },
@@ -117,6 +129,7 @@ export function getJobFailureKind(job: JobFailureLike): JobFailureKind | null {
   const errorCode = getString(job.error_code).toLowerCase()
   const errorMessage = getString(job.error_message)
   const artifacts = getRecord(job.artifacts)
+  const imageSummary = artifacts ? getRecord(artifacts.image_download_summary) : null
   const failureContext = artifacts ? getRecord(artifacts.failure_context) : null
   const remoteFetch = failureContext ? getRecord(failureContext.remote_fetch) : null
   const remoteAttempt = artifacts ? getRecord(artifacts.remote_attempt) : null
@@ -143,7 +156,26 @@ export function getJobFailureKind(job: JobFailureLike): JobFailureKind | null {
   if (includesAny(errorCode, ['remote_timeout'])) return 'remote_timeout'
   if (includesAny(errorCode, ['remote_connection_error'])) return 'remote_connection'
   if (includesAny(errorCode, ['remote_soft_block'])) return 'remote_blocked'
-  if (includesAny(errorCode, ['image_target_not_downloaded'])) return 'image_download_failed'
+  if (includesAny(errorCode, ['image_target_not_downloaded'])) {
+    const failed = Number(imageSummary?.failed || 0)
+    const statuses = getRecord(imageSummary?.http_status_counts)
+    const errors = getRecord(imageSummary?.error_type_counts)
+    const statusKeys = statuses ? Object.keys(statuses) : []
+    if (failed > 0 && statuses && errors && Object.keys(errors).length === 1 && Number(errors.http_error) === failed && statusKeys.reduce((total, key) => total + Number(statuses[key] || 0), 0) === failed) {
+      if (statusKeys.length === 1 && statusKeys[0] === '404') return 'image_http_404'
+      if (statusKeys.length > 0 && statusKeys.every(key => key === '429' || key === '503')) return 'image_upstream_throttled'
+    }
+    const errorKeys = errors ? Object.keys(errors) : []
+    if (failed > 0 && errors && errorKeys.length > 0 && errorKeys.every(key => key === 'truncated_image' || key === 'invalid_image_body') && errorKeys.reduce((total, key) => total + Number(errors[key] || 0), 0) === failed) {
+      const diagnostics = Array.isArray(artifacts?.image_download_diagnostics) ? artifacts.image_download_diagnostics : []
+      if (diagnostics.length === failed && diagnostics.every(item => {
+        const diagnostic = getRecord(item)
+        return diagnostic?.error_type === 'truncated_image' && diagnostic.content_length_matches === false
+      })) return 'image_truncated_transfer'
+      return 'image_validation_failed'
+    }
+    return 'image_download_failed'
+  }
   // 远程抓取兜底
   if (includesAny(errorCode, ['remotefetcherror', 'remote_fetch_failed']) || includesAny(combined, ['failed to read', 'remote fetch'])) return 'remote_fetch'
   if (includesAny(errorCode, ['unexpectedpageerror', 'unexpected_remote_page']) || includesAny(combined, ['unexpected page', 'expected thread detail page'])) return 'unexpected_page'

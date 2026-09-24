@@ -128,6 +128,7 @@ def create_thread_archive_job(
     html_path: str | None = None,
     base_url: str | None = None,
     forum_id: int | None = None,
+    mode: str = "full",
 ) -> AgentResult:
     return _create_thread_archive_job(
         tid=tid,
@@ -135,6 +136,7 @@ def create_thread_archive_job(
         html_path=html_path,
         base_url=base_url,
         forum_id=forum_id,
+        mode=mode,
     )
 
 
@@ -144,8 +146,9 @@ def create_thread_archive_batch_jobs(
     tids: list[int],
     base_url: str | None = None,
     forum_id: int | None = None,
+    mode: str = "full",
 ) -> AgentResult:
-    return _create_thread_archive_batch_jobs(tids=tids, base_url=base_url, forum_id=forum_id)
+    return _create_thread_archive_batch_jobs(tids=tids, base_url=base_url, forum_id=forum_id, mode=mode)
 
 
 @agent_tool
@@ -154,8 +157,9 @@ def ensure_thread_archived(
     tid: int,
     base_url: str | None = None,
     forum_id: int | None = None,
+    mode: str = "full",
 ) -> AgentResult:
-    return _ensure_thread_archived(tid=tid, base_url=base_url, forum_id=forum_id)
+    return _ensure_thread_archived(tid=tid, base_url=base_url, forum_id=forum_id, mode=mode)
 
 
 @agent_tool
@@ -727,7 +731,8 @@ PUBLIC_AGENT_TOOLS = [
     ),
     capability_registration(
         "create_thread_archive_job",
-        "Create a background archive job for a thread or local HTML input. Side effect: "
+        "Create a background archive job for a thread or local HTML input. "
+        "mode=text_only saves text and image references; mode=full (default) also downloads images. Side effect: "
         "writes a queued job to the configured database; daemon execution is required.",
         create_thread_archive_job,
         _job_metadata(
@@ -740,7 +745,8 @@ PUBLIC_AGENT_TOOLS = [
     ),
     capability_registration(
         "create_thread_archive_batch_jobs",
-        "Create background archive jobs for multiple thread ids. Side effect: writes "
+        "Create background archive jobs for multiple thread ids. "
+        "mode=text_only saves text and image references; mode=full (default) also downloads images. Side effect: writes "
         "queued jobs to the configured database; daemon execution is required.",
         create_thread_archive_batch_jobs,
         _job_metadata(

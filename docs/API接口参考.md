@@ -145,7 +145,7 @@ Discussion Trend V1 是 PostgreSQL-only 能力面，包含：
 
 ### 1.4 create_thread_archive_job
 
-创建帖子归档任务；长操作只返回 job_id。
+创建帖子归档任务；只写入 Job 队列，Daemon 执行后才有归档结果。
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
@@ -153,8 +153,10 @@ Discussion Trend V1 是 PostgreSQL-only 能力面，包含：
 | tid | int \| null | 否 | 帖子 ID |
 | url | string \| null | 否 | 帖子 URL |
 | base_url | string \| null | 否 | 站点根 URL |
+| forum_id | int \| null | 否 | 分区 ID；漫画区为 30 |
+| mode | `text_only` \| `full` | 否 | 默认 `full`；`text_only` 归档文字与图片引用，但不下载图片 |
 
-三个参数至少提供一个。返回 `{"job_id": "sync_thread_xxxx"}`。
+`html_path`、`tid`、`url` 至少提供一个。返回的 `data` 包含 `job_id`、`job_type`、`created`、`requested_mode`、`status`。已有完整归档再次请求 `text_only` 时可能返回 `status=satisfied`、`job_id=null`；活动中的同类 Job 会复用。对已完成的 `text_only` 归档再次请求 `mode=full`，会创建 `image_backfill` Job，完成后将 `capture_mode` 更新为 `full`。`job_id` 非空只表示任务已排队，须通过 `read_job` / `wait_for_job` 确认终态。
 
 ---
 
@@ -167,8 +169,9 @@ Discussion Trend V1 是 PostgreSQL-only 能力面，包含：
 | tids | int[] | 是 | - | 要归档的帖子 ID 列表 |
 | base_url | string \| null | 否 | null | 站点根 URL |
 | forum_id | int \| null | 否 | null | 指定分区 ID |
+| mode | `text_only` \| `full` | 否 | `full` | `text_only` 不下载图片；后续可对相同 tid 请求 `full` |
 
-返回结果包含 `target_count / created_count / reused_count / created_job_ids / reused_job_ids / tids`。
+返回结果包含 `target_count / created_count / reused_count / satisfied_count / created_job_ids / reused_job_ids / requested_mode / jobs / tids`。每个 `jobs` 项会标明 `tid`、`job_id`、`job_type`、`requested_mode` 和状态。
 
 ---
 
@@ -180,7 +183,7 @@ Discussion Trend V1 是 PostgreSQL-only 能力面，包含：
 
 ### 1.5 ensure_thread_archived
 
-检查本地是否已有归档；若缺失则创建归档任务。
+检查本地是否已有满足 `mode` 的归档；`mode` 可为 `text_only` 或默认的 `full`。已有完整归档满足文字请求；仅文字归档不满足完整请求，会创建图片回填 Job。
 
 ### 1.6 read_archived_thread
 
@@ -203,6 +206,8 @@ Discussion Trend V1 是 PostgreSQL-only 能力面，包含：
 | chunk_size | int \| null | 否 | 20 | content 视图每页楼层数，最大 50 |
 
 `content` 视图返回 `has_more`、`next_cursor`、`resource_hints`，大帖应按 cursor 分页读取。
+
+所有视图还会返回 `capture_mode`、`image_reference_count`、`local_image_count`、`image_state`。`capture_mode=text_only` 且 `image_state=not_requested` 表示有意未下载图片，不是图片下载失败；楼层文字仍可通过 `content` 分页读取。`capture_mode=full` 时 `image_state=complete|partial` 描述本地图片是否齐全。`archive_status=complete` 与 `capture_mode=text_only` 可以同时成立：前者表示此次文字归档已完成，不表示图片已保存。仅文字归档须升级为完整归档后才能创建导出任务或单图补取任务。
 
 ### 1.6.1 probe_archived_threads
 
@@ -585,9 +590,13 @@ yamibo-archiver search-threads --query "星灵感应"
 
 # 创建归档任务
 yamibo-archiver create-thread-archive-job --tid 572313
+yamibo-archiver create-thread-archive-job --tid 572313 --forum-id 30 --mode text_only
+# 等文字 Job 完成后，用同一 tid 升级为完整归档
+yamibo-archiver create-thread-archive-job --tid 572313 --forum-id 30 --mode full
 
 # 批量创建归档任务
 yamibo-archiver create-sync-thread-batch-jobs --tid 572313 --tid 572314
+yamibo-archiver create-sync-thread-batch-jobs --tid 572313 --tid 572314 --forum-id 30 --mode text_only
 
 # 远端只读预览
 yamibo-archiver inspect-remote-thread --tid 572313
@@ -671,6 +680,7 @@ Web 控制台基于 HTTP，提供 JSON API 和页面路由。
 
 | 路径 | 方法 | 说明 |
 |------|------|------|
+| `/api/threads/archive-batch` | POST | 请求体含 `tids: number[]`、可选 `forum_id` 和 `mode: "text_only" \| "full"`（默认 `full`）；返回各 tid 的 Job 创建、复用或已满足状态。对仅文字归档请求 `full` 会排入图片回填 Job |
 | `/api/threads/{tid}/active-sync-job` | GET | 返回指定帖子的最新活动 `sync_thread` Job；无活动任务时返回 `{ "job": null }`，不包含 payload、artifact 或事件列表 |
 | `/api/threads/{tid}/images/{asset_id}/retry` | POST | 为指定图片创建或复用交互式 selected `image_backfill` Job；只处理目标图片，不重跑原归档 Job |
 | `/api/logs?limit=&since=&job_id=&tid=&event_type=&level=&component=&q=&errors_only=` | GET | 查询结构化实时日志；`since` 支持 ISO-8601 或 epoch 秒，`errors_only` 包含失败、部分成功、阻塞和缺失状态；返回时间范围与实际过滤条件 |

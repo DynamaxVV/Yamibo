@@ -99,6 +99,7 @@ CREATE TABLE IF NOT EXISTS threads (
   image_count INTEGER NOT NULL DEFAULT 0 CHECK(image_count >= 0),
   context_path TEXT,
   archive_status TEXT NOT NULL DEFAULT 'stale',
+  capture_mode TEXT NOT NULL DEFAULT 'full' CHECK(capture_mode IN ('text_only', 'full')),
   validation_status TEXT NOT NULL DEFAULT 'unknown',
   validation_errors_json TEXT,
   missing_images_json TEXT,
@@ -315,6 +316,7 @@ def migrate(conn: Any, *, schema: str | None = None) -> None:
     conn.executescript(FTS_SQL)
     _ensure_column(conn, "title_parse", "chapter_title", "TEXT")
     _ensure_column(conn, "title_parse", "chapter_index_end", "REAL")
+    _ensure_column(conn, "threads", "capture_mode", "TEXT NOT NULL DEFAULT 'full' CHECK(capture_mode IN ('text_only', 'full'))")
     _ensure_column(conn, "threads", "forum_id", "INTEGER")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_threads_forum_tid "

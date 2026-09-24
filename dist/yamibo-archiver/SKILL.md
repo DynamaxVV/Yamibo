@@ -1,6 +1,6 @@
 ---
 name: yamibo-archiver
-description: 使用 YamiboArchiver 检索、浏览、归档、批量归档、检查轻小说更新、追加更新、构建 RAG 索引、读取本地归档，以及执行 PostgreSQL-only 的 Discussion Trend V1 趋势查询、evidence 检索和报告工作流。用户提到百合会、Yamibo、漫画区、轻小说区、动漫区、海域区、tid、归档、导出、RAG、本地检索、论坛趋势、topic 证据、forum evidence、trend report、research report 时使用。
+description: 使用 YamiboArchiver 检索、浏览、归档、批量归档、检查轻小说更新、追加更新、构建 RAG 索引、读取本地归档，以及执行 PostgreSQL-only 的 Discussion Trend V1 趋势查询、evidence 检索和报告工作流。用户提到百合会、Yamibo、漫画区仅文字归档或后续图片升级、轻小说区、动漫区、海域区、tid、归档、导出、RAG、本地检索、论坛趋势、topic 证据、forum evidence、trend report、research report 时使用。
 ---
 
 # YamiboArchiver 中文 Skill
@@ -22,7 +22,7 @@ description: 使用 YamiboArchiver 检索、浏览、归档、批量归档、检
 - Discussion Trend V1 仅支持 PostgreSQL；如果后端不是 PostgreSQL，不要承诺趋势查询、topic evidence、forum evidence pack 或 report artifact 一定可用。
 - 所有公共 tool 都返回 `ok/data/error/resources/next_actions/warnings/side_effects`；先根据这些字段判断事实和后续动作，再生成自然语言回答。
 - `side_effects` 非空或工具说明标记为 job 创建时，只能说“已创建/复用了任务”，不能说“已经归档/导出完成”。
-- 当前 WebUI Chat 不内建 MCP tool loop、approval、citation 或 Agent run。若模型能调用本 MCP，编排由外部客户端或 Hermes 运行时负责。
+- 公共 MCP 与 WebUI Chat 的受限工具集不同；按当前会话的 Capability Manifest 和实际工具 schema 调用，不把公共工具参数套用到受限工具。
 
 ## Tool / Resource / CLI 边界
 
@@ -30,12 +30,14 @@ description: 使用 YamiboArchiver 检索、浏览、归档、批量归档、检
 - MCP Resource 负责稳定 URI 下的大文本、文件和只读快照：归档正文、帖子列表、诊断、资产、导出包、job status/events、guide 和 schema。
 - Resource 只读取稳定内容，不创建 job，不触发远程抓取。
 - CLI 用于人类操作和脚本；MCP Tool / Resource 用于 LLM 客户端。两者共享 application 层，但返回面和适用场景不同。
-- 不确定工具参数或能力面时，先读取 `yamibo://schema/tools` 与 guide resources，不要猜测未公开 capability。
+- 不确定工具参数或能力面时，先读取 `yamibo://schema/capabilities` 与 guide resources；`yamibo://schema/tools` 只是兼容用的签名列表。
 
 当前 CLI 对齐入口：
 
 ```bash
 uv run yamibo-archiver create-thread-archive-job --tid <tid>
+uv run yamibo-archiver create-thread-archive-job --tid <tid> --forum-id 30 --mode text_only
+uv run yamibo-archiver create-thread-archive-job --tid <tid> --forum-id 30 --mode full
 uv run yamibo-archiver inspect-remote-thread --tid <tid>
 uv run yamibo-archiver probe-archived-threads --tid <tid1> --tid <tid2>
 uv run yamibo-archiver ensure-thread-archived --tid <tid>
@@ -103,7 +105,7 @@ uv run yamibo-archiver read-job-events <job_id>
 
 #### `ensure_thread_archived`
 
-用于保证本地有归档；若缺失则创建归档任务。
+用于保证本地有满足 `mode` 的归档；默认 `full`，也可指定 `text_only`。已有完整归档满足文字请求；仅文字归档不满足完整请求。
 
 适用场景：
 - 用户要读本地归档，但当前可能还没有本地副本
@@ -124,6 +126,7 @@ uv run yamibo-archiver read-job-events <job_id>
 注意：
 - `content` 支持 `cursor` / `chunk_size` 分页
 - 这是本地只读接口，不会触发远端抓取
+- `capture_mode=text_only` 且 `image_state=not_requested` 表示图片引用已保存、文件有意未下载；`archive_status=complete` 此时只表示文字归档完成
 
 #### `probe_archived_threads`
 
@@ -146,7 +149,7 @@ uv run yamibo-archiver read-job-events <job_id>
 
 #### `create_thread_archive_job`
 
-用于发起单贴归档任务。
+用于发起单贴归档任务。`mode=text_only` 保存文字和图片引用；默认 `mode=full` 也下载图片。对已完成的仅文字归档再次请求 `full`，会创建 `image_backfill` Job；不要把 Job 创建当成图片已到本地。
 
 适用场景：
 - 用户要求“归档这个帖子”
@@ -155,7 +158,7 @@ uv run yamibo-archiver read-job-events <job_id>
 
 #### `create_thread_archive_batch_jobs`
 
-用于一次性为多个帖子创建归档任务。
+用于一次性为多个帖子创建归档任务，支持同样的 `mode=text_only|full`。逐项检查 `jobs` 中的 `job_id`、`job_type` 和 `status`；`status=satisfied` 且 `job_id=null` 表示已有归档满足请求。
 
 适用场景：
 - 用户明确要求“批量归档”
@@ -329,7 +332,7 @@ Agent 工作流优先读取紧凑资源，按需深入。
 8. `yamibo://jobs/{job_id}/status`：任务主状态快照
 9. `yamibo://jobs/{job_id}/events`：任务事件时间线
 10. `yamibo://guide/agent-workflows` / `yamibo://guide/archive-model` / `yamibo://guide/error-codes` / `yamibo://guide/agent-evaluation`
-11. `yamibo://schema/tools`：当前工具参数签名
+11. `yamibo://schema/capabilities`：当前工具、副作用和 Job 终态契约；`yamibo://schema/tools` 是兼容资源
 
 ### 其他资源
 
@@ -370,6 +373,13 @@ Agent 工作流优先读取紧凑资源，按需深入。
 2. 返回 `job_id`
 3. 用 `read_job` 或 `wait_for_job` 追踪
 4. 需要排障时读 `read_job_events` 或 `yamibo://jobs/{job_id}/events`
+
+### 4.1 漫画帖先归档文字，后续下载图片
+
+1. 用户要先分析漫画帖文字时，调用 `create_thread_archive_job(tid=..., forum_id=30, mode="text_only")`；等返回 Job 到达可读终态。
+2. 用 `read_archived_thread(view="summary")` 确认 `capture_mode=text_only`、`image_state=not_requested`，再用 `view="content"` 按返回的 `next_cursor` 读到 `has_more=false`。图片引用可从 `assets` 视图读取；不能称为已保存图片。
+3. 用户随后要全量图片时，对同一 tid 调用 `create_thread_archive_job(mode="full")`，等待新的 Job 完成，再确认 `capture_mode=full` 和 `image_state=complete`；若为 `partial`，读 `diagnostics` 和 Job 恢复建议。
+4. 仅文字归档不能直接创建导出或单图补取任务，先完成 `full` 升级。远端列表的回复数可能与当下可见楼层数不同，不据此单独断言解析遗漏。
 
 ### 5. 轻小说更新
 
@@ -417,4 +427,4 @@ Agent 工作流优先读取紧凑资源，按需深入。
 
 ## 未来能力边界
 
-Capability manifest、受控 tool loop、policy approval、citation 和 Agent run/step trace 是后续运行时规划，不是当前 MCP Tools、Resources 或 Chat 返回字段。不要在回答中承诺这些能力已经自动执行。
+公共 MCP 已提供 Capability Manifest。WebUI Chat 与外部 MCP 客户端的工具范围和运行记录不同；只按当前会话实际暴露的工具与返回字段说明能力，不承诺未验收的审批、引用或自动续作。

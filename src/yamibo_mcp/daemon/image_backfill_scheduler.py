@@ -145,6 +145,11 @@ def maybe_enqueue_image_backfill_dry_run(repo: JobsRepository, settings: Setting
             while pending_candidates:
                 candidate = pending_candidates.pop(0)
                 tid = int(candidate["tid"])
+                thread = repo.conn.execute(
+                    "SELECT capture_mode FROM threads WHERE tid = ?", (tid,),
+                ).fetchone()
+                if thread is None or thread["capture_mode"] != "full":
+                    continue
                 if not _has_auto_repairable_site_image(settings, tid):
                     continue
                 if tid in _blocking_backfill_tids(repo, [tid], dry_run=dry_run, campaign=_CAMPAIGN):
@@ -342,6 +347,7 @@ def _select_candidate_batch(
           FROM threads t
           WHERE t.forum_id = ?
             AND t.archive_status IN ('complete', 'partial')
+            AND t.capture_mode = 'full'
             AND t.tid > ?
           ORDER BY t.tid ASC
           LIMIT ?
@@ -350,13 +356,14 @@ def _select_candidate_batch(
             a.tid,
             COUNT(*) AS image_assets,
             COUNT(*) FILTER (
-              WHERE a.local_path IS NULL
-                OR a.local_path = ''
-                OR COALESCE(a.status, '') IN ('missing', 'pending')
+              WHERE a.asset_type IN ('image', 'attachment')
+                AND (a.local_path IS NULL
+                  OR a.local_path = ''
+                  OR COALESCE(a.status, '') IN ('missing', 'pending'))
             ) AS missing_asset_rows
           FROM assets a
           JOIN batch b ON b.tid = a.tid
-          WHERE a.asset_type IN ('image', 'attachment')
+          WHERE a.asset_type IN ('image', 'attachment', 'shared')
           GROUP BY a.tid
         ), non_first AS (
           SELECT f.tid, COUNT(*) AS floors_without_assets
@@ -368,7 +375,7 @@ def _select_candidate_batch(
               FROM assets a
               WHERE a.tid = f.tid
                 AND a.pid = f.pid
-                AND a.asset_type IN ('image', 'attachment')
+                AND a.asset_type IN ('image', 'attachment', 'shared')
             )
           GROUP BY f.tid
         ), candidates AS (

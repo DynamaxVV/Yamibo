@@ -27,7 +27,7 @@ from yamibo_mcp.domain.models import FloorSnapshot, Job, ThreadSnapshot, TitleSn
 from yamibo_mcp.domain.thread_fingerprint import floor_content_hash
 from yamibo_mcp.domain.validation import validate_floor_sequence, validate_thread_snapshot
 from yamibo_mcp.storage.atomic import atomic_write_text
-from yamibo_mcp.storage.images import download_images_to_staging
+from yamibo_mcp.storage.images import ImageDownloadResult, download_images_to_staging
 from yamibo_mcp.storage.paths import StoragePaths
 from yamibo_mcp.storage.thread_archive import materialize_thread
 from yamibo_mcp.errors import LoginRequiredError, ThreadPermissionRequiredError, UnexpectedPageError, _extract_permission_code
@@ -111,6 +111,7 @@ def handle_update_thread(repo: JobsRepository, job: Job, worker_id: str, lease_s
     thread = thread_repo.get_thread(tid)
     if thread is None:
         raise ValueError(f"thread not found: {tid}")
+    capture_mode = thread["capture_mode"] if "capture_mode" in thread.keys() else "full"
 
     archive_signature = (check_result.get("local_snapshot") or {}).get("archive_signature") or {}
     local_total_pages = archive_signature.get("author_only_total_pages") or archive_signature.get("total_pages_detected")
@@ -346,7 +347,7 @@ def handle_update_thread(repo: JobsRepository, job: Job, worker_id: str, lease_s
         existing_archive_maps = _extract_archive_maps(existing_meta)
 
         new_snapshot = replace(merged_snapshot, floors=merged_snapshot.floors[len(local_snapshot.floors):])
-        repo.update_stage(job.job_id, "download_images", progress_current=3, progress_total=4)
+        repo.update_stage(job.job_id, "download_images" if capture_mode == "full" else "skip_images", progress_current=3, progress_total=4)
         _check_cancelled(repo, job.job_id)
         _check_paused(repo, job.job_id)
         download_stage_timeout_seconds = float(getattr(settings, "image_download_stage_timeout_seconds", 600.0))
@@ -364,23 +365,26 @@ def handle_update_thread(repo: JobsRepository, job: Job, worker_id: str, lease_s
             heartbeat_pacer.beat()
             main_control_check()
 
-        image_result = download_images_to_staging(
-            paths,
-            job.job_id,
-            new_snapshot,
-            timeout=settings.image_download_timeout_seconds,
-            retries=settings.image_download_retries,
-            headers=client.headers,
-            cookie_jar=client.cookie_jar,
-            cookie_file=getattr(client, "cookie_file", None),
-            use_system_proxy=client.use_system_proxy,
-            proxy_url=getattr(client, "proxy_url", None),
-            referer=tail_page.final_url,
-            fetcher=getattr(client, "fetch_image", None),
-            on_progress=_progress,
-            cancel_check=worker_cancel_check,
-            control_check=main_control_check,
-            stage_deadline_seconds=download_stage_timeout_seconds,
+        image_result = (
+            download_images_to_staging(
+                paths,
+                job.job_id,
+                new_snapshot,
+                timeout=settings.image_download_timeout_seconds,
+                retries=settings.image_download_retries,
+                headers=client.headers,
+                cookie_jar=client.cookie_jar,
+                cookie_file=getattr(client, "cookie_file", None),
+                use_system_proxy=client.use_system_proxy,
+                proxy_url=getattr(client, "proxy_url", None),
+                referer=tail_page.final_url,
+                fetcher=getattr(client, "fetch_image", None),
+                on_progress=_progress,
+                cancel_check=worker_cancel_check,
+                control_check=main_control_check,
+                stage_deadline_seconds=download_stage_timeout_seconds,
+            )
+            if capture_mode == "full" else ImageDownloadResult()
         )
         _check_paused(repo, job.job_id)
         new_local_path_by_remote_url = _build_remote_local_path_map(new_snapshot, image_result)
@@ -422,6 +426,7 @@ def handle_update_thread(repo: JobsRepository, job: Job, worker_id: str, lease_s
                 category=thread["category"] if "category" in thread.keys() else None,
                 context_path=str(paths.thread_context(tid).relative_to(settings.data_dir)),
                 archive_status=archive_status,
+                capture_mode=capture_mode,
                 missing_image_urls=_unique_list(
                     [*(existing_meta.get("missing_image_urls") or []), *image_result.missing_urls]
                 ),
@@ -480,6 +485,7 @@ def handle_update_thread(repo: JobsRepository, job: Job, worker_id: str, lease_s
             "context_path": str(context_path),
             "metadata_path": str(metadata_path),
             "archive_status": archive_status,
+            "capture_mode": capture_mode,
             "archive_signature": {
                 "author_uid": None if merged_snapshot.publisher_uid is None else str(merged_snapshot.publisher_uid),
                 "last_pid": None if not merged_snapshot.floors else merged_snapshot.floors[-1].pid,

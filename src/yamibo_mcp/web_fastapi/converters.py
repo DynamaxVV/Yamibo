@@ -239,6 +239,33 @@ def describe_job_en(conn, job, thread_title: str | None = None, *, allow_thread_
     return JOB_TYPE_LABELS_EN.get(job.job_type, job.job_type)
 
 
+def _image_download_failure_kind(artifacts: dict[str, object] | None) -> str:
+    summary = artifacts.get("image_download_summary") if isinstance(artifacts, dict) else None
+    if not isinstance(summary, dict):
+        return "image_download_failed"
+    statuses = summary.get("http_status_counts") or {}
+    errors = summary.get("error_type_counts") or {}
+    if not isinstance(statuses, dict) or not isinstance(errors, dict):
+        return "image_download_failed"
+    failed = int(summary.get("failed") or 0)
+    if failed > 0 and errors == {"http_error": failed} and sum(int(value) for value in statuses.values()) == failed:
+        if set(statuses) == {"404"}:
+            return "image_http_404"
+        if set(statuses).issubset({"429", "503"}):
+            return "image_upstream_throttled"
+    if failed > 0 and sum(int(value) for value in errors.values()) == failed and set(errors).issubset({"truncated_image", "invalid_image_body"}):
+        diagnostics = artifacts.get("image_download_diagnostics") if isinstance(artifacts, dict) else None
+        if isinstance(diagnostics, list) and len(diagnostics) == failed and all(
+            isinstance(item, dict)
+            and item.get("error_type") == "truncated_image"
+            and item.get("content_length_matches") is False
+            for item in diagnostics
+        ):
+            return "image_truncated_transfer"
+        return "image_validation_failed"
+    return "image_download_failed"
+
+
 def job_failure_kind(job, *, artifacts: dict[str, object] | None = None) -> str | None:
     error_code = str(getattr(job, "error_code", "") or "").strip().lower()
     error_message = str(getattr(job, "error_message", "") or "").strip()
@@ -276,7 +303,7 @@ def job_failure_kind(job, *, artifacts: dict[str, object] | None = None) -> str 
     if error_code in {"remotemaintenanceerror", "remote_maintenance", "remote_access_paused"} or "maintenance" in combined:
         return "maintenance"
     if error_code == "image_target_not_downloaded":
-        return "image_download_failed"
+        return _image_download_failure_kind(artifacts)
     # 远程抓取类 — 细分
     if error_code in {"remote_http_404"}:
         return "remote_http_404"

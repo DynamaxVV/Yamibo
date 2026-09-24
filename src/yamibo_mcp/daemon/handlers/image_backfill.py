@@ -6,7 +6,8 @@ import shutil
 from collections import Counter
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs
@@ -140,6 +141,29 @@ def _should_retry_image_download(image_result, diagnostics: list[dict[str, Any]]
     )
 
 
+def _image_retry_delay_seconds(diagnostics: list[dict[str, Any]], *, retry_count: int) -> int | None:
+    throttled = [item for item in diagnostics if item.get("http_status") in {429, 503}]
+    if not throttled:
+        return None
+    delay = min(60 * (2 ** min(max(retry_count, 0), 6)), 3600)
+    for item in throttled:
+        headers = item.get("response_headers") or {}
+        if not isinstance(headers, dict):
+            continue
+        value = headers.get("Retry-After")
+        if value is None:
+            continue
+        try:
+            suggested = int(str(value).strip())
+        except ValueError:
+            try:
+                suggested = int((parsedate_to_datetime(str(value)) - datetime.now(timezone.utc)).total_seconds())
+            except (TypeError, ValueError, OverflowError):
+                continue
+        delay = max(delay, suggested)
+    return min(max(delay, 1), 3600)
+
+
 def _image_download_failure_code(diagnostics: list[dict[str, Any]]) -> str:
     """Map per-image diagnostics to the task-level failure classification."""
     if any(
@@ -180,11 +204,12 @@ def handle_image_backfill(
     if tid <= 0:
         raise ValueError("image_backfill requires tid")
 
-    dry_run = bool(job.payload.get("dry_run", True))
-    scope = str(job.payload.get("scope") or "non_first_floor").strip().lower()
+    upgrade_to_full = bool(job.payload.get("upgrade_to_full"))
+    dry_run = False if upgrade_to_full else bool(job.payload.get("dry_run", True))
+    scope = "selected" if upgrade_to_full else str(job.payload.get("scope") or "non_first_floor").strip().lower()
     reconcile_mode = str(job.payload.get("mode") or "").strip().lower() == "reconcile_missing"
     selected_scope = scope == "selected" or reconcile_mode
-    include_first_floor = bool(job.payload.get("include_first_floor", selected_scope))
+    include_first_floor = True if upgrade_to_full else bool(job.payload.get("include_first_floor", selected_scope))
     target_urls = _unique([str(url) for url in (job.payload.get("target_urls") or []) if str(url).strip()])
     site_only = bool(job.payload.get("internal_auto"))
     if site_only:
@@ -199,9 +224,37 @@ def handle_image_backfill(
     thread = ThreadsRepository(repo.conn).get_thread(tid)
     if thread is None:
         raise ValueError(f"local archive not found for image_backfill: {tid}")
+    if thread["capture_mode"] == "text_only" and not upgrade_to_full:
+        raise ValueError("text-only archive requires an explicit full upgrade before image backfill")
     asset_rows = AssetsRepository(repo.conn).list_assets(tid)
     local_assets = _local_assets_by_url(asset_rows)
     local_snapshot = _load_local_snapshot_for_backfill(paths, repo.conn, thread)
+    if upgrade_to_full:
+        if thread["capture_mode"] == "text_only" and thread["archive_status"] != "complete":
+            raise ValueError("full upgrade requires a complete text-only archive")
+        if thread["capture_mode"] not in {"text_only", "full"} or thread["archive_status"] not in {"complete", "partial"}:
+            raise ValueError("full upgrade requires an archived thread")
+        upgrade_diff = _diff_snapshot_images(
+            local_snapshot,
+            local_assets=local_assets,
+            paths=paths,
+            scope="selected",
+            include_first_floor=True,
+            site_only=False,
+        )
+        target_urls = _unique([str(item["url"]) for item in upgrade_diff["missing_items_for_apply"]])
+        if not target_urls:
+            with transaction(repo.conn):
+                repo.assert_lease(job.job_id, for_update=True)
+                repo.conn.execute(
+                    "UPDATE threads SET capture_mode = 'full', archive_status = 'complete', missing_images_json = '[]' WHERE tid = ?",
+                    (tid,),
+                )
+            repo.succeed(job.job_id, {
+                "tid": tid, "capture_mode": "full", "archive_status_after": "complete",
+                "already_complete": True, "downloaded_image_count": 0,
+            })
+            return
     target_positions = _target_positions(paths, tid, job.payload, target_urls)
     if reconcile_mode and not dry_run and not target_urls:
         target_urls = _metadata_missing_targets(paths, tid, site_only=site_only)
@@ -266,11 +319,19 @@ def handle_image_backfill(
         )
         if reconciled == set(target_urls):
             repo.update_stage(job.job_id, "reconcile", progress_current=4, progress_total=4)
+            if upgrade_to_full:
+                with transaction(repo.conn):
+                    repo.assert_lease(job.job_id, for_update=True)
+                    repo.conn.execute(
+                        "UPDATE threads SET capture_mode = 'full', archive_status = 'complete', missing_images_json = '[]' WHERE tid = ?",
+                        (tid,),
+                    )
             repo.succeed(
                 job.job_id,
                 {
                     "tid": tid,
                     "scope": "selected",
+                    "capture_mode": "full" if upgrade_to_full else thread["capture_mode"],
                     "target_urls": target_urls,
                     "reconciled_urls": sorted(reconciled),
                     "downloaded_image_count": 0,
@@ -581,6 +642,13 @@ def handle_image_backfill(
                         }
                     )
                     repo.update_stage(job.job_id, "finalize", progress_current=4, progress_total=4)
+                    if upgrade_to_full:
+                        with transaction(repo.conn):
+                            repo.assert_lease(job.job_id, for_update=True)
+                            repo.conn.execute(
+                                "UPDATE threads SET capture_mode = 'full', archive_status = 'complete', missing_images_json = '[]' WHERE tid = ?",
+                                (tid,),
+                            )
                     repo.succeed(job.job_id, artifacts)
                     return
 
@@ -734,8 +802,9 @@ def handle_image_backfill(
                     repo.assert_lease(job.job_id, for_update=True)
                     if url_first_result is not None:
                         repo.conn.execute(
-                            "UPDATE threads SET archive_status = ?, missing_images_json = ? WHERE tid = ?",
-                            (archive_status, json.dumps([*missing_image_urls, *missing_shared_image_urls], ensure_ascii=False), tid),
+                            "UPDATE threads SET archive_status = ?, missing_images_json = ?, capture_mode = ? WHERE tid = ?",
+                            (archive_status, json.dumps([*missing_image_urls, *missing_shared_image_urls], ensure_ascii=False),
+                             thread["capture_mode"], tid),
                         )
                     else:
                         ThreadsRepository(repo.conn).upsert_snapshot(
@@ -744,6 +813,7 @@ def handle_image_backfill(
                             category=thread["category"] if "category" in thread.keys() else None,
                             context_path=str(paths.thread_context(tid).relative_to(settings.data_dir)),
                             archive_status=archive_status,
+                            capture_mode=thread["capture_mode"],
                             missing_image_urls=[*missing_image_urls, *missing_shared_image_urls],
                         )
                     if selected_scope:
@@ -753,6 +823,7 @@ def handle_image_backfill(
                             remote_assets=synced_assets,
                             local_assets=local_assets,
                             local_path_by_url=local_path_by_url,
+                            selected_url_map=selected_url_map,
                         )
                     else:
                         ContentBlocksRepository(repo.conn).upsert_blocks(
@@ -792,11 +863,16 @@ def handle_image_backfill(
                     cleaner_output=cleaner_output,
                     metadata=context_metadata,
                 )
+                if upgrade_to_full:
+                    with transaction(repo.conn):
+                        repo.assert_lease(job.job_id, for_update=True)
+                        repo.conn.execute("UPDATE threads SET capture_mode = 'full' WHERE tid = ?", (tid,))
                 artifacts.update(
                     {
                         "context_path": str(context_path),
                         "metadata_path": str(metadata_path),
                         "archive_status_after": archive_status,
+                        "capture_mode": "full" if upgrade_to_full else thread["capture_mode"],
                         "downloaded_image_count": image_result.downloaded_count,
                         "non_export_image_count": image_result.non_export_count,
                         "shared_image_count": image_result.shared_downloaded_count,
@@ -809,6 +885,7 @@ def handle_image_backfill(
                 )
                 if strict_selected_scope and not resolved_selected_urls:
                     if should_retry_image_download:
+                        retry_delay = _image_retry_delay_seconds(diagnostics, retry_count=job.retry_count)
                         retry_scheduled = repo.retry_later(
                             job.job_id,
                             error_code=image_failure_code,
@@ -818,6 +895,8 @@ def handle_image_backfill(
                                 else "selected image target download was transiently unsuccessful; retrying"
                             ),
                             artifacts=artifacts,
+                            delay_seconds=retry_delay,
+                            max_delay_seconds=3600 if retry_delay is not None else 60,
                         )
                         if retry_scheduled:
                             shutil.rmtree(paths.staging_job_dir(job.job_id), ignore_errors=True)
@@ -1623,6 +1702,11 @@ def _resolve_selected_remote_urls(
             candidate_aid = _stable_attachment_id(candidate)
             if (submitted_aid is not None and submitted_aid == candidate_aid) or (
                 submitted_aid is None and candidate == submitted
+            ) or (
+                submitted_aid is None
+                and urlparse(submitted).path.lower().startswith("/data/attachment/")
+                and _is_site_attachment(submitted)
+                and _is_site_attachment(candidate)
             ):
                 result[submitted] = candidate
                 continue
@@ -1661,6 +1745,7 @@ def _update_selected_assets(
     remote_assets,
     local_assets: dict[str, _LocalAsset],
     local_path_by_url: dict[str, str],
+    selected_url_map: dict[str, str] | None = None,
 ) -> None:
     """Update only selected rows, retaining every other asset untouched."""
     downloaded = set(local_path_by_url)
@@ -1669,6 +1754,15 @@ def _update_selected_assets(
         if asset.remote_url not in downloaded:
             continue
         old = _local_asset_for_url(local_assets, asset.remote_url)
+        if old is None:
+            old = next(
+                (
+                    local_assets[submitted]
+                    for submitted, current in (selected_url_map or {}).items()
+                    if current == asset.remote_url and submitted in local_assets
+                ),
+                None,
+            )
         if old is None:
             local_path = local_path_by_url.get(asset.remote_url)
             if local_path:
@@ -1793,7 +1887,11 @@ def _selected_download_retries(*, target_urls: set[str] | None, configured_retri
 
 def _is_site_attachment(url: str) -> bool:
     parsed = urlparse(url)
-    if (parsed.hostname or "").lower() != "bbs.yamibo.com" or parsed.path.lower() != "/forum.php":
+    if (parsed.hostname or "").lower() != "bbs.yamibo.com":
+        return False
+    if parsed.path.lower().startswith("/data/attachment/"):
+        return True
+    if parsed.path.lower() != "/forum.php":
         return False
     query = parse_qs(parsed.query)
     mod_values = {value.lower() for value in query.get("mod", [])}

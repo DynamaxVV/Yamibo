@@ -75,6 +75,7 @@ def test_postgres_migration_creates_baseline_schema(pg_engine):
 
         assert "search_vector" in thread_columns
         assert "content_preview" in thread_columns
+        assert "capture_mode" in thread_columns
         assert "embedding" in rag_columns
         assert "is_current" not in trend_columns
         assert version_pk["constrained_columns"] == ["version_num"]
@@ -84,6 +85,60 @@ def test_postgres_migration_creates_baseline_schema(pg_engine):
         assert "idx_threads_forum_pub_time" in thread_indexes
         assert "idx_floors_tid_pub_time" in floor_indexes
         assert "idx_discussion_topic_assignments_run_topic" in topic_assign_indexes
+
+
+def test_postgres_thread_capture_mode_defaults_and_accepts_text_only(pg_engine):
+    with pg_engine.connect() as raw_conn:
+        migrate(DatabaseConnection(raw_conn, backend="postgres"), schema="public")
+        tid = 910099
+        _cleanup_tid(raw_conn, tid)
+        raw_conn.execute(
+            text("INSERT INTO threads (tid, raw_title, display_title, sync_time) VALUES (:tid, 'title', 'title', now())"),
+            {"tid": tid},
+        )
+        assert raw_conn.execute(text("SELECT capture_mode FROM threads WHERE tid = :tid"), {"tid": tid}).scalar_one() == "full"
+        raw_conn.execute(text("UPDATE threads SET capture_mode = 'text_only' WHERE tid = :tid"), {"tid": tid})
+        assert raw_conn.execute(text("SELECT capture_mode FROM threads WHERE tid = :tid"), {"tid": tid}).scalar_one() == "text_only"
+        _cleanup_tid(raw_conn, tid)
+        raw_conn.commit()
+
+
+def test_postgres_text_only_archive_job_keeps_image_reference(pg_engine, tmp_path, monkeypatch):
+    from tests.unit.test_daemon.test_sync_thread_handler import _make_settings, _make_snapshot
+    from yamibo_mcp.daemon.handlers.sync_thread import handle_sync_thread
+    from yamibo_mcp.db.repositories.assets import AssetsRepository
+    from yamibo_mcp.db.repositories.jobs import JobsRepository
+
+    settings = _make_settings(tmp_path)
+    html_path = tmp_path / "thread.html"
+    html_path.write_text("<html></html>", encoding="utf-8")
+    snapshot = _make_snapshot()
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.sync_thread.parse_thread_snapshot",
+        lambda html, url=None, tid=None: snapshot,
+    )
+    monkeypatch.setattr(
+        "yamibo_mcp.daemon.handlers.sync_thread.refine_title_parse_with_llm",
+        lambda settings, raw_title, parsed: (parsed, None),
+    )
+    monkeypatch.setattr("yamibo_mcp.daemon.handlers.sync_thread.update_title_hints", lambda *args, **kwargs: None)
+
+    def forbidden_download(*args, **kwargs):
+        raise AssertionError("text-only archive must not download images")
+
+    monkeypatch.setattr("yamibo_mcp.daemon.handlers.sync_thread.download_images_to_staging", forbidden_download)
+    with pg_engine.connect() as raw_conn:
+        conn = DatabaseConnection(raw_conn, backend="postgres")
+        migrate(conn, schema="public")
+        repo = JobsRepository(conn)
+        job = repo.create("sync_thread", tid=42, payload={"tid": 42, "html_path": str(html_path), "forum_id": 30, "mode": "text_only"})
+        job = repo.acquire(job.job_id, "worker-1", 300)
+        handle_sync_thread(repo, job, "worker-1", 300, settings)
+        thread = ThreadsRepository(conn).get_thread(42)
+        assets = AssetsRepository(conn).list_assets(42)
+        assert (thread["capture_mode"], thread["archive_status"]) == ("text_only", "complete")
+        assert len(assets) == 1 and assets[0]["remote_url"] == snapshot.floors[0].image_urls[0]
+        assert assets[0]["local_path"] is None
 
 
 def test_postgres_migration_exposes_remote_observation_and_traceability_columns(pg_engine):

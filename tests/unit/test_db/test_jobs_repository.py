@@ -229,14 +229,14 @@ class TestList:
         first = repo.create("noop")
         second = repo.create("noop")
         third = repo.create("noop")
-        db.execute("UPDATE jobs SET created_at = ? WHERE job_id = ?", ("2026-01-01T08:00:00+00:00", first.job_id))
-        db.execute("UPDATE jobs SET created_at = ? WHERE job_id = ?", ("2026-01-01T09:00:00+00:00", second.job_id))
-        db.execute("UPDATE jobs SET created_at = ? WHERE job_id = ?", ("2026-01-01T10:00:00+00:00", third.job_id))
+        db.execute("UPDATE jobs SET created_at = ?, updated_at = ? WHERE job_id = ?", ("2026-01-01T08:00:00+00:00", "2026-01-01T08:00:00+00:00", first.job_id))
+        db.execute("UPDATE jobs SET created_at = ?, updated_at = ? WHERE job_id = ?", ("2026-01-01T09:00:00+00:00", "2026-01-01T09:00:00+00:00", second.job_id))
+        db.execute("UPDATE jobs SET created_at = ?, updated_at = ? WHERE job_id = ?", ("2026-01-01T10:00:00+00:00", "2026-01-01T10:00:00+00:00", third.job_id))
         db.commit()
 
         jobs = repo.list(limit=2, offset=1)
 
-        assert [job.job_id for job in jobs] == [second.job_id, third.job_id]
+        assert [job.job_id for job in jobs] == [second.job_id, first.job_id]
 
     def test_list_filters_by_status(self, db):
         # Arrange
@@ -253,7 +253,7 @@ class TestList:
         assert len(succeeded) == 1
         assert succeeded[0].job_id == j1.job_id
 
-    def test_list_orders_active_then_queued_then_terminal_by_start_time(self, db):
+    def test_list_orders_by_latest_update(self, db):
         # Arrange
         repo = JobsRepository(db)
         active_late = repo.create("noop")
@@ -261,20 +261,20 @@ class TestList:
         queued = repo.create("noop")
         terminal = repo.create("noop")
         db.execute(
-            "UPDATE jobs SET status = ?, created_at = ? WHERE job_id = ?",
-            ("running", "2026-01-01T10:00:00+00:00", active_late.job_id),
+            "UPDATE jobs SET status = ?, created_at = ?, updated_at = ? WHERE job_id = ?",
+            ("running", "2026-01-01T10:00:00+00:00", "2026-01-01T11:00:00+00:00", active_late.job_id),
         )
         db.execute(
-            "UPDATE jobs SET status = ?, created_at = ? WHERE job_id = ?",
-            ("retrying", "2026-01-01T09:00:00+00:00", active_early.job_id),
+            "UPDATE jobs SET status = ?, created_at = ?, updated_at = ? WHERE job_id = ?",
+            ("retrying", "2026-01-01T09:00:00+00:00", "2026-01-01T12:00:00+00:00", active_early.job_id),
         )
         db.execute(
-            "UPDATE jobs SET status = ?, created_at = ? WHERE job_id = ?",
-            ("queued", "2026-01-01T08:00:00+00:00", queued.job_id),
+            "UPDATE jobs SET status = ?, created_at = ?, updated_at = ? WHERE job_id = ?",
+            ("queued", "2026-01-01T08:00:00+00:00", "2026-01-01T10:00:00+00:00", queued.job_id),
         )
         db.execute(
-            "UPDATE jobs SET status = ?, created_at = ? WHERE job_id = ?",
-            ("succeeded", "2026-01-01T07:00:00+00:00", terminal.job_id),
+            "UPDATE jobs SET status = ?, created_at = ?, updated_at = ? WHERE job_id = ?",
+            ("succeeded", "2026-01-01T07:00:00+00:00", "2026-01-01T09:00:00+00:00", terminal.job_id),
         )
         db.commit()
 
@@ -590,6 +590,19 @@ class TestRetryLater:
         assert acquired is not None
         assert acquired.job_id == job.job_id
         assert acquired.status == JobStatus.RUNNING
+
+    def test_retry_later_allows_bounded_upstream_retry_after(self, db, monkeypatch):
+        repo = JobsRepository(db)
+        job = repo.create("image_backfill", tid=42)
+        repo.acquire(job.job_id, "worker-1", 300)
+        delays = []
+        monkeypatch.setattr(jobs_module, "utc_after_iso", lambda seconds: delays.append(seconds) or "2099-01-01T00:00:00+00:00")
+
+        assert repo.retry_later(
+            job.job_id, error_code="IMAGE_TARGET_NOT_DOWNLOADED", error_message="HTTP 503",
+            delay_seconds=180, max_delay_seconds=3600,
+        )
+        assert delays == [180]
 
     def test_retry_later_respects_max_retries(self, db):
         repo = JobsRepository(db)

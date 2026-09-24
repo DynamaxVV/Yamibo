@@ -45,6 +45,8 @@ def handle_export_thread(repo: JobsRepository, job: Job, worker_id: str, lease_s
     repo.heartbeat(job.job_id, worker_id, lease_seconds)
     thread_repo = ThreadsRepository(repo.conn)
     thread = thread_repo.get_thread(tid)
+    if thread is not None and thread["capture_mode"] == "text_only":
+        raise ValueError("text-only archive has no local images; upgrade to full before exporting")
     sync_job_info: dict[str, object] | None = None
     paths = StoragePaths(
         settings.data_dir,

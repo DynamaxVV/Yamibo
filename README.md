@@ -9,7 +9,7 @@
 - **MCP Server** — 基于 FastMCP，支持 stdio/SSE/HTTP 传输，LLM 客户端直接调用
 - **多分区支持** — 漫画区(30)、轻小说区(55)、动漫区(5)、海域区(33) + 7 个扩展分区，通过 `forum_id` 参数切换
 - **智能标题解析** — 规则引擎 + LLM 辅助作为内部归档实现细节
-- **自动归档** — 抓取帖子 HTML，解析楼层，下载图片，生成结构化本地存档
+- **自动归档** — 抓取帖子 HTML，解析楼层；可先仅保存文字和图片引用，后续再升级下载图片，或直接完整归档
 - **轻小说更新检测** — 独立 `check_thread_updates` / `update_thread` 流程，轻小说贴子支持只看楼主增量更新
 - **图片回填闲时任务** — Daemon 以 single-flight、有界 TID 游标扫描自动补跑 `image_backfill`，避免维护查询与在线 Web 请求竞争
 - **阅读中单图补取** — 本地帖子阅读预览可只重试一张缺失图片；优先复用原位置的有效文件，避免为一张图片重新同步整帖
@@ -134,7 +134,7 @@ docker compose up -d yamibo yamibo-mcp
 
 注意：以上 `yamibo-init-db` 是显式数据库迁移命令；当前工作区还会在 `yamibo` 启动时
 自动检查并应用待处理 schema migration，其中包括 `016_add_jobs_started_at`、
-`019_add_idle_backfill_scan_indexes` 和 `020_indexed_thread_list_sorts`。仅执行
+`019_add_idle_backfill_scan_indexes`、`020_indexed_thread_list_sorts` 和 `021_thread_capture_mode`。仅执行
 `git push` 或 `docker compose build` 不会改库，但远端若据此启动新镜像，会应用尚未执行的
 迁移并更新 `alembic_version`。允许改库时，请先完成备份和维护窗口
 准备，再按[已批准数据库变更后的发布流程](docs/部署运维指南.md#已批准数据库变更后的发布流程)
@@ -276,8 +276,15 @@ uv run yamibo-archiver update-thread --tid 544422
 # 创建单帖归档任务
 uv run yamibo-archiver create-thread-archive-job --tid 572313
 
+# 漫画帖先保存全部可见楼层文字和图片引用，不下载图片
+uv run yamibo-archiver create-thread-archive-job --tid 572313 --forum-id 30 --mode text_only
+
+# 之后对同一 tid 请求完整归档：已完成的仅文字归档会创建图片回填 Job
+uv run yamibo-archiver create-thread-archive-job --tid 572313 --forum-id 30 --mode full
+
 # 批量创建归档任务
 uv run yamibo-archiver create-sync-thread-batch-jobs --tid 572313 --tid 572314
+uv run yamibo-archiver create-sync-thread-batch-jobs --tid 572313 --tid 572314 --forum-id 30 --mode text_only
 
 # 批量重同步“磁盘有归档、DB 无 thread row”的历史帖子，并顺便回填 PG
 uv run python scripts/enqueue_missing_db_thread_sync.py --dry-run --batch-size 100 --max-batches 2

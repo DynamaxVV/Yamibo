@@ -201,6 +201,35 @@ def test_image_target_download_failure_has_a_dedicated_failure_kind(client, test
     assert body["failure_kind"] == "image_download_failed"
 
 
+@pytest.mark.parametrize(
+    ("summary", "diagnostics", "expected"),
+    [
+        ({"failed": 1, "http_status_counts": {"404": 1}, "error_type_counts": {"http_error": 1}}, [], "image_http_404"),
+        ({"failed": 1, "http_status_counts": {"404": 1}, "error_type_counts": {"waf_response": 1}}, [], "image_download_failed"),
+        ({"failed": 2, "http_status_counts": {"429": 1, "503": 1}, "error_type_counts": {"http_error": 2}}, [], "image_upstream_throttled"),
+        ({"failed": 1, "error_type_counts": {"truncated_image": 1}}, [{"error_type": "truncated_image", "content_length_matches": False}], "image_truncated_transfer"),
+        ({"failed": 1, "error_type_counts": {"truncated_image": 1}}, [{"error_type": "truncated_image", "content_length_matches": True}], "image_validation_failed"),
+        ({"failed": 1, "error_type_counts": {"invalid_image_body": 1}}, [{"error_type": "invalid_image_body", "content_length_matches": False}], "image_validation_failed"),
+    ],
+)
+def test_image_failure_kind_uses_download_evidence(client, test_settings, summary, diagnostics, expected):
+    from yamibo_mcp.db.connection import connect
+
+    conn = connect(test_settings.db_path)
+    try:
+        repo = JobsRepository(conn)
+        job = repo.create("image_backfill", tid=42)
+        repo.fail(job.job_id, "IMAGE_TARGET_NOT_DOWNLOADED", "selected target not downloaded", {
+            "image_download_summary": summary,
+            "image_download_diagnostics": diagnostics,
+        })
+    finally:
+        conn.close()
+
+    body = client.get(f"/api/jobs/{job.job_id}").json()
+    assert body["failure_kind"] == expected
+
+
 def test_jobs_list_filters_other_failure_kind(client, test_settings):
     from yamibo_mcp.db.connection import connect
 

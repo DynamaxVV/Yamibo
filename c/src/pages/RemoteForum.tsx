@@ -112,16 +112,16 @@ export function RemoteForum() {
     setSearchParams(next, { replace: true })
   }
 
-  const handleAction = async (tid: number, archived: boolean) => {
-    setActionLoading(`${archived ? 'resync' : 'archive'}-${tid}`)
+  const handleAction = async (tid: number, action: 'resync' | 'text_only' | 'full') => {
+    setActionLoading(`${action}-${tid}`)
     setActionMessage(null)
     setActionJobId(null)
     try {
-      if (archived) {
+      if (action === 'resync') {
         const result = await api.resyncThread(tid, forumId)
         setActionJobId(result.job_id)
       } else {
-        const result = await api.createThreadArchiveBatch({ tids: [tid], forum_id: forumId })
+        const result = await api.createThreadArchiveBatch({ tids: [tid], forum_id: forumId, mode: action })
         setActionJobId(result.created_job_ids[0] || result.reused_job_ids[0] || null)
       }
       setActionMessage(lang === 'en' ? `Task queued for #${tid}.` : `已为 #${tid} 提交任务，等待处理。`)
@@ -184,7 +184,8 @@ export function RemoteForum() {
             {data.items.length === 0 ? <div className="panel">{t('no_data')}</div> : data.items.map(item => {
               const titleText = formatThreadListTitle(item)
               const archived = !!item.local_thread?.archived
-              const pending = actionLoading === `${archived ? 'resync' : 'archive'}-${item.tid}`
+              const textOnly = item.local_thread?.capture_mode === 'text_only'
+              const pending = actionLoading?.endsWith(`-${item.tid}`)
               return <article className="catalog-row" key={item.tid}>
                 <div className="catalog-main">
                   <Link className="catalog-title" to={`/forum/${item.tid}?forum_id=${forumId}&page=1`}>{titleText}</Link>
@@ -199,8 +200,10 @@ export function RemoteForum() {
                 </div>
                 <div className="catalog-row-actions">
                   {archived ? <Badge status={item.archive_status || 'complete'} /> : <Badge status="none">{lang === 'en' ? 'Not archived' : '未归档'}</Badge>}
+                  {textOnly && <span className="text-xs">{lang === 'en' ? 'Text only' : '仅文字'}</span>}
                   {archived && <Link className="btn-subtle" to={`/threads/${item.tid}`}>{lang === 'en' ? 'Read local' : '本地阅读'}</Link>}
-                  <button className="btn-subtle" disabled={actionLoading !== null} onClick={() => void handleAction(item.tid, archived)}>{pending ? t('running') : archived ? t('resync') : t('archive')}</button>
+                  {forumId === 30 && !archived && <button className="btn-subtle" disabled={actionLoading !== null} onClick={() => void handleAction(item.tid, 'text_only')}>{lang === 'en' ? 'Archive text' : '仅归档文字'}</button>}
+                  <button className="btn-subtle" disabled={actionLoading !== null} onClick={() => void handleAction(item.tid, textOnly ? 'full' : archived ? 'resync' : 'full')}>{pending ? t('running') : textOnly ? (lang === 'en' ? 'Download images' : '下载图片') : archived ? t('resync') : t('archive')}</button>
                 </div>
               </article>
             })}

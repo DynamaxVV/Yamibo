@@ -168,3 +168,41 @@ def test_probe_archived_threads_reports_local_archive_state(tmp_path, db):
     assert missing["local_floor_count"] == 0
     assert missing["local_last_floor_pub_time"] is None
     assert missing["local_last_reply_at"] is None
+
+
+def test_text_only_read_reports_intentional_image_omission(tmp_path, db):
+    settings = _fake_settings(tmp_path)
+    _seed_large_thread(db, floor_count=1)
+    db.execute("UPDATE threads SET capture_mode = 'text_only', image_count = 3 WHERE tid = 9001")
+    db.commit()
+    with patch("yamibo_mcp.application.archive_queries.load_settings", return_value=settings), \
+         patch("yamibo_mcp.application.archive_queries.connect", return_value=db):
+        result = read_archived_thread(tid=9001, view="content")
+    assert result.ok
+    assert result.data["capture_mode"] == "text_only"
+    assert result.data["image_state"] == "not_requested"
+    assert result.data["image_content_available"] is False
+    assert result.data["image_reference_count"] == 3
+    assert result.data["local_image_count"] == 0
+    assert len(result.data["floors"]) == 1
+
+
+def test_full_read_counts_downloaded_shared_image(tmp_path, db):
+    settings = _fake_settings(tmp_path)
+    _seed_large_thread(db, floor_count=1)
+    db.execute("UPDATE threads SET capture_mode = 'full', image_count = 2 WHERE tid = 9001")
+    db.execute(
+        """INSERT INTO assets (asset_id, tid, pid, asset_type, remote_url, local_path, status)
+           VALUES ('image', 9001, 10001, 'image', 'https://example.invalid/a.webp', 'images/a.webp', 'downloaded'),
+                  ('shared', 9001, 10001, 'shared', 'https://example.invalid/static/image/smile.gif', 'shared/smile.gif', 'downloaded')"""
+    )
+    db.commit()
+
+    with patch("yamibo_mcp.application.archive_queries.load_settings", return_value=settings), \
+         patch("yamibo_mcp.application.archive_queries.connect", return_value=db):
+        result = read_archived_thread(tid=9001, view="summary")
+
+    assert result.ok
+    assert result.data["image_reference_count"] == 2
+    assert result.data["local_image_count"] == 2
+    assert result.data["image_state"] == "complete"

@@ -153,6 +153,7 @@ def _build_local_thread_dict(row) -> dict | None:
         "series_id": row["series_id"] if "series_id" in row.keys() else None,
         "export_path": row["export_path"] if "export_path" in row.keys() else None,
         "content_kind": row["content_kind"] if "content_kind" in row.keys() else None,
+        "capture_mode": row["capture_mode"] if "capture_mode" in row.keys() else "full",
     }
 
 
