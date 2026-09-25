@@ -700,6 +700,8 @@ Web 控制台基于 HTTP，提供 JSON API 和页面路由。
 
 站内 `bbs.yamibo.com/forum.php?mod=attachment...` 图片会复用帖子抓取使用的 `curl_cffi` 会话、Cookie、代理和浏览器请求头。下载结果以 `image.download.result` / `image.download.summary` 写入结构化日志；selected 回填还会把脱敏后的逐图诊断写入 Job artifacts 和 `/api/jobs/{job_id}/events`。诊断字段包含稳定附件身份、HTTP 状态、内容类型、响应字节数、尝试次数、耗时、传输方式、错误分类和可重试性，不包含 Cookie、Authorization 或签名查询串。
 
+Job artifacts 中的 `image_download_summary` 汇总成功、失败、可重试数量及停止原因；`image_download_diagnostics` 保留每张图片的校验结果、响应头白名单、正文 SHA-256、Range 状态和 `attempt_history`。selected 补图在旧站内附件地址失败后刷新帖子地址时，还会写入 `image_url_refresh`：`reason`、`initial_diagnostics`、`resolution`（`changed`、`unchanged`、`not_found`）、`pages_fetched` 和脱敏的 `current_targets`。刷新开始时先追加 `image.url_refresh_requested` 事件，因而后续抓取异常仍可回看首次下载失败。事件的 `resolution=pending` 表示刷新尚未完成；最终结果以 Job artifact 为准。旧 Job 不会追溯生成当时未记录的证据。
+
 图片诊断与任务分类：
 
 - `truncated_image`：响应看起来是图片，但内容校验发现传输不完整；下载器会先进行一次有边界的 `Range: bytes=<已收到长度>-` 续传，再使用任务重试预算。JPEG 结束标记后的少量服务端尾部填充不再被误判为截断。

@@ -1466,7 +1466,8 @@ def test_text_only_upgrade_downloads_saved_images_from_first_and_later_floors(db
         ),
     ],
 )
-def test_image_backfill_refreshes_expired_attachment_url_after_direct_failure(db, tmp_path, monkeypatch, old_url, new_url):
+@pytest.mark.parametrize("refresh_fetch_fails", [False, True])
+def test_image_backfill_refreshes_expired_attachment_url_after_direct_failure(db, tmp_path, monkeypatch, old_url, new_url, refresh_fetch_fails):
     tid = 2402
     local_snapshot = _snapshot(tid, [old_url])
     paths = StoragePaths(tmp_path)
@@ -1511,6 +1512,8 @@ def test_image_backfill_refreshes_expired_attachment_url_after_direct_failure(db
 
         def fetch_thread_page(self, **kwargs):
             calls.append(("thread", tid))
+            if refresh_fetch_fails:
+                raise RuntimeError("thread fetch failed")
             return SimpleNamespace(html="<html></html>", final_url=f"https://bbs.yamibo.com/forum.php?mod=viewthread&tid={tid}")
 
     @contextmanager
@@ -1530,11 +1533,32 @@ def test_image_backfill_refreshes_expired_attachment_url_after_direct_failure(db
         image_download_timeout_seconds=1.0, image_download_retries=0,
     )
 
+    if refresh_fetch_fails:
+        with pytest.raises(RuntimeError, match="thread fetch failed"):
+            handle_image_backfill(repo, repo.get(job.job_id), "worker", 60, settings)
+        refresh_events = [event for event in JobEventsRepository(db).list(job_id=job.job_id, limit=100)
+                          if event.event_type == "image.url_refresh_requested"]
+        assert len(refresh_events) == 1
+        assert refresh_events[0].payload["initial_diagnostics"][0]["http_status"] == 404
+        assert old_url not in json.dumps(refresh_events[0].payload)
+        return
+
     handle_image_backfill(repo, repo.get(job.job_id), "worker", 60, settings)
 
     completed = repo.get(job.job_id)
     assert completed.status == "succeeded"
     assert completed.artifacts["pages_fetched"] == 1
+    refresh = completed.artifacts["image_url_refresh"]
+    assert refresh["reason"] == "stored_attachment_url_failed"
+    assert refresh["resolution"] == "changed"
+    assert refresh["initial_diagnostics"][0]["http_status"] == 404
+    assert refresh["current_targets"][0]["url_host"] == "bbs.yamibo.com"
+    assert "url" not in refresh["initial_diagnostics"][0]
+    assert old_url not in json.dumps(refresh) and new_url not in json.dumps(refresh)
+    refresh_events = [event for event in JobEventsRepository(db).list(job_id=job.job_id, limit=100)
+                      if event.event_type == "image.url_refresh_requested"]
+    assert len(refresh_events) == 1
+    assert refresh_events[0].payload["initial_diagnostics"][0]["http_status"] == 404
     assert calls == [("image", old_url), ("thread", tid), ("image", new_url)]
     asset = db.execute("SELECT remote_url, local_path FROM assets WHERE tid = ?", (tid,)).fetchone()
     assert asset["remote_url"] == new_url

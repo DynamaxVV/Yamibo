@@ -468,6 +468,7 @@ def handle_image_backfill(
                 url_first_diff = None
                 url_first_map: dict[str, str] = {}
                 url_first_snapshot = local_snapshot
+                url_refresh: dict[str, Any] | None = None
                 if strict_selected_scope and not dry_run:
                     url_first_snapshot = _snapshot_with_metadata_targets(local_snapshot, paths, tid, target_urls)
                     url_first_map = _resolve_selected_remote_urls(url_first_snapshot, target_urls, target_positions)
@@ -535,6 +536,28 @@ def handle_image_backfill(
                             if not needs_url_refresh:
                                 url_first_result = direct_result
                             else:
+                                url_refresh = {
+                                    "reason": "stored_attachment_url_failed",
+                                    "initial_diagnostics": [
+                                        _safe_image_diagnostic(item)
+                                        for item in direct_result.diagnostics
+                                        if item.get("status") != "ok"
+                                    ],
+                                    "resolution": "pending",
+                                }
+                                try:
+                                    repo.assert_lease(job.job_id)
+                                    JobEventsRepository(repo.conn).append(
+                                        job_id=job.job_id,
+                                        event_type="image.url_refresh_requested",
+                                        status="partial",
+                                        stage="download_missing_images",
+                                        payload=url_refresh,
+                                    )
+                                except LeaseNotAcquired:
+                                    raise
+                                except Exception:
+                                    LOG.warning("Failed to persist URL refresh diagnostics for job %s", job.job_id, exc_info=True)
                                 shutil.rmtree(paths.staging_job_dir(job.job_id), ignore_errors=True)
 
                 if url_first_result is not None:
@@ -574,13 +597,25 @@ def handle_image_backfill(
                     else _resolve_selected_remote_urls(snapshot, target_urls, target_positions)
                     if strict_selected_scope else {}
                 )
+                if url_refresh is not None:
+                    url_refresh["pages_fetched"] = pages_fetched
+                    url_refresh["resolution"] = (
+                        "not_found" if not selected_url_map else
+                        "changed" if any(selected_url_map.get(old) != old for old in target_urls) else
+                        "unchanged"
+                    )
+                    url_refresh["current_targets"] = [
+                        _safe_image_diagnostic({"url": url})
+                        for url in selected_url_map.values()
+                    ]
                 selected_remote_urls = set(selected_url_map.values())
                 if strict_selected_scope and not selected_remote_urls:
                     repo.fail(
                         job.job_id,
                         "IMAGE_TARGET_NOT_FOUND",
                         "selected image target was not found at its recorded position or stable attachment id",
-                        {"tid": tid, "scope": "selected", "target_urls": target_urls},
+                        {"tid": tid, "scope": "selected", "target_urls": target_urls,
+                         **({"image_url_refresh": url_refresh} if url_refresh is not None else {})},
                     )
                     return
                 diff = url_first_diff if url_first_result is not None else _diff_snapshot_images(
@@ -620,6 +655,8 @@ def handle_image_backfill(
                     **proxy_pool_artifacts,
                     **diff,
                 }
+                if url_refresh is not None:
+                    artifacts["image_url_refresh"] = url_refresh
                 if dry_run:
                     repo.update_stage(job.job_id, "finalize", progress_current=4, progress_total=4)
                     repo.succeed(job.job_id, artifacts)

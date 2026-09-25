@@ -20,6 +20,9 @@ import { formatDateTime } from '../utils/time'
 import { getArchiveBreakdown, getPartialArchiveReason, hasPartialArchiveBreakdown } from '../utils/archiveSummary'
 import { formatJobErrorMessage, formatJobFailureKind, getJobFailureKind, renderBbsLinks } from '../utils/jobMessages'
 
+const asRecord = (value: unknown): Record<string, unknown> =>
+  value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+
 export function JobDetail() {
   const { t, lang, tx } = useI18n()
   const navigate = useNavigate()
@@ -147,6 +150,19 @@ export function JobDetail() {
   const skippedCount = Number(job.artifacts?.skipped_image_count || 0)
   const missingCount = Number(job.artifacts?.missing_image_count || 0)
   const missingSharedCount = Number(job.artifacts?.missing_shared_image_count || 0)
+  const imageSummary = asRecord(job.artifacts?.image_download_summary)
+  const imageDiagnostics = Array.isArray(job.artifacts?.image_download_diagnostics)
+    ? job.artifacts.image_download_diagnostics.map(asRecord)
+    : []
+  const failedImages = imageDiagnostics.filter(item => item.status !== 'ok')
+  const refreshEvent = sortedEvents.find(event => event.event_type === 'image.url_refresh_requested')
+  const imageUrlRefresh = Object.keys(asRecord(job.artifacts?.image_url_refresh)).length > 0
+    ? asRecord(job.artifacts?.image_url_refresh)
+    : asRecord(refreshEvent?.payload)
+  const refreshInitial = Array.isArray(imageUrlRefresh.initial_diagnostics)
+    ? imageUrlRefresh.initial_diagnostics.map(asRecord)
+    : []
+  const diagnosticValue = (value: unknown) => value === null || value === undefined || value === '' ? '—' : String(value)
 
   const renderValue = (value: unknown) => {
     if (value == null || value === '') return '-'
@@ -441,6 +457,55 @@ export function JobDetail() {
             )}
           </div>
         </details>
+      )}
+
+      {/* The final download and the preceding stored-URL attempt are separate evidence. */}
+      {isImageBackfill && (imageDiagnostics.length > 0 || refreshInitial.length > 0) && (
+        <section className="p-5 bg-card border border-border rounded-md shadow-2xs space-y-4">
+          <h2 className="text-sm font-semibold text-foreground">{tx('图片下载诊断', 'Image download diagnostics')}</h2>
+          {imageDiagnostics.length > 0 && (
+            <p className="text-xs text-muted-foreground">
+              {tx('本次尝试', 'This attempt')}: {diagnosticValue(imageSummary.attempted)} ·
+              {' '}{tx('成功', 'Succeeded')} {diagnosticValue(imageSummary.succeeded)} ·
+              {' '}{tx('失败', 'Failed')} {diagnosticValue(imageSummary.failed)} ·
+              {' '}{tx('可重试', 'Retryable')} {diagnosticValue(imageSummary.retryable_failed)}
+              {imageSummary.stopped_reason ? ` · ${tx('停止原因', 'Stopped')}: ${diagnosticValue(imageSummary.stopped_reason)}` : ''}
+            </p>
+          )}
+          {refreshInitial.length > 0 && (
+            <div className="rounded-md border border-amber-300/60 bg-amber-50/50 dark:bg-amber-950/20 p-3 space-y-2 text-xs">
+              <p className="font-medium">{tx('旧地址请求与地址刷新', 'Stored URL attempt and refresh')} · {diagnosticValue(imageUrlRefresh.resolution)} · {tx('抓取页面', 'Pages fetched')} {diagnosticValue(imageUrlRefresh.pages_fetched)}</p>
+              {refreshInitial.map((item, index) => (
+                <p key={index} className="font-mono break-all text-muted-foreground">
+                  {diagnosticValue(item.url_host)}{diagnosticValue(item.url_path)}{item.remote_identity ? ` #${diagnosticValue(item.remote_identity)}` : ''} · HTTP {diagnosticValue(item.http_status)} · {diagnosticValue(item.error_type)}
+                </p>
+              ))}
+            </div>
+          )}
+          {failedImages.length > 0 && (
+            <div className="space-y-2">
+              <h3 className="text-xs font-semibold">{tx('失败图片', 'Failed images')} ({failedImages.length})</h3>
+              {failedImages.map((item, index) => (
+                <details key={index} className="rounded-md border border-border p-3 text-xs">
+                  <summary className="cursor-pointer break-all font-mono">
+                    {diagnosticValue(item.url_host)}{diagnosticValue(item.url_path)}{item.remote_identity ? ` #${diagnosticValue(item.remote_identity)}` : ''} · HTTP {diagnosticValue(item.http_status)} · {diagnosticValue(item.error_type)}
+                  </summary>
+                  <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2 text-muted-foreground">
+                    <span>{tx('响应字节', 'Bytes received')}: {diagnosticValue(item.bytes)} / {diagnosticValue(item.content_length)} · {tx('长度匹配', 'Length matches')}: {diagnosticValue(item.content_length_matches)}</span>
+                    <span>{tx('响应类型', 'Content type')}: {diagnosticValue(item.content_type)} · {tx('格式', 'Format')}: {diagnosticValue(item.body_format)}</span>
+                    <span>{tx('请求次数', 'Attempts')}: {diagnosticValue(item.attempts)} · {tx('耗时', 'Duration')}: {diagnosticValue(item.duration_ms)} ms · {tx('可重试', 'Retryable')}: {diagnosticValue(item.retryable)}</span>
+                    <span>Range: {diagnosticValue(item.range_attempted)} / {diagnosticValue(item.range_recovered)} · Content-Range: {diagnosticValue(item.content_range)}</span>
+                    <span>SHA-256: {diagnosticValue(item.body_sha256)}</span>
+                    <span className="sm:col-span-2 break-all">{tx('错误', 'Error')}: {diagnosticValue(item.error_message)}</span>
+                    {Array.isArray(item.attempt_history) && item.attempt_history.length > 0 && (
+                      <div className="sm:col-span-2 break-all">{tx('逐次请求', 'Attempt history')}: {renderValue(item.attempt_history)}</div>
+                    )}
+                  </div>
+                </details>
+              ))}
+            </div>
+          )}
+        </section>
       )}
 
       {/* ─── Partial Archive Breakdown ─── */}
