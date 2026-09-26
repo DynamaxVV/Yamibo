@@ -165,14 +165,6 @@ class WorkFiles:
         # Caller has serialized file mutations using the session-independent guidance row lock.
         if action == "create_work_file":
             name = self.name(args["name"])
-            if Path(name).suffix.lower() not in {
-                ".md",
-                ".txt",
-                ".json",
-                ".csv",
-                ".tsv",
-            }:
-                raise ValueError("TEXT_FILE_EXTENSION_REQUIRED")
             item = dict(
                 id=uid(),
                 parent_id=run["parent_id"],
@@ -180,15 +172,26 @@ class WorkFiles:
                 source="agent",
                 revision=0,
             )
-        elif action == "update_agent_guidance":
+        elif action in {"update_agent_guidance", "confirm_agent_memory"}:
             item = self.store.get("files", "guidance", conn, lock=True)
         else:
             item = self.store.get("files", args["file_id"], conn, lock=True)
-            if item["source"] != "agent" or item.get("deleted") or item.get("guidance"):
-                raise ValueError("FILE_NOT_AGENT_OWNED")
-        kind = "guidance" if action == "update_agent_guidance" else "workspace"
+            if item.get("deleted") or item.get("guidance"):
+                raise ValueError("FILE_UNAVAILABLE")
+        kind = "guidance" if action in {"update_agent_guidance", "confirm_agent_memory"} else "workspace"
+        if action == "confirm_agent_memory":
+            session = self.store.get("sessions", run["parent_id"], conn, lock=True)
+            pending = session.get("pending_agent_memory") or {}
+            if pending.get("id") != args["proposal_id"]:
+                raise ValueError("MEMORY_CONFIRMATION_REQUIRED")
+            current = self.guidance()
+            content = pending["content"]
+            if not content or "\n" in content:
+                raise ValueError("INVALID_MEMORY_CONTENT")
+            args = {"content": current.rstrip() + "\n\n## 用户确认的长期偏好\n- " + content + "\n",
+                    "expected_revision": item["revision"]}
         data = args.get("content", "").encode("utf-8")
-        if len(data) > (16384 if action == "update_agent_guidance" else MAX_WRITE):
+        if len(data) > (16384 if kind == "guidance" else MAX_WRITE):
             raise ValueError("FILE_TOO_LARGE")
         size = 0
         for folder in ("workspace", "versions", "trash", "guidance"):

@@ -2,7 +2,7 @@
 
 百合会 (yamibo.com) 论坛本地归档系统。通过 MCP 协议让 LLM 客户端浏览、搜索、归档、检查更新和导出论坛贴子；内嵌 React WebUI 控制台，支持多主题切换。
 
-> 当前版本：`1.3.3`
+> 当前版本：`1.4.0`
 
 ## 功能特性
 
@@ -145,17 +145,17 @@ MCP SSE 入口默认地址：`http://localhost:8000/sse`。
 
 1.0 的 Compose 默认只将 Web、MCP 和 PostgreSQL 绑定到 `127.0.0.1`。Web/MCP 尚未内置互联网身份认证；远程访问必须放在 TLS 反向代理、VPN 或 identity-aware proxy 后面，不能直接开放端口。
 
-对话页支持内置 Pydantic AI 和外部 Hermes 两种后端，验证期间默认仍为 `hermes`。设置 `YAMIBO_CHAT_BACKEND=embedded` 并配置现有 `YAMIBO_LLM_*` 即可启用内置业务助手，保存后须重启 Web 宿主。完整认证、预算、持久化和回退步骤见 [内置 Agent 实现与配置](docs/内置Agent实现与配置.md)。
+对话页默认使用内置 Pydantic AI，并通过 `YAMIBO_LLM_BASE_URL`、`YAMIBO_LLM_MODEL` 和 `YAMIBO_LLM_API_KEY` 调用外部 OpenAI 兼容模型 API。RK3588 Docker 只运行 Yamibo 客户端，不在 NAS 内运行 Hermes 或模型推理；没有配置 API Key 时，对话不可用。完整配置步骤见 [内置 Agent 实现与配置](docs/内置Agent实现与配置.md)。旧 Hermes 后端仍可通过显式设置 `YAMIBO_CHAT_BACKEND=hermes` 保留访问。
 
-以下为 Hermes 回退配置；它调用 Yamibo MCP 的连接仍需在外部 Hermes 运行时单独配置：
+以下为外部兼容模型 API 配置示例。请在部署环境中提供自己的地址、模型和密钥；密钥不应提交到仓库：
 
 ```env
-YAMIBO_LLM_BASE_URL=http://hermes:8000/v1
-YAMIBO_LLM_API_KEY=dummy
-YAMIBO_LLM_MODEL=hermes
+YAMIBO_CHAT_BACKEND=embedded
+YAMIBO_LLM_BASE_URL=https://api.openai.com/v1
+YAMIBO_LLM_API_KEY=由部署环境注入
+YAMIBO_LLM_MODEL=gpt-4.1-mini
 ```
-
-如果 Hermes 运行在宿主机，改用 `http://host.docker.internal:8000/v1`。更完整的 data 外挂、Hermes Docker 网络、PostgreSQL 备份恢复和迁移说明见 [`docs/部署运维指南.md`](docs/部署运维指南.md)。
+更完整的 data 外挂、外部 Hermes 兼容回退、PostgreSQL 备份恢复和迁移说明见 [`docs/部署运维指南.md`](docs/部署运维指南.md)。
 
 ## 运行期行为
 

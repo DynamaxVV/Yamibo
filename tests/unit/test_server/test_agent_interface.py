@@ -50,6 +50,11 @@ RECOMMENDED_AGENT_TOOLS = {
     "get_forum_evidence_pack",
     "create_discussion_trend_report_job",
     "create_forum_research_report_job",
+    "list_scheduled_tasks",
+    "read_scheduled_task",
+    "create_archive_schedule",
+    "set_scheduled_task_enabled",
+    "trigger_scheduled_task",
 }
 
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -112,12 +112,9 @@ class Settings:
     image_backfill_daily_limit: int
     image_backfill_max_pages: int
     image_backfill_fixed_after: str | None
-    chat_backend: str = "hermes"
-    chat_max_requests: int = 20
-    chat_max_tools: int = 50
+    chat_backend: str = "embedded"
     chat_timeout: int = 900
     chat_max_parallel: int = 2
-    chat_batch_limit: int = 20
     chat_access_token: str | None = None
     settings_access_token: str | None = None
     auto_signin_enabled: bool = True
@@ -143,6 +140,22 @@ def _cfg_value(config: dict[str, object], section: str, key: str, default):
     if isinstance(section_value, dict) and key in section_value:
         return section_value[key]
     return default
+
+
+def refresh_llm_settings(settings: Settings) -> Settings:
+    """Read only model connection fields from disk for a new request or Run."""
+    config = read_local_config(settings.config_path)
+    base_url = str(os.environ.get("YAMIBO_LLM_BASE_URL", _cfg_value(config, "llm", "base_url", "https://api.openai.com/v1")))
+    key = os.environ.get("YAMIBO_LLM_API_KEY") or _cfg_value(config, "llm", "api_key", None)
+    model = str(os.environ.get("YAMIBO_LLM_MODEL", _cfg_value(config, "llm", "model", "gpt-4.1-mini")))
+    rag_base_url = settings.rag_base_url
+    rag_key = settings.rag_api_key
+    if not os.environ.get("YAMIBO_RAG_BASE_URL") and not _cfg_value(config, "rag", "base_url", None):
+        rag_base_url = base_url
+    if not os.environ.get("YAMIBO_RAG_API_KEY") and not _cfg_value(config, "rag", "api_key", None):
+        rag_key = key
+    return replace(settings, llm_base_url=base_url, llm_api_key=str(key) if key else None,
+                   llm_model=model, rag_base_url=rag_base_url, rag_api_key=str(rag_key) if rag_key else None)
 
 
 def _cfg_list(config: dict[str, object], section: str, key: str, default: list[str] | None = None) -> list[str]:
@@ -408,12 +421,9 @@ def load_settings() -> Settings:
             )
         ).lower()
         in {"1", "true", "yes", "on"},
-        chat_backend=str(os.environ.get("YAMIBO_CHAT_BACKEND", _cfg_value(config, "chat", "backend", "hermes"))),
-        chat_max_requests=int(os.environ.get("YAMIBO_CHAT_MAX_REQUESTS", _cfg_value(config, "chat", "max_requests", 20))),
-        chat_max_tools=int(os.environ.get("YAMIBO_CHAT_MAX_TOOLS", _cfg_value(config, "chat", "max_tools", 50))),
+        chat_backend=str(os.environ.get("YAMIBO_CHAT_BACKEND", _cfg_value(config, "chat", "backend", "embedded"))),
         chat_timeout=int(os.environ.get("YAMIBO_CHAT_TIMEOUT", _cfg_value(config, "chat", "timeout", 900))),
         chat_max_parallel=int(os.environ.get("YAMIBO_CHAT_MAX_PARALLEL", _cfg_value(config, "chat", "max_parallel", 2))),
-        chat_batch_limit=int(os.environ.get("YAMIBO_CHAT_BATCH_LIMIT", _cfg_value(config, "chat", "batch_limit", 20))),
         chat_access_token=os.environ.get("YAMIBO_CHAT_ACCESS_TOKEN") or _cfg_value(config, "chat", "access_token", None),
         settings_access_token=(os.environ.get("YAMIBO_SETTINGS_ACCESS_TOKEN") or os.environ.get("YAMIBO_CHAT_ACCESS_TOKEN")
                                or _cfg_value(config, "security", "access_token", None) or _cfg_value(config, "chat", "access_token", None)),

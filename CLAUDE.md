@@ -70,13 +70,16 @@ YAMIBO_TEST_PG_URL=postgresql://yamibo:yamibo@localhost:5432/yamibo uv run pytes
 | `db/` | DB abstraction (PostgreSQL primary, SQLite legacy/test), Alembic migrations, repositories per table | `connection.py` (DatabaseConnection), `repositories/` (jobs, threads, series, assets, rag_chunks, discussion_trends, etc.) |
 | `domain/` | Frozen dataclasses, enums, validation — pure data, no I/O | `models.py`, `enums.py` |
 | `rag/` | Chunking, embedding, hybrid search (FTS5/pgvector + vector similarity) | |
+| `web_fastapi/` | FastAPI 版 web 层；`yamibo-web` 入口；与旧 `web/` 并存 | `app.py`, `routers/`, `settings_session.py` |
 | `services/` | LLM client, title hints | |
 | `maintenance/` | backup, cleanup, reset CLI | |
 | `benchmark/` | Hermes performance benchmarking | |
 
 **Shared package-root modules**: `config.py` (settings loading), `errors.py` (exception hierarchy), `time_utils.py`, `logging.py`.
 
-**Web layer**: `web/api.py` is the single dispatch entry point — it owns the DB lifecycle (`connect()` → `migrate()` → route → `conn.close()`). Per-resource route handlers in `web/routes/` (`jobs.py`, `threads.py`, `series.py`, `forums.py`, `rag.py`, `review.py`, `settings.py`, `dashboard.py`, `debug.py`, `remote_forum.py`, `daemon.py`). Shared helpers in `web/routes/_helpers.py` and `web/routes/_converters.py`. The embedded web server starts inside the daemon process on `:8765` (configurable via `YAMIBO_WEB_HOST`/`YAMIBO_WEB_PORT`).
+**Web layer（两套并存）**:
+- **`web/`** — 旧的手写 `BaseHTTPRequestHandler` 实现。`web/api.py` 是单一 dispatch 入口，负责 DB 生命周期（`connect()` → `migrate()` → route → `conn.close()`）。路由在 `web/routes/`，共享工具在 `_helpers.py` / `_converters.py`。由 daemon 内嵌 web server 使用，监听 `:8765`（可通过 `YAMIBO_WEB_HOST`/`YAMIBO_WEB_PORT` 配置）。
+- **`web_fastapi/`** — 新的 FastAPI 实现，`yamibo-web` 命令入口。`app.py:create_app()` 构建应用，路由在 `web_fastapi/routers/`（比旧层多了 `chat.py`、`knowledge.py`）。`settings_session.py` 管理会话认证。两套 web 层共用相同的 `application/` 业务逻辑，不重复实现。
 
 **Frontend**: React 18 + Vite + React Router v6. Layout route pattern — `<Layout>` wraps all pages. Context providers (`I18nProvider` zh/en, `ThemeProvider` 4 themes + dark mode) wrap `<BrowserRouter>`. Pages in `pages/`, shared components in `components/` (ThreadReader, LazyImage, PaginationControls, DataTable, Badge, ThemePicker). CSS: `styles.css` (global) + `styles/` (per-page). API client in `api/client.ts` — `fetchJson<T>(path)` for GET, `postJson<T>(path, body)` for POST, both prepend `/api` base. Build output → `src/yamibo_mcp/web/static/`.
 

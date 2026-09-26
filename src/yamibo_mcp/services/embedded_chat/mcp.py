@@ -1,40 +1,105 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 import json
-from typing import Literal, get_type_hints
+import re
+from typing import get_type_hints
 
+# Reused by the lazily imported tool_server module when constructing each Run.
 from mcp.server.fastmcp import FastMCP
 from pydantic import ConfigDict, create_model
 
 from yamibo_mcp.server import agent_tools
 from yamibo_mcp.server.agent_adapter import to_wire
+from yamibo_mcp.domain.forums import default_forums
 
 from .files import WorkFiles
-from .policy import Policy
+from .read_boundary import job_status, daily_issue_status
+from .policy import Policy, memory_request
 from .store import encode
+from .store import uid
 
 # Explicit argument lists are intentionally narrower than the public registry.
 READS = {
-    "browse_forum_page": ("page", "forum_id", "order"),
-    "search_forum_threads": ("query", "forum_id", "start_page"),
-    "inspect_remote_thread": ("tid",),
-    "probe_archived_threads": ("tids",),
-    "read_archived_thread": (
-        "tid",
-        "view",
-        "floor_start",
-        "floor_end",
-        "cursor",
-        "chunk_size",
-    ),
-    "read_forum_profiles": (),
-    "check_thread_updates": ("tid",),
-    "search_archived_content": ("query", "mode", "top_k"),
     "read_job": ("job_id",),
-    "read_job_events": ("job_id",),
 }
+
+
+# Public capability names are authoritative; deployment/credential overrides are not model input.
+UNSAFE_PUBLIC_ARGUMENTS = {"base_url", "cookie_file", "html_path", "url"}
+PUBLIC_TOOLS = {name: (description, handler) for name, description, handler in agent_tools.PUBLIC_AGENT_TOOLS}
+
+
+def requested_forum_ids(text: str) -> set[int]:
+    """Resolve explicit forum names and IDs from one user turn, without guessing."""
+    names = {profile.forum_id for profile in default_forums() if profile.name in text}
+    numeric = {
+        int(match)
+        for match in re.findall(r"(?:forum_id|fid)\s*[:：=]?\s*(\d+)", text, re.I)
+    }
+    return names | numeric
+
+
+def public_input_model(name):
+    handler = PUBLIC_TOOLS[name][1]
+    hints = get_type_hints(handler)
+    return create_model(
+        name + "PublicInput", __config__=ConfigDict(extra="forbid"),
+        **{key: (hints[key], parameter.default if parameter.default is not inspect.Parameter.empty else ...)
+           for key, parameter in inspect.signature(handler).parameters.items()
+           if key not in UNSAFE_PUBLIC_ARGUMENTS},
+    )
+
+
+def public_description(name):
+    description, handler = PUBLIC_TOOLS[name]
+    metadata = getattr(handler, "__capability_metadata__", {})
+    return description + "\nFor this task, use list_project_skills/read_project_skill; read_yamibo_guidance provides public MCP reference. Capability metadata: " + json.dumps(metadata, ensure_ascii=False) + (
+        "\nWrites require an exact user approval. Creating a Job is not completion; read_job verifies its result."
+        if metadata.get("effect") not in {"read_only", "remote_read"} else
+        "\nFrozen Run scope is enforced before reads. Unsupported evidence readers return SCOPED_READER_REQUIRED; use find_discussions/read_discussion_source. For named forum scope first use read_forum_profiles. Remote search reads one page per call; local results cannot substitute for remote results."
+    )
+
+
+def validate_public_arguments(name: str, args: dict) -> dict:
+    """Bound dynamic MCP inputs before a handler can touch a database or forum."""
+    integer_limits = {
+        "forum_id": 100_000, "tid": 2_147_483_647, "series_id": 2_147_483_647,
+        "page": 100, "start_page": 100, "end_page": 100, "top_k": 100,
+        "floor_start": 2_147_483_647, "floor_end": 2_147_483_647,
+        "chunk_size": 16_000, "embedding_dimensions": 4_096,
+        "retention_success_runs": 100, "min_floor_count": 1_000_000,
+        "min_thread_count": 1_000_000, "min_user_count": 1_000_000,
+        "expected_revision": 2_147_483_647,
+    }
+    for key, maximum in integer_limits.items():
+        value = args.get(key)
+        if value is not None and (type(value) is not int or not 1 <= value <= maximum):
+            raise ValueError("PUBLIC_ARGUMENT_OUT_OF_RANGE:" + key)
+    since = args.get("since_event_id")
+    if since is not None and (type(since) is not int or not 0 <= since <= 2_147_483_647):
+        raise ValueError("PUBLIC_ARGUMENT_OUT_OF_RANGE:since_event_id")
+    tids = args.get("tids")
+    if tids is not None and (
+        not isinstance(tids, list) or not 1 <= len(tids) <= 200
+        or any(type(tid) is not int or not 1 <= tid <= 2_147_483_647 for tid in tids)
+    ):
+        raise ValueError("INVALID_TIDS")
+    for key, value in args.items():
+        if isinstance(value, str) and len(value) > (500 if key == "query" else 2_000):
+            raise ValueError("PUBLIC_ARGUMENT_TOO_LARGE:" + key)
+        if isinstance(value, (dict, list)) and len(encode(value).encode("utf-8")) > 8_192:
+            raise ValueError("PUBLIC_ARGUMENT_TOO_LARGE:" + key)
+    if name == "create_archive_schedule" and len(args["name"]) > 120:
+        raise ValueError("PUBLIC_ARGUMENT_TOO_LARGE:name")
+    if args.get("floor_start") and args.get("floor_end") and args["floor_start"] > args["floor_end"]:
+        raise ValueError("INVALID_FLOOR_RANGE")
+    confidence = args.get("min_confidence")
+    if confidence is not None and not 0 <= confidence <= 1:
+        raise ValueError("PUBLIC_ARGUMENT_OUT_OF_RANGE:min_confidence")
+    return args
 
 
 def clean(value, settings, maximum=65536):
@@ -68,6 +133,43 @@ class RestrictedTools:
         self.policy = Policy(settings, run_id)
         self.store = self.policy.store
         self.files = WorkFiles(settings, self.store)
+
+    def require_scoped_public_read(self, name, args):
+        """Reject before I/O when a reader cannot express the frozen scope.
+
+        New public read tools are denied by default. Source evidence goes through
+        scoped discovery/source tools so PID/time filters and receipts apply.
+        """
+        scope, _ = self.discussion_scope()
+        if name in {"read_forum_profiles", "read_job", "wait_for_job"}:
+            return
+        if name in {"search_forum_threads", "browse_forum_page"} and (
+            scope.get("mode") == "discovery"
+            and not any(scope.get(key) for key in ("tids", "pids", "start_at", "end_at", "report_revision"))
+        ):
+            forum_id = args.get("forum_id")
+            remote_forums = set(scope.get("remote_forum_ids") or ())
+            if forum_id not in scope["forum_ids"] and forum_id not in remote_forums:
+                # The frozen evidence scope intentionally contains discussion
+                # boards only. Explicit remote targets are frozen separately
+                # from the Run's immutable user request and do not widen local
+                # source reads.
+                raise ValueError("FORUM_SCOPE_MISMATCH")
+            if forum_id in remote_forums and not self.forum_is_enabled(forum_id):
+                raise ValueError("FORUM_SCOPE_MISMATCH")
+            return
+        raise ValueError("SCOPED_READER_REQUIRED")
+
+    def forum_is_enabled(self, forum_id):
+        from yamibo_mcp.db.connection import connect
+        from yamibo_mcp.db.repositories.forums import ForumsRepository
+
+        conn = connect(self.settings, bootstrap=False)
+        try:
+            forum = ForumsRepository(conn).get_forum(forum_id)
+            return forum is not None and bool(forum["enabled"])
+        finally:
+            conn.close()
 
     def reads(self, name, args):
         if name not in READS or set(args) - set(READS[name]):
@@ -103,12 +205,253 @@ class RestrictedTools:
                 or any(type(t) is not int or t < 1 for t in value)
             ):
                 raise ValueError("INVALID_TIDS")
+        self.require_scoped_public_read(name, args)
+        return clean(job_status(self.settings, args["job_id"]), self.settings)
+
+    async def public_call(self, name, args):
+        args = public_input_model(name).model_validate(args).model_dump()
         if name == "search_forum_threads":
-            args = dict(args, end_page=args.get("start_page", 1))
-        return clean(getattr(agent_tools, name)(**args), self.settings)
+            # A date-wide search ignores the page bounds in the remote query layer.
+            # Require the model to traverse one explicit page at a time.
+            if args.get("posted_on") is not None:
+                raise ValueError("POSTED_ON_UNBOUNDED")
+            args["end_page"] = args["start_page"]
+        args = validate_public_arguments(name, args)
+        if "forum_id" in args:
+            scope, _ = self.discussion_scope()
+            explicit_forums = set(scope.get("remote_forum_ids") or ())
+            if explicit_forums and args.get("forum_id") not in explicit_forums:
+                raise ValueError("FORUM_SCOPE_MISMATCH")
+        for key in ("page", "start_page"):
+            if key in args and (type(args[key]) is not int or args[key] < 1):
+                raise ValueError("POSITIVE_INTEGER_REQUIRED")
+        if name == "wait_for_job":
+            args["timeout_seconds"] = min(max(args["timeout_seconds"], 0), 120)
+            args["poll_interval_seconds"] = min(max(args["poll_interval_seconds"], 1), 10)
+        handler = PUBLIC_TOOLS[name][1]
+        effect = getattr(handler, "__capability_metadata__", {}).get("effect")
+        with self.store.transaction() as conn:
+            self.store.guard(self.policy.run_id, conn)
+        if effect in {"read_only", "remote_read"}:
+            self.require_scoped_public_read(name, args)
+            if name in {"read_job", "wait_for_job"}:
+                # Public artifacts/events may contain report bodies. Query only
+                # status columns, never those unscoped evidence blobs.
+                if name == "wait_for_job":
+                    return await self.wait_for_job_status(args)
+                return clean(await asyncio.to_thread(job_status, self.settings, args["job_id"]), self.settings)
+            return clean(await asyncio.to_thread(handler, **args), self.settings)
+        op = self.policy.request(name, args)
+        while op["status"] == "pending":
+            await asyncio.sleep(0.25)
+            with self.store.transaction() as conn:
+                self.store.guard(self.policy.run_id, conn)
+                op = self.store.get("operations", op["id"], conn)
+        if op["status"] == "completed":
+            return op["result"]
+        with self.store.transaction() as conn:
+            self.store.guard(self.policy.run_id, conn)
+            current = self.store.get("operations", op["id"], conn, lock=True)
+            if current["status"] != "approved":
+                return current.get("result", {"ok": False, "error": {
+                    "code": current["status"], "message": "未获授权或结果待核实，禁止自动重试"}})
+            current["status"] = "outcome_unknown"
+            self.store.save("operations", current, conn)
+        # Persist uncertainty before external effects. Exceptions retain this receipt,
+        # preventing duplicate submissions even across process restart.
+        result = clean(await asyncio.to_thread(handler, **args), self.settings)
+        with self.store.transaction() as conn:
+            current = self.store.get("operations", op["id"], conn, lock=True)
+            current.update(status="completed", result=result)
+            self.store.save("operations", current, conn)
+        return result
+
+    async def wait_for_job_status(self, args):
+        deadline = asyncio.get_running_loop().time() + args["timeout_seconds"]
+        while True:
+            with self.store.transaction() as conn:
+                self.store.guard(self.policy.run_id, conn)
+            result = await asyncio.to_thread(job_status, self.settings, args["job_id"])
+            if not result.get("ok") or result["data"]["is_terminal"]:
+                return clean(result, self.settings)
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                result["data"]["timed_out"] = True
+                return clean(result, self.settings)
+            await asyncio.sleep(min(args["poll_interval_seconds"], remaining))
+
+    def read_daily_issue(self, issue_id: str):
+        self.discussion_scope()
+        run = self.store.get("runs", self.policy.run_id)
+        session = self.store.get("sessions", run["parent_id"])
+        return {"ok": True, "data": daily_issue_status(
+            self.settings, issue_id=issue_id, owner_id=str(session.get("owner_id") or "local"),
+        )}
+
+    async def create_daily_issue(self, target_day: str, forum_ids: list[int]):
+        from datetime import date
+        from yamibo_mcp.application.daily_brief_service import create_manual_issue
+
+        day = date.fromisoformat(target_day)
+        if not forum_ids or len(forum_ids) > 20 or any(type(fid) is not int or fid <= 0 for fid in forum_ids):
+            raise ValueError("INVALID_FORUM_IDS")
+        args = {"target_day": day.isoformat(), "forum_ids": sorted(set(forum_ids))}
+        op = self.policy.request("create_daily_issue", args)
+        while op["status"] == "pending":
+            await asyncio.sleep(0.25)
+            with self.store.transaction() as conn:
+                self.store.guard(self.policy.run_id, conn)
+                op = self.store.get("operations", op["id"], conn)
+        if op["status"] == "completed":
+            return op["result"]
+        with self.store.transaction() as conn:
+            run = self.store.guard(self.policy.run_id, conn)
+            current = self.store.get("operations", op["id"], conn, lock=True)
+            if current["status"] != "approved":
+                return {"ok": False, "error": {"code": current["status"]}}
+            current["status"] = "outcome_unknown"
+            self.store.save("operations", current, conn)
+        result = clean({"ok": True, "data": await asyncio.to_thread(
+            create_manual_issue, session_id=run["parent_id"], target_day=day,
+            forum_ids=args["forum_ids"], settings=self.settings,
+        )}, self.settings)
+        with self.store.transaction() as conn:
+            current = self.store.get("operations", op["id"], conn, lock=True)
+            current.update(status="completed", result=result)
+            self.store.save("operations", current, conn)
+        return result
+
+    def read_daily_report(self):
+        """Read only the immutable report snapshot bound to this Run."""
+        from yamibo_mcp.application.daily_brief_report_queries import read_daily_report_snapshot
+
+        run = self.store.get("runs", self.policy.run_id)
+        snapshot = run.get("daily_report_snapshot")
+        scope = run.get("discussion_scope") or {}
+        if (
+            run.get("scope_pending")
+            or not isinstance(snapshot, dict)
+            or snapshot.get("revision_id") != scope.get("report_revision")
+        ):
+            raise ValueError("DAILY_REPORT_NOT_FROZEN")
+        return clean(
+            read_daily_report_snapshot(snapshot=snapshot, settings=self.settings), self.settings
+        )
+
+    def propose_agent_memory(self, content: str):
+        content = content.strip()
+        if not content or len(content) > 500 or "\n" in content:
+            raise ValueError("INVALID_MEMORY_CONTENT")
+        with self.store.transaction() as conn:
+            run = self.store.guard(self.policy.run_id, conn)
+            if not memory_request(run["input"]) or any(
+                phrase in run["input"] for phrase in ("不要记住", "别记住", "无需记住")
+            ):
+                raise ValueError("MEMORY_REQUEST_REQUIRED")
+            session = self.store.get("sessions", run["parent_id"], conn, lock=True)
+            existing = session.get("pending_agent_memory") or {}
+            if existing.get("run_id") == self.policy.run_id:
+                if existing.get("content") != content:
+                    raise ValueError("MEMORY_PROPOSAL_ALREADY_EXISTS")
+                proposal = existing
+            else:
+                proposal = {"id": uid(), "content": content, "run_id": self.policy.run_id}
+                session["pending_agent_memory"] = proposal
+                self.store.save("sessions", session, conn)
+        return {"ok": True, "data": {
+            "proposal_id": proposal["id"], "content": content,
+            "question": f"我理解你要我长期记住：{content}。是否记录到 AGENTS.md？请回复“确认记录”或“取消记录”。",
+        }}
+
+    def cancel_agent_memory(self):
+        with self.store.transaction() as conn:
+            run = self.store.guard(self.policy.run_id, conn)
+            if run["input"].strip() != "取消记录":
+                raise ValueError("MEMORY_CANCELLATION_REQUIRED")
+            session = self.store.get("sessions", run["parent_id"], conn, lock=True)
+            session.pop("pending_agent_memory", None)
+            self.store.save("sessions", session, conn)
+        return {"ok": True, "data": {"cancelled": True}}
+
+    def discussion_scope(self):
+        run = self.store.get("runs", self.policy.run_id)
+        if run.get("scope_pending") or not run.get("discussion_scope_id"):
+            raise ValueError("DISCUSSION_SCOPE_UNAVAILABLE")
+        return run["discussion_scope"], run["discussion_scope_id"]
+
+    def find_discussions(self, *, query, forum_ids, tids, start_date, end_date, limit):
+        from yamibo_mcp.application.discussion_discovery_queries import find_discussions
+        from yamibo_mcp.db.repositories.discussion_search import parse_date_bound
+
+        scope, _scope_id = self.discussion_scope()
+        if scope["pids"]:
+            from yamibo_mcp.application.contracts import AgentError, AgentResult
+
+            return clean(to_wire(AgentResult(
+                ok=False,
+                error=AgentError(
+                    code="SCOPE_REQUIRES_SELECTED_FLOORS",
+                    message="This Run is limited to selected PIDs; read those exact floors directly.",
+                    agent_hint="Call read_discussion_source with a frozen TID and PID.",
+                ),
+            )), self.settings)
+        forums = scope["forum_ids"]
+        if not forums:
+            return {"ok": True, "data": {"count": 0, "items": [], "result_status": "complete"}}
+        if forum_ids is not None:
+            forums = sorted(set(forums) & set(forum_ids))
+            if not forums:
+                return {"ok": True, "data": {"count": 0, "items": [], "result_status": "complete"}}
+        scoped_tids = scope["tids"]
+        if tids is not None:
+            requested = sorted(set(tids))
+            if scoped_tids:
+                requested = sorted(set(requested) & set(scoped_tids))
+            if not requested:
+                return {"ok": True, "data": {"count": 0, "items": [], "result_status": "complete"}}
+            scoped_tids = requested
+
+        frozen_start = parse_date_bound(scope["start_at"])
+        frozen_end = parse_date_bound(scope["end_at"])
+        requested_start = parse_date_bound(start_date)
+        requested_end = parse_date_bound(end_date, end=True)
+        effective_start = max((x for x in (frozen_start, requested_start) if x is not None), default=None)
+        effective_end = min((x for x in (frozen_end, requested_end) if x is not None), default=None)
+        if effective_start is not None and effective_end is not None and effective_start >= effective_end:
+            return {"ok": True, "data": {"count": 0, "items": [], "result_status": "complete"}}
+        result = find_discussions(
+            query=query, forum_ids=forums, tids=scoped_tids or None,
+            start_date=effective_start.isoformat() if effective_start else None,
+            end_date=effective_end.isoformat() if effective_end else None,
+            limit=limit,
+        )
+        return clean(to_wire(result), self.settings)
+
+    def read_discussion_source(self, *, tid, pid, paragraph_start, paragraph_end, max_bytes):
+        from yamibo_mcp.application.assistant_evidence_queries import read_discussion_source
+
+        _scope, scope_id = self.discussion_scope()
+        result = read_discussion_source(
+            scope_id=scope_id, run_id=self.policy.run_id, tid=tid, pid=pid,
+            paragraph_start=paragraph_start, paragraph_end=paragraph_end,
+            max_bytes=max_bytes,
+        )
+        return clean(to_wire(result), self.settings)
+
+    def validate_discussion_citations(self, *, receipt_ids):
+        from yamibo_mcp.application.assistant_evidence_queries import validate_source_receipts
+
+        self.discussion_scope()
+        result = validate_source_receipts(run_id=self.policy.run_id, receipt_ids=receipt_ids)
+        response = to_wire(result)
+        if isinstance(response.get("data"), dict):
+            # The host uses excerpts to render answer cards. The model already
+            # read them, so keep this validation receipt small.
+            response["data"].pop("sources", None)
+        return clean(response, self.settings)
 
     async def invoke(self, tool, args, handler, *, file=False):
-        self.policy.budget(file=file)
+        self.policy.record_call(file=file)
         self.store.event(
             self.policy.run_id,
             "tool.started",
@@ -119,20 +462,58 @@ class RestrictedTools:
         except Exception as exc:
             # No raw provider, DB, HTTP or filesystem exception text crosses the boundary.
             allowed = {
+                "SCOPED_READER_REQUIRED",
+                "DISCUSSION_SCOPE_UNAVAILABLE",
                 "FILE_NOT_FOUND",
-                "FILE_NOT_AGENT_OWNED",
+                "FILE_UNAVAILABLE",
                 "FILE_REVISION_CONFLICT",
                 "WORKSPACE_QUOTA_EXCEEDED",
                 "RUN_STOPPED",
                 "RUN_LIMIT_REACHED",
-                "TOOL_LIMIT_REACHED",
                 "INVALID_FILE_NAME",
+                "INVALID_OWNER_CONTEXT",
+                "INVALID_REQUEST_KEY",
+                "INVALID_ACTION",
+                "INVALID_TIDS",
+                "INVALID_IMAGE_REQUIREMENT",
+                "EXPORT_REQUIRES_IMAGES",
+                "INVALID_EXPORT_STRATEGY",
+                "RUN_SESSION_MISMATCH",
+                "SESSION_NOT_FOUND",
+                "SCOPE_NOT_FOUND",
+                "SCOPE_ACCESS_DENIED",
+                "SCOPE_REQUIRES_SELECTION",
+                "TID_OUTSIDE_SCOPE",
+                "PID_SCOPE_UNSUPPORTED",
+                "THREAD_NOT_FOUND",
+                "NOT_A_DISCUSSION",
+                "EXPORT_FORMAT_UNSUPPORTED",
+                "IDEMPOTENCY_CONFLICT",
+                "DAILY_REPORT_NOT_FROZEN",
+                "DAILY_ISSUE_NOT_FOUND",
+                "INVALID_FORUM_IDS",
+                "CHAT_DAILY_REPORT_UNAVAILABLE",
+                "FORUM_SCOPE_MISMATCH",
+                "POSTED_ON_UNBOUNDED",
+                "INVALID_MEMORY_CONTENT",
+                "MEMORY_REQUEST_REQUIRED",
+                "MEMORY_PROPOSAL_ALREADY_EXISTS",
+                "MEMORY_CONFIRMATION_REQUIRED",
+                "MEMORY_CANCELLATION_REQUIRED",
+                "MEMORY_USE_PROPOSAL_FLOW",
             }
+            code = getattr(exc, "code", None)
             result = {
                 "ok": False,
                 "error": {
-                    "code": str(exc) if str(exc) in allowed else "TOOL_FAILED",
-                    "message": "操作未完成，请查看输入、授权或已有任务状态",
+                    "code": code if code in allowed else (
+                        str(exc) if str(exc) in allowed else "TOOL_FAILED"
+                    ),
+                    "message": (
+                        "此读取入口无法证明符合当前分析范围。请使用 find_discussions / read_discussion_source；日报正文请从知识库打开指定版本后使用 read_daily_report。"
+                        if str(exc) == "SCOPED_READER_REQUIRED"
+                        else "操作未完成，请查看输入、授权或已有任务状态"
+                    ),
                 },
             }
         result = clean(result, self.settings)
@@ -158,12 +539,6 @@ class RestrictedTools:
                     "message": "未获授权或执行结果待核实，禁止自动重试",
                 },
             }
-        if tool == "authorize_job_plan":
-            result = {"ok": True, "data": {"authorized": args, "approval_id": op["id"]}}
-            self.store.update("operations", op["id"], status="completed", result=result)
-            return result
-        if tool == "create_jobs":
-            return self.jobs(op)
         # File-system and database commits cannot be atomic. Persist the uncertainty
         # marker BEFORE touching bytes; a crash blocks replay instead of overwriting.
         with self.store.transaction() as conn:
@@ -181,311 +556,81 @@ class RestrictedTools:
                 "files", "guidance", conn, lock=True
             )  # global file mutation lock
             result = self.files.mutate(tool, args, run, conn, op["id"])
+            if tool == "confirm_agent_memory":
+                session = self.store.get("sessions", run["parent_id"], conn, lock=True)
+                session.pop("pending_agent_memory", None)
+                self.store.save("sessions", session, conn)
             op.update(status="completed", result={"ok": True, "data": result})
             self.store.save("operations", op, conn)
             self.store.event(self.policy.run_id, "file.changed", result, conn)
         return op["result"]
 
-    def jobs(self, op):
-        from yamibo_mcp.application import archive_commands
+    def propose_operation_plan(
+        self, *, action, tids, require_images, strategy=None
+    ):
+        from yamibo_mcp.application.assistant_operation_plans import create_operation_plan
 
-        with self.store.transaction() as conn:
-            run = self.store.guard(self.policy.run_id, conn)
-            current = self.store.get("operations", op["id"], conn, lock=True)
-            if current["status"] == "completed":
-                return current["result"]
-            if current["status"] != "approved":
-                raise ValueError("APPROVAL_REQUIRED")
-            args = op["args"]
-            results = []
-            functions = {
-                "archive": archive_commands.create_thread_archive_job,
-                "update": archive_commands.create_thread_update_job,
-                "export": archive_commands.create_thread_export_job,
-            }
-            prior = {}
-            for receipt in self.store.list("operations", self.policy.run_id, conn):
-                if (
-                    receipt["tool"] == "create_jobs"
-                    and receipt["status"] == "completed"
-                    and receipt["args"]["action"] == args["action"]
-                ):
-                    prior.update(
-                        zip(receipt["args"]["tids"], receipt["result"]["data"]["items"])
-                    )
-            for tid in args["tids"]:
-                if tid in prior:
-                    results.append(prior[tid])
-                    continue
-                result = functions[args["action"]](tid=tid, connection=conn)
-                results.append(to_wire(result))
-            receipt = {
-                "ok": True,
-                "data": {
-                    "items": results,
-                    "job_ids": [r["data"]["job_id"] for r in results],
-                },
-            }
-            current.update(status="completed", result=receipt)
-            self.store.save("operations", current, conn)
-            run["authorized_tids"] = sorted(
-                set(run.get("authorized_tids", [])) | set(args["tids"])
+        run = self.store.get("runs", self.policy.run_id)
+        if run.get("scope_pending") or not run.get("discussion_scope_id"):
+            raise ValueError("DISCUSSION_SCOPE_UNAVAILABLE")
+        scope = run.get("discussion_scope") or {}
+        if scope.get("mode") != "selected":
+            from yamibo_mcp.application.assistant_operation_plans import OperationPlanError
+
+            raise OperationPlanError(
+                "SCOPE_REQUIRES_SELECTION",
+                "Choose exact TIDs and start a selected-scope Run before proposing an operation plan.",
+                409,
             )
-            self.store.save("runs", run, conn)
-            return receipt
+        if scope.get("pids"):
+            from yamibo_mcp.application.assistant_operation_plans import OperationPlanError
+
+            raise OperationPlanError(
+                "PID_SCOPE_UNSUPPORTED",
+                "Operation plans require whole-thread selection.",
+                422,
+            )
+        if not isinstance(tids, list) or not tids or any(type(tid) is not int for tid in tids):
+            from yamibo_mcp.application.assistant_operation_plans import OperationPlanError
+
+            raise OperationPlanError("INVALID_TIDS", "Provide explicit positive TIDs.", 400)
+        normalized_tids = sorted(tids)
+        if len(set(normalized_tids)) != len(normalized_tids):
+            from yamibo_mcp.application.assistant_operation_plans import OperationPlanError
+
+            raise OperationPlanError("INVALID_TIDS", "TIDs must be unique.", 400)
+        if not set(normalized_tids) <= set(scope.get("tids") or []):
+            from yamibo_mcp.application.assistant_operation_plans import OperationPlanError
+
+            raise OperationPlanError(
+                "TID_OUTSIDE_SCOPE", "Every TID must be inside this Run's selected scope.", 403
+            )
+
+        # The model cannot choose an approval key. Exact retries in this Run are
+        # idempotent; changed inputs receive a distinct server-derived key.
+        request = {
+            "run_id": self.policy.run_id,
+            "action": action,
+            "tids": normalized_tids,
+            "require_images": require_images,
+            "strategy": strategy,
+        }
+        request_key = "embedded-chat:" + hashlib.sha256(
+            json.dumps(request, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        return clean(
+            create_operation_plan(
+                session_id=run["parent_id"], run_id=self.policy.run_id,
+                request_key=request_key, action=action, tids=normalized_tids,
+                require_images=require_images,
+                export_strategy=strategy,
+            ),
+            self.settings,
+        )
 
 
 def build_restricted_server(settings, run_id):
-    """Build the per-run MCP server without doing blocking I/O.
+    """Build the isolated per-Run MCP server."""
+    from .tool_server import build_restricted_server as register_tools
 
-    The parent runtime has already loaded the bound run before spawning the
-    stdio child.  Server construction is part of the MCP handshake, so an
-    eager database read here could consume the entire initialization timeout
-    when PostgreSQL is briefly saturated.  Every callable tool goes through
-    ``RestrictedTools.invoke``/``Policy.guard`` before doing work; resources
-    that expose state perform the same check.  Invalid or expired run IDs are
-    therefore rejected at the first operation while the protocol can still
-    initialize promptly.
-    """
-    if not run_id:
-        raise ValueError("embedded-chat requires a bound run")
-    tools = RestrictedTools(settings, run_id)
-    server = FastMCP(
-        "yamibo-embedded-chat",
-        instructions="只提供受限 Yamibo 业务与工作文件能力。创建 Job 不等于完成。",
-    )
-    for name, fields in READS.items():
-        handler = getattr(agent_tools, name)
-        signature = inspect.signature(handler)
-        hints = get_type_hints(handler)
-        definitions = {
-            key: (
-                hints[key],
-                signature.parameters[key].default
-                if signature.parameters[key].default is not inspect.Parameter.empty
-                else ...,
-            )
-            for key in fields
-        }
-        model = create_model(
-            name + "Input", __config__=ConfigDict(extra="forbid"), **definitions
-        )
-
-        def make(name, model):
-            async def call(**kwargs):
-                args = model.model_validate(kwargs).model_dump()
-
-                async def execute():
-                    return await asyncio.to_thread(tools.reads, name, args)
-
-                return await tools.invoke(name, args, execute)
-
-            call.__name__ = name
-            call.__signature__ = inspect.Signature(
-                [
-                    inspect.Parameter(
-                        k,
-                        inspect.Parameter.KEYWORD_ONLY,
-                        annotation=f.annotation,
-                        default=inspect.Parameter.empty
-                        if f.is_required()
-                        else f.default,
-                    )
-                    for k, f in model.model_fields.items()
-                ],
-                return_annotation=dict,
-            )
-            return call
-
-        server.tool(name=name, description=f"受限业务查询 {name}")(make(name, model))
-
-    @server.tool()
-    async def read_operation_history(offset: int = 0) -> dict:
-        """分页读取当前会话的操作事实；用于长会话裁剪后核查 Job 和未完成操作。"""
-        if offset < 0:
-            raise ValueError("INVALID_OFFSET")
-
-        async def execute():
-            from .runtime import operation_facts
-
-            run = tools.store.get("runs", run_id)
-            facts = operation_facts(tools.store, run["parent_id"])
-            return {
-                "ok": True,
-                "data": {
-                    "items": facts[offset : offset + 20],
-                    "next_offset": offset + 20 if len(facts) > offset + 20 else None,
-                },
-            }
-
-        return await tools.invoke("read_operation_history", {"offset": offset}, execute)
-
-    @server.tool()
-    async def authorize_job_plan(
-        action: Literal["archive", "update", "export"], tids: list[int]
-    ) -> dict:
-        """批量任务先列出完整目标并确认一次；确认后可分批 create_jobs，不重复询问。最多 1000 帖。"""
-        if (
-            not tids
-            or len(tids) > 1000
-            or any(type(t) is not int or t < 1 for t in tids)
-        ):
-            raise ValueError("INVALID_TIDS")
-        args = {"action": action, "tids": sorted(set(tids))}
-        return await tools.invoke(
-            "authorize_job_plan", args, lambda: tools.write("authorize_job_plan", args)
-        )
-
-    @server.tool()
-    async def create_jobs(
-        action: Literal["archive", "update", "export"], tids: list[int]
-    ) -> dict:
-        """按明确授权创建归档/更新/导出 Job；只表示提交，等待结果用 wait_for_jobs。"""
-        if (
-            not tids
-            or len(tids) > 200
-            or any(type(t) is not int or t < 1 for t in tids)
-        ):
-            raise ValueError("INVALID_TIDS")
-        args = {"action": action, "tids": sorted(set(tids))}
-        return await tools.invoke(
-            "create_jobs", args, lambda: tools.write("create_jobs", args)
-        )
-
-    @server.tool()
-    async def wait_for_jobs(job_ids: list[str]) -> dict:
-        """需要任务完成后继续整理时使用。程序等待，不反复调用模型。"""
-        if not job_ids or len(job_ids) > 200:
-            raise ValueError("INVALID_JOB_IDS")
-
-        async def wait():
-            with tools.store.transaction() as conn:
-                run = tools.store.guard(run_id, conn)
-                run["status"] = "waiting_jobs"
-                tools.store.save("runs", run, conn)
-            previous = None
-            try:
-                while True:
-                    with tools.store.transaction() as conn:
-                        tools.store.guard(run_id, conn)
-                    results = [
-                        await asyncio.to_thread(tools.reads, "read_job", {"job_id": j})
-                        for j in job_ids
-                    ]
-                    status = [(r.get("data") or {}).get("status") for r in results]
-                    if status != previous:
-                        tools.store.event(
-                            run_id,
-                            "job.progress",
-                            {"job_ids": job_ids, "statuses": status},
-                        )
-                        previous = status
-                    if all(
-                        not r.get("ok")
-                        or (r.get("data") or {}).get("result_ready")
-                        or (r.get("data") or {}).get("is_terminal")
-                        or (r.get("data") or {}).get("status")
-                        in {"failed", "cancelled", "completed"}
-                        for r in results
-                    ):
-                        return {"ok": True, "data": results}
-                    await asyncio.sleep(5)
-            finally:
-                with tools.store.transaction() as conn:
-                    run = tools.store.get("runs", run_id, conn, lock=True)
-                    if run["status"] == "waiting_jobs":
-                        run["status"] = "running"
-                        tools.store.save("runs", run, conn)
-
-        return await tools.invoke("wait_for_jobs", {"job_ids": job_ids}, wait)
-
-    @server.tool()
-    async def list_work_files() -> dict:
-        """列出专属目录文件，用户导入文件只读。"""
-
-        async def execute():
-            return {"ok": True, "data": tools.files.listing()}
-
-        return await tools.invoke("list_work_files", {}, execute, file=True)
-
-    @server.tool()
-    async def read_work_file(file_id: str, offset: int = 0) -> dict:
-        """按文件 ID 分段读取 UTF-8 文本。"""
-
-        async def execute():
-            return {"ok": True, "data": tools.files.read(file_id, offset)}
-
-        return await tools.invoke(
-            "read_work_file", {"file_id": file_id, "offset": offset}, execute, file=True
-        )
-
-    @server.tool()
-    async def create_work_file(name: str, content: str) -> dict:
-        """创建新的工作文本，不能覆盖已有文件。"""
-        args = dict(name=name, content=content)
-        return await tools.invoke(
-            "create_work_file",
-            args,
-            lambda: tools.write("create_work_file", args),
-            file=True,
-        )
-
-    @server.tool()
-    async def update_work_file(
-        file_id: str, expected_revision: int, content: str
-    ) -> dict:
-        """修改 Agent 自建文件，保留旧版本；外部改动导致冲突。"""
-        args = dict(
-            file_id=file_id, expected_revision=expected_revision, content=content
-        )
-        return await tools.invoke(
-            "update_work_file",
-            args,
-            lambda: tools.write("update_work_file", args),
-            file=True,
-        )
-
-    @server.tool()
-    async def delete_work_file(file_id: str, expected_revision: int) -> dict:
-        """仅在用户明确要求时移入回收区；无永久删除能力。"""
-        args = dict(file_id=file_id, expected_revision=expected_revision)
-        return await tools.invoke(
-            "delete_work_file",
-            args,
-            lambda: tools.write("delete_work_file", args),
-            file=True,
-        )
-
-    @server.tool()
-    async def update_agent_guidance(expected_revision: int, content: str) -> dict:
-        """用户明确要求时更新独立 AGENTS.md，不能改变程序权限。"""
-        args = dict(expected_revision=expected_revision, content=content)
-        return await tools.invoke(
-            "update_agent_guidance",
-            args,
-            lambda: tools.write("update_agent_guidance", args),
-            file=True,
-        )
-
-    @server.resource("yamibo://agent/guidance")
-    def guidance() -> str:
-        with tools.store.transaction() as conn:
-            tools.store.guard(run_id, conn)
-        return encode(
-            {
-                "revision": tools.store.get("files", "guidance")["revision"],
-                "content": tools.files.guidance(),
-            }
-        )
-
-    @server.resource("yamibo://schema/capabilities")
-    async def capabilities() -> str:
-        return encode(
-            {
-                "profile": "embedded-chat",
-                "tools": [t.model_dump(mode="json") for t in await server.list_tools()],
-            }
-        )
-
-    # No general URI reader, public resource templates, prompts or subscriptions.
-    return server
+    return register_tools(settings, run_id)

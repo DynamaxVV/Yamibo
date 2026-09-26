@@ -106,6 +106,17 @@ class TestBrowseForumPageForumId:
 
 
 class TestSearchThreadsForumId:
+    def test_remote_failure_fallback_stays_in_requested_forum(self, tmp_path, db):
+        settings = _fake_settings(tmp_path)
+        from yamibo_mcp.application.remote_queries import search_threads
+        with patch("yamibo_mcp.application.remote_queries.load_settings", return_value=settings), \
+             patch("yamibo_mcp.application.remote_queries.connect", return_value=db), \
+             patch("yamibo_mcp.application.remote_queries._run_remote_action_with_permission_retry", side_effect=RuntimeError("offline")), \
+             patch("yamibo_mcp.application.remote_queries.ThreadsRepository.search_threads", return_value=[]) as local_search:
+            result = search_threads(query="星灵感应", forum_id=30)
+        assert result["source"] == "local_fallback"
+        assert local_search.call_args.kwargs["forum_id"] == 30
+
     def test_default_forum_id_propagated_to_search(self, tmp_path, db):
         # Arrange
         settings = _fake_settings(tmp_path)

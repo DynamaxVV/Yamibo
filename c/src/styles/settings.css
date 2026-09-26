@@ -28,8 +28,13 @@
 .settings-lock-list { padding: 0; list-style: none; font-size: 12px; }
 .settings-lock-list li { display: flex; gap: 12px; flex-wrap: wrap; padding: 8px 0; border-bottom: 1px solid var(--border-light); }
 .settings-section > .settings-note { margin-bottom: 16px; }
+.settings-model-test { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin-top: 16px; }
+.settings-model-test > .settings-note { flex-basis: 100%; margin: 0; }
 .settings-select-wrap input { min-width: 0; flex: 1; }
 .settings-section { padding: 14px; }
+.settings-page-embedded { max-width: none; margin: 0; gap: 0; }
+.settings-auth-shell-embedded { min-height: 0; padding: 0; }
+.settings-auth-shell-embedded .settings-auth { width: 100%; }
 @media (max-width: 640px) {
   .settings-page-header { flex-direction: column; gap: 12px; }
   .settings-auth { padding: 24px 20px; }
@@ -329,3 +334,8 @@
  .settings-select-wrap { flex-wrap: wrap; }
  .settings-section-save,.settings-page-nav a { min-height: 44px; }
 }
+
+.scheduled-task-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; margin: 16px 0; }
+.scheduled-task-form label { display: grid; gap: 6px; }
+.scheduled-task-form input, .scheduled-task-form select { width: 100%; min-width: 0; box-sizing: border-box; }
+.scheduled-task-item { border-top: 1px solid var(--border); padding: 12px 0; overflow-wrap: anywhere; }

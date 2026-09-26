@@ -2,6 +2,7 @@ import { Markdown } from '../Markdown'
 import type { ReactNode } from 'react'
 import { formatContent, type ChatMessage } from '../../types/chat'
 import { useI18n } from '../../context/I18nContext'
+import { ChatSources, chatSources, formatCitationMarkers } from './ChatSources'
 
 function compactToolResult(content: unknown) {
   const formatted = formatContent(content).trim()
@@ -34,7 +35,8 @@ function reasoningParts(message: ChatMessage, t: (key: string) => string) {
 }
 
 export function ChatMessageView({ message, streaming = false, extra, hideReasoning = false, hideToolCalls = false }: { message: ChatMessage; streaming?: boolean; extra?: ReactNode; hideReasoning?: boolean; hideToolCalls?: boolean }) {
-  const { t } = useI18n()
+  const { t, tx } = useI18n()
+  const citations = message.role === 'assistant' ? chatSources(message.citations) : []
   const roles: Record<string, string> = {
     user: t('chat_role_user'),
     assistant: t('chat_role_assistant'),
@@ -68,8 +70,9 @@ export function ChatMessageView({ message, streaming = false, extra, hideReasoni
         </div>
       ) : message.content !== undefined ? (
         <>
-          <Markdown content={formatContent(message.content)} />
+          <Markdown content={formatCitationMarkers(formatContent(message.content), citations, tx('来源', 'Source'))} />
           {streaming && <span className="chat-stream-caret" aria-hidden="true" />}
+          <ChatSources citations={citations} />
         </>
       ) : null}
       {!hideReasoning && messageReasoning.length > 0 && (

@@ -28,7 +28,7 @@ uv run yamibo-archiver job-status <job_id>
 uv run yamibo-archiver search-archived-content --query "..." --mode hybrid --top-k 5
 uv run yamibo-archiver discussion-partition-trends --forum-id 5 --start-date 2014-11-01 --end-date 2014-11-30
 
-# Database (DANGER: Destructive Operations
+# Database (DANGER: destructive operations)
 uv run yamibo-init-db
 uv run yamibo-backup-db
 uv run yamibo-maintenance-cleanup
@@ -76,7 +76,7 @@ YAMIBO_TEST_PG_URL=postgresql://yamibo:yamibo@localhost:5432/yamibo uv run pytes
 
 **Shared package-root modules**: `config.py` (settings loading), `errors.py` (exception hierarchy), `time_utils.py`, `logging.py`.
 
-**Web layer**: `web/api.py` is the single dispatch entry point — it owns the DB lifecycle (`connect()` → `migrate()` → route → `conn.close()`). Per-resource route handlers in `web/routes/` (`jobs.py`, `threads.py`, `series.py`, `forums.py`, `rag.py`, `review.py`, `settings.py`, `dashboard.py`, `debug.py`, `remote_forum.py`, `daemon.py`). Shared helpers in `web/routes/_helpers.py` and `web/routes/_converters.py`. The embedded web server starts inside the daemon process on `:8765` (configurable via `YAMIBO_WEB_HOST`/`YAMIBO_WEB_PORT`).
+**Web layer**: `web_fastapi/app.py:create_app()` composes the FastAPI application and includes per-resource `APIRouter` modules from `web_fastapi/routers/`. Request-scoped dependencies live in `web_fastapi/deps.py`; shared response conversion and helper logic live in `converters.py` and `helpers.py`. The same app can run standalone through `yamibo-web` or inside the daemon's `EmbeddedWebServer` on `:8765` (configurable via `YAMIBO_WEB_HOST`/`YAMIBO_WEB_PORT`).
 
 **Frontend**: React 18 + Vite + React Router v6. Layout route pattern — `<Layout>` wraps all pages. Context providers (`I18nProvider` zh/en, `ThemeProvider` 4 themes + dark mode) wrap `<BrowserRouter>`. Pages in `pages/`, shared components in `components/` (ThreadReader, LazyImage, PaginationControls, DataTable, Badge, ThemePicker). CSS: `styles.css` (global) + `styles/` (per-page). API client in `api/client.ts` — `fetchJson<T>(path)` for GET, `postJson<T>(path, body)` for POST, both prepend `/api` base. Build output → `src/yamibo_mcp/web/static/`.
 
@@ -104,13 +104,14 @@ def tool_name(*, param_a: int, param_b: str = "default") -> AgentResult:
     return _underlying_app_function(param_a=param_a, param_b=param_b)
 ```
 
-The `@agent_tool` decorator (defined in `agent_adapter.py`) catches all exceptions and maps them to structured `AgentError` via `map_exception()`. Error codes: `JOB_NOT_FOUND`, `REMOTE_FETCH_FAILED`, `REMOTE_LOGIN_REQUIRED`, `REMOTE_MAINTENANCE`, `REMOTE_ACCESS_PAUSED`, `REMOTE_THREAD_PERMISSION_REQUIRED`, `UNEXPECTED_REMOTE_PAGE`, `EXPORT_PRECHECK_FAILED`, `LOCAL_ARCHIVE_NOT_FOUND`, `INVALID_ARGUMENT`, `INTERNAL_ERROR`.
+The `@agent_tool` decorator in `agent_adapter.py` catches exceptions and maps them to structured `AgentError` values via `map_exception()`. Treat that implementation and its tests as the source of truth for error codes; do not duplicate the full list here.
 
 ### Adding a new web API route
 
-1. Create `web/routes/<name>.py` with handler functions signature `handle_<endpoint>(handler, conn, params, settings)` — `handler` is the `BaseHTTPRequestHandler`, `conn` is a pre-connected `DatabaseConnection`.
-2. In `web/api.py`: add the route dispatch in `_route()` (another `if/elif` chain). Check HTTP method via `handler.command == "GET"` etc.
-3. For dynamic path segments, extract via string slicing (e.g. `route[6:-7]` for `/jobs/<id>/events`).
+1. Create or extend `web_fastapi/routers/<name>.py` using `APIRouter(prefix="/api", tags=[...])`.
+2. Declare request validation with FastAPI parameters or models from `web_fastapi/models/`; acquire configuration and database connections through dependencies in `web_fastapi/deps.py`.
+3. Include a new router from `web_fastapi/app.py:create_app()`. Keep response conversion in `converters.py` and shared web-only utilities in `helpers.py` rather than duplicating them in endpoints.
+4. Add focused tests under `tests/unit/test_web/` for routing, validation, error mapping, and side effects.
 
 ### Adding a new frontend page
 
@@ -143,13 +144,9 @@ Repositories in `db/repositories/` are plain classes wrapping a `DatabaseConnect
 3. `run_forever()` loop: poll for queued jobs → acquire lease → `get_handler(job)` → execute → update status/artifacts. `run_once()` processes at most one job then returns.
 4. `KeyboardInterrupt` → graceful shutdown → `embedded_web.stop()`.
 
-### Web API dispatch
+### Web API composition
 
-`web/api.py:handle_api(handler, path, query, settings)` is the single entry:
-1. Strips `/api` prefix, parses query string.
-2. Opens DB connection, runs `migrate(conn)` (ensures schema current on every request).
-3. Dispatches to per-route handler via `_route()` (if/elif chain on route string).
-4. `finally: conn.close()`. `BrokenPipeError`/`ConnectionResetError` swallowed silently.
+`web_fastapi/app.py:create_app(settings)` creates the FastAPI app, installs exception handlers, includes routers, mounts media/static routes, and stores shared services on `app.state`. Routers declare their own paths and use `Depends(get_conn)` / `Depends(get_settings)` where needed. Schema initialization belongs to application startup and migration entrypoints, not individual requests.
 
 ### Config system
 
@@ -196,9 +193,8 @@ Local dev PostgreSQL: `docker compose up -d` starts `pgvector/pgvector:pg15` wit
 - After modifying the frontend TSX/TS source code, you must run `cd c && npm run build` to recompile; otherwise, the web client will still display the old static assets. `npm run dev` is only used for local development and debugging (HMR). In production, static files rely on the build output to `src/yamibo_mcp/web/static/`.
 - Agent tool guideline: prefer `probe_archived_threads` before batch archiving; `read_job` is the primary status surface (not `read_job_events`); creating a job ≠ job completion — always verify with `read_job` or `wait_for_job`.
 - **CRITICAL / DATABASE DANGER**:
-  - `yamibo-reset-data` will **wipe all production data** instantly.
-  - `yamibo-init-db` will overwrite existing tables if forced.
-  - Never run destructive DB commands (`reset-data`, `init-db`, `maintenance-cleanup`) without a recent backup via `yamibo-backup-db`.
+  - `yamibo-reset-data` can wipe production data; `yamibo-init-db --force` and cleanup operations can also be destructive.
+  - Resolve the exact database and scope first. Require explicit user authorization before destructive execution, and create or verify a recent `yamibo-backup-db` backup when the operation affects valuable data.
 
 ## Commit Conventions (github)
 

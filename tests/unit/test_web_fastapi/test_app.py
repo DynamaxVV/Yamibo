@@ -382,6 +382,20 @@ def test_settings_saved_and_active_values_are_distinct(client):
     assert "hermes_port" in body["pending_fields"]
 
 
+def test_llm_settings_apply_to_new_requests_without_restart(client):
+    response = client.post("/api/settings", json={"values": {
+        "llm_base_url": "http://localhost:8317/v1", "llm_api_key": "new-key", "llm_model": "new-model",
+    }})
+    assert response.status_code == 200
+    assert response.json()["restart_required"] is False
+    current = client.get("/api/settings").json()
+    assert current["active_values"]["llm_base_url"] == "http://localhost:8317/v1"
+    assert current["active_values"]["llm_model"] == "new-model"
+    assert "llm_base_url" not in current["pending_fields"]
+    assert "llm_model" not in current["pending_fields"]
+    assert current["configured"]["llm_api_key"] is True
+
+
 def test_disabled_signin_does_not_inspect_accounts():
     from types import SimpleNamespace
     from yamibo_mcp.daemon.daily_sign_in_scheduler import maybe_enqueue_daily_sign_ins

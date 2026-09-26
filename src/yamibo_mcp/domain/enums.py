@@ -28,3 +28,4 @@ class JobType(StrEnum):
     DISCUSSION_TREND_REPORT = "discussion_trend_report"
     IMAGE_BACKFILL = "image_backfill"
     DAILY_SIGN_IN = "daily_sign_in"
+    DAILY_BRIEF_REPORT = "daily_brief_report"

@@ -50,7 +50,7 @@ def create_app(settings) -> FastAPI:
 
     @app.middleware("http")
     async def protect_chat_origin(request: Request, call_next):
-        if request.url.path.startswith("/api/chat/"):
+        if request.url.path.startswith("/api/chat/") or request.url.path.startswith("/api/assistant/operation-plans"):
             origin = request.headers.get("origin")
             if origin and origin not in {f"{request.url.scheme}://{request.url.netloc}", f"https://{request.url.netloc}"}:
                 return JSONResponse(status_code=403, content={"error": {"code": "CHAT_ORIGIN_DENIED", "message": "跨站请求被拒绝"}})
@@ -86,8 +86,8 @@ def create_app(settings) -> FastAPI:
 
     from yamibo_mcp.errors import JobNotFound
     from yamibo_mcp.web_fastapi.routers import (
-        chat, daemon, dashboard, debug, forums, jobs, knowledge,
-        rag, remote_forum, review, series, threads,
+        assistant_operations, chat, daily_briefs, daily_rules, daemon, dashboard, debug, forums, jobs, knowledge,
+        rag, remote_forum, review, scheduled_tasks, series, skill_reviews, threads,
     )
     from yamibo_mcp.web_fastapi.routers import settings as settings_router
 
@@ -128,11 +128,16 @@ def create_app(settings) -> FastAPI:
     app.include_router(rag.router)
     app.include_router(review.router)
     app.include_router(settings_router.router)
+    app.include_router(skill_reviews.router)
+    app.include_router(scheduled_tasks.router)
     app.include_router(knowledge.router)
     app.include_router(debug.router)
     app.include_router(daemon.router)
     app.include_router(remote_forum.router)
     app.include_router(chat.router)
+    app.include_router(assistant_operations.router)
+    app.include_router(daily_briefs.router)
+    app.include_router(daily_rules.router)
 
     @app.get("/api/avatar-proxy")
     def avatar_proxy(uid: str = Query(...), size: str = Query(default="middle")):

@@ -250,7 +250,10 @@ def search_threads(
             thread_row, title_row = _local_row_by_tid(repo, item.tid)
             merged.append(_search_item_from_remote(item, thread_row, title_row, base_url=base_url))
         if remote_error is not None and query.strip():
-            local_rows = repo.search_threads(query, limit=max(limit, 200) if limit > 0 else 500)
+            local_rows = repo.search_threads(
+                query, limit=max(limit, 200) if limit > 0 else 500,
+                forum_id=forum_id,
+            )
             for row in local_rows:
                 payload = thread_summary_payload(row, include_export=True)
                 payload.update(

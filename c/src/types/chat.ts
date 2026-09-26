@@ -1,18 +1,31 @@
 export type ChatRole = 'system' | 'user' | 'assistant' | 'tool' | 'unknown'
-export type ChatRunStatus = 'preparing'|'submitting'|'queued'|'running'|'waiting_for_approval'|'stopping'|'reconciling'|'completed'|'failed'|'cancelled'|'unknown'|'waiting_jobs'|'limited'|'interrupted'
+export type ChatSubmissionStatus = 'submitting'|'accepted'|'queued'|'running'|'research_find'|'research_read'|'waiting_jobs'|'approval'|'completed'|'failed'
+export type ChatRunStatus = 'preparing'|'submitting'|'accepted'|'queued'|'running'|'waiting_for_approval'|'stopping'|'reconciling'|'completed'|'failed'|'cancelled'|'unknown'|'waiting_jobs'|'limited'|'interrupted'
+/** User-controllable discussion scope accepted by POST /chat/sessions/{id}/runs. */
+export type ChatRunScope = {
+  mode?: 'discovery'|'selected'
+  forum_ids?: number[]
+  tids?: number[]
+  pids?: number[]
+  start_at?: string|null
+  end_at?: string|null
+  report_revision?: number|string|null
+}
+export type StartRunRequest = { input: string; client_request_id: string } & ChatRunScope
 export type ApprovalChoice = 'once'|'session'|'always'|'deny'
 export type ChatError = { code: string; message: string; retryable?: boolean; details?: unknown }
 export type ChatContent = unknown
-export type ChatMessage = { id?: string; role: ChatRole; content: ChatContent; tool_call_id?: string|null; tool_calls?: unknown[]; tool_name?: string|null; reasoning?: string|null; reasoning_content?: string|null; finish_reason?: string|null; timestamp?: string }
+export type ChatCitation = { receipt_id: string; tid: number; pid: number; source_url: string; paragraph_range: { start: number; end: number }; truncated: boolean; content: string }
+export type ChatMessage = { id?: string; role: ChatRole; content: ChatContent; citations?: ChatCitation[]; tool_call_id?: string|null; tool_calls?: unknown[]; tool_name?: string|null; reasoning?: string|null; reasoning_content?: string|null; finish_reason?: string|null; timestamp?: string }
 export type ChatSession = { id: string; title: string; preview?: string|null; message_count?: number; created_at?: string; updated_at?: string; last_active?: string|null; active_run_id?: string|null }
 export type ChatRun = { run_id: string; session_id: string; status: ChatRunStatus; last_seq?: number; error?: ChatError|null; terminal_payload?: unknown; stop_requested?: boolean }
 export type ChatContext = { ready: boolean; mode?: 'hermes_runs'|'hermes_http'|'embedded'|null; transport?: string; degraded?: boolean; streaming_enabled?: boolean; model?: string; error?: ChatError|null; warning?: ChatError|null; hermes?: { endpoint?: string; connected?: boolean; version?: string; has_api_key?: boolean; capabilities?: string[]; capabilities_source?: string } }
 export type ChatSessionPage = { sessions?: ChatSession[]; items?: ChatSession[]; total?: number; has_more?: boolean }
-export type StartRunResponse = { run_id: string; session_id: string; status: ChatRunStatus; events_url: string }
+export type StartRunResponse = { run_id: string; session_id: string; status: ChatRunStatus; events_url: string; mode?: 'discovery'|'selected'; scope?: ChatRunScope; scope_id?: string|null; report_revision?: number|string|null; scope_pending?: boolean }
 export type ChatEventBase = { seq: number; run_id: string; type: string; timestamp: number }
 export type MessageDeltaEvent = ChatEventBase & { type: 'message.delta'; delta: unknown; role?: ChatRole }
 export type ToolStartedEvent = ChatEventBase & { type: 'tool.started'; tool: string; preview?: unknown; call_id?: string }
-export type ToolCompletedEvent = ChatEventBase & { type: 'tool.completed'; tool: string; duration?: number; error?: unknown; call_id?: string }
+export type ToolCompletedEvent = ChatEventBase & { type: 'tool.completed'; tool: string; duration?: number; error?: unknown; result?: unknown; call_id?: string }
 export type ReasoningAvailableEvent = ChatEventBase & { type: 'reasoning.available'; text: unknown }
 export type ApprovalRequestEvent = ChatEventBase & { type: 'approval.request'; approval_id?: string; plan_hash?: string; choices: ApprovalChoice[]; summary?: unknown; tool?: unknown }
 export type ApprovalRespondedEvent = ChatEventBase & { type: 'approval.responded'; choice: ApprovalChoice; resolved: boolean }

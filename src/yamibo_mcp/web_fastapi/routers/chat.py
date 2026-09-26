@@ -1,9 +1,10 @@
 from __future__ import annotations
 import json
 from typing import Any, Literal
-from fastapi import APIRouter, Depends, Header, Query, Request
-from pydantic import BaseModel, ConfigDict, Field
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
 from starlette.responses import StreamingResponse
+from yamibo_mcp.application.assistant_evidence_queries import list_run_source_receipts
 from yamibo_mcp.services.chat_runtime import ChatRun
 from yamibo_mcp.services.web_chat import ChatService, ChatServiceError
 from yamibo_mcp.web_fastapi.deps import get_chat_service
@@ -15,6 +16,13 @@ class UpdateSession(Strict): title: str | None = None; end_reason: str | None = 
 class StartRun(Strict):
     input: str = Field(min_length=1, max_length=64000)
     client_request_id: str | None = Field(default=None, max_length=128)
+    mode: Literal["discovery", "selected"] = "discovery"
+    forum_ids: list[StrictInt] | None = None
+    tids: list[StrictInt] | None = None
+    pids: list[StrictInt] | None = None
+    start_at: str | None = None
+    end_at: str | None = None
+    report_revision: StrictInt | StrictStr | None = None
 class Approval(Strict):
     choice: Literal["once", "session", "always", "deny"]
     resolve_all: bool = False
@@ -23,10 +31,24 @@ class Approval(Strict):
 def fail(exc: ChatServiceError):
     from fastapi import HTTPException
     return HTTPException(status_code=exc.http_status, detail=exc.as_dict()["error"])
+def source_receipts_error(result):
+    error = result.error
+    status = {
+        "INVALID_ARGUMENT": 422,
+        "RUN_NOT_FOUND": 404,
+        "SESSION_NOT_FOUND": 404,
+        "RUN_SESSION_MISMATCH": 409,
+        "RECEIPT_ACCESS_DENIED": 403,
+        "RECEIPT_QUERY_FAILED": 503,
+    }.get(error.code, 500)
+    raise HTTPException(status_code=status, detail={"code": error.code, "message": error.message, "retryable": error.retryable})
 def run_payload(run: ChatRun | dict[str, Any], session_id: str) -> dict[str, Any]:
-    if isinstance(run, dict): run_id, status = str(run.get("run_id") or run.get("id") or ""), run.get("status", "unknown")
+    extras = {}
+    if isinstance(run, dict):
+        run_id, status = str(run.get("run_id") or run.get("id") or ""), run.get("status", "unknown")
+        extras = {key: run[key] for key in ("mode", "scope", "scope_id", "report_revision", "scope_pending") if key in run}
     else: run_id, status = run.run_id, run.status.value
-    return {"run_id": run_id, "session_id": session_id, "status": status, "events_url": f"/api/chat/runs/{run_id}/events"}
+    return {"run_id": run_id, "session_id": session_id, "status": status, "events_url": f"/api/chat/runs/{run_id}/events", **extras}
 def run_view(run: ChatRun) -> dict[str, Any]:
     return {"run_id": run.run_id, "session_id": run.session_id, "status": run.status.value,
             "created_at": run.created_at, "updated_at": run.updated_at, "last_seq": run.last_seq,
@@ -63,7 +85,14 @@ def messages(session_id: str, service: ChatService = Depends(get_chat_service)):
 def start_run(session_id: str, body: StartRun, service: ChatService = Depends(get_chat_service)):
     try:
         if hasattr(service, "store"):
-            return run_payload(service.start_run(session_id, body.input, body.client_request_id), session_id)
+            return run_payload(
+                service.start_run(
+                    session_id, body.input, body.client_request_id,
+                    mode=body.mode, forum_ids=body.forum_ids, tids=body.tids,
+                    pids=body.pids, start_at=body.start_at, end_at=body.end_at,
+                    report_revision=body.report_revision,
+                ), session_id,
+            )
         return run_payload(service.start_run(session_id, body.input), session_id)
     except ChatServiceError as exc: raise fail(exc)
 @router.get("/chat/runs/{run_id}")
@@ -72,6 +101,16 @@ def get_run(run_id: str, service: ChatService = Depends(get_chat_service)):
         result = service.get_run(run_id)
         return run_view(result) if isinstance(result, ChatRun) else {**result, "events_url": result.get("events_url", f"/api/chat/runs/{run_id}/events")}
     except ChatServiceError as exc: raise fail(exc)
+@router.get("/chat/runs/{run_id}/source-receipts")
+def run_source_receipts(
+    run_id: str,
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    result = list_run_source_receipts(run_id=run_id, limit=limit, offset=offset)
+    if not result.ok or result.data is None:
+        source_receipts_error(result)
+    return result.data
 @router.post("/chat/runs/{run_id}/stop")
 def stop_run(run_id: str, service: ChatService = Depends(get_chat_service)):
     try: return service.stop_run(run_id)

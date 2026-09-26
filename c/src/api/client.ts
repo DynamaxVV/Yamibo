@@ -28,7 +28,11 @@ async function postJson<T>(path: string, body: Record<string, unknown>): Promise
 
 function toApiError(payload: unknown, status: number, statusText: string): Error {
   const root = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {}
-  const detail = root.error && typeof root.error === 'object' ? root.error as Record<string, unknown> : root
+  const detail = root.error && typeof root.error === 'object'
+    ? root.error as Record<string, unknown>
+    : root.detail && typeof root.detail === 'object'
+      ? root.detail as Record<string, unknown>
+      : root
   const message = typeof detail.message === 'string' ? detail.message : typeof root.detail === 'string' ? root.detail : typeof root.error === 'string' ? root.error : `${status} ${statusText}`
   const code = typeof detail.code === 'string' ? detail.code : undefined
   const error = new Error(message) as Error & { code?: string }
@@ -63,6 +67,92 @@ export interface JobSummary {
   finished_at: string | null
   payload?: Record<string, unknown>
   artifacts?: Record<string, unknown>
+}
+
+export interface OperationPlanStep {
+  kind: string
+  state: string
+  mode?: string
+  format?: string
+  strategy?: string
+  job_id?: string
+  error_code?: string
+  error_message?: string
+  export_path?: string
+}
+
+export interface OperationPlanItem {
+  tid: number
+  ordinal: number
+  title?: string | null
+  stage: string
+  steps: OperationPlanStep[]
+}
+
+export interface OperationPlan {
+  plan_id: string
+  session_id: string
+  run_id: string
+  action: 'archive' | 'export' | string
+  status: string
+  plan_version: number
+  plan_hash: string
+  approval_ready: boolean
+  execution: string
+  items: OperationPlanItem[]
+}
+
+export interface OperationPlanPage {
+  plans: OperationPlan[]
+  limit: number
+  offset: number
+  has_more: boolean
+}
+
+export interface DailyIssue {
+  issue_id: string
+  source_kind: 'manual' | 'scheduled' | string
+  target_day: string
+  timezone: string
+  state: string
+  queued_job_id?: string | null
+  config_snapshot_json?: Record<string, unknown> | null
+}
+export interface DailyReportRevision {
+  revision_id: string
+  report_revision: number
+  status: string
+  coverage_status: string
+  body_markdown?: string | null
+  report_json?: Record<string, any> | null
+  stats_receipt_json?: Record<string, any> | null
+  source_receipts_json?: { tid: number; pid: number; [key: string]: unknown }[]
+  gap_reasons_json?: string[]
+  regeneration_reason?: string | null
+  created_at?: string
+}
+export interface DailyIssueSummary {
+  issue: DailyIssue
+  latest_revision: DailyReportRevision | null
+  queued_job: { job_id: string; status: string; job_type: string } | null
+}
+export interface DailyIssuePage { items: DailyIssueSummary[]; limit: number; offset: number }
+export interface DailyIssueDetail {
+  issue: DailyIssue
+  attempts: { attempt_id: string; attempt_no: number; status: string; error_code?: string | null; error_message?: string | null; coverage_json?: Record<string, any> | null }[]
+  revisions: DailyReportRevision[]
+  queued_job: { job_id: string; status: string; job_type: string } | null
+}
+export interface DailyRule {
+  rule_id: string
+  revision: number
+  forum_ids: number[]
+  timezone: string
+  execution_time: string
+  preparation_deadline: string
+  budget: Record<string, unknown>
+  enabled: boolean
+  next_run_at: string | null
 }
 
 export interface JobEvent {
@@ -463,6 +553,40 @@ export interface RagOverview {
   recent_jobs: JobSummary[]
 }
 
+export interface ScheduledArchiveInput {
+  name: string
+  schedule_kind: 'at' | 'cron'
+  at?: string
+  cron?: string
+  timezone: string
+  action: 'archive_thread'
+  arguments: { tid: number; mode: 'text_only' | 'full'; forum_id?: number }
+  enabled: boolean
+}
+export interface ScheduledArchiveTask extends ScheduledArchiveInput {
+  task_id: string
+  revision: number
+  next_run_at?: number | string | null
+}
+export interface ScheduledArchiveRun {
+  run_id?: string
+  scheduled_for?: number | string
+  created_at?: number | string
+  status: string
+  job_ids?: string[]
+  job_id?: string
+  error?: string | null
+}
+
+export interface SkillReviewProposal {
+  id: string
+  name: string
+  reason: string
+  diff: string
+  status: 'pending' | 'approved' | 'rejected'
+  created_at: number
+}
+
 export interface SettingsResponse {
   active_values?: Record<string, unknown>
   pending_fields?: string[]
@@ -559,6 +683,38 @@ export interface RagSearchResponse {
   top_k: number
   count: number
   items: RagSearchItem[]
+}
+
+export interface DiscussionSearchItem {
+  tid: number
+  pid: number | null
+  title: string
+  pub_time: string | null
+  forum_id: number
+  snippet: string
+  match_type: 'title' | 'floor' | 'title_and_floor' | string
+  matched_at: 'title' | 'floor' | string
+}
+
+export interface DiscussionSearchResponse {
+  query: string
+  actual_mode: 'title_and_floor_text' | 'title_only' | string
+  body_search_status: 'searched' | 'not_requested' | 'INDEX_UNAVAILABLE' | string
+  result_status: 'complete' | 'partial_index_unavailable' | string
+  forum_ids: number[]
+  tids: number[]
+  start_date: string | null
+  end_date_exclusive: string | null
+  date_semantics: string
+  limit: number
+  count: number
+  items: DiscussionSearchItem[]
+  budget: {
+    timeout_ms: number
+    floor_match_limit: number
+    floor_rows_returned: number
+    floor_match_limit_reached: boolean
+  }
 }
 
 export interface AgentWireResult<T> {
@@ -783,6 +939,24 @@ export const api = {
     return fetchJson<LogsResponse>(`/logs${s ? `?${s}` : ''}`)
   },
   ragOverview: () => fetchJson<RagOverview>('/rag/overview'),
+  searchDiscussions: (data: {
+    query?: string
+    forum_ids?: number[] | null
+    tids?: number[] | null
+    start_date?: string | null
+    end_date?: string | null
+    limit?: number
+  }) => postJson<DiscussionSearchResponse>('/knowledge/discussions/search', data),
+  scheduledTasks: () => fetchJson<{ items: ScheduledArchiveTask[] }>('/settings/scheduled-tasks'),
+  createScheduledTask: (body: ScheduledArchiveInput) => postJson<ScheduledArchiveTask>('/settings/scheduled-tasks', { ...body }),
+  updateScheduledTask: (id: string, body: ScheduledArchiveInput & { expected_revision: number }) => fetchJson<ScheduledArchiveTask>(`/settings/scheduled-tasks/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(body) }),
+  triggerScheduledTask: (id: string, expected_revision: number) => postJson<ScheduledArchiveRun>(`/settings/scheduled-tasks/${encodeURIComponent(id)}/trigger`, { expected_revision }),
+  archiveScheduledTask: (id: string, expected_revision: number) => postJson<ScheduledArchiveTask>(`/settings/scheduled-tasks/${encodeURIComponent(id)}/archive`, { expected_revision }),
+  scheduledTaskRuns: (id: string) => fetchJson<{ items: ScheduledArchiveRun[] }>(`/settings/scheduled-tasks/${encodeURIComponent(id)}/runs`),
+  skillReviews: () => fetchJson<{ proposals: SkillReviewProposal[] }>('/settings/skill-reviews'),
+  reviewSkill: (id: string, approve: boolean) => postJson<SkillReviewProposal>(`/settings/skill-reviews/${encodeURIComponent(id)}/review`, { approve }),
+  agentGuidance: () => fetchJson<{ content: string; revision: number }>('/settings/agent-guidance'),
+  saveAgentGuidance: (content: string, revision: number) => postJson<{ content: string; revision: number }>('/settings/agent-guidance', { content, revision }),
   settings: () => fetchJson<SettingsResponse>('/settings'),
   settingsLayouts: () => fetchJson<{ table_layouts: TableLayouts }>('/settings-layouts'),
   settingsSession: () => fetchJson<{ required: boolean; authenticated: boolean; available?: boolean }>('/settings/session'),
@@ -791,6 +965,8 @@ export const api = {
   settingsModels: (draft?: { base_url: string; api_key: string }) => draft
     ? postJson<SettingsModelsResponse>('/settings/models', draft)
     : fetchJson<SettingsModelsResponse>('/settings/models'),
+  testModelConnection: (draft: { base_url: string; api_key: string; model: string }) =>
+    postJson<{ ok: boolean; model: string; elapsed_ms: number; message: string; error_code?: string; http_status?: number }>('/settings/model-test', draft),
   updateSettings: (values: Record<string, unknown>, revision?: string) => postJson<SettingsUpdateResponse>('/settings', { values, ...(revision ? { revision } : {}) }),
   testHermesConnection: () => postJson<{ connected: boolean; endpoint: string; label: string; status: number; stdout: string; stderr: string; request?: unknown }>('/settings/hermes-test', {}),
   ragThreads: (params?: { q?: string; forum_id?: number | 'all'; index_state?: string; rag_status?: string; page?: number; page_size?: number }) => {
@@ -859,6 +1035,22 @@ export const api = {
     return fetchJson<RemoteThreadDetail>(`/remote/threads/${tid}${s ? `?${s}` : ''}`)
   },
   chatRuns: (id: string) => fetchJson<{ runs: (import('../types/chat').ChatRun & { input: string; operations?: unknown[] })[] }>(`/chat/sessions/${encodeURIComponent(id)}/runs`),
+  operationPlans: (params: { session_id: string; limit?: number; offset?: number }) => {
+    const query = new URLSearchParams({ session_id: params.session_id, limit: String(params.limit ?? 20), offset: String(params.offset ?? 0) })
+    return fetchJson<OperationPlanPage>(`/assistant/operation-plans?${query}`)
+  },
+  dailyIssues: (params: { session_id: string; limit?: number; offset?: number }) => {
+    const query = new URLSearchParams({ session_id: params.session_id, limit: String(params.limit ?? 30), offset: String(params.offset ?? 0) })
+    return fetchJson<DailyIssuePage>(`/daily-issues?${query}`)
+  },
+  dailyIssue: (issueId: string, session_id: string) => fetchJson<DailyIssueDetail>(`/daily-issues/${encodeURIComponent(issueId)}?${new URLSearchParams({ session_id })}`),
+  createDailyIssue: (body: { session_id: string; target_day: string; forum_ids: number[]; timezone: string }) => postJson<{ issue: DailyIssue; created: boolean; job_id: string | null; queued: boolean }>('/daily-issues', body),
+  retryDailyIssue: (issueId: string, session_id: string, regeneration_reason: string) => postJson<{ issue: DailyIssue; job_id: string | null; queued: boolean; reused?: boolean }>(`/daily-issues/${encodeURIComponent(issueId)}/retry`, { session_id, regeneration_reason }),
+  dailyRules: (session_id: string) => fetchJson<{ items: DailyRule[] }>(`/daily-rules?${new URLSearchParams({ session_id })}`),
+  createDailyRule: (body: { session_id: string; forum_ids: number[]; timezone: string; execution_time: string; preparation_deadline: string; budget: Record<string, unknown>; enabled: boolean }) => postJson<DailyRule>('/daily-rules', body),
+  updateDailyRule: (ruleId: string, body: { session_id: string; forum_ids: number[]; timezone: string; execution_time: string; preparation_deadline: string; budget: Record<string, unknown>; enabled: boolean; expected_revision: number }) => fetchJson<DailyRule>(`/daily-rules/${encodeURIComponent(ruleId)}`, { method: 'PUT', body: JSON.stringify(body) }),
+  approveOperationPlan: (planId: string, body: { session_id: string; plan_version: number; plan_hash: string }) => postJson<OperationPlan>(`/assistant/operation-plans/${encodeURIComponent(planId)}/approve`, body),
+  cancelOperationPlan: (planId: string, session_id: string) => postJson<OperationPlan>(`/assistant/operation-plans/${encodeURIComponent(planId)}/cancel`, { session_id }),
   chatFiles: () => fetchJson<{ files: { file_id: string; name: string; revision: number; source: string }[] }>('/chat/files'),
   chatFile: (id: string, offset = 0) => fetchJson<{ content: string; next_offset: number | null }>(`/chat/files/${encodeURIComponent(id)}?offset=${offset}`),
   chatContext: () => fetchJson<import('../types/chat').ChatContext>('/chat/context'),
@@ -868,7 +1060,7 @@ export const api = {
   renameChatSession: (id: string, title: string) => fetchJson<import('../types/chat').ChatSession>(`/chat/sessions/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify({ title }) }),
   deleteChatSession: (id: string) => fetchJson<{ ok: boolean }>(`/chat/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   chatMessages: async (id: string, signal?: AbortSignal) => { const payload = await fetchJson<{ messages?: import('../types/chat').ChatMessage[] } | import('../types/chat').ChatMessage[]>(`/chat/sessions/${encodeURIComponent(id)}/messages`, { signal }); return Array.isArray(payload) ? payload : payload.messages || [] },
-  startChatRun: (id: string, input: string, client_request_id?: string) => postJson<import('../types/chat').StartRunResponse>(`/chat/sessions/${encodeURIComponent(id)}/runs`, { input, client_request_id }),
+  startChatRun: (id: string, request: import('../types/chat').StartRunRequest) => postJson<import('../types/chat').StartRunResponse>(`/chat/sessions/${encodeURIComponent(id)}/runs`, request),
   getChatRun: (id: string) => fetchJson<import('../types/chat').ChatRun>(`/chat/runs/${encodeURIComponent(id)}`),
   stopChatRun: (id: string) => postJson<{ status: 'stopping' }>(`/chat/runs/${encodeURIComponent(id)}/stop`, {}),
   approveChatRun: (id: string, choice: import('../types/chat').ApprovalChoice, resolve_all = false, approval_id?: string, plan_hash?: string) => postJson<{ status: string }>(`/chat/runs/${encodeURIComponent(id)}/approval`, { choice, resolve_all, approval_id, plan_hash }),

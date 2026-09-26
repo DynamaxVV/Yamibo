@@ -530,6 +530,40 @@ def create_forum_research_report_job(
     )
 
 
+
+@agent_tool
+def list_scheduled_tasks() -> AgentResult:
+    from yamibo_mcp.application.scheduled_task_commands import list_scheduled_tasks as operation
+    return AgentResult(ok=True, data=operation())
+
+
+@agent_tool
+def read_scheduled_task(*, task_id: str) -> AgentResult:
+    from yamibo_mcp.application.scheduled_task_commands import read_scheduled_task as operation
+    return AgentResult(ok=True, data=operation(task_id=task_id))
+
+
+@agent_tool
+def create_archive_schedule(*, name: str, tid: int, schedule_kind: str,
+                            timezone_name: str = "Asia/Shanghai", cron: str | None = None,
+                            at: str | None = None, mode: str = "text_only", forum_id: int | None = None) -> AgentResult:
+    from yamibo_mcp.application.scheduled_task_commands import create_archive_schedule as operation
+    return AgentResult(ok=True, data=operation(name=name, tid=tid, schedule_kind=schedule_kind,
+        timezone_name=timezone_name, cron=cron, at=at, mode=mode, forum_id=forum_id), side_effects=["db_write"])
+
+
+@agent_tool
+def set_scheduled_task_enabled(*, task_id: str, expected_revision: int, enabled: bool) -> AgentResult:
+    from yamibo_mcp.application.scheduled_task_commands import set_scheduled_task_enabled as operation
+    return AgentResult(ok=True, data=operation(task_id=task_id, expected_revision=expected_revision, enabled=enabled), side_effects=["db_write"])
+
+
+@agent_tool
+def trigger_scheduled_task(*, task_id: str, expected_revision: int, requested_at: str) -> AgentResult:
+    from yamibo_mcp.application.scheduled_task_commands import trigger_scheduled_task as operation
+    return AgentResult(ok=True, data=operation(task_id=task_id, expected_revision=expected_revision, requested_at=requested_at), side_effects=["db_write"])
+
+
 def _read_metadata(
     *,
     requires: list[str] | None = None,
@@ -904,3 +938,17 @@ PUBLIC_AGENT_TOOLS = [
     ),
     *_DISCUSSION_AGENT_TOOLS,
 ]
+
+
+# Schedule mutations require the same exact user approval as other persistent writes.
+for _name, _description, _handler, _write in [
+    ("list_scheduled_tasks", "List local scheduled archive tasks; read-only PostgreSQL access.", list_scheduled_tasks, False),
+    ("read_scheduled_task", "Read a scheduled task's exact parameters, revision and last 50 occurrences. Read before pause/resume or manual trigger.", read_scheduled_task, False),
+    ("create_archive_schedule", "Create a fixed-TID archive schedule. Side effect: persistent database write and authorization for future archive Jobs with the exact TID, mode, forum_id, cron/at and timezone. Show these details before approval. schedule_kind=cron needs a five-field cron with one minute per hour; at needs a future ISO timestamp with timezone. Daemon required; creation is not archive completion.", create_archive_schedule, True),
+    ("set_scheduled_task_enabled", "Pause (enabled=false) or resume (true) a schedule at its expected_revision. Side effect: persistent database write; resuming authorizes future executions of the previously read exact task. Past one-shot schedules cannot resume.", set_scheduled_task_enabled, True),
+    ("trigger_scheduled_task", "Manually trigger the previously read exact task revision. Side effect: writes an occurrence and possibly a queued archive Job; daemon required. requested_at is an ISO timestamp with timezone and an idempotency key: retain it on retry. Inspect result.job_id via read_job; queued is not completed.", trigger_scheduled_task, True),
+]:
+    _metadata = _read_metadata(followups=["read_scheduled_task"])
+    if _write:
+        _metadata.update(effect="mutating", risk="write", idempotency={"mode": "not_deduplicated", "scope": [], "retry": "do_not_automatically_retry"})
+    PUBLIC_AGENT_TOOLS.append(capability_registration(_name, _description, _handler, _metadata))

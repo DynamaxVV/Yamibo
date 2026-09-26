@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api/client'
-import { isTerminalStatus, reduceChatEvent, type ChatEvent, type ChatRunStatus, type ChatState } from '../types/chat'
+import { isTerminalStatus, reduceChatEvent, type ChatEvent, type ChatRunScope, type ChatRunStatus, type ChatState } from '../types/chat'
 export type SseFrame = { id?: string; event?: string; data: string }
 export function parseSseFrames(buffer: string, eof = false): { frames: SseFrame[]; rest: string } {
   const blocks = buffer.split(/\r\n\r\n|\n\n|\r\r/)
@@ -120,13 +120,13 @@ export function useChatRunStream(sessionId:string,refreshMessages:(id?:string)=>
     update(sessionId, () => ({ runId, state: { ...emptyState(), status, startedAt: Date.now() }, error: null }))
     void consume(sessionId, runId, 0)
   }, [consume, sessionId])
-  const requestRef=useRef<{session:string;input:string;id:string}|null>(null)
+  const requestRef=useRef<{session:string;input:string;id:string;scope:ChatRunScope}|null>(null)
   const sendingRef=useRef(false)
-  const start=useCallback(async(input:string)=>{if(sendingRef.current)throw new Error(lang === 'en' ? 'A message is already being submitted.' : '正在提交');sendingRef.current=true;
+  const start=useCallback(async(input:string,scope:ChatRunScope={},clientRequestId?:string)=>{if(sendingRef.current)throw new Error(lang === 'en' ? 'A message is already being submitted.' : '正在提交');sendingRef.current=true;
     if(!requestRef.current){try{requestRef.current=JSON.parse(sessionStorage.getItem('yamibo.chat.pending.'+sessionId)||'null')}catch{}}
-    if(!requestRef.current||requestRef.current.session!==sessionId||requestRef.current.input!==input)requestRef.current={session:sessionId,input,id:crypto.randomUUID()};
+    if(!requestRef.current||requestRef.current.session!==sessionId||requestRef.current.input!==input||JSON.stringify(requestRef.current.scope||{})!==JSON.stringify(scope)||clientRequestId&&requestRef.current.id!==clientRequestId)requestRef.current={session:sessionId,input,id:clientRequestId||crypto.randomUUID(),scope};
     sessionStorage.setItem('yamibo.chat.pending.'+sessionId,JSON.stringify(requestRef.current));
-    try { const old=controllersRef.current[sessionId];old?.abort();const run=await api.startChatRun(sessionId,input,requestRef.current.id);requestRef.current=null;sessionStorage.removeItem('yamibo.chat.pending.'+sessionId);persist(sessionId,run.run_id,0);update(sessionId,()=>({runId:run.run_id,state:{...emptyState(),status:run.status,startedAt:Date.now()},error:null}));void consume(sessionId,run.run_id,0);return run} finally {sendingRef.current=false}},[consume,sessionId,lang])
+    try { const old=controllersRef.current[sessionId];old?.abort();const saved=requestRef.current;const run=await api.startChatRun(sessionId,{input,client_request_id:saved.id,...saved.scope});requestRef.current=null;sessionStorage.removeItem('yamibo.chat.pending.'+sessionId);persist(sessionId,run.run_id,0);update(sessionId,()=>({runId:run.run_id,state:{...emptyState(),status:run.status,startedAt:Date.now()},error:null}));void consume(sessionId,run.run_id,0);return run} finally {sendingRef.current=false}},[consume,sessionId,lang])
   const stop=useCallback(async()=>{const view=viewsRef.current[sessionId];if(view?.runId){await api.stopChatRun(view.runId);update(sessionId,v=>({...v,state:{...v.state,status:'stopping'}}))}},[sessionId])
   const reconnect=useCallback(async(session:string,force=false)=>{
     const view=viewsRef.current[session]

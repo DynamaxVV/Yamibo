@@ -1,21 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { useI18n } from '../../context/I18nContext'
-import { formatContent, type ChatEvent, type ChatMessage } from '../../types/chat'
-import { ChatMessageView } from './ChatMessageView'
+import { type ChatEvent, type ChatMessage } from '../../types/chat'
+import { buildToolSteps, preparationTools, stepError } from './toolTimeline'
 import { ChatToolEvent } from './ChatToolEvent'
 
 type ToolEvent = Extract<ChatEvent, { type: 'tool.started' | 'tool.completed' }>
-
-function toolCallRows(messages: ChatMessage[]) {
-  return messages.flatMap(message => (Array.isArray(message.tool_calls) ? message.tool_calls : [])).map((call, index) => {
-    const record = call && typeof call === 'object' ? call as Record<string, unknown> : {}
-    const fn = record.function && typeof record.function === 'object' ? record.function as Record<string, unknown> : {}
-    const name = String(fn.name || record.name || record.tool_name || 'tool')
-    const argumentValue = fn.arguments ?? record.arguments
-    const preview = argumentValue === undefined ? '' : formatContent(argumentValue).replace(/\s+/g, ' ').trim().slice(0, 180)
-    return { key: `${String(record.id || record.call_id || name)}-${index}`, name, preview }
-  })
-}
 
 type Props = {
   content?: string
@@ -27,10 +16,13 @@ type Props = {
 }
 
 export function ChatReasoning({ content, toolCallMessages = [], toolEvents = [], toolMessages = [], defaultOpen = false, streaming = false }: Props) {
-  const { t } = useI18n()
+  const { t, tx } = useI18n()
   const hasToolContent = toolCallMessages.length > 0 || toolEvents.length > 0 || toolMessages.length > 0
   const hasContent = Boolean(content) || hasToolContent
-  const callRows = toolCallRows(toolCallMessages)
+  const steps = buildToolSteps(toolEvents, toolCallMessages, toolMessages)
+  const preparation = steps.filter(step => preparationTools.has(step.name) && !stepError(step))
+  const operations = steps.filter(step => !preparationTools.has(step.name) || Boolean(stepError(step)))
+  const failures = steps.filter(step => Boolean(stepError(step))).length
   const scrollRef = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(defaultOpen)
 
@@ -50,15 +42,14 @@ export function ChatReasoning({ content, toolCallMessages = [], toolEvents = [],
   if (!hasContent) return null
   return <details className="chat-reasoning" open={open} onToggle={event => setOpen(event.currentTarget.open)}>
     <summary className="chat-reasoning-summary">
-      <span>{t('chat_reasoning')}</span>
+      <span>{t('chat_reasoning')}</span><span className="chat-execution-count">{tx(`${operations.length} 项操作`, `${operations.length} operations`)}{failures > 0 && <span className="chat-error"> · {tx(`${failures} 项失败`, `${failures} failed`)}</span>}</span>
     </summary>
     <div className="chat-reasoning-scroll" ref={scrollRef}>
-      {content && <pre>{content}</pre>}
       {hasToolContent && <div className="chat-reasoning-tools">
-        {callRows.map(row => <div className="chat-tool-call" key={row.key}><span className="chat-tool-call-bullet" aria-hidden="true">●</span><strong>{row.name}</strong>{row.preview && <code>{row.preview}</code>}</div>)}
-        {toolMessages.map((message, index) => <ChatMessageView key={message.id || `tool-message-${index}`} message={message} />)}
-        {toolEvents.map(event => <ChatToolEvent key={event.seq} event={event} />)}
+        {operations.map(step => <ChatToolEvent key={step.key} step={step} streaming={streaming} />)}
+        {preparation.length > 0 && <details className="chat-execution-preparation"><summary>{tx(`准备工作 · ${preparation.length} 次调用`, `Preparation · ${preparation.length} calls`)}</summary>{preparation.map(step => <ChatToolEvent key={step.key} step={step} streaming={streaming} />)}</details>}
       </div>}
+      {content && <details className="chat-execution-preparation"><summary>{tx('模型思考', 'Model reasoning')}</summary><pre>{content}</pre></details>}
     </div>
   </details>
 }

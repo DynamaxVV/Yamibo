@@ -1,6 +1,0 @@
-import{c as g}from"./index-sL5MK-Q2.js";/**
- * @license lucide-react v1.47.0 - ISC
- *
- * This source code is licensed under the ISC license.
- * See the LICENSE file in the root directory of this source tree.
- */const r={name:"arrow-left",size:24,node:[["path",{d:"m12 19-7-7 7-7",key:"1l729n"}],["path",{d:"M19 12H5",key:"x3x0zl"}]]};r.node;const h=g(r);function t(e,s){const i=(s==null?void 0:s.archive_breakdown)??null;return i||(e?{downloaded_relpaths:e.archived_images,non_export_relpaths:e.non_export_images,shared_relpaths:e.shared_images,skipped_relpaths:e.skipped_image_urls,missing_image_urls:e.missing_image_urls,missing_shared_image_urls:e.missing_shared_image_urls}:null)}function a(e){return e?!!(e.missing_image_urls&&e.missing_image_urls.length>0||e.missing_shared_image_urls&&e.missing_shared_image_urls.length>0):!1}function m(e,s="zh"){var n,_;if(!e)return s==="en"?"Unknown":"未知";const i=[];return(n=e.missing_image_urls)!=null&&n.length&&i.push(s==="en"?`Missing ${e.missing_image_urls.length} body images`:`正文图片缺失 ${e.missing_image_urls.length} 张`),(_=e.missing_shared_image_urls)!=null&&_.length&&i.push(s==="en"?`Missing ${e.missing_shared_image_urls.length} shared assets`:`共享资源缺失 ${e.missing_shared_image_urls.length} 个`),i.length===0?s==="en"?"None":"无":i.join(s==="en"?", ":"，")}export{h as A,m as a,t as g,a as h};

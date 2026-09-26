@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
-import { formatContent, visibleStreamingAssistant, type ChatEvent, type ChatMessage } from '../../types/chat'
+import { formatContent, visibleStreamingAssistant, type ChatEvent, type ChatMessage, type ChatSubmissionStatus } from '../../types/chat'
 import { ChatActivityIndicator, type ChatActivityKind } from './ChatActivityIndicator'
 import { ChatMessageView } from './ChatMessageView'
 import { ChatReasoning } from './ChatReasoning'
 import { useI18n } from '../../context/I18nContext'
 
-type Props = { messages: ChatMessage[]; events: ChatEvent[]; assistant: string; pendingUser?: string; streamingEnabled?: boolean; streaming?: boolean }
+type PendingTranscriptItem = { id: string; input: string; existingCount: number; status: ChatSubmissionStatus; onRetry?: () => void }
+type Props = { messages: ChatMessage[]; events: ChatEvent[]; assistant: string; pendingSubmissions?: PendingTranscriptItem[]; streamingEnabled?: boolean; streaming?: boolean }
 type Activity = { kind: ChatActivityKind; label: string; detail?: string }
 type ToolEvent = Extract<ChatEvent, { type: 'tool.started' | 'tool.completed' }>
 type AssistantGroup = { messages: ChatMessage[]; toolCallMessages: ChatMessage[]; toolMessages: ChatMessage[]; anchor?: ChatMessage }
@@ -67,13 +68,19 @@ function lastAssistant(group: AssistantGroup, visible: Set<ChatMessage>): ChatMe
   return [...group.messages].reverse().find(message => visible.has(message))
 }
 
-export function ChatTranscript({ messages, events, assistant, pendingUser, streamingEnabled = true, streaming = false, activity }: Props & { activity?: Activity }) {
+export function ChatTranscript({ messages, events, assistant, pendingSubmissions = [], streamingEnabled = true, streaming = false, activity }: Props & { activity?: Activity }) {
   const { tx } = useI18n()
+  const pendingLabels: Record<ChatSubmissionStatus, [string, string]> = {
+    submitting: ['正在提交…', 'Submitting…'], accepted: ['服务已接受', 'Accepted'], queued: ['排队中', 'Queued'],
+    running: ['处理中', 'Running'], research_find: ['正在查找讨论', 'Finding discussions'], research_read: ['正在阅读来源', 'Reading sources'],
+    waiting_jobs: ['等待后台任务', 'Waiting for background jobs'], approval: ['等待授权', 'Awaiting approval'],
+    completed: ['已完成', 'Completed'], failed: ['提交失败，可使用相同请求安全重试', 'Submission failed. Retry safely with the same request ID'],
+  }
   const ref = useRef<HTMLDivElement>(null)
   const previousMessages = useRef(messages)
   const [follow, setFollow] = useState(true)
   useEffect(() => { if (previousMessages.current !== messages && follow && ref.current) ref.current.scrollTop = ref.current.scrollHeight; previousMessages.current = messages }, [messages, follow])
-  useEffect(() => { if (follow && ref.current) ref.current.scrollTop = ref.current.scrollHeight }, [events, assistant, pendingUser, follow])
+  useEffect(() => { if (follow && ref.current) ref.current.scrollTop = ref.current.scrollHeight }, [events, assistant, pendingSubmissions, follow])
   const persistedReasoning = messages.flatMap(message => [message.reasoning, message.reasoning_content]).map(value => formatContent(value).trim()).filter(Boolean).map(value => value.replace(/\s+/g, ' ').trim())
   const seenReasoning = new Set<string>()
   const reasoning = events
@@ -87,7 +94,13 @@ export function ChatTranscript({ messages, events, assistant, pendingUser, strea
       return true
     })
     .join('\n')
-  const pendingAlreadyPersisted = Boolean(pendingUser && messages.some(message => message.role === 'user' && typeof message.content === 'string' && message.content === pendingUser))
+  const pendingPersistedCounts: Record<string, number> = {}
+  const visiblePending = pendingSubmissions.filter(item => {
+    const count = messages.filter(message => message.role === 'user' && typeof message.content === 'string' && message.content === item.input).length
+    const ordinal = pendingPersistedCounts[item.input] || 0
+    pendingPersistedCounts[item.input] = ordinal + 1
+    return count <= item.existingCount + ordinal
+  })
   const visibleEvents = streamingEnabled ? events : []
   const toolEvents = visibleEvents.filter((event): event is ToolEvent => event.type === 'tool.started' || event.type === 'tool.completed')
   const toolMessages = messages.filter(message => message.role === 'tool')
@@ -117,7 +130,7 @@ export function ChatTranscript({ messages, events, assistant, pendingUser, strea
   const historicalPanelVisible = groups.some(group => groupHasPanel(group, eventGroup)) || historicalEvents.length > 0
   const livePanelVisible = streaming && (Boolean(reasoning) || toolEvents.length > 0)
   const showActivity = Boolean(activity) && (!visibleAssistant || activity?.kind !== 'reply')
-  const hasContent = visibleMessages.length > 0 || historicalPanelVisible || livePanelVisible || showActivity || Boolean(pendingUser && !pendingAlreadyPersisted) || Boolean(visibleAssistant) || visibleEvents.length > 0
+  const hasContent = visibleMessages.length > 0 || historicalPanelVisible || livePanelVisible || showActivity || visiblePending.length > 0 || Boolean(visibleAssistant) || visibleEvents.length > 0
   return <div className="chat-transcript" ref={ref} onScroll={e => { const el = e.currentTarget; setFollow(el.scrollHeight - el.scrollTop - el.clientHeight <= 80) }}>
     {!hasContent && <div className="chat-transcript-empty">{tx('暂无消息，发送内容开始对话', 'No messages yet. Send one to start the conversation.')}</div>}
     {visibleMessages.map((message, index) => {
@@ -128,7 +141,7 @@ export function ChatTranscript({ messages, events, assistant, pendingUser, strea
       const panel = attachPanel && group ? <ChatReasoning content={groupReasoning} toolCallMessages={group.toolCallMessages} toolEvents={group === eventGroup ? historicalEvents : []} toolMessages={group.toolMessages} /> : undefined
       return <ChatMessageView key={message.id || `message-${index}`} message={message} hideReasoning={!!group && groupHasPanel(group, eventGroup) && Boolean(messageReasoning(message))} hideToolCalls={!!group && groupHasPanel(group, eventGroup) && Boolean(message.tool_calls)} extra={panel} />
     })}
-    {pendingUser && !pendingAlreadyPersisted && <ChatMessageView message={{ role: 'user', content: pendingUser }} />}
+    {visiblePending.map(item => <div className="chat-pending-message" key={item.id}><ChatMessageView message={{ role: 'user', content: item.input }} /><div className={`chat-pending-state is-${item.status}`} role="status">{tx(...pendingLabels[item.status])}{item.status === 'failed' && item.onRetry && <button type="button" className="chat-text-button" onClick={item.onRetry}>{tx('使用同一请求 ID 重试','Retry with the same request ID')}</button>}</div></div>)}
     {(visibleAssistant || livePanelVisible) && <ChatMessageView message={{ role: 'assistant', content: visibleAssistant }} streaming={streaming} extra={livePanelVisible ? <ChatReasoning content={reasoning} toolEvents={toolEvents} defaultOpen={!visibleAssistant} streaming /> : undefined} />}
     {showActivity && activity && <ChatActivityIndicator kind={activity.kind} label={activity.label} detail={activity.detail} />}
     {groups.filter(group => groupHasPanel(group, eventGroup) && !lastAssistant(group, visibleSet) && !group.anchor).map((group, index) => <ChatReasoning key={`orphan-reasoning-${index}`} content={mergeReasoning(group.messages.map(message => messageReasoning(message)).filter(Boolean))} toolCallMessages={group.toolCallMessages} toolEvents={group === eventGroup ? historicalEvents : []} toolMessages={group.toolMessages} />)}

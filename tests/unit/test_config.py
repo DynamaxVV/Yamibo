@@ -3,7 +3,49 @@ from __future__ import annotations
 import json
 import pytest
 
-from yamibo_mcp.config import load_settings
+from yamibo_mcp.config import load_settings, refresh_llm_settings
+
+
+def test_llm_connection_fields_refresh_without_reloading_other_settings(monkeypatch, tmp_path):
+    config_path = tmp_path / "yamibo.local.json"
+    monkeypatch.setenv("YAMIBO_CONFIG_PATH", str(config_path))
+    for name in ("YAMIBO_LLM_BASE_URL", "YAMIBO_LLM_API_KEY", "YAMIBO_LLM_MODEL"):
+        monkeypatch.delenv(name, raising=False)
+    original = load_settings()
+    config_path.write_text(json.dumps({"llm": {"base_url": "http://localhost:8317/v1", "api_key": "new-key", "model": "new-model"}, "chat": {"timeout": 1}}))
+
+    refreshed = refresh_llm_settings(original)
+    assert (refreshed.llm_base_url, refreshed.llm_api_key, refreshed.llm_model) == ("http://localhost:8317/v1", "new-key", "new-model")
+    assert refreshed.chat_timeout == original.chat_timeout
+    assert refreshed.rag_base_url == refreshed.llm_base_url
+    assert refreshed.rag_api_key == refreshed.llm_api_key
+    monkeypatch.setenv("YAMIBO_LLM_MODEL", "locked-model")
+    assert refresh_llm_settings(original).llm_model == "locked-model"
+
+
+def test_chat_defaults_to_embedded_without_model_credentials(monkeypatch, tmp_path):
+    config_path = tmp_path / "yamibo.local.json"
+    monkeypatch.setenv("YAMIBO_CONFIG_PATH", str(config_path))
+    monkeypatch.setenv("YAMIBO_DATA_DIR", str(tmp_path / "data"))
+    for name in ("YAMIBO_CHAT_BACKEND", "YAMIBO_LLM_BASE_URL", "YAMIBO_LLM_API_KEY", "YAMIBO_LLM_MODEL"):
+        monkeypatch.delenv(name, raising=False)
+
+    settings = load_settings()
+
+    assert settings.chat_backend == "embedded"
+    assert settings.llm_base_url == "https://api.openai.com/v1"
+    assert settings.llm_model == "gpt-4.1-mini"
+    assert settings.llm_api_key is None
+
+
+def test_chat_can_explicitly_select_legacy_hermes_backend(monkeypatch, tmp_path):
+    config_path = tmp_path / "yamibo.local.json"
+    config_path.write_text(json.dumps({"chat": {"backend": "hermes"}}), encoding="utf-8")
+    monkeypatch.setenv("YAMIBO_CONFIG_PATH", str(config_path))
+    monkeypatch.setenv("YAMIBO_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.delenv("YAMIBO_CHAT_BACKEND", raising=False)
+
+    assert load_settings().chat_backend == "hermes"
 
 
 def test_load_settings_parses_account_pool(monkeypatch, tmp_path):
@@ -222,6 +264,8 @@ def test_load_settings_reads_database_configuration(monkeypatch, tmp_path):
     )
     monkeypatch.setenv("YAMIBO_CONFIG_PATH", str(config_path))
     monkeypatch.setenv("YAMIBO_DATA_DIR", str(data_dir))
+    monkeypatch.delenv("YAMIBO_DB_BACKEND", raising=False)
+    monkeypatch.delenv("YAMIBO_DB_URL", raising=False)
     monkeypatch.setenv("YAMIBO_DB_POOL_MAX", "10")
 
     settings = load_settings()
@@ -243,6 +287,8 @@ def test_load_settings_rejects_invalid_database_backend(monkeypatch, tmp_path):
     config_path.write_text(json.dumps({"database": {"backend": "oracle"}}), encoding="utf-8")
     monkeypatch.setenv("YAMIBO_CONFIG_PATH", str(config_path))
     monkeypatch.setenv("YAMIBO_DATA_DIR", str(data_dir))
+    monkeypatch.delenv("YAMIBO_DB_BACKEND", raising=False)
+    monkeypatch.delenv("YAMIBO_DB_URL", raising=False)
 
     with pytest.raises(ValueError, match="unsupported database backend"):
         load_settings()

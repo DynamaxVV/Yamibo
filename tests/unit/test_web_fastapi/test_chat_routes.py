@@ -1,10 +1,12 @@
 from dataclasses import dataclass
 from unittest.mock import Mock
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
 from yamibo_mcp.services.chat_runtime import ChatRun, ChatRunStatus, NormalizedChatEvent
 from yamibo_mcp.services.web_chat import ChatServiceError
+from yamibo_mcp.application.contracts import AgentError, AgentResult
 from yamibo_mcp.web_fastapi.app import create_app
 from yamibo_mcp.web_fastapi.deps import get_chat_service
 
@@ -74,3 +76,18 @@ def test_sse_waits_for_reconciliation_after_stream_loss_and_ignores_unknown(test
     assert "id: 4" in body and "event: stream.error" in body and '"run_id":"r1"' in body
     assert "id: 6" in body
     assert fake.subscription.close.called
+
+
+def test_run_source_receipts_route_returns_local_pid_url_and_explicit_errors(test_settings):
+    client, _ = client_and_service(test_settings)
+    valid = AgentResult(ok=True, data={"run_id": "r1", "items": [{"tid": 7, "pid": 8, "floor_no": 2, "source_url": "/threads/7#pid-8", "status": "valid"}], "count": 1, "total": 1, "limit": 100, "offset": 0})
+    with patch("yamibo_mcp.web_fastapi.routers.chat.list_run_source_receipts", return_value=valid):
+        response = client.get("/api/chat/runs/r1/source-receipts")
+    assert response.status_code == 200
+    assert response.json()["items"][0]["source_url"] == "/threads/7#pid-8"
+
+    missing = AgentResult(ok=False, error=AgentError(code="RUN_NOT_FOUND", message="missing", agent_hint="missing"))
+    with patch("yamibo_mcp.web_fastapi.routers.chat.list_run_source_receipts", return_value=missing):
+        response = client.get("/api/chat/runs/missing/source-receipts")
+    assert response.status_code == 404
+    assert response.json()["detail"]["code"] == "RUN_NOT_FOUND"

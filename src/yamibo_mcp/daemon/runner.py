@@ -4,6 +4,7 @@ import logging
 import random
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from threading import Event, Lock, Thread
 from uuid import uuid4
 
@@ -18,6 +19,9 @@ from yamibo_mcp.daemon.handlers import get_handler
 from yamibo_mcp.daemon.handlers.sync_thread import JobCancelled, JobPaused
 from yamibo_mcp.daemon.image_backfill_scheduler import maybe_enqueue_image_backfill_dry_run
 from yamibo_mcp.daemon.daily_sign_in_scheduler import maybe_enqueue_daily_sign_ins
+from yamibo_mcp.application.assistant_operation_execution import advance_operation_plans
+from yamibo_mcp.application.daily_brief_scheduler import schedule_due_daily_briefs
+from yamibo_mcp.application.scheduled_task_scheduler import schedule_due_tasks
 from yamibo_mcp.daemon.recovery import recover_expired_jobs
 from yamibo_mcp.maintenance.forum_sizes import FORUM_SIZE_CACHE_REFRESH_SECONDS, refresh_forum_size_cache
 from yamibo_mcp.storage.paths import StoragePaths
@@ -209,6 +213,27 @@ class DaemonRunner:
                 _maybe_schedule_daily_sign_ins(repo, settings)
             except Exception:
                 LOG.exception("Daily sign-in scheduler failed")
+
+            try:
+                advance_operation_plans(conn, settings)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                LOG.exception("Assistant operation plan scheduler failed")
+
+            if getattr(conn, "backend", "sqlite") in {"postgres", "postgresql"}:
+                try:
+                    schedule_due_daily_briefs(conn, now=datetime.now(timezone.utc))
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                    LOG.exception("Daily brief scheduler failed")
+                try:
+                    schedule_due_tasks(conn, now=datetime.now(timezone.utc))
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                    LOG.exception("Scheduled task scheduler failed")
 
             # 维护恢复探测：每 10 分钟用一次轻量请求检查维护是否结束。
             maintenance_state = get_maintenance_pause_state(conn)

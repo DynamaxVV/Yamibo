@@ -4,6 +4,7 @@ import json
 import os
 import math
 import hashlib
+import time
 from threading import RLock
 from urllib.parse import urlsplit
 import urllib.request
@@ -11,7 +12,7 @@ from copy import deepcopy
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from yamibo_mcp.config import RAG_CHUNKER_VERSION, Settings, load_settings, read_local_config, write_local_config
+from yamibo_mcp.config import RAG_CHUNKER_VERSION, Settings, load_settings, read_local_config, refresh_llm_settings, write_local_config
 from yamibo_mcp.web_fastapi.deps import get_chat_service, get_settings
 from yamibo_mcp.services.web_chat import ChatService
 
@@ -43,10 +44,9 @@ TABLE_LAYOUT_DEFAULTS = {
 }
 
 SETTINGS_FIELD_SPECS = {
-    "chat_backend": {"section": "chat", "key": "backend", "type": "string", "default": "hermes", "env": "YAMIBO_CHAT_BACKEND", "effect": "restart_web"},
+    "chat_backend": {"section": "chat", "key": "backend", "type": "string", "default": "embedded", "env": "YAMIBO_CHAT_BACKEND", "effect": "restart_web"},
     "settings_access_token": {"section": "security", "key": "access_token", "type": "string", "default": None, "env": "YAMIBO_SETTINGS_ACCESS_TOKEN", "sensitive": True, "effect": "restart_web", "readonly": True},
     "chat_max_parallel": {"section": "chat", "key": "max_parallel", "type": "int", "default": 2, "env": "YAMIBO_CHAT_MAX_PARALLEL", "effect": "restart_web"},
-    "chat_batch_limit": {"section": "chat", "key": "batch_limit", "type": "int", "default": 20, "env": "YAMIBO_CHAT_BATCH_LIMIT", "effect": "restart_web"},
     "auto_signin_enabled": {"section": "worker", "key": "auto_signin_enabled", "type": "bool", "default": True, "env": "YAMIBO_AUTO_SIGNIN_ENABLED", "effect": "immediate"},
     "cookie_refresh_interval_hours": {"section": "yamibo", "key": "cookie_refresh_interval_hours", "type": "float", "default": 12, "env": "YAMIBO_COOKIE_REFRESH_INTERVAL_HOURS", "effect": "restart_daemon"},
     "image_backfill_enabled": {"section": "yamibo", "key": "image_backfill_enabled", "type": "bool", "default": True, "env": "YAMIBO_IMAGE_BACKFILL_ENABLED", "effect": "immediate"},
@@ -55,8 +55,6 @@ SETTINGS_FIELD_SPECS = {
     "image_backfill_daily_limit": {"section": "yamibo", "key": "image_backfill_daily_limit", "type": "int", "default": 100, "env": "YAMIBO_IMAGE_BACKFILL_DAILY_LIMIT", "effect": "immediate"},
     "image_backfill_auto_interval_seconds": {"section": "yamibo", "key": "image_backfill_auto_interval_seconds", "type": "float", "default": 60, "env": "YAMIBO_IMAGE_BACKFILL_AUTO_INTERVAL_SECONDS", "effect": "immediate"},
     "image_backfill_max_pages": {"section": "yamibo", "key": "image_backfill_max_pages", "type": "int", "default": 1, "env": "YAMIBO_IMAGE_BACKFILL_MAX_PAGES", "effect": "immediate"},
-    "chat_max_requests": {"section": "chat", "key": "max_requests", "type": "int", "default": 20, "env": "YAMIBO_CHAT_MAX_REQUESTS", "effect": "restart_web"},
-    "chat_max_tools": {"section": "chat", "key": "max_tools", "type": "int", "default": 50, "env": "YAMIBO_CHAT_MAX_TOOLS", "effect": "restart_web"},
     "chat_timeout": {"section": "chat", "key": "timeout", "type": "int", "default": 900, "env": "YAMIBO_CHAT_TIMEOUT", "effect": "restart_web"},
 
     "db_backend": {"section": "database", "key": "backend", "type": "string", "default": "sqlite", "env": "YAMIBO_DB_BACKEND", "effect": "restart_daemon_web"},
@@ -77,9 +75,9 @@ SETTINGS_FIELD_SPECS = {
     "archive_thread_max_pages": {"section": "yamibo", "key": "archive_thread_max_pages", "type": "int", "default": 50, "env": "YAMIBO_ARCHIVE_THREAD_MAX_PAGES", "effect": "restart_daemon"},
     "novel_author_only_max_pages": {"section": "yamibo", "key": "novel_author_only_max_pages", "type": "int", "default": 50, "env": "YAMIBO_NOVEL_AUTHOR_ONLY_MAX_PAGES", "effect": "restart_daemon"},
     "novel_author_only_page_delay_seconds": {"section": "yamibo", "key": "novel_author_only_page_delay_seconds", "type": "float", "default": 0.5, "env": "YAMIBO_NOVEL_AUTHOR_ONLY_PAGE_DELAY_SECONDS", "effect": "restart_daemon"},
-    "llm_base_url": {"section": "llm", "key": "base_url", "type": "string", "default": "https://api.openai.com/v1", "env": "YAMIBO_LLM_BASE_URL", "effect": "restart_daemon_web"},
-    "llm_api_key": {"section": "llm", "key": "api_key", "type": "string", "default": None, "env": "YAMIBO_LLM_API_KEY", "sensitive": True, "effect": "restart_daemon_web"},
-    "llm_model": {"section": "llm", "key": "model", "type": "string", "default": "gpt-4.1-mini", "env": "YAMIBO_LLM_MODEL", "effect": "restart_daemon_web"},
+    "llm_base_url": {"section": "llm", "key": "base_url", "type": "string", "default": "https://api.openai.com/v1", "env": "YAMIBO_LLM_BASE_URL", "effect": "immediate"},
+    "llm_api_key": {"section": "llm", "key": "api_key", "type": "string", "default": None, "env": "YAMIBO_LLM_API_KEY", "sensitive": True, "effect": "immediate"},
+    "llm_model": {"section": "llm", "key": "model", "type": "string", "default": "gpt-4.1-mini", "env": "YAMIBO_LLM_MODEL", "effect": "immediate"},
     "hermes_host": {"section": "chat", "key": "hermes_host", "type": "string", "default": "host.docker.internal", "env": "YAMIBO_HERMES_HOST", "effect": "restart_web"},
     "hermes_port": {"section": "chat", "key": "hermes_port", "type": "int", "default": 8642, "env": "YAMIBO_HERMES_PORT", "effect": "restart_web"},
     "hermes_model": {"section": "chat", "key": "hermes_model", "type": "string", "default": "hermes-agent", "env": "YAMIBO_HERMES_MODEL", "effect": "restart_web"},
@@ -413,7 +411,7 @@ def _settings_update(body: dict, settings: Settings):
         })
         changed_fields.extend(hints_updates.keys())
 
-    payload = _settings_payload(settings)
+    payload = _settings_payload(refresh_llm_settings(settings))
     # UI-only JSON settings are intentionally not part of the runtime Settings dataclass.
     # Return the just-written value even when this endpoint is using an injected test/runtime config.
     if "table_layouts" in next_raw_config.get("ui", {}):
@@ -450,6 +448,66 @@ def settings_models_test(body: dict, settings: Settings = Depends(get_settings))
     if not key:
         key = settings.llm_api_key if os.environ.get("YAMIBO_LLM_API_KEY") else raw.get("llm", {}).get("api_key", settings.llm_api_key)
     return _fetch_models(base_url, key)
+
+
+@router.post("/settings/model-test")
+def settings_model_test(body: dict, settings: Settings = Depends(get_settings)):
+    """Probe draft settings without persisting credentials or returning provider payloads."""
+    from openai import OpenAI, APIConnectionError, APIStatusError, APITimeoutError
+
+    values = _settings_payload(settings)["values"]
+    base_url = body.get("base_url", values["llm_base_url"])
+    model = body.get("model", values["llm_model"])
+    key = body.get("api_key")
+    try:
+        for name, value in (("llm_base_url", base_url), ("llm_model", model)):
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{name} is required")
+            _normalize_setting_input(name, value)
+        if key is not None:
+            _normalize_setting_input("llm_api_key", key)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, detail=str(exc))
+    if not key:
+        raw = read_local_config(settings.config_path)
+        key = settings.llm_api_key if os.environ.get("YAMIBO_LLM_API_KEY") else raw.get("llm", {}).get("api_key", settings.llm_api_key)
+    started = time.monotonic()
+
+    def result(ok, message, error_code=None, http_status=None):
+        payload = {"ok": ok, "model": model, "elapsed_ms": round((time.monotonic() - started) * 1000), "message": message}
+        if error_code:
+            payload["error_code"] = error_code
+        if http_status:
+            payload["http_status"] = http_status
+        return payload
+
+    try:
+        with OpenAI(base_url=base_url.strip(), api_key=key or "", timeout=30, max_retries=0) as client:
+            response = client.chat.completions.create(
+                model=model.strip(), messages=[{"role": "user", "content": "Reply only OK."}], stream=False,
+            )
+        if not response.choices or not response.choices[0].message.content:
+            return result(False, "服务已响应，但未返回有效对话文本，请检查模型是否支持 Chat Completions。", "EMPTY_RESPONSE")
+        return result(True, "模型已成功生成对话回复。此测试不验证论坛访问或工具执行。")
+    except APITimeoutError:
+        return result(False, "模型请求超时（30 秒），请检查服务负载与网络。", "TIMEOUT")
+    except APIConnectionError:
+        return result(False, "无法连接模型服务，请检查地址、端口及服务器网络。Docker 中的 127.0.0.1 指向容器自身。", "CONNECTION_ERROR")
+    except APIStatusError as exc:
+        status = exc.status_code
+        if "location is not supported" in str(exc).lower():
+            message, code = "模型提供方拒绝当前出口地区，请检查模型服务的上游网络。", "REGION_UNSUPPORTED"
+        elif status in (401, 403):
+            message, code = "模型服务拒绝认证或访问，请检查 API Key 和模型权限。", "AUTH_ERROR"
+        elif status == 404:
+            message, code = "模型或接口不存在，请检查模型名和 Base URL（通常以 /v1 结尾）。", "NOT_FOUND"
+        elif status == 429:
+            message, code = "模型服务触发限流或余额限制，请检查提供方状态。", "RATE_LIMITED"
+        else:
+            message, code = f"模型服务返回 HTTP {status}，请检查模型兼容性及提供方状态。", "PROVIDER_ERROR"
+        return result(False, message, code, status)
+    except Exception:
+        return result(False, "模型服务返回了无法解析的响应，请检查 OpenAI Chat Completions 兼容性。", "INVALID_RESPONSE")
 
 
 def _fetch_models(base_url: str, api_key: str | None):
@@ -492,3 +550,35 @@ def persist_jobs_enabled(settings: Settings, enabled: bool) -> None:
     next_raw_config = deepcopy(raw_config)
     _apply_setting_patch(next_raw_config, "jobs_enabled", enabled)
     write_local_config(settings.config_path, next_raw_config)
+
+
+def _agent_files(service):
+    if not hasattr(service, "files"):
+        raise HTTPException(409, "内置 Agent 未启用")
+    return service.files
+
+
+@router.get("/settings/agent-guidance")
+def agent_guidance_get(service=Depends(get_chat_service)):
+    files = _agent_files(service)
+    with files.store.transaction() as conn:
+        item = files.store.get("files", "guidance", conn, lock=True)
+        return {"content": files.guidance(), "revision": item["revision"]}
+
+
+@router.post("/settings/agent-guidance")
+def agent_guidance_update(body: dict, service=Depends(get_chat_service)):
+    from yamibo_mcp.services.embedded_chat.store import uid
+
+    content, revision = body.get("content"), body.get("revision")
+    if not isinstance(content, str) or type(revision) is not int or revision < 1:
+        raise HTTPException(422, "content 和 revision 必填")
+    if len(content.encode("utf-8")) > 16384:
+        raise HTTPException(422, "指导内容不能超过 16 KiB")
+    files = _agent_files(service)
+    try:
+        with files.store.transaction() as conn:
+            result = files.mutate("update_agent_guidance", {"content": content, "expected_revision": revision}, {}, conn, uid())
+        return {"content": content, "revision": result["revision"]}
+    except ValueError as exc:
+        raise HTTPException(409 if str(exc) == "FILE_REVISION_CONFLICT" else 422, str(exc)) from exc

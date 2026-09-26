@@ -13,6 +13,7 @@ import {
 import { api, type JobSummary, type BackfillStatus } from '../api/client'
 import { Badge } from '../components/Badge'
 import { PaginationControls } from '../components/PaginationControls'
+import { GlobalJobControl } from '../components/GlobalJobControl'
 import { useI18n } from '../context/I18nContext'
 import { formatDateTime } from '../utils/time'
 import { formatJobFailureKind, getJobFailureKind, type JobFailureKind } from '../utils/jobMessages'
@@ -530,8 +531,13 @@ export function Jobs() {
   return (
     <div className="space-y-3">
       <header className="border-b border-border pb-3">
-        <h1 className="text-3xl">{tx('任务中心', 'Task center')}</h1>
-        <p className="mt-1 text-sm text-muted-foreground">{tx('查看任务进度、处理失败与暂停的任务。', 'Track task progress and manage failed or paused tasks.')}</p>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h1 className="text-3xl">{tx('任务中心', 'Task center')}</h1>
+            <p className="mt-1 text-sm text-muted-foreground">{tx('查看任务进度、处理失败与暂停的任务。', 'Track task progress and manage failed or paused tasks.')}</p>
+          </div>
+          <GlobalJobControl />
+        </div>
       </header>
       {/* ─── Top Filter & Action Bar ─── */}
       <div className="space-y-3">

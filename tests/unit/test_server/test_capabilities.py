@@ -30,6 +30,7 @@ def test_capability_manifest_covers_public_tools_once_and_matches_signatures():
         "read_only",
         "remote_read",
         "enqueue_job",
+        "mutating",
     }
     for item in capabilities:
         required = {
@@ -119,8 +120,8 @@ def test_agent_interface_tool_table_matches_public_registration():
     doc_path = Path(__file__).parents[3] / "docs" / "智能体接口说明.md"
     documented = set(
         re.findall(
-            r"^\| `([^`]+)` \| `uv run yamibo-archiver",
-            doc_path.read_text(encoding="utf-8"),
+            r"^\| `([^`]+)` \|",
+            doc_path.read_text(encoding="utf-8").split("## 公共工具", 1)[1].split("## 导航资源", 1)[0],
             re.MULTILINE,
         )
     )
